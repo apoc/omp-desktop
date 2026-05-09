@@ -1,3 +1,9 @@
+// Tauri's `#[command]` macro requires arguments by value (owned `String`,
+// `State<'_, _>`, `AppHandle`) for deserialization from the frontend
+// invoke payload. Suppress the related pedantic lints at module scope so
+// command signatures stay idiomatic for the Tauri API.
+#![allow(clippy::needless_pass_by_value)]
+
 mod agent;
 
 use agent::AgentBridge;
@@ -21,7 +27,7 @@ fn start_session(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let cwd_opt = if cwd.is_empty() { None } else { Some(cwd) };
-    bridge.start_session(session_id, cwd_opt, app)
+    bridge.start_session(session_id, cwd_opt.as_deref(), app)
 }
 
 /// Kill the omp process for a tab session.
@@ -39,16 +45,27 @@ fn open_project(app: tauri::AppHandle) -> Result<Option<String>, String> {
     // FilePath::to_string formatting (URL encoding, UNC prefix quirks)
     // that could diverge from what std::fs and the rest of the app
     // expect downstream.
-    let path = app
+    let Some(picked) = app
         .dialog()
         .file()
         .set_title("Open Project Folder")
         .blocking_pick_folder()
-        .and_then(|p| p.into_path().ok())
-        .map(|p| p.to_string_lossy().into_owned());
-    Ok(path)
+    else {
+        return Ok(None);
+    };
+    let path = picked
+        .into_path()
+        .map_err(|e| format!("invalid picked path: {e}"))?;
+    Ok(Some(path.to_string_lossy().into_owned()))
 }
 
+/// Run the Tauri application. Panics if the runtime fails to initialise.
+///
+/// # Panics
+///
+/// Panics if `tauri::Builder::run` returns an error (e.g. the webview
+/// runtime cannot be initialised). This is a fatal startup condition;
+/// there is no meaningful recovery from inside `main`.
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

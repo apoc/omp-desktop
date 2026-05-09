@@ -19,7 +19,7 @@ struct BridgeInner {
     gen: u64,
     /// Stdin wrapped in its own mutex so writes never serialize through
     /// the bridge map lock. A blocked write on a slow consumer can no
-    /// longer deadlock concurrent start_session / stop_session calls.
+    /// longer deadlock concurrent `start_session` / `stop_session` calls.
     stdin: Option<Arc<Mutex<ChildStdin>>>,
     /// Live child handle. Cleared once reaped on a background thread.
     child: Option<Child>,
@@ -46,12 +46,12 @@ impl AgentBridge {
     pub fn start_session(
         &self,
         session_id: String,
-        cwd: Option<String>,
+        cwd: Option<&str>,
         app: AppHandle,
     ) -> Result<(), String> {
         // Spawn first — if this fails, the existing session (if any) stays
         // intact rather than getting torn down for nothing.
-        let mut child = spawn_omp(cwd.as_deref())?;
+        let mut child = spawn_omp(cwd)?;
         let stdin  = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
@@ -76,14 +76,14 @@ impl AgentBridge {
             }
         }
 
-        spawn_stdout_reader(self.sessions.clone(), session_id.clone(), gen, app.clone(), stdout);
+        spawn_stdout_reader(self.sessions.clone(), session_id.clone(), gen, app, stdout);
         spawn_stderr_reader(session_id, stderr);
         Ok(())
     }
 
     pub fn stop_session(&self, session_id: &str) {
         let removed = {
-            let mut s = match self.sessions.lock() { Ok(g) => g, Err(_) => return };
+            let Ok(mut s) = self.sessions.lock() else { return };
             s.remove(session_id)
         };
         if let Some(mut inner) = removed {
@@ -158,12 +158,11 @@ fn spawn_stdout_reader(
         loop {
             buf.clear();
             match read_until_capped(&mut reader, b'\n', &mut buf, MAX_LINE_BYTES) {
-                Ok(0)  => break, // EOF — pipe closed, child exited
-                Ok(_)  => {}
-                Err(_) => break, // pipe error
+                Ok(0) | Err(_) => break, // EOF or pipe error
+                Ok(_) => {}
             }
             // Strip trailing CR/LF.
-            while matches!(buf.last(), Some(b'\n') | Some(b'\r')) { buf.pop(); }
+            while matches!(buf.last(), Some(b'\n' | b'\r')) { buf.pop(); }
             if buf.is_empty() { continue; }
             let text = String::from_utf8_lossy(&buf).into_owned();
             let _ = app.emit(&line_event, text);
@@ -210,22 +209,18 @@ fn read_until_capped<R: BufRead>(
             Err(e) => return Err(e),
         };
         if avail.is_empty() { return Ok(total); }
-        let used = match avail.iter().position(|&b| b == delim) {
-            Some(i) => {
-                let room = max.saturating_sub(out.len());
-                let take = (i + 1).min(room);
-                out.extend_from_slice(&avail[..take]);
-                let used = i + 1;
-                r.consume(used);
-                total += used;
-                return Ok(total);
-            }
-            None => {
-                let room = max.saturating_sub(out.len());
-                let take = avail.len().min(room);
-                if take > 0 { out.extend_from_slice(&avail[..take]); }
-                avail.len()
-            }
+        let room = max.saturating_sub(out.len());
+        let used = if let Some(i) = avail.iter().position(|&b| b == delim) {
+            let take = (i + 1).min(room);
+            out.extend_from_slice(&avail[..take]);
+            let used = i + 1;
+            r.consume(used);
+            total += used;
+            return Ok(total);
+        } else {
+            let take = avail.len().min(room);
+            if take > 0 { out.extend_from_slice(&avail[..take]); }
+            avail.len()
         };
         r.consume(used);
         total += used;
