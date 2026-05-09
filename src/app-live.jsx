@@ -40,6 +40,12 @@ function App() {
   const [planOpen,   setPlanOpen]   = React.useState(false);
   const [planMode,   setPlanMode]   = React.useState(false);
   const planStartedRef = React.useRef(false); // true after first send in plan mode
+  const [planAnnotations, setPlanAnnotations] = React.useState({});
+  const handleAnnotate = (idx, value) => setPlanAnnotations(prev => {
+    const next = { ...prev };
+    if (value === null) delete next[idx]; else next[idx] = value;
+    return next;
+  });
 
   // ── Live data (all per-session — driven by OMP_BRIDGE.onUpdate) ───────────
   const [messages,      setMessages]      = React.useState([]);
@@ -128,14 +134,27 @@ function App() {
   const APPROVAL_PROMPT = "Plan approved. Please proceed to execute it. Use your todo_write tool to track tasks as you go.";
 
   const handleSend = text => {
-    if (!text.trim()) return;
+    const hasAnnotations = Object.keys(planAnnotations).length > 0;
+    if (!text.trim() && !hasAnnotations) return;
     let msg = text.trim();
     if (planMode && !planStartedRef.current) {
+      // First send in plan mode — frame as intent
       planStartedRef.current = true;
       msg = intentFraming(text.trim());
+    } else if (planMode && hasAnnotations) {
+      // Subsequent sends — prepend block comments then user text
+      const lineComments = Object.entries(planAnnotations)
+        .sort(([a],[b]) => Number(a)-Number(b))
+        .map(([,{raw,comment}]) => {
+          const quoted = raw.split('\n').map(l => `> ${l}`).join('\n');
+          return `${quoted}\n→ ${comment.trim()}`;
+        }).join('\n\n');
+      const parts = ['Line comments:\n' + lineComments, text.trim()].filter(Boolean);
+      msg = parts.join('\n\n');
+      setPlanAnnotations({});
     }
     if (bridge?.isConnected) bridge.send(msg);
-    else setMessages(prev => [...prev, { kind: "user", time: _timeNow(), text }]);
+    else setMessages(prev => [...prev, { kind: "user", time: _timeNow(), text: msg }]);
   };
 
   const handleAbort = () => { bridge?.abort(); setStreaming(false); };
@@ -158,10 +177,11 @@ function App() {
   };
 
   const handleApprovePlan = () => {
+    setPlanAnnotations({});
     bridge?.followUp(APPROVAL_PROMPT);
     setPlanMode(false);
     planStartedRef.current = false;
-    setPlanOpen(true); // open the kanban to track execution
+    setPlanOpen(true);
   };
 
   // Tab select — switches the active session; bridge resets all per-session state
@@ -212,7 +232,11 @@ function App() {
 
           <div className={`stage ${showRail ? "with-rail" : ""}`}>
             <main className="session">
-              <ChatView messages={messages} />
+              <ChatView messages={messages}
+                planMode={planMode}
+                annotations={planAnnotations}
+                onAnnotate={handleAnnotate}
+              />
               <Composer
                 onSend={handleSend}
                 planMode={planMode}

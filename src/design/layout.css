@@ -846,3 +846,76 @@
   .stage.with-rail { grid-template-columns: 1fr 240px; }
   .window.is-split .stage.with-rail { grid-template-columns: 1fr 280px 240px; }
 }
+
+/* ── Plan annotation blocks (rendered in AssistantBubble when planMode) ── */
+.plan-annot-blocks { display: flex; flex-direction: column; gap: 2px; }
+
+.plan-block {
+  position: relative;
+  padding: 6px 36px 6px 8px;
+  border-radius: 6px;
+  border-left: 2px solid transparent;
+  transition: background 0.1s, border-color 0.1s;
+}
+.plan-block:hover { background: color-mix(in oklab, var(--fg) 3%, transparent); }
+.plan-block.is-selected {
+  background: color-mix(in oklab, var(--amber) 6%, transparent);
+  border-left-color: var(--amber);
+}
+.plan-block.has-comment { border-left-color: var(--lilac); }
+.plan-block.is-selected.has-comment { border-left-color: var(--amber); }
+
+.plan-block-body { pointer-events: none; }
+.plan-block-body p:first-child { margin-top: 0; }
+.plan-block-body p:last-child  { margin-bottom: 0; }
+
+.plan-block-add {
+  position: absolute; top: 6px; right: 6px;
+  width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line-bright); border-radius: 4px;
+  background: var(--bg-elevated);
+  opacity: 0; transition: opacity 0.1s; cursor: pointer;
+}
+.plan-block:hover .plan-block-add,
+.plan-block.is-selected .plan-block-add,
+.plan-block.has-comment .plan-block-add { opacity: 1; }
+
+.plan-comment-chip {
+  display: flex; align-items: center; gap: 5px;
+  margin: 4px 0 2px 2px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--lilac) 10%, var(--bg-elevated));
+  border: 1px solid color-mix(in oklab, var(--lilac) 25%, var(--line));
+  font-size: var(--d-text-xs); color: var(--fg-2);
+  cursor: pointer; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.plan-comment-chip:hover { background: color-mix(in oklab, var(--lilac) 15%, var(--bg-elevated)); }
+
+.plan-comment-form {
+  margin-top: 6px;
+  border: 1px solid color-mix(in oklab, var(--amber) 35%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--amber) 5%, var(--bg-elevated));
+  overflow: hidden;
+}
+.plan-comment-form-quote {
+  padding: 5px 10px;
+  border-bottom: 1px solid color-mix(in oklab, var(--amber) 20%, var(--line));
+  font-size: var(--d-text-xs); color: var(--fg-4);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.plan-comment-form-area {
+  display: block; width: 100%;
+  min-height: 64px; max-height: 180px; resize: none;
+  padding: 10px; background: transparent;
+  border: none; outline: none;
+  color: var(--fg); font-family: var(--font-sans); font-size: var(--d-text-sm); line-height: 1.5;
+}
+.plan-comment-form-foot {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid color-mix(in oklab, var(--amber) 15%, var(--line));
+}
