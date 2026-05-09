@@ -5,6 +5,31 @@
 
 const { UserBubble: _CV_UserBubble, ToolCard: _CV_ToolCard, AssistantBubble: _CV_AssistantBubble } = window;
 
+function CompactRow({ msg }) {
+  const pending = msg.status === "pending";
+  const error   = msg.status === "error";
+  return (
+    <div className="row compact-row">
+      <div className={`compact-card${pending ? " compact-pending" : error ? " compact-error" : ""}`}>
+        <span className="compact-icon mono">&#9636;</span>
+        {pending && <span>Compacting context…</span>}
+        {error   && <span>Compaction failed</span>}
+        {!pending && !error && (
+          <>
+            <span className="compact-label">Context compacted</span>
+            {msg.tokensBefore != null && (
+              <span className="chip muted mono" style={{ marginLeft: 4 }}>
+                {msg.tokensBefore.toLocaleString()} tokens
+              </span>
+            )}
+            {msg.summary && <span className="compact-summary">{msg.summary}</span>}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx }) {
   const scrollRef    = React.useRef(null);
   const atBottomRef  = React.useRef(true);   // assume start at bottom
@@ -46,6 +71,7 @@ function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx }
         {messages.map((m, i) => {
           const hl = hoveredMsgIdx === i;
           if (m.kind === "user") return <_CV_UserBubble key={i} idx={i} highlighted={hl} msg={m} />;
+          if (m.kind === "compact") return <CompactRow key={i} msg={m} />;
           if (m.kind === "tool") return <_CV_ToolCard    key={i} idx={i} highlighted={hl} msg={m} />;
           return <_CV_AssistantBubble key={i} idx={i} highlighted={hl} msg={m}
             annotable={i === lastAsstIdx}

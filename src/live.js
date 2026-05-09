@@ -315,6 +315,25 @@
       }
       return;
     }
+    // Compact — handle success and failure both (must come before early-return below)
+    if (resp.command === "compact") {
+      let idx = -1;
+      for (let i = state.messages.length - 1; i >= 0; i--) {
+        if (state.messages[i].kind === "compact" && state.messages[i].status === "pending") { idx = i; break; }
+      }
+      if (idx !== -1) {
+        const d = resp.data ?? {};
+        const summary = resp.success
+          ? (d.shortSummary || (d.summary ?? "").split("\n")[0]).slice(0, 160)
+          : null;
+        const update = resp.success
+          ? { status: "done", summary, tokensBefore: d.tokensBefore }
+          : { status: "error" };
+        state.messages = state.messages.map((m, i) => i === idx ? { ...m, ...update } : m);
+      }
+      notify();
+      return;
+    }
     if (!resp.success) return;
     const { command, data } = resp;
 
@@ -723,7 +742,12 @@
     setModel(model)    { _send({ type: "set_model", provider: model.provider, modelId: model.id }); },
     cycleModel()       { _send({ type: "cycle_model" }); },
     cycleThinking()    { _send({ type: "cycle_thinking_level" }); },
-    compact()          { _send({ type: "compact" }); },
+    compact() {
+      const id  = "cmpct-" + (_nextCmdId++);
+      state.messages = [...state.messages, { kind: "compact", status: "pending", id, time: _timeNow() }];
+      notify();
+      _send({ type: "compact", id });
+    },
     newSession()       { _send({ type: "new_session" }); },
     exportHtml()       { _send({ type: "export_html" }); },
     refreshModels()    { _initFetch(); },
