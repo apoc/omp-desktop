@@ -443,13 +443,12 @@
       state.planMeta = window.buildPlanMeta(rpcState.todoPhases, rpcState);
     }
 
-    // Update session registry entry name from omp session metadata
-    const sessionName = rpcState.sessionName
-      ?? rpcState.sessionFile?.replace(/\\/g, "/").split("/").pop()?.replace(".jsonl", "")
-      ?? "session";
-    if (activeSessionId && sessionRegistry.has(activeSessionId)) {
+    // Only update the tab name if omp provides an explicit human-readable
+    // sessionName. The sessionFile is a timestamp ID — leave the folder-based
+    // name set at tab-open time intact when sessionName is absent.
+    if (rpcState.sessionName && activeSessionId && sessionRegistry.has(activeSessionId)) {
       const entry = sessionRegistry.get(activeSessionId);
-      sessionRegistry.set(activeSessionId, { ...entry, name: sessionName });
+      sessionRegistry.set(activeSessionId, { ...entry, name: rpcState.sessionName });
     }
 
     _refreshCtx();
