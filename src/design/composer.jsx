@@ -124,7 +124,7 @@ function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, curr
 //  commands view  — lists all slash-commands; /model row drills into picker
 //  models view    — filterable model list; Esc returns to commands
 //
-function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
+function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, models = [] }) {
   const [q, setQ]       = React.useState("");
   const [view, setView] = React.useState("commands"); // "commands" | "models"
   const inputRef = React.useRef(null);
@@ -155,7 +155,6 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
 
   // ── Model picker view ──────────────────────────────────────────────
   if (view === "models") {
-    const models    = window.OMP_DATA.models;
     const modelHits = models.filter((m) => !q || fil(m.name) || fil(m.id));
     const current   = models.find((m) => m.id === currentModelId);
 
@@ -232,7 +231,7 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
   cmdHits.forEach((c) => { (groups[c.group] = groups[c.group] || []).push(c); });
 
   // Display name of the active model as a hint on the /model row
-  const activeModelName = window.OMP_DATA.models.find((m) => m.id === currentModelId)?.name ?? "–";
+  const activeModelName = models.find((m) => m.id === currentModelId)?.name ?? "–";
 
   return (
     <div className="bridge-scrim" onClick={onClose}>

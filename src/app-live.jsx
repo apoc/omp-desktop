@@ -290,6 +290,7 @@ function App() {
         onPick={handleCommand}
         onPickModel={handlePickModel}
         currentModelId={model.id}
+        models={models}
       />
 
       {planOpen && (
