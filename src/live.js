@@ -311,6 +311,7 @@
         if (data.thinkingLevel != null) state.thinkingLevel = data.thinkingLevel;
         state.models = state.models.map(m => ({ ...m, current: m.id === data.model.id }));
         notify();
+      }
 
     } else if (command === "cycle_thinking_level") {
       // data is { level: Effort } | null. null means thinking not supported
