@@ -137,21 +137,24 @@ function App() {
     const hasAnnotations = Object.keys(planAnnotations).length > 0;
     if (!text.trim() && !hasAnnotations) return;
     let msg = text.trim();
-    if (planMode && !planStartedRef.current) {
-      // First send in plan mode — frame as intent
-      planStartedRef.current = true;
-      msg = intentFraming(text.trim());
-    } else if (planMode && hasAnnotations) {
-      // Subsequent sends — prepend block comments then user text
-      const lineComments = Object.entries(planAnnotations)
-        .sort(([a],[b]) => Number(a)-Number(b))
-        .map(([,{raw,comment}]) => {
-          const quoted = raw.split('\n').map(l => `> ${l}`).join('\n');
-          return `${quoted}\n→ ${comment.trim()}`;
-        }).join('\n\n');
-      const parts = ['Line comments:\n' + lineComments, text.trim()].filter(Boolean);
-      msg = parts.join('\n\n');
-      setPlanAnnotations({});
+    if (planMode) {
+      if (hasAnnotations) {
+        // Feedback with block comments — always takes priority over intent framing
+        const lineComments = Object.entries(planAnnotations)
+          .sort(([a],[b]) => Number(a)-Number(b))
+          .map(([,{raw,comment}]) => {
+            const quoted = raw.split('\n').map(l => `> ${l}`).join('\n');
+            return `${quoted}\n→ ${comment.trim()}`;
+          }).join('\n\n');
+        const parts = ['Line comments:\n' + lineComments, text.trim()].filter(Boolean);
+        msg = parts.join('\n\n');
+        setPlanAnnotations({});
+        planStartedRef.current = true; // annotations imply plan is already in progress
+      } else if (!planStartedRef.current) {
+        // First clean send — wrap in intent framing
+        planStartedRef.current = true;
+        msg = intentFraming(text.trim());
+      }
     }
     if (bridge?.isConnected) bridge.send(msg);
     else setMessages(prev => [...prev, { kind: "user", time: _timeNow(), text: msg }]);
