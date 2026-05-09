@@ -4,7 +4,9 @@ A Tauri 2 desktop shell for [oh-my-pi](https://github.com/can1357/oh-my-pi) (`om
 Wraps the `omp --mode rpc` coding agent as a managed child process and serves the
 React UI as a connected, live interface — no browser, no Electron, ~8 MB binary.
 
-![screenshot placeholder](docs/screenshot.png)
+![Chat](screenshots/1.jpg)
+![Tools](screenshots/2.jpg)
+![Minimap](screenshots/3.jpg)
 
 ---
 
