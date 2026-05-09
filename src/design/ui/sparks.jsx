@@ -47,7 +47,7 @@ const TokenGauge = ({ used, total, pct, label, sub }) => {
           style={{ filter: `drop-shadow(0 0 4px ${tone})`, transition: "stroke-dasharray 600ms var(--ease-out)" }}
         />
         <text x="28" y="31" textAnchor="middle" fontSize="11" fontFamily="var(--font-mono)" fill="var(--fg)">
-          {pct}%
+          {(+pct).toFixed(1)}%
         </text>
       </svg>
       <div>
