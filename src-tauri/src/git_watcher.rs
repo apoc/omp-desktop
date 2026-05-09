@@ -62,8 +62,18 @@ impl GitWatcherState {
         })
         .map_err(|e| e.to_string())?;
 
+        // Watch the *parent directory* non-recursively rather than the HEAD
+        // file itself.  On Linux, inotify attaches to the inode; git writes
+        // HEAD atomically via rename(HEAD.lock → HEAD), which replaces the
+        // inode and orphans a file-level watch after the first branch switch.
+        // Watching the parent avoids this and is also how notify's Windows
+        // and macOS backends already behave internally.  The filename filter
+        // in the callback above ensures only HEAD events trigger a re-read.
+        let git_dir = head_path
+            .parent()
+            .ok_or_else(|| "HEAD path has no parent".to_owned())?;
         watcher
-            .watch(&head_path, RecursiveMode::NonRecursive)
+            .watch(git_dir, RecursiveMode::NonRecursive)
             .map_err(|e| e.to_string())?;
 
         self.watchers.lock().map_or_else(
