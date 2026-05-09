@@ -170,7 +170,7 @@ function App() {
     else if (c.name === "compact")  { bridge?.compact(); }
     else if (c.name === "export")   { bridge?.exportHtml(); }
     else if (c.name === "thinking") { cycleThinking(); }
-    else if (c.name === "model")    { bridge?.cycleModel(); }
+    else if (c.name === "model")    { openBridge("models"); }
     else if (c.name === "new")      { bridge?.newSession(); }
   };
 
@@ -259,6 +259,7 @@ function App() {
                 onApprove={handleApprovePlan}
                 annotationCount={Object.keys(planAnnotations).length}
                 microcopy={data.microcopy}
+                onPick={handleCommand}
               />
               <StatusBar
                 ctx={liveCtx}

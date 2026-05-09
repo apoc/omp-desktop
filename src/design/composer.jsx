@@ -5,18 +5,30 @@
 const { Icon } = window;
 
 // ── The composer (input + plan/steer modes + send) ────────────────────
-function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy }) {
-  const [text, setText] = React.useState("");
-  const [showSlash, setShowSlash] = React.useState(false);
-  const taRef = React.useRef(null);
-  const cmds = (window.OMP_DATA?.commands || []);
-  const filtered = text.startsWith("/")
-    ? cmds.filter((c) => c.name.startsWith(text.slice(1).toLowerCase()))
-    : [];
+function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy }) {
+  const [text, setText]       = React.useState("");
+  const [activeIdx, setActiveIdx] = React.useState(0);
+  const taRef   = React.useRef(null);
+  const listRef = React.useRef(null);
 
+  const cmds = window.OMP_DATA?.commands || [];
+
+  // Derive slash state inline — no useEffect, no stale flicker
+  const slashQ = text.startsWith("/") ? text.slice(1).split(" ")[0].toLowerCase() : null;
+  const filtered = slashQ !== null
+    ? cmds.filter(c => !slashQ || c.name.startsWith(slashQ) || c.name.includes(slashQ))
+    : [];
+  const showSlash = filtered.length > 0;
+
+  // Keep activeIdx in bounds; auto-select when single result
+  const clampedIdx = showSlash ? Math.min(activeIdx, filtered.length - 1) : 0;
+
+  // Scroll active item into view
   React.useEffect(() => {
-    setShowSlash(text.startsWith("/") && filtered.length > 0);
-  }, [text, filtered.length]);
+    if (!showSlash || !listRef.current) return;
+    const el = listRef.current.children[clampedIdx];
+    el?.scrollIntoView({ block: "nearest" });
+  }, [clampedIdx, showSlash]);
 
   React.useEffect(() => {
     const ta = taRef.current;
@@ -25,7 +37,15 @@ function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, curr
     ta.style.height = `${Math.min(ta.scrollHeight, 320)}px`;
   }, [text]);
 
+  const execCmd = (cmd) => {
+    setText("");
+    setActiveIdx(0);
+    onPick?.(cmd);
+  };
+
   const send = () => {
+    // If the slash popup is open, Enter executes the highlighted command
+    if (showSlash) { execCmd(filtered[clampedIdx]); return; }
     const canSend = text.trim() || (planMode && annotationCount > 0);
     if (!canSend || isStreaming) return;
     onSend(text.trim());
@@ -33,8 +53,14 @@ function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, curr
   };
 
   const onKey = (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-    if (e.key === "Escape" && isStreaming) { onAbort(); }
+    if (showSlash) {
+      if (e.key === "ArrowDown")  { e.preventDefault(); setActiveIdx(i => Math.min(i + 1, filtered.length - 1)); return; }
+      if (e.key === "ArrowUp")    { e.preventDefault(); setActiveIdx(i => Math.max(i - 1, 0)); return; }
+      if (e.key === "Escape")     { e.preventDefault(); setText(""); return; }
+      if (e.key === "Tab")        { e.preventDefault(); setActiveIdx(i => (i + 1) % filtered.length); return; }
+    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); return; }
+    if (e.key === "Escape" && isStreaming) { onAbort(); return; }
     if (e.key === "k" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onOpenCmd(); }
   };
 
@@ -50,10 +76,12 @@ function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, curr
       )}
 
       {showSlash && (
-        <div className="slash-pop">
-          {filtered.map((c) => (
-            <button key={c.name} className="slash-row"
-              onMouseDown={(e) => { e.preventDefault(); setText(`/${c.name} `); taRef.current?.focus(); }}>
+        <div className="slash-pop" ref={listRef}>
+          {filtered.map((c, i) => (
+            <button key={c.name}
+              className={`slash-row${i === clampedIdx ? " active" : ""}`}
+              onMouseEnter={() => setActiveIdx(i)}
+              onMouseDown={(e) => { e.preventDefault(); execCmd(c); }}>
               <span className="slash-glyph">{c.icon}</span>
               <span className="mono" style={{ color: "var(--accent)" }}>/{c.name}</span>
               <span style={{ color: "var(--fg-3)" }}>{c.hint}</span>

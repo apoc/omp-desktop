@@ -450,6 +450,7 @@
   border-bottom: 1px solid var(--line-soft);
 }
 .slash-row:hover { background: var(--bg-hover); }
+.slash-row.active { background: var(--bg-hover); }
 .slash-row:last-child { border-bottom: 0; }
 .slash-glyph { width: 18px; color: var(--fg-3); font-family: var(--font-mono); }
 
