@@ -676,13 +676,13 @@
     const win  = getCurrentWindow();
     const isWin = navigator.userAgent.includes("Windows") || navigator.platform.startsWith("Win");
 
-    const chrome = document.querySelector(".chrome");
-    if (chrome) {
-      chrome.addEventListener("mousedown", e => {
-        if (e.target.closest("button, .chrome-lights, .win-controls")) return;
-        win.startDragging().catch(() => {});
-      });
-    }
+    // Drag: delegate from document so it works regardless of React render timing.
+    // startDragging() must be called synchronously within the mousedown handler.
+    document.addEventListener("mousedown", e => {
+      if (!e.target.closest(".chrome")) return;
+      if (e.target.closest("button, .chrome-lights, .win-controls")) return;
+      win.startDragging().catch(() => {});
+    });
 
     if (isWin) {
       document.addEventListener("click", e => {

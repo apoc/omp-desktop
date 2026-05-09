@@ -15,7 +15,7 @@ const IS_WIN = typeof navigator !== "undefined" &&
 // ── Window chrome ─────────────────────────────────────────────────────
 function WindowChrome({ project, peer, onCmd }) {
   return (
-    <div className="chrome">
+    <div className="chrome" data-tauri-drag-region>
       {/* macOS traffic lights — left side, hidden on Windows */}
       {!IS_WIN && (
         <div className="chrome-lights">
