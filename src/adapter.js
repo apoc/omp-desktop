@@ -142,9 +142,10 @@
   }
 
 
-  // Merge a rolling snapshot (next) into accumulated stream (prev).
-  // Detects the longest suffix of prev that matches a prefix of next,
-  // then appends only the new tail — prevents duplicate lines on each poll.
+  // Merge a rolling snapshot (next) into the accumulated stream (prev).
+  // recentOutput lines grow in-place while streaming, so the last matched
+  // line is allowed to be a prefix of its next counterpart (startsWith),
+  // not just an exact match. This handles both line-append and new-line cases.
   function _accumulateLines(prev, next) {
     if (!next.length) return prev;
     if (!prev.length) return next.slice();
@@ -152,9 +153,15 @@
     for (let k = maxK; k > 0; k--) {
       let ok = true;
       for (let i = 0; i < k; i++) {
-        if (prev[prev.length - k + i] !== next[i]) { ok = false; break; }
+        const p = prev[prev.length - k + i];
+        const n = next[i];
+        // All lines except the last must match exactly.
+        // The last compared pair allows p to be a prefix of n (streaming growth).
+        const match = (i < k - 1) ? p === n : (p === n || n.startsWith(p));
+        if (!match) { ok = false; break; }
       }
-      if (ok) return prev.concat(next.slice(k));
+      // Replace the overlapping tail of prev with the full next snapshot.
+      if (ok) return prev.slice(0, prev.length - k).concat(next);
     }
     return prev.concat(next);
   }
