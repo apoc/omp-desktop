@@ -141,6 +141,23 @@
       .map(e => ({ t: Math.floor((now - e.ts) / 1000), k: normalizeToolName(e.toolName) }));
   }
 
+
+  // Merge a rolling snapshot (next) into accumulated stream (prev).
+  // Detects the longest suffix of prev that matches a prefix of next,
+  // then appends only the new tail — prevents duplicate lines on each poll.
+  function _accumulateLines(prev, next) {
+    if (!next.length) return prev;
+    if (!prev.length) return next.slice();
+    const maxK = Math.min(prev.length, next.length);
+    for (let k = maxK; k > 0; k--) {
+      let ok = true;
+      for (let i = 0; i < k; i++) {
+        if (prev[prev.length - k + i] !== next[i]) { ok = false; break; }
+      }
+      if (ok) return prev.concat(next.slice(k));
+    }
+    return prev.concat(next);
+  }
   // ── tool_execution_start → running tool card ──────────────────────────────
   // Verified fields: ev.toolName, ev.toolCallId, ev.args (object), ev.intent
   function buildToolStartCard(event, time) {
@@ -238,6 +255,8 @@
           const r = byIdx.get(p.index);
           if (!r) return { ...p };
           const failed = r.error || r.exitCode !== 0 || r.aborted;
+          // Append the final output lines to _stream so stream view stays complete.
+          const finalLines = r.output ? r.output.split("\n") : [];
           return {
             ...p,
             status:    r.aborted ? "aborted" : failed ? "failed" : "completed",
@@ -245,6 +264,7 @@
             durationMs:r.durationMs ?? p.durationMs ?? 0,
             output:    r.output    ?? null,
             error:     r.error     ?? null,
+            _stream:   _accumulateLines(p._stream ?? [], finalLines),
           };
         });
       }
@@ -284,21 +304,27 @@
       }
     }
     if (card.tool === "task" && details.progress?.length) {
-      extra.subagents = details.progress.map(p => ({
-        index:      p.index,
-        id:         p.id,
-        agent:      p.agent,
-        status:     p.status,
-        task:       p.task ?? "",
-        lastIntent: p.lastIntent ?? null,
-        currentTool:p.currentTool ?? null,
-        toolCount:  p.toolCount ?? 0,
-        tokens:     p.tokens ?? 0,
-        durationMs: p.durationMs ?? 0,
-        recentOutput: p.recentOutput ?? [],
-        output:     null,
-        error:      null,
-      }));
+      const existingByIdx = new Map((card.subagents ?? []).map(s => [s.index, s]));
+      extra.subagents = details.progress.map(p => {
+        const prev    = existingByIdx.get(p.index);
+        const newLines = p.recentOutput ?? [];
+        return {
+          index:       p.index,
+          id:          p.id,
+          agent:       p.agent,
+          status:      p.status,
+          task:        p.task ?? "",
+          lastIntent:  p.lastIntent ?? null,
+          currentTool: p.currentTool ?? null,
+          toolCount:   p.toolCount ?? 0,
+          tokens:      p.tokens ?? 0,
+          durationMs:  p.durationMs ?? 0,
+          recentOutput: newLines,
+          _stream:     _accumulateLines(prev?._stream ?? [], newLines),
+          output:      null,
+          error:       null,
+        };
+      });
     }
     return { ...card, ...extra };
   }

@@ -329,3 +329,28 @@
 .ta-running .ta-agent { color: var(--accent); }
 .ta-failed  .ta-agent { color: var(--rose); }
 .ta-aborted .ta-agent { color: var(--amber); }
+
+/* ── Task stream log (open when header clicked) ──────────────────── */
+.task-head { cursor: pointer; }
+.task-head:hover { background: var(--bg-hover); }
+.ta-stream {
+  max-height: 360px; overflow-y: auto;
+  background: var(--bg-input);
+  border-top: 1px solid var(--line);
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.ta-stream-empty {
+  display: block; padding: 10px 12px;
+  font-size: 11px; color: var(--fg-4); font-style: italic;
+}
+.ta-stream-block { padding: 8px 0 4px; border-bottom: 1px solid var(--line); }
+.ta-stream-block:last-child { border-bottom: 0; }
+.ta-stream-hd {
+  display: flex; align-items: center; gap: 6px;
+  padding: 0 10px 4px; font-size: 11px;
+}
+.ta-stream-line {
+  padding: 0 10px 0 26px;
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.55;
+  color: var(--fg-3); white-space: pre-wrap; word-break: break-all;
+}
