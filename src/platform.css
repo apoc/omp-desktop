@@ -65,15 +65,6 @@
 .win-min:active,
 .win-max:active   { background: color-mix(in oklab, var(--fg) 18%, transparent); }
 
-/* ── Composer textarea — roomier for multiline prompts ────────────────────────
-   Design default is 22px (1 line) / 180px max. Override to 4-line start with
-   more vertical room before the textarea scrolls.                              */
-
-.composer-input textarea {
-  min-height: 76px;    /* ~4 lines at compact density (12.5px × 1.5 leading)   */
-  max-height: 320px;   /* ~17 lines; matches the updated JS cap in composer.jsx */
-}
-
 /* ── CommandBridge model row — active / selected model ────────────────────── */
 .bridge-row.active {
   background: color-mix(in oklab, var(--accent) 8%, transparent);
