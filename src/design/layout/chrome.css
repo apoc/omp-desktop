@@ -38,10 +38,9 @@
   display: flex; align-items: center; justify-content: center;
   border-radius: 4px; cursor: default;
 }
-.win-ctrl:hover { background: color-mix(in oklab, currentColor 12%, transparent); }
-.win-close { color: #FF5F57; }
-.win-min   { color: #FEBC2E; }
-.win-max   { color: #28C840; }
+.win-close { color: #FF5F57 !important; }
+.win-min   { color: #FEBC2E !important; }
+.win-max   { color: #28C840 !important; }
 .chrome-title { display: flex; align-items: center; gap: 6px; font-size: var(--d-text-sm); flex: 1; justify-content: center; }
 .chrome-right { display: flex; gap: 6px; }
 
