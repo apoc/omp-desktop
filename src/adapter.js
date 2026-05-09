@@ -148,7 +148,11 @@
     // args is a plain object; extract a display target from common arg names
     const args   = (typeof event.args === "object" && event.args !== null) ? event.args : {};
     const target = args.path ?? args.pattern ?? args.command ?? args.query
-                ?? args.expression ?? args.url ?? "";
+                ?? args.expression ?? args.url
+                ?? (tool === "eval" && args.input
+                      ? (String(args.input).match(/={5}\s*(.*?)\s*={5}/)?.[1] ?? "")
+                      : "")
+                ?? "";
     // Use intent (one-line description written by the agent) when available
     const title = event.intent
       ?? (target ? `${event.toolName} · ${target}` : (event.toolName ?? tool));
@@ -202,11 +206,53 @@
              : "fg-3",
       }));
     }
+    if (card.tool === "eval" && details?.cells) {
+      extra.cells = details.cells.map(c => ({
+        code: c.code ?? "",
+        language: c.language ?? "js",
+        output: c.output ?? "",
+        status: c.status ?? "pending",
+        title: c.title,
+        durationMs: c.durationMs,
+      }));
+      extra.evalLanguage = details.language;
+    }
     if (card.tool === "read") {
       extra.summary = details?.lines ? `${details.lines} lines` : card.summary;
     }
 
     return { ...card, status: "ok", duration, ...extra };
+  }
+
+  // ── tool_execution_update → partial card update (streaming) ─────────────────
+  // Applies only the fields that stream in progressively (eval cells,
+  // bash output tail). Status stays "running"; finalization is left to
+  // finalizeToolCard on tool_execution_end.
+  function updateToolCard(card, event) {
+    const details = event.details;
+    if (!details) return card;
+    const extra = {};
+    if (card.tool === "eval" && details.cells) {
+      extra.cells = details.cells.map(c => ({
+        code: c.code ?? "",
+        language: c.language ?? "js",
+        output: c.output ?? "",
+        status: c.status ?? "running",
+        title: c.title,
+      }));
+    }
+    if (card.tool === "bash") {
+      const text = event.content?.[0]?.text ?? "";
+      if (text) {
+        extra.output = text.split("\n").slice(-20).map(line => ({
+          line,
+          color: /^[✓✔]|^PASS|\bpassed\b/.test(line) ? "accent"
+               : /^[✗✘]|^FAIL|^Error|\bfailed\b/.test(line) ? "rose"
+               : "fg-3",
+        }));
+      }
+    }
+    return { ...card, ...extra };
   }
 
   // ── AgentMessage[] (from get_messages) → design message array ─────────────
@@ -316,6 +362,7 @@
     buildActivityFromLog,
     buildToolStartCard,
     finalizeToolCard,
+    updateToolCard,
     adaptAgentMessages,
   });
 })();

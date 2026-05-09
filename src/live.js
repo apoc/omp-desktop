@@ -475,6 +475,21 @@
       return;
     }
 
+    if (type === "tool_execution_update") {
+      const idx = activeToolCards.get(ev.toolCallId);
+      if (idx !== undefined) {
+        const card = state.messages[idx];
+        if (card?.kind === "tool") {
+          const updated = window.updateToolCard(card, ev);
+          const msgs = [...state.messages];
+          msgs[idx] = updated;
+          state.messages = msgs;
+          notify();
+        }
+      }
+      return;
+    }
+
     if (type === "tool_execution_end") {
       const idx = activeToolCards.get(ev.toolCallId);
       if (idx !== undefined) {

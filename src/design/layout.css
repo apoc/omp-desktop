@@ -297,6 +297,39 @@
 }
 .tool-bash > div { line-height: 1.55; }
 
+
+/* ── Eval cells ────────────────────────────────────────────────────── */
+.tool-eval { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.eval-cell { border-bottom: 1px solid var(--line); }
+.eval-cell:last-child { border-bottom: none; }
+.eval-cell-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 10px;
+  background: var(--bg-input);
+  font-size: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.eval-lang { color: var(--rose); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.eval-title { color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.eval-dur { color: var(--fg-4); }
+.eval-code {
+  margin: 0; padding: 6px 10px;
+  font-size: 11px; line-height: 1.5;
+  color: var(--fg-2);
+  white-space: pre-wrap; word-break: break-all;
+  max-height: 240px; overflow-y: auto;
+}
+.eval-output {
+  margin: 0; padding: 6px 10px;
+  font-size: 11px; line-height: 1.5;
+  color: var(--fg-3);
+  white-space: pre-wrap; word-break: break-all;
+  border-top: 1px solid var(--line);
+  background: color-mix(in oklab, var(--bg-input) 60%, transparent);
+  max-height: 200px; overflow-y: auto;
+}
+.eval-output.eval-error { color: var(--rose); }
+.eval-running .eval-cell-head { border-bottom-color: color-mix(in oklab, var(--rose) 30%, var(--line)); }
 /* ── Diff (scrubbable) ─────────────────────────────────────────────── */
 .diff-wrap { border-top: 1px solid var(--line); }
 .diff-head {

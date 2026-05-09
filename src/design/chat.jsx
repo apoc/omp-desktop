@@ -176,6 +176,33 @@ function ToolCard({ msg, idx, highlighted }) {
             ))}
           </pre>
         )}
+
+        {msg.tool === "eval" && msg.cells && (
+          <div className="tool-eval">
+            {msg.cells.map((cell, i) => (
+              <div key={i} className={`eval-cell eval-${cell.status}`}>
+                <div className="eval-cell-head mono">
+                  <span className="eval-lang">{cell.language}</span>
+                  {cell.title && <span className="eval-title">{cell.title}</span>}
+                  {cell.durationMs != null && (
+                    <span className="eval-dur" style={{ marginLeft: "auto" }}>{cell.durationMs}ms</span>
+                  )}
+                  {cell.status === "running" && !cell.durationMs && (
+                    <span className="shimmer-text" style={{ marginLeft: "auto", fontSize: 10 }}>running…</span>
+                  )}
+                </div>
+                {cell.code && (
+                  <pre className="eval-code selectable mono">{cell.code.trimEnd()}</pre>
+                )}
+                {cell.output && (
+                  <pre className={`eval-output selectable mono${cell.status === "error" ? " eval-error" : ""}`}>
+                    {cell.output.trimEnd()}
+                  </pre>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
