@@ -88,7 +88,7 @@ function TabBar({ projects, activeId, onSelect, onClose, peer, onNew }) {
 }
 
 // ── Status bar (footer): connection, model, tokens, todos, extension ─
-function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel }) {
+function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel, onTweaks }) {
   const thinkLabel = { off: "off", minimal: "min", low: "low", medium: "med", high: "high", xhigh: "max" }[thinking] ?? "—";
   return (
     <div className="status">
@@ -119,6 +119,10 @@ function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel 
       </button>
       <span className="status-sep">·</span>
       <span className="status-cell mono" style={{ color: "var(--fg-4)" }}>autosave on · 2s ago</span>
+      <span className="status-sep">·</span>
+      <button className="status-cell btn ghost" onClick={onTweaks} title="tweaks" style={{ height: 20, padding: "0 6px" }}>
+        <Icon name="cog" size={11} color="var(--fg-3)" />
+      </button>
     </div>
   );
 }

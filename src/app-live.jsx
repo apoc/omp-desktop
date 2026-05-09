@@ -219,6 +219,7 @@ function App() {
                 todoTotal={todoCounts.total}
                 onTodo={() => setPlanOpen(true)}
                 onModel={() => openBridge("models")}
+                onTweaks={() => window.postMessage({ type: '__activate_edit_mode' }, '*')}
               />
             </main>
 
