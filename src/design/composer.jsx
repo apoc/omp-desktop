@@ -10,6 +10,9 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
   const [activeIdx, setActiveIdx] = React.useState(0);
   const taRef   = React.useRef(null);
   const listRef = React.useRef(null);
+  // paste blocks: id → raw content; collapsed in textarea as [paste #N +K lines]
+  const pasteBlocksRef   = React.useRef(new Map());
+  const pasteCounterRef  = React.useRef(0);
 
   const cmds = window.OMP_DATA?.commands || [];
 
@@ -40,16 +43,48 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
   const execCmd = (cmd) => {
     setText("");
     setActiveIdx(0);
+    pasteBlocksRef.current.clear();
+    pasteCounterRef.current = 0;
     onPick?.(cmd);
   };
+
+  // Expand [paste #N +K lines] tokens back to their real content before sending.
+  const expandPastes = (txt) =>
+    txt.replace(/\[paste #(\d+) \+\d+ lines?\]/g, (match, id) =>
+      pasteBlocksRef.current.get(Number(id)) ?? match);
 
   const send = () => {
     // If the slash popup is open, Enter executes the highlighted command
     if (showSlash) { execCmd(filtered[clampedIdx]); return; }
     const canSend = text.trim() || (planMode && annotationCount > 0);
     if (!canSend || isStreaming) return;
-    onSend(text.trim());
+    onSend(expandPastes(text.trim()));
     setText("");
+    pasteBlocksRef.current.clear();
+    pasteCounterRef.current = 0;
+  };
+
+  // Collapse long pastes into a token so the textarea stays navigable.
+  // Threshold: more than 5 lines OR more than 500 characters.
+  const onPaste = (e) => {
+    const raw = e.clipboardData?.getData("text/plain") ?? "";
+    const lines = raw.split("\n");
+    if (lines.length <= 5 && raw.length <= 500) return; // short — let browser handle normally
+    e.preventDefault();
+    const id    = ++pasteCounterRef.current;
+    pasteBlocksRef.current.set(id, raw);
+    const token = `[paste #${id} +${lines.length} line${lines.length === 1 ? "" : "s"}]`;
+    const ta    = taRef.current;
+    const start = ta ? ta.selectionStart : text.length;
+    const end   = ta ? ta.selectionEnd   : text.length;
+    const next  = text.slice(0, start) + token + text.slice(end);
+    setText(next);
+    // Reposition cursor after the token on next frame (state not flushed yet).
+    requestAnimationFrame(() => {
+      if (!taRef.current) return;
+      const pos = start + token.length;
+      taRef.current.selectionStart = taRef.current.selectionEnd = pos;
+    });
   };
 
   const onKey = (e) => {
@@ -112,6 +147,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKey}
+            onPaste={onPaste}
             disabled={isStreaming && !text}
             className="selectable"
           />
