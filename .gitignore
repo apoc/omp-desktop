@@ -28,3 +28,6 @@ desktop.ini
 
 # ── Design prototype (read-only reference — live copy lives in src/design/) ───
 /design/
+
+# Worktrees
+.worktrees/
