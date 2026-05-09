@@ -197,8 +197,6 @@ function App() {
   };
 
   const handleCloseTab = id => {
-    // Kill the agent process owned by this tab before removing it.
-    bridge?.stopAgent();
     setProjects(prev => {
       const next = prev.filter(p => p.id !== id);
       if (id === activeTabId && next.length > 0) {
