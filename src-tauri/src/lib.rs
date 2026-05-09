@@ -7,9 +7,7 @@
 mod agent;
 
 use agent::AgentBridge;
-use std::thread;
-use std::time::Duration;
-use tauri::{Emitter, Manager, State};
+use tauri::{Manager, State};
 
 /// Write a JSON command to a specific session's omp stdin.
 #[tauri::command]
@@ -34,6 +32,19 @@ fn start_session(
 #[tauri::command]
 fn stop_session(session_id: String, bridge: State<'_, AgentBridge>) {
     bridge.stop_session(&session_id);
+}
+
+/// Query a session's last error. Returns `None` if the session is
+/// running (or has never been started under this id), `Some(reason)`
+/// if its last `start_session` attempt failed.
+///
+/// This replaces a previous timing-fragile pattern that emitted a
+/// delayed `agent://exit/{id}` after a fixed sleep, hoping the
+/// frontend listener was attached in time. The frontend can now query
+/// this synchronously on activation and surface the real reason.
+#[tauri::command]
+fn session_status(session_id: String, bridge: State<'_, AgentBridge>) -> Option<String> {
+    bridge.last_error(&session_id)
 }
 
 /// Native folder picker — returns the chosen path or null.
@@ -69,12 +80,12 @@ fn open_project(app: tauri::AppHandle) -> Result<Option<String>, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_shell::init())
         .manage(AgentBridge::new())
         .invoke_handler(tauri::generate_handler![
             send_command,
             start_session,
             stop_session,
+            session_status,
             open_project,
         ])
         .setup(|app| {
@@ -84,20 +95,14 @@ pub fn run() {
             }
             // Start the default session (no cwd = omp's working directory).
             // The frontend activates this session on load via OMP_BRIDGE.activateSession("default").
+            //
+            // Failure handling: the bridge caches the spawn error keyed
+            // by session_id. The frontend's activateSession queries
+            // session_status on attach and surfaces the cached reason
+            // if any — no event timing race, no delayed emit thread.
             let bridge = app.state::<AgentBridge>();
-            let app_handle = app.handle().clone();
-            if let Err(e) = bridge.start_session("default".into(), None, app_handle.clone()) {
+            if let Err(e) = bridge.start_session("default".into(), None, app.handle().clone()) {
                 eprintln!("[omp-desktop] failed to start default session: {e}");
-                // Defer the exit emit so the frontend has time to attach
-                // its agent://exit/default listener (which runs from
-                // activateSession on load). 1.5s is generous; if listeners
-                // somehow miss it, the next send_command surfaces the
-                // "session not found" error and the user can retry.
-                let err_msg = e;
-                thread::spawn(move || {
-                    thread::sleep(Duration::from_millis(1500));
-                    let _ = app_handle.emit("agent://exit/default", err_msg);
-                });
             }
             Ok(())
         })

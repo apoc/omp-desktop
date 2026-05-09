@@ -224,6 +224,26 @@
     });
     activeListeners = [ulLine, ulExit];
 
+    // Surface any cached startup error for this session. Tauri starts
+    // the default session in setup() before the frontend can attach
+    // listeners, so a spawn failure (e.g. omp not on PATH) would
+    // otherwise be invisible. session_status returns the cached error
+    // synchronously — no event timing race.
+    try {
+      const startupError = await window.__TAURI__.core.invoke("session_status", { sessionId: id });
+      if (startupError) {
+        console.warn(`[live] session '${id}' startup error: ${startupError}`);
+        state.messages.push({
+          kind: "assistant",
+          time: _timeNow(),
+          text: `**Agent failed to start:** ${startupError}`,
+          completed: true,
+        });
+      }
+    } catch (e) {
+      console.warn(`[live] session_status query failed:`, e);
+    }
+
     // Re-fetch to pick up events missed while not listening.
     // get_messages handler merges completed turns with the cached streaming bubble.
     _initFetch();
