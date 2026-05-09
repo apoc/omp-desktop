@@ -1,0 +1,28 @@
+/* Stage layout + session column ──────────────────────────────────── */
+
+/* ── Stage layout ────────────────────────────────────────────────────── */
+.stage {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr;
+  min-height: 0;
+}
+.stage.with-rail {
+  grid-template-columns: 1fr 280px;
+}
+.window.is-split .stage.with-rail {
+  grid-template-columns: 1fr 320px 280px;
+}
+.window.is-split .stage:not(.with-rail) {
+  grid-template-columns: 1fr 320px;
+}
+
+/* ── Session column ─────────────────────────────────────────────────── */
+.session {
+  display: flex; flex-direction: column;
+  background: var(--bg-window);
+  min-height: 0;
+  position: relative;
+  border-right: 1px solid var(--line);
+}
+

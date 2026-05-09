@@ -11,7 +11,7 @@ React UI as a connected, live interface — no browser, no Electron, ~8 MB binar
 - Full session snapshots: switch tabs, state is preserved including in-flight streams
 - `/new` command starts a fresh session (history kept on disk)
 - Model picker with two-view command bridge; cycle or pick directly from the status bar
-- Thinking-level control (auto / extended / off)
+- Thinking-level control: cycle through `off / minimal / low / medium / high / xhigh` (per-model — omp picks the supported subset)
 - Streaming token display with tokens/sec sparkline and context-window gauge
 
 **Plan mode**
@@ -69,7 +69,7 @@ React UI as a connected, live interface — no browser, no Electron, ~8 MB binar
 │    spawn  omp --mode rpc                            │
 │    stdin  ◄── send_command (JSON lines)             │
 │    stdout ──► agent://line events (JSON lines)      │
-│    kill   on drop / stop_agent / hot-reload         │
+│    kill   on drop / stop_session / hot-reload         │
 └────────────────────────┬────────────────────────────┘
                          │  stdin / stdout pipes
 ┌────────────────────────▼────────────────────────────┐
@@ -121,8 +121,8 @@ Dev mode auto-opens the WebView DevTools in debug builds.
 ```
 omp-desktop/
 ├── src/                        # Frontend (served by Tauri asset server)
-│   ├── index.html              # Entry point — loads scripts in order
-│   ├── app-live.jsx            # React root; wires OMP_BRIDGE to all state
+│   ├── index.html              # Entry point — declares script load order
+│   ├── app-live.jsx            # React root: state + handlers + render
 │   ├── live.js                 # Tauri IPC bridge + OMP_BRIDGE + OMP_DATA
 │   ├── adapter.js              # Pure RPC→UI data transforms (no side effects)
 │   ├── model-names.js          # Model ID → display name lookup table
@@ -130,31 +130,67 @@ omp-desktop/
 │   ├── react.development.js    # React 18 (local, no CDN)
 │   ├── react-dom.development.js
 │   ├── babel.min.js            # @babel/standalone for JSX transform
-│   └── design/                 # Live-wired UI components (modified from prototype)
-│       ├── ui.jsx              # Icon, Sparkline, TokenGauge, ActivityRadar, TOOL_META
-│       ├── chat.jsx            # ChatView, UserBubble, AssistantBubble, ToolCard
-│       ├── chrome.jsx          # WindowChrome, TabBar, StatusBar, AmbientRail, Minimap
-│       ├── composer.jsx        # Composer (textarea), CommandBridge (⌘K palette)
-│       ├── panels.jsx          # PlanKanban (review / running / done)
-│       ├── tweaks-panel.jsx    # Tweaks shell + controls (theme, density, layout)
-│       ├── layout.css          # Full layout system
-│       └── styles.css          # Visual tokens and component styles
+│   ├── marked.min.js           # Markdown renderer
+│   ├── highlight.min.js        # Syntax highlighting (atom-one-dark theme)
+│   ├── highlight-theme.css
+│   │
+│   ├── app/                    # App-root helpers (extracted from app-live.jsx)
+│   │   ├── constants.js        # TWEAK_DEFAULTS, NULL_MODEL, framing strings
+│   │   └── use-bridge-snapshot.jsx  # Custom hooks: bridge subscription, theme, ⌘K
+│   │
+│   └── design/                 # UI components, split by domain
+│       ├── ui/
+│       │   ├── icons.jsx           # OMP Icon Pack v1 + TOOL_META
+│       │   ├── sparks.jsx          # Sparkline, TokenGauge, ActivityRadar
+│       │   ├── markdown.jsx        # MarkdownContent (marked + hljs)
+│       │   └── plan-annotations.jsx # AnnotablePlan + CommentForm
+│       ├── chat/
+│       │   ├── user-bubble.jsx
+│       │   ├── assistant-bubble.jsx # AssistantBubble + InlinePlan
+│       │   ├── eval-cell.jsx        # Syntax-highlighted kernel cell
+│       │   ├── tool-card.jsx        # ToolCard + ScrubbableDiff
+│       │   └── chat-view.jsx        # Auto-scroll wiring + bubble routing
+│       ├── tweaks/
+│       │   ├── style.js             # __TWEAKS_STYLE template
+│       │   ├── use-tweaks.js        # useTweaks hook
+│       │   ├── panel.jsx            # TweaksPanel + TweakSection + TweakRow
+│       │   └── controls.jsx         # Slider/Toggle/Radio/Select/etc.
+│       ├── layout/                  # CSS by visual layer (chained @import)
+│       │   ├── _index.css
+│       │   ├── chrome.css           # App + window chrome + Tabs
+│       │   ├── stage.css            # Stage layout + session column
+│       │   ├── chat.css             # Chat surface, inline plan, tool cards
+│       │   ├── composer.css         # Composer + slash palette
+│       │   ├── rail.css             # Status bar + ambient rail + minimap
+│       │   └── overlays.css         # ⌘K bridge + kanban + plan annotations
+│       ├── chrome.jsx               # WindowChrome, TabBar, StatusBar, AmbientRail, SessionMinimap
+│       ├── composer.jsx             # Composer + CommandBridge (⌘K palette)
+│       ├── panels.jsx               # PlanKanban (kanban view)
+│       ├── layout.css               # Single @import → layout/_index.css
+│       └── styles.css               # Visual tokens (colours, spacing, type)
 │
 ├── src-tauri/                  # Rust backend
 │   ├── src/
 │   │   ├── main.rs             # Binary entry point
 │   │   ├── lib.rs              # Tauri setup, command registration
-│   │   └── agent.rs            # AgentBridge: process lifecycle + IPC
+│   │   └── agent/              # AgentBridge module
+│   │       ├── mod.rs              # Public surface: AgentBridge struct + impl
+│   │       ├── inner.rs            # BridgeInner per-session record
+│   │       ├── spawn.rs            # spawn_omp + Windows CREATE_NO_WINDOW flag
+│   │       └── reader.rs           # stdout/stderr reader threads, read_until_capped
 │   ├── Cargo.toml
-│   ├── tauri.conf.json         # Window config (decorations: false, withGlobalTauri)
+│   ├── tauri.conf.json         # Window config + strict CSP
 │   └── capabilities/
 │       └── default.json        # Tauri capability grants
 │
 ├── docs/
 │   └── plans/                  # Design documents
+├── screenshots/                # README assets
 ├── test-rpc.mjs                # Dev utility: probe omp RPC directly (Node/Bun)
 ├── .gitattributes
 ├── .gitignore
+├── README.md
+├── CLAUDE.md
 └── package.json
 ```
 
@@ -163,7 +199,7 @@ omp-desktop/
 ## RPC Protocol
 
 The frontend communicates with `omp` exclusively through the Tauri IPC bridge.
-`live.js` sends JSON commands via `invoke("send_command", { json })` and receives
+`live.js` sends JSON commands via `invoke("send_command", { sessionId, json })` and
 `agent://line` events emitted by the Rust stdout reader.
 
 ### Commands sent (stdin → omp)
@@ -177,7 +213,7 @@ The frontend communicates with `omp` exclusively through the Tauri IPC bridge.
 | `abort` | User clicks abort |
 | `set_model` | User picks a model in ⌘K bridge |
 | `cycle_model` | User clicks `/model` command |
-| `set_thinking_level` | User cycles thinking in composer |
+| `cycle_thinking_level` | User cycles thinking in composer / `/thinking` |
 | `compact` | User runs `/compact` |
 | `export_html` | User runs `/export` |
 | `get_session_stats` | After each `turn_end` |
@@ -229,9 +265,11 @@ below `max-height: 60vh` and invisible without scrolling. Models now render firs
 
 | Command | Signature | Description |
 |---------|-----------|-------------|
-| `send_command` | `(json: String) → Result<()>` | Write a JSON line to omp stdin |
-| `stop_agent` | `() → ()` | Kill the omp child process |
-| `open_project` | `() → Result<Option<String>>` | Native folder picker dialog |
+| `start_session`   | `(sessionId: String, cwd: String) → Result<()>` | Spawn omp for a new tab session (`cwd: ""` = omp default) |
+| `stop_session`    | `(sessionId: String) → ()`                       | Kill that tab's omp process and reap it off-thread |
+| `send_command`    | `(sessionId: String, json: String) → Result<()>`| Write a JSON line to that session's omp stdin |
+| `session_status`  | `(sessionId: String) → Option<String>`           | Returns cached startup error if the last `start_session` failed |
+| `open_project`    | `() → Result<Option<String>>`                   | Native folder picker dialog |
 
 ---
 

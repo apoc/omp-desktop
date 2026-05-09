@@ -60,9 +60,19 @@
   </script>
 
   <!-- Design components (unchanged — from src/design/ copy) -->
-  <script type="text/babel" src="design/tweaks-panel.jsx"></script>
-  <script type="text/babel" src="design/ui.jsx"></script>
-  <script type="text/babel" src="design/chat.jsx"></script>
+  <script src="design/tweaks/style.js"></script>
+  <script src="design/tweaks/use-tweaks.js"></script>
+  <script type="text/babel" src="design/tweaks/panel.jsx"></script>
+  <script type="text/babel" src="design/tweaks/controls.jsx"></script>
+  <script type="text/babel" src="design/ui/icons.jsx"></script>
+  <script type="text/babel" src="design/ui/sparks.jsx"></script>
+  <script type="text/babel" src="design/ui/markdown.jsx"></script>
+  <script type="text/babel" src="design/ui/plan-annotations.jsx"></script>
+  <script type="text/babel" src="design/chat/user-bubble.jsx"></script>
+  <script type="text/babel" src="design/chat/eval-cell.jsx"></script>
+  <script type="text/babel" src="design/chat/assistant-bubble.jsx"></script>
+  <script type="text/babel" src="design/chat/tool-card.jsx"></script>
+  <script type="text/babel" src="design/chat/chat-view.jsx"></script>
   <script type="text/babel" src="design/composer.jsx"></script>
   <script type="text/babel" src="design/chrome.jsx"></script>
   <script type="text/babel" src="design/panels.jsx"></script>
@@ -73,6 +83,10 @@
   <script src="live.js"></script>
 
   <!-- App root — wired to OMP_BRIDGE, no demo effects -->
+  <!-- App constants + cross-cutting hooks (must load before app-live.jsx) -->
+  <script src="app/constants.js"></script>
+  <script type="text/babel" src="app/use-bridge-snapshot.jsx"></script>
+
   <script type="text/babel" src="app-live.jsx"></script>
 </body>
 </html>

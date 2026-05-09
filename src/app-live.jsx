@@ -7,27 +7,21 @@
    bridge.activateSession() which resets ALL per-session state and
    re-fetches from omp — so the right panel (sparkline, activity radar,
    minimap, kanban, context gauge) always reflects the active session.
+
+   Constants and the cross-cutting effects (bridge subscription, theme,
+   ⌘K shortcut) live in app/constants.js and app/use-bridge-snapshot.jsx
+   respectively. This file owns only the App component itself: state
+   declarations, handlers, and the render tree.
    ═════════════════════════════════════════════════════════════════════ */
 
 const {
   Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar,
   StatusBar, AmbientRail, PlanKanban, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor,
+  TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, NULL_PEER,
+  INTENT_FRAMING, APPROVAL_PROMPT,
+  useBridgeSnapshot, useThemeEffect, useCommandShortcut,
 } = window;
-
-const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
-  "theme": "aurora",
-  "density": "compact",
-  "layout": "rail",
-  "accent": "#8AF0C8",
-  "monoChat": false,
-  "scanlines": true,
-  "showRadar": true
-}/*EDITMODE-END*/;
-
-const NULL_MODEL   = { id: "", name: "–", provider: "", note: "", latency: 0, current: false };
-const EMPTY_PROJECT = { id: "", name: "OMP Desktop", path: "", color: "var(--accent)", branch: "" };
-const NULL_PEER    = { project: "—", title: "no peer session", activity: "edit · idle", tps: 0, todo: { done: 0, total: 1 } };
 
 function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
@@ -57,9 +51,9 @@ function App() {
 
   // ── Live data (all per-session — driven by OMP_BRIDGE.onUpdate) ───────────
   const [messages,      setMessages]      = React.useState([]);
-  const [streaming,     setStreaming]      = React.useState(false);
+  const [streaming,     setStreaming]     = React.useState(false);
   const [model,         setModelState]    = React.useState(NULL_MODEL);
-  const [thinkingLevel, setThinkingLevel] = React.useState("auto");
+  const [thinkingLevel, setThinkingLevel] = React.useState(null);
   const [ctx,           setCtx]           = React.useState(data.ctx);
   const [kanban,        setKanban]        = React.useState([]);
   const [planMeta,      setPlanMeta]      = React.useState(data.planMeta);
@@ -67,62 +61,22 @@ function App() {
   const [activity,      setActivity]      = React.useState([]);
   const [sparkline,     setSparkline]     = React.useState(Array(30).fill(0));
 
-  // ── Tab list — driven by bridge session registry ───────────────────────────
+  // ── Tab list — driven by bridge session registry ──────────────────────────
   // Each entry: { id, name, path, color, branch }
-  const [sessions,        setSessions]       = React.useState([]);
+  const [sessions,        setSessions]        = React.useState([]);
   const [activeSessionId, setActiveSessionId] = React.useState("");
 
+  // ── Cross-cutting effects (bridge subscription, theme, ⌘K) ────────────────
+  useBridgeSnapshot(bridge, {
+    setMessages, setStreaming, setCtx, setKanban, setPlanMeta,
+    setModels, setActivity, setSparkline,
+    setModelState, setThinkingLevel,
+    setSessions, setActiveSessionId,
+  });
+  useThemeEffect(t);
+  useCommandShortcut(setBridgeOpen, setBridgeView);
 
-  // ── Subscribe to bridge ───────────────────────────────────────────────────
-  React.useEffect(() => {
-    if (!bridge) return;
-    const unsub = bridge.onUpdate(snap => {
-      // Per-session state — ALL reset when switching tabs, then re-populated
-      setMessages(snap.messages);
-      setStreaming(snap.isStreaming);
-      setCtx(snap.ctx);
-      setKanban(snap.kanban);
-      setPlanMeta(snap.planMeta);
-      setModels(snap.models);
-      setActivity(snap.activity);
-      setSparkline(snap.sparkline);
-      if (snap.model)         setModelState(snap.model);
-      else                    setModelState(NULL_MODEL);
-      if (snap.thinkingLevel) setThinkingLevel(snap.thinkingLevel);
-
-      // Tab list — updated whenever a session is opened / closed / renamed
-      setSessions(snap.sessions ?? []);
-      if (snap.activeSessionId) setActiveSessionId(snap.activeSessionId);
-
-      // kanban updated — PlanKanban derives running/done internally
-    });
-    return unsub;
-  }, [bridge]);
-
-  // ── Theme / density ────────────────────────────────────────────────────────
-  React.useEffect(() => {
-    const root = document.documentElement;
-    root.classList.remove("theme-aurora", "theme-phosphor", "theme-daylight");
-    root.classList.add(`theme-${t.theme}`);
-    root.classList.remove("density-cozy", "density-compact", "density-dense");
-    root.classList.add(`density-${t.density}`);
-    if (t.monoChat) root.classList.add("mono-chat");
-    else            root.classList.remove("mono-chat");
-    if (t.accent) root.style.setProperty("--accent", t.accent);
-  }, [t.theme, t.density, t.accent, t.monoChat]);
-
-  // ── ⌘K shortcut ──────────────────────────────────────────────────────────
   const openBridge = view => { setBridgeView(view); setBridgeOpen(true); };
-
-  React.useEffect(() => {
-    const onKey = e => {
-      if (e.key === "k" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); setBridgeOpen(v => { if (!v) setBridgeView("commands"); return !v; }); }
-      if (e.key === "Escape") setBridgeOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
 
   // ── Derived values ────────────────────────────────────────────────────────
   const activeProject = sessions.find(s => s.id === activeSessionId) ?? sessions[0] ?? EMPTY_PROJECT;
@@ -136,11 +90,6 @@ function App() {
   );
 
   // ── Handlers ──────────────────────────────────────────────────────────────
-  const intentFraming = intent =>
-    `Please draft a plan for the following task. Write it in Markdown with clear sections: overview, approach, key steps, and risks. Do not start implementing yet — draft only for my review.\n\n---\n\n${intent.trim()}`;
-
-  const APPROVAL_PROMPT = "Plan approved. Please proceed to execute it. Use your todo_write tool to track tasks as you go.";
-
   const handleSend = text => {
     const hasAnnotations = Object.keys(planAnnotations).length > 0;
     if (!text.trim() && !hasAnnotations) return;
@@ -149,8 +98,8 @@ function App() {
       if (hasAnnotations) {
         // Feedback with block comments — always takes priority over intent framing
         const lineComments = Object.entries(planAnnotations)
-          .sort(([a],[b]) => Number(a)-Number(b))
-          .map(([,{raw,comment}]) => {
+          .sort(([a], [b]) => Number(a) - Number(b))
+          .map(([, { raw, comment }]) => {
             const quoted = raw.split('\n').map(l => `> ${l}`).join('\n');
             return `${quoted}\n→ ${comment.trim()}`;
           }).join('\n\n');
@@ -161,16 +110,16 @@ function App() {
       } else if (!planStartedRef.current) {
         // First clean send — wrap in intent framing
         planStartedRef.current = true;
-        msg = intentFraming(text.trim());
+        msg = INTENT_FRAMING(text.trim());
       }
     }
     if (bridge?.isConnected) bridge.send(msg);
     else setMessages(prev => [...prev, { kind: "user", time: _timeNow(), text: msg }]);
   };
 
-  const handleAbort = () => { bridge?.abort(); setStreaming(false); };
-
-  const handlePickModel = m => { setModelState(m); bridge?.setModel(m); };
+  const handleAbort      = () => { bridge?.abort(); setStreaming(false); };
+  const handlePickModel  = m  => { setModelState(m); bridge?.setModel(m); };
+  const cycleThinking    = () => bridge?.cycleThinking();
 
   const handleCommand = c => {
     if      (c.name === "plan")     { setPlanMode(true); planStartedRef.current = false; }
@@ -182,8 +131,6 @@ function App() {
     else if (c.name === "new")      { bridge?.newSession(); }
   };
 
-  const cycleThinking = () => bridge?.cycleThinking();
-
   const handleApprovePlan = () => {
     setPlanAnnotations({});
     bridge?.followUp(APPROVAL_PROMPT);
@@ -193,7 +140,7 @@ function App() {
   };
 
   // Tab select — switches the active session; bridge resets all per-session state
-  // and re-fetches from the new session's omp → notify() pushes fresh data
+  // and re-fetches from the new session's omp → notify() pushes fresh data.
   const handleSelectTab = id => {
     if (id === activeSessionId) return;
     bridge?.activateSession(id);
@@ -210,9 +157,7 @@ function App() {
   };
 
   // Close tab → kills that session's omp process; bridge updates tab list
-  const handleCloseTab = id => {
-    bridge?.closeSession(id);
-  };
+  const handleCloseTab = id => { bridge?.closeSession(id); };
 
   const showRail  = t.layout !== "focus";
   const showSplit = t.layout === "split" && data.peer !== null;

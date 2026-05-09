@@ -1,0 +1,83 @@
+/* Composer — input row, plan strip, slash palette ────────────────── */
+
+/* ── Composer ──────────────────────────────────────────────────────── */
+.composer {
+  position: relative;
+  border-top: 1px solid var(--line);
+  background: linear-gradient(180deg, transparent, color-mix(in oklab, var(--bg-elevated) 50%, transparent));
+  padding: 10px 16px 8px;
+}
+.composer.plan-on { background: linear-gradient(180deg, color-mix(in oklab, var(--amber) 8%, transparent), transparent); }
+.plan-strip {
+  display: flex; align-items: center; gap: 8px;
+  font-size: var(--d-text-sm);
+  padding: 4px 6px 6px;
+  border-bottom: 1px dashed color-mix(in oklab, var(--amber) 35%, var(--line));
+  margin-bottom: 6px;
+}
+
+.composer-row {
+  display: flex; align-items: flex-end; gap: 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--line-bright);
+  border-radius: 12px;
+  padding: 6px 8px;
+  transition: border-color 160ms;
+}
+.composer-row:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.composer-input { flex: 1; padding: 4px 4px 4px 4px; }
+.composer-input textarea {
+  width: 100%;
+  min-height: 22px; max-height: 180px;
+  resize: none;
+  font: inherit; font-size: var(--d-text);
+  color: var(--fg);
+  line-height: 1.5;
+}
+.composer-input textarea::placeholder { color: var(--fg-4); }
+
+.composer-foot {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 2px 0;
+}
+.composer-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  background: var(--bg-elevated);
+  font-size: var(--d-text-xs);
+  color: var(--fg-2);
+  transition: border-color 120ms, background 120ms;
+}
+.composer-pill:hover { border-color: var(--line-bright); background: var(--bg-hover); }
+.composer-pill.on { border-color: color-mix(in oklab, var(--amber) 50%, var(--line)); background: color-mix(in oklab, var(--amber) 12%, transparent); }
+
+/* slash palette pop */
+.slash-pop {
+  position: absolute;
+  bottom: calc(100% - 4px);
+  left: 16px; right: 16px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-bright);
+  border-radius: 10px;
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+  z-index: 20;
+  animation: slideIn 180ms var(--ease-out);
+}
+.slash-row {
+  width: 100%;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
+  font-size: var(--d-text-sm);
+  background: transparent;
+  border: 0;
+  text-align: left;
+  border-bottom: 1px solid var(--line-soft);
+}
+.slash-row:hover { background: var(--bg-hover); }
+.slash-row.active { background: var(--bg-hover); }
+.slash-row:last-child { border-bottom: 0; }
+.slash-glyph { width: 18px; color: var(--fg-3); font-family: var(--font-mono); }
+

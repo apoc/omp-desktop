@@ -1,6 +1,6 @@
 /**
  * test-rpc.mjs — Direct omp RPC protocol probe.
- * Spawns omp --rpc, sends "say hello in one sentence", logs every
+ * Spawns omp --mode rpc, sends "say hello in one sentence", logs every
  * event with type + key fields for 15 seconds, then exits.
  *
  * Run: node test-rpc.mjs  OR  bun test-rpc.mjs
@@ -9,7 +9,7 @@
 import { spawn } from "child_process";
 import { createInterface } from "readline";
 
-const proc = spawn("omp", ["--rpc"], {
+const proc = spawn("omp", ["--mode", "rpc"], {
   stdio: ["pipe", "pipe", "pipe"],
   shell: false,
 });

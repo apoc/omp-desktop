@@ -1,0 +1,297 @@
+/* Chat surface — bubbles, inline plan, tool card, eval, diff ────── */
+
+/* ── Chat ───────────────────────────────────────────────────────────── */
+.chat-scroll {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--bg-window);
+}
+.chat-pad {
+  max-width: none;
+  margin: 0;
+  padding: 24px 32px 12px;
+  display: flex; flex-direction: column;
+  gap: 18px;
+}
+
+.row { display: flex; gap: 12px; }
+.row.user { justify-content: flex-end; }
+
+/* assistant left rail with thread */
+.ass-rail {
+  position: relative;
+  width: 22px; flex-shrink: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding-top: 2px;
+}
+.ass-glyph, .tool-glyph {
+  width: 22px; height: 22px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in oklab, var(--accent) 40%, var(--line));
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-elevated);
+  flex-shrink: 0;
+}
+.tool-glyph { border-radius: 6px; }
+.ass-thread {
+  flex: 1; width: 1.5px;
+  background: linear-gradient(180deg, var(--line-bright), transparent);
+  margin-top: 2px;
+}
+.ass-body { flex: 1; min-width: 0; }
+.ass-meta {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 4px;
+  font-size: var(--d-text-xs);
+}
+.ass-text {
+  margin: 0; padding: 0;
+  font-size: var(--d-text);
+  color: var(--fg);
+  line-height: var(--d-leading);
+  text-wrap: pretty;
+}
+.thought {
+  margin: 4px 0 8px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--lilac);
+  background: color-mix(in oklab, var(--lilac) 6%, transparent);
+  border-radius: 0 6px 6px 0;
+  font-size: var(--d-text-sm);
+}
+
+/* user bubble — right side, soft gradient */
+.user-bubble {
+  max-width: min(820px, 70%);
+  padding: 10px 14px;
+  border-radius: 12px 12px 4px 12px;
+  background: linear-gradient(135deg,
+    color-mix(in oklab, var(--accent) 18%, var(--bg-elevated)),
+    var(--bg-elevated));
+  border: 1px solid color-mix(in oklab, var(--accent) 25%, var(--line-bright));
+}
+.user-meta { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; font-size: var(--d-text-xs); }
+.user-text {
+  font-size: var(--d-text);
+  color: var(--fg);
+  text-wrap: pretty;
+}
+
+/* ── Inline plan (assistant's first reply) ──────────────────────────── */
+.inline-plan {
+  margin-top: 8px;
+  background: linear-gradient(180deg,
+    color-mix(in oklab, var(--accent) 6%, var(--bg-surface)),
+    var(--bg-surface));
+  border: 1px solid color-mix(in oklab, var(--accent) 22%, var(--line));
+  border-radius: 10px;
+  overflow: hidden;
+}
+.inline-plan-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in oklab, var(--accent) 4%, transparent);
+}
+.inline-plan-body { padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+.inline-phase-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: var(--d-text-xs); letter-spacing: 0.08em;
+  margin-bottom: 4px;
+}
+.inline-phase-head .hr { flex: 1; }
+.inline-task {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 3px 0;
+  font-size: var(--d-text-sm);
+  color: var(--fg-2);
+}
+.inline-task.status-done .task-text { color: var(--fg-3); text-decoration: line-through; text-decoration-color: var(--line-bright); }
+.inline-task.status-done .task-mark { color: var(--accent); }
+.inline-task.status-in_progress .task-text { color: var(--fg); font-weight: 500; }
+.task-mark {
+  width: 14px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+  margin-top: 2px;
+}
+.pulse-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 0 0 color-mix(in oklab, var(--cyan) 40%, transparent);
+  animation: pulseDot 1.4s ease-in-out infinite;
+}
+
+/* ── Tool card ─────────────────────────────────────────────────────── */
+.tool-card {
+  flex: 1;
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  transition: border-color 200ms;
+}
+.tool-card.running { border-color: color-mix(in oklab, var(--accent) 35%, var(--line-bright)); }
+.tool-card-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  font-size: var(--d-text-sm);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--bg-elevated) 60%, transparent), transparent);
+}
+.tool-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  font-family: var(--font-mono);
+  font-size: var(--d-text-xs);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+.tool-title {
+  font-family: var(--font-mono);
+  color: var(--fg);
+  font-size: var(--d-text-sm);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tool-card-spacer { flex: 1; }
+
+.tool-search {
+  padding: 6px 8px 8px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.search-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-family: var(--font-mono); font-size: var(--d-text-sm);
+}
+.search-row.hot { background: color-mix(in oklab, var(--accent) 6%, transparent); }
+.search-row:hover { background: var(--bg-hover); }
+
+.tool-foot {
+  padding: 6px 12px 10px;
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--d-text-sm);
+}
+
+.tool-bash {
+  margin: 0;
+  padding: 8px 12px 10px;
+  background: var(--bg-input);
+  border-top: 1px solid var(--line);
+  font-size: var(--d-text-sm);
+  white-space: pre-wrap;
+  max-height: 180px; overflow-y: auto;
+}
+.tool-bash > div { line-height: 1.55; }
+
+
+/* ── Eval cells ────────────────────────────────────────────────────── */
+.tool-eval { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.eval-cell { border-bottom: 1px solid var(--line); }
+.eval-cell:last-child { border-bottom: none; }
+.eval-cell-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 10px;
+  background: var(--bg-input);
+  font-size: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.eval-lang { color: var(--rose); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.eval-title { color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.eval-dur { color: var(--fg-4); }
+.eval-code {
+  margin: 0; padding: 6px 10px;
+  font-size: 11px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-all;
+  max-height: 240px; overflow-y: auto;
+}
+/* plain (pre-highlight) fallback only — hljs tokens override when present */
+.eval-code.mono { color: var(--fg-2); }
+.eval-code code { font-size: inherit; }
+.eval-output {
+  margin: 0; padding: 6px 10px;
+  font-size: 11px; line-height: 1.5;
+  color: var(--fg-3);
+  white-space: pre-wrap; word-break: break-all;
+  border-top: 1px solid var(--line);
+  background: color-mix(in oklab, var(--bg-input) 60%, transparent);
+  max-height: 200px; overflow-y: auto;
+}
+.eval-output.eval-error { color: var(--rose); }
+.eval-running .eval-cell-head { border-bottom-color: color-mix(in oklab, var(--rose) 30%, var(--line)); }
+/* ── Diff (scrubbable) ─────────────────────────────────────────────── */
+.diff-wrap { border-top: 1px solid var(--line); }
+.diff-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px;
+  font-size: var(--d-text-xs);
+  background: var(--bg-input);
+  border-bottom: 1px solid var(--line);
+}
+.diff-counts { margin-left: auto; display: flex; gap: 8px; }
+
+.diff-body {
+  background: var(--bg-input);
+  font-size: var(--d-text-sm);
+  line-height: 1.55;
+  padding: 4px 0;
+  max-height: 260px; overflow-y: auto;
+}
+.diff-line {
+  display: grid;
+  grid-template-columns: 44px 14px 1fr;
+  align-items: center;
+  padding: 1px 0 1px 4px;
+  white-space: pre;
+}
+.diff-line.k-add { background: var(--diff-add-bg); }
+.diff-line.k-rem { background: var(--diff-rm-bg); }
+.diff-gutter {
+  text-align: right;
+  padding-right: 8px;
+  color: var(--fg-5);
+  font-size: var(--d-text-xs);
+  border-right: 1px solid var(--line);
+}
+.diff-mark {
+  text-align: center;
+  font-weight: 600;
+}
+.diff-line.k-add .diff-mark { color: var(--diff-add-fg); }
+.diff-line.k-rem .diff-mark { color: var(--diff-rm-fg); }
+.diff-code { padding: 0 12px; color: var(--fg-2); }
+.diff-line.k-add .diff-code { color: var(--diff-add-fg); }
+.diff-line.k-rem .diff-code { color: var(--diff-rm-fg); }
+.diff-line.ghost { opacity: 0.18; }
+.diff-line.ghost .diff-code { color: var(--fg-5); }
+
+.diff-track-wrap {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px 10px;
+  background: var(--bg-input);
+}
+.diff-track {
+  position: relative; flex: 1; height: 14px;
+  cursor: ew-resize;
+}
+.diff-track-base {
+  position: absolute; left: 0; right: 0; top: 6px; height: 2px;
+  background: var(--line-bright);
+  border-radius: 2px;
+}
+.diff-tick {
+  position: absolute; top: 3px; height: 8px;
+  border-radius: 1px;
+}
+.diff-tick.k-add { background: var(--diff-add-fg); }
+.diff-tick.k-rem { background: var(--diff-rm-fg); }
+.diff-tick.k-ctx { background: var(--fg-5); top: 5px; height: 4px; }
+.diff-track-cursor {
+  position: absolute; top: -2px; bottom: -2px; width: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+  transform: translateX(-1px);
+  pointer-events: none;
+  transition: left 80ms var(--ease-out);
+}
+
