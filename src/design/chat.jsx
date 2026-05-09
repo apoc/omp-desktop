@@ -255,6 +255,31 @@ function ScrubbableDiff({ msg }) {
 
 // ── ChatView: wires everything ───────────────────────────────────────
 function ChatView({ messages, planMode, annotations, onAnnotate }) {
+  const scrollRef    = React.useRef(null);
+  const atBottomRef  = React.useRef(true);   // assume start at bottom
+  const prevCountRef = React.useRef(0);
+
+  // Track whether user is near the bottom
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  };
+
+  // Auto-scroll on every messages change
+  React.useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const count = messages.length;
+    const newMsg = count > prevCountRef.current;
+    prevCountRef.current = count;
+    // Always scroll when a new message block is added (user sent, agent started, tool card appeared)
+    // During streaming (same count, content grows) only scroll if already at bottom
+    if (newMsg || atBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [messages]);
+
   // Only the last completed assistant message is annotatable in plan mode
   let lastAsstIdx = -1;
   if (planMode) {
@@ -262,8 +287,9 @@ function ChatView({ messages, planMode, annotations, onAnnotate }) {
       if (messages[i].kind === "assistant" && !messages[i].streaming) { lastAsstIdx = i; break; }
     }
   }
+
   return (
-    <div className="chat-scroll selectable">
+    <div className="chat-scroll selectable" ref={scrollRef} onScroll={onScroll}>
       <div className="chat-pad">
         {messages.map((m, i) => {
           if (m.kind === "user") return <UserBubble key={i} msg={m} />;
