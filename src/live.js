@@ -73,6 +73,7 @@
   // Tracks all open tabs. The tab list in the UI is derived from this.
   // { id, name, path, color, branch }
   const sessionRegistry = new Map();
+  const sessionSnapshots = new Map(); // id -> saved state + volatile vars
 
   let activeSessionId  = null;
   let activeListeners  = [];          // unlisten functions for current session
@@ -132,20 +133,78 @@
     activityLog     = [];
   }
 
+  // ── Session snapshot helpers ──────────────────────────────────────────────
+  function _saveCurrentSession() {
+    if (!activeSessionId) return;
+    sessionSnapshots.set(activeSessionId, {
+      // state fields
+      messages:      state.messages,
+      isStreaming:   state.isStreaming,
+      model:         state.model,
+      thinkingLevel: state.thinkingLevel,
+      ctx:           { ...state.ctx },
+      kanban:        state.kanban,
+      planMeta:      state.planMeta,
+      models:        state.models,
+      activity:      state.activity,
+      sparkline:     [...state.sparkline],
+      rpcState:      state.rpcState,
+      sessionCost:   state.sessionCost,
+      currentTps:    state.currentTps,
+      // volatile vars
+      streamingBubble,
+      activeToolCards: new Map(activeToolCards),
+      tpsSamples:    [...tpsSamples],
+      turnStartTime,
+      activityLog:   [...activityLog],
+    });
+  }
+
+  function _restoreSession(id) {
+    const snap = sessionSnapshots.get(id);
+    if (!snap) return false;
+    Object.assign(state, {
+      messages:      snap.messages,
+      isStreaming:   snap.isStreaming,
+      model:         snap.model,
+      thinkingLevel: snap.thinkingLevel,
+      ctx:           snap.ctx,
+      kanban:        snap.kanban,
+      planMeta:      snap.planMeta,
+      models:        snap.models,
+      activity:      snap.activity,
+      sparkline:     snap.sparkline,
+      rpcState:      snap.rpcState,
+      sessionCost:   snap.sessionCost,
+      currentTps:    snap.currentTps,
+    });
+    streamingBubble = snap.streamingBubble;
+    activeToolCards = snap.activeToolCards;
+    tpsSamples      = snap.tpsSamples;
+    turnStartTime   = snap.turnStartTime;
+    activityLog     = snap.activityLog;
+    return true;
+  }
+
   // ── Session switching ─────────────────────────────────────────────────────
   async function _switchToSession(id) {
     if (!window.__TAURI__) return;
+
+    // Snapshot current session so we can restore it when switching back
+    _saveCurrentSession();
 
     // Tear down old listeners
     for (const ul of activeListeners) { try { await ul(); } catch (_) {} }
     activeListeners = [];
 
-    // Reset state for incoming session
-    _resetSessionVars();
     activeSessionId = id;
 
-    const { listen } = window.__TAURI__.event;
+    // Restore cached snapshot (preserves streaming messages) or start fresh
+    if (!_restoreSession(id)) {
+      _resetSessionVars();
+    }
 
+    const { listen } = window.__TAURI__.event;
     const ulLine = await listen(`agent://line/${id}`, ev => handleLine(ev.payload));
     const ulExit = await listen(`agent://exit/${id}`, () => {
       console.warn(`[live] session '${id}' omp process exited`);
@@ -154,7 +213,8 @@
     });
     activeListeners = [ulLine, ulExit];
 
-    // Fetch fresh state, messages and models from the session's omp
+    // Re-fetch to pick up events missed while not listening.
+    // get_messages handler merges completed turns with the cached streaming bubble.
     _initFetch();
     notify();
   }
@@ -187,7 +247,12 @@
       _applyRpcState(data);
 
     } else if (command === "get_messages") {
-      state.messages = window.adaptAgentMessages(data.messages ?? []);
+      const completed = window.adaptAgentMessages(data.messages ?? []);
+      // Preserve any in-progress streaming bubble — omp doesn't persist
+      // incomplete turns, so get_messages won't include it.
+      state.messages = streamingBubble
+        ? [...completed, streamingBubble]
+        : completed;
       notify();
 
     } else if (command === "get_available_models") {
@@ -554,6 +619,7 @@
         window.__TAURI__.core.invoke("stop_session", { sessionId: id }).catch(() => {});
       }
       sessionRegistry.delete(id);
+      sessionSnapshots.delete(id);
       if (id === activeSessionId) {
         const remaining = [...sessionRegistry.keys()];
         if (remaining.length > 0) {
