@@ -154,7 +154,6 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKey}
             onPaste={onPaste}
-            disabled={isStreaming && !text}
             className="selectable"
           />
         </div>
