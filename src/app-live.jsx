@@ -220,6 +220,8 @@ function App() {
                 onTodo={() => setPlanOpen(true)}
                 onModel={() => openBridge("models")}
                 onTweaks={() => window.postMessage({ type: '__activate_edit_mode' }, '*')}
+                autosave={t.autosave ?? true}
+                onAutosave={v => setTweak("autosave", v)}
               />
             </main>
 

@@ -18,7 +18,8 @@
     "monoChat": false,
     "scanlines": true,
     "showRadar": true,
-    "fontSize": 100
+    "fontSize":  100,
+    "autosave":  true
   }/*EDITMODE-END*/;
 
   const NULL_MODEL    = { id: "", name: "–", provider: "", note: "", latency: 0, current: false };

@@ -88,7 +88,7 @@ function TabBar({ projects, activeId, onSelect, onClose, peer, onNew }) {
 }
 
 // ── Status bar (footer): connection, model, tokens, todos, extension ─
-function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel, onTweaks }) {
+function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel, onTweaks, autosave, onAutosave }) {
   const thinkLabel = { off: "off", minimal: "min", low: "low", medium: "med", high: "high", xhigh: "max" }[thinking] ?? "—";
   return (
     <div className="status">
@@ -118,7 +118,12 @@ function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel,
         <span style={{ color: "var(--accent)" }}>todo {todoDone}/{todoTotal}</span>
       </button>
       <span className="status-sep">·</span>
-      <span className="status-cell mono" style={{ color: "var(--fg-4)" }}>autosave on · 2s ago</span>
+      <button className="status-cell btn ghost" onClick={() => onAutosave?.(!autosave)}
+        style={{ height: 20, padding: "0 6px" }} title="toggle autosave">
+        <span className="mono" style={{ color: autosave ? "var(--fg-3)" : "var(--fg-5)" }}>
+          autosave {autosave ? "on" : "off"}
+        </span>
+      </button>
       <span className="status-sep">·</span>
       <button className="status-cell btn ghost" onClick={onTweaks} title="tweaks" style={{ height: 20, padding: "0 6px" }}>
         <Icon name="cog" size={11} color="var(--fg-3)" />
