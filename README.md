@@ -4,6 +4,43 @@ A Tauri 2 desktop shell for [oh-my-pi](https://github.com/can1357/oh-my-pi) (`om
 Wraps the `omp --mode rpc` coding agent as a managed child process and serves the
 React UI as a connected, live interface — no browser, no Electron, ~8 MB binary.
 
+## Features
+
+**Chat & sessions**
+- Per-tab session isolation — each tab owns its own `omp --mode rpc` process
+- Full session snapshots: switch tabs, state is preserved including in-flight streams
+- `/new` command starts a fresh session (history kept on disk)
+- Model picker with two-view command bridge; cycle or pick directly from the status bar
+- Thinking-level control (auto / extended / off)
+- Streaming token display with tokens/sec sparkline and context-window gauge
+
+**Plan mode**
+- Activates a draft-before-write workflow entirely in the chat window
+- First message is wrapped in an intent framing prompt; subsequent sends steer the plan
+- Inline plan annotations: click any paragraph to leave a comment before approving
+- Approve button sends all annotations as a single feedback prompt and opens the kanban
+- Kanban panel auto-populates from the agent's `todo_write` tool calls (running / done)
+
+**Tool cards**
+- Live streaming output for `eval` (JS/Python kernel) and `bash` tool calls
+- Syntax-highlighted code blocks (highlight.js, atom-one-dark) once a cell completes
+- Scrubbable unified diff viewer for `edit` calls with animated line reveal
+- Search preview, read summary, task board for the respective tools
+- Distinct icon + color per tool type: read, search, edit, bash, eval, task, debug, ask
+
+**Minimap**
+- Dense cell grid (one cell per message) replacing the old bar stack — fits 200+ messages
+- Token heatmap: assistant cells brightness log-scaled by tokens used
+- Hover a cell → corresponding chat bubble highlights with an accent ring
+- Click a cell → chat scrolls smoothly to that message
+- Tooltip shows role, token count (in/out), tool name, duration, or message preview
+
+**Native shell**
+- Tauri 2, Rust backend, no Electron, no CDN dependencies
+- Frameless window with custom traffic-light / drag region on Windows and macOS
+- Native folder picker for opening projects
+- Strict CSP; asset protocol disabled; no shell plugin surface
+
 ![Chat](screenshots/1.jpg)
 ![Tools](screenshots/2.jpg)
 ![Minimap](screenshots/3.jpg)
