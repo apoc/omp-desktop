@@ -140,7 +140,6 @@ function ToolCard({ msg, idx, highlighted }) {
   const meta    = _TC_TOOL_META[msg.tool] || { color: "var(--fg-3)", icon: "circle", label: msg.tool };
   const running = msg.status === "running";
   return (
-  return (
     <div className={`row tool fade-up${highlighted ? " mm-hot" : ""}`} data-msg-idx={idx}>
       <div className="ass-rail">
         <div className="tool-glyph" style={{ borderColor: meta.color, color: meta.color }}>
