@@ -1,0 +1,30 @@
+# ── Rust / Tauri ──────────────────────────────────────────────────────────────
+/src-tauri/target/
+/src-tauri/gen/
+
+# ── Node ──────────────────────────────────────────────────────────────────────
+node_modules/
+
+# ── Local overrides ───────────────────────────────────────────────────────────
+*.local
+.env
+.env.*
+!.env.example
+
+# ── Dev artefacts ─────────────────────────────────────────────────────────────
+dev.log
+*.log
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editors ───────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Design prototype (read-only reference — live copy lives in src/design/) ───
+/design/

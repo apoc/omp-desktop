@@ -1,0 +1,83 @@
+/* platform.css — loaded after layout.css; overrides prototype "floating window"
+   appearance when running as a real Tauri app, and adds Windows controls. */
+
+/* ── Tauri native mode ────────────────────────────────────────────────────────
+   The design prototype renders a floating window (14px gap, rounded corners,
+   drop shadow) intended to be viewed inside a browser. Inside a Tauri app with
+   decorations:false the WebView IS the window — that framing must disappear.
+
+   live.js adds `tauri-native` to <html> at startup when __TAURI__ is present. */
+
+.tauri-native .app {
+  padding: 0;                    /* fill entire WebView — no outer gap         */
+}
+
+.tauri-native .window {
+  border-radius: 0;              /* OS (DWM on Win11) handles corner rounding  */
+  border: none;                  /* no double border                           */
+  box-shadow: none;              /* no double shadow                           */
+  max-width: 100%;               /* fill full width                            */
+  max-height: 100%;              /* fill full height                           */
+}
+
+/* The aurora backdrop should fill the whole screen, not the inner window rect */
+.tauri-native .app-backdrop {
+  z-index: -1;                   /* already fixed; keep behind content         */
+}
+
+/* ── Windows 11-style window controls ─────────────────────────────────────────
+   Rendered by WindowChrome (IS_WIN branch) inside .chrome-right.
+   46 × 38 px matches Windows 11 standards; bleed to window edge.             */
+
+.win-controls {
+  display: flex;
+  align-items: stretch;
+  margin-right: -12px;           /* cancel .chrome padding so controls reach edge */
+  position: relative;
+  z-index: 1;
+}
+
+.win-ctrl {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 38px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--fg-3);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 80ms, color 80ms;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.win-ctrl:hover {
+  background: color-mix(in oklab, var(--fg) 10%, transparent);
+  color: var(--fg);
+}
+
+.win-close:hover  { background: #c42b1c; color: #fff; }
+.win-close:active { background: #b11c0c; color: #fff; }
+.win-min:active,
+.win-max:active   { background: color-mix(in oklab, var(--fg) 18%, transparent); }
+
+/* ── Composer textarea — roomier for multiline prompts ────────────────────────
+   Design default is 22px (1 line) / 180px max. Override to 4-line start with
+   more vertical room before the textarea scrolls.                              */
+
+.composer-input textarea {
+  min-height: 76px;    /* ~4 lines at compact density (12.5px × 1.5 leading)   */
+  max-height: 320px;   /* ~17 lines; matches the updated JS cap in composer.jsx */
+}
+
+/* ── CommandBridge model row — active / selected model ────────────────────── */
+.bridge-row.active {
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+}
+.bridge-row.active:hover {
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+}

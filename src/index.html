@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>OMP Desktop</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Fonts (optional — system fallbacks defined in styles.css) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+
+  <!-- Design tokens — copied into src/design/ -->
+  <link rel="stylesheet" href="design/styles.css" />
+  <link rel="stylesheet" href="design/layout.css" />
+  <link rel="stylesheet" href="platform.css" />
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- React 18 + Babel — served locally, no CDN dependency -->
+  <script src="react.development.js"></script>
+  <script src="react-dom.development.js"></script>
+  <script src="babel.min.js"></script>
+
+  <!-- Design components (unchanged — from src/design/ copy) -->
+  <script type="text/babel" src="design/tweaks-panel.jsx"></script>
+  <script type="text/babel" src="design/ui.jsx"></script>
+  <script type="text/babel" src="design/chat.jsx"></script>
+  <script type="text/babel" src="design/composer.jsx"></script>
+  <script type="text/babel" src="design/chrome.jsx"></script>
+  <script type="text/babel" src="design/panels.jsx"></script>
+
+  <!-- Live data layer (must load before app-live.jsx) -->
+  <script src="model-names.js"></script>
+  <script src="adapter.js"></script>
+  <script src="live.js"></script>
+
+  <!-- App root — wired to OMP_BRIDGE, no demo effects -->
+  <script type="text/babel" src="app-live.jsx"></script>
+</body>
+</html>

@@ -1,0 +1,420 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   OMP Desktop — design tokens
+   Three themes: aurora (default dark), phosphor (terminal), daylight.
+   Density: cozy / compact / dense (rem scale + line-height).
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* type */
+  --font-sans: "Geist", "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
+  --font-mono: "JetBrains Mono", "Berkeley Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-display: "Geist", "Inter", -apple-system, sans-serif;
+
+  /* density (overridden by .density-* on root) */
+  --d-row: 28px;
+  --d-pad: 14px;
+  --d-gap: 10px;
+  --d-text: 13px;
+  --d-text-sm: 11.5px;
+  --d-text-xs: 10.5px;
+  --d-text-lg: 14.5px;
+  --d-leading: 1.55;
+
+  /* radius / shadow */
+  --r-1: 6px;
+  --r-2: 10px;
+  --r-3: 14px;
+  --r-pill: 999px;
+  --shadow-pop: 0 8px 24px -8px rgba(0,0,0,0.6), 0 1px 0 rgba(255,255,255,0.04) inset;
+  --shadow-card: 0 1px 0 rgba(255,255,255,0.04) inset, 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-window: 0 30px 90px -20px rgba(0,0,0,0.7), 0 8px 24px -8px rgba(0,0,0,0.5);
+
+  /* motion */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ── Aurora (default) ──────────────────────────────────────────────────── */
+:root, .theme-aurora {
+  --bg-app: #060709;
+  --bg-window: #0B0D14;
+  --bg-surface: #11141D;
+  --bg-elevated: #161A27;
+  --bg-input: #0D1019;
+  --bg-hover: #1A1F2E;
+  --bg-active: #20263A;
+
+  --line: #1C2030;
+  --line-soft: #161A27;
+  --line-bright: #2A3045;
+
+  --fg: #E6E9F2;
+  --fg-2: #B7BDD0;
+  --fg-3: #7B8298;
+  --fg-4: #545A70;
+  --fg-5: #393E54;
+
+  --accent: #8AF0C8;            /* liquid mint */
+  --accent-deep: #2BD49A;
+  --accent-soft: rgba(138, 240, 200, 0.12);
+  --accent-glow: rgba(138, 240, 200, 0.45);
+
+  --magenta: #FF7AC6;
+  --cyan: #6EE7FF;
+  --amber: #FFC56E;
+  --lilac: #B59BFF;
+  --rose: #FF8896;
+  --lime: #C4FF6E;
+
+  --syntax-comment: #5C6480;
+  --syntax-key: #B59BFF;
+  --syntax-str: #8AF0C8;
+  --syntax-num: #FFC56E;
+  --syntax-fn: #6EE7FF;
+  --syntax-tag: #FF7AC6;
+
+  --diff-add-bg: rgba(138, 240, 200, 0.10);
+  --diff-add-fg: #8AF0C8;
+  --diff-rm-bg: rgba(255, 136, 150, 0.08);
+  --diff-rm-fg: #FF8896;
+
+  --grain-opacity: 0.03;
+  color-scheme: dark;
+}
+
+/* ── Phosphor (terminal CRT) ───────────────────────────────────────────── */
+.theme-phosphor {
+  --bg-app: #000000;
+  --bg-window: #050807;
+  --bg-surface: #07100A;
+  --bg-elevated: #0B1A12;
+  --bg-input: #04090A;
+  --bg-hover: #0F2218;
+  --bg-active: #143025;
+
+  --line: #143020;
+  --line-soft: #0E2017;
+  --line-bright: #1F4632;
+
+  --fg: #B5FF8A;
+  --fg-2: #7CD968;
+  --fg-3: #4F9C49;
+  --fg-4: #386B36;
+  --fg-5: #244524;
+
+  --accent: #C4FF3F;
+  --accent-deep: #9DE21A;
+  --accent-soft: rgba(196, 255, 63, 0.14);
+  --accent-glow: rgba(196, 255, 63, 0.5);
+
+  --magenta: #FF6EAA;
+  --cyan: #58F0E0;
+  --amber: #FFD24A;
+  --lilac: #A98EFF;
+  --rose: #FF8A6E;
+  --lime: #C4FF3F;
+
+  --syntax-comment: #3F7437;
+  --syntax-key: #FFD24A;
+  --syntax-str: #C4FF3F;
+  --syntax-num: #FF6EAA;
+  --syntax-fn: #58F0E0;
+  --syntax-tag: #A98EFF;
+
+  --diff-add-bg: rgba(196, 255, 63, 0.10);
+  --diff-add-fg: #C4FF3F;
+  --diff-rm-bg: rgba(255, 110, 170, 0.08);
+  --diff-rm-fg: #FF6EAA;
+
+  --grain-opacity: 0.06;
+  color-scheme: dark;
+}
+
+/* ── Daylight (light) ──────────────────────────────────────────────────── */
+.theme-daylight {
+  --bg-app: #E5E2D9;
+  --bg-window: #F6F3EB;
+  --bg-surface: #FFFFFF;
+  --bg-elevated: #FAF7EF;
+  --bg-input: #FFFFFF;
+  --bg-hover: #F0EBDD;
+  --bg-active: #E8E1CF;
+
+  --line: #DDD5C2;
+  --line-soft: #ECE6D5;
+  --line-bright: #C7BEA8;
+
+  --fg: #14181F;
+  --fg-2: #34394A;
+  --fg-3: #5E6478;
+  --fg-4: #8A8FA0;
+  --fg-5: #B6BAC7;
+
+  --accent: #1F8A5B;
+  --accent-deep: #145C3D;
+  --accent-soft: rgba(31, 138, 91, 0.12);
+  --accent-glow: rgba(31, 138, 91, 0.4);
+
+  --magenta: #C2438C;
+  --cyan: #1F7A8C;
+  --amber: #C68A1E;
+  --lilac: #6A4FE0;
+  --rose: #C04A56;
+  --lime: #5C8A1F;
+
+  --syntax-comment: #8A8FA0;
+  --syntax-key: #6A4FE0;
+  --syntax-str: #1F8A5B;
+  --syntax-num: #C68A1E;
+  --syntax-fn: #1F7A8C;
+  --syntax-tag: #C2438C;
+
+  --diff-add-bg: rgba(31, 138, 91, 0.10);
+  --diff-add-fg: #145C3D;
+  --diff-rm-bg: rgba(192, 74, 86, 0.08);
+  --diff-rm-fg: #B23A45;
+
+  --grain-opacity: 0;
+  color-scheme: light;
+}
+
+/* ── Density ──────────────────────────────────────────────────────────── */
+.density-cozy {
+  --d-row: 32px;
+  --d-pad: 18px;
+  --d-gap: 12px;
+  --d-text: 13.5px;
+  --d-text-sm: 12px;
+  --d-text-xs: 10.5px;
+  --d-text-lg: 15px;
+  --d-leading: 1.6;
+}
+.density-compact {
+  --d-row: 26px;
+  --d-pad: 12px;
+  --d-gap: 8px;
+  --d-text: 12.5px;
+  --d-text-sm: 11px;
+  --d-text-xs: 10px;
+  --d-text-lg: 14px;
+  --d-leading: 1.5;
+}
+.density-dense {
+  --d-row: 22px;
+  --d-pad: 8px;
+  --d-gap: 6px;
+  --d-text: 11.5px;
+  --d-text-sm: 10.5px;
+  --d-text-xs: 9.5px;
+  --d-text-lg: 13px;
+  --d-leading: 1.45;
+}
+
+/* ── Reset + globals ──────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  background: var(--bg-app);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--d-text);
+  line-height: var(--d-leading);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "ss01", "cv11";
+  overflow: hidden;
+  user-select: none;
+}
+
+button { font: inherit; color: inherit; cursor: pointer; }
+input, textarea { font: inherit; color: inherit; background: transparent; border: 0; outline: none; }
+.selectable, .selectable * { user-select: text; }
+.mono { font-family: var(--font-mono); font-feature-settings: "ss01"; }
+
+/* ── App backdrop: subtle aurora wash + grain ─────────────────────────── */
+.app-backdrop {
+  position: fixed; inset: 0;
+  background:
+    radial-gradient(1200px 700px at 80% -10%, color-mix(in oklab, var(--accent) 15%, transparent), transparent 60%),
+    radial-gradient(900px 500px at -10% 100%, color-mix(in oklab, var(--magenta) 10%, transparent), transparent 60%),
+    var(--bg-app);
+  z-index: -1;
+}
+.app-backdrop::after {
+  content: ""; position: absolute; inset: 0;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.6 0'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.6'/></svg>");
+  opacity: var(--grain-opacity);
+  mix-blend-mode: overlay;
+  pointer-events: none;
+}
+
+/* ── Phosphor scan-line treatment ─────────────────────────────────────── */
+.theme-phosphor .scanlines::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0px,
+    rgba(0, 0, 0, 0) 2px,
+    rgba(0, 0, 0, 0.18) 3px,
+    rgba(0, 0, 0, 0) 4px
+  );
+  mix-blend-mode: multiply;
+  z-index: 9;
+}
+.theme-phosphor .glow-text {
+  text-shadow: 0 0 6px var(--accent-glow), 0 0 1px var(--accent);
+}
+
+/* ── Scrollbars ───────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--line-bright); border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ── Common motion utilities ──────────────────────────────────────────── */
+@keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.8); }
+}
+@keyframes typeBlink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes drift {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(0, -3px); }
+}
+
+.fade-up { animation: fadeUp 320ms var(--ease-out) both; }
+.slide-in { animation: slideIn 360ms var(--ease-out) both; }
+
+/* shimmer skeleton for streaming text */
+.shimmer-text {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--fg) 70%, transparent) 0%,
+    color-mix(in oklab, var(--accent) 90%, transparent) 50%,
+    color-mix(in oklab, var(--fg) 70%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2.4s linear infinite;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.caret-blink::after {
+  content: "▌";
+  margin-left: 1px;
+  color: var(--accent);
+  animation: typeBlink 1.05s steps(1) infinite;
+}
+
+/* ── Soft chip ────────────────────────────────────────────────────────── */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  color: var(--fg-2);
+  font-size: var(--d-text-xs);
+  letter-spacing: 0.01em;
+}
+.chip.accent { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 30%, var(--line)); background: var(--accent-soft); }
+.chip.warn { color: var(--amber); border-color: color-mix(in oklab, var(--amber) 30%, var(--line)); }
+.chip.danger { color: var(--rose); border-color: color-mix(in oklab, var(--rose) 30%, var(--line)); }
+.chip.muted { color: var(--fg-3); }
+
+/* dot */
+.dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--fg-4);
+}
+.dot.live { background: var(--accent); box-shadow: 0 0 0 0 var(--accent-glow); animation: pulseDot 1.4s ease-in-out infinite; }
+.dot.warn { background: var(--amber); }
+.dot.error { background: var(--rose); }
+
+/* keyboard chip */
+.kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 16px; height: 16px;
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--fg-3);
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+}
+
+/* hairline divider used everywhere */
+.hr { height: 1px; background: var(--line); width: 100%; }
+.vr { width: 1px; background: var(--line); align-self: stretch; }
+
+/* card */
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  box-shadow: var(--shadow-card);
+}
+
+/* glass surface for ambient peripherals */
+.glass {
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--bg-elevated) 80%, transparent),
+    color-mix(in oklab, var(--bg-surface) 90%, transparent)
+  );
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+}
+
+/* button base */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; height: 24px;
+  border-radius: var(--r-1);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-2);
+  font-size: var(--d-text-sm);
+  transition: background 120ms var(--ease-out), color 120ms, border-color 120ms;
+}
+.btn:hover { background: var(--bg-hover); color: var(--fg); }
+.btn.ghost { color: var(--fg-3); }
+.btn.primary {
+  background: var(--accent);
+  color: #06241B;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.theme-phosphor .btn.primary { color: #001000; }
+.theme-daylight .btn.primary { color: #FAF7EF; }
+.btn.primary:hover { background: var(--accent-deep); border-color: var(--accent-deep); color: #06241B; }
+.btn.outlined { border-color: var(--line); }
+.btn.outlined:hover { border-color: var(--line-bright); }
+.btn.icon {
+  width: 24px; height: 24px; padding: 0; justify-content: center;
+}
+.btn.danger { color: var(--rose); }
+.btn.danger:hover { background: color-mix(in oklab, var(--rose) 15%, transparent); }
+
+/* focus ring */
+.btn:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
