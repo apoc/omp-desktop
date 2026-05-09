@@ -1,4 +1,4 @@
-# omp-desktop
+# Oh My Pi Desktop
 
 A Tauri 2 desktop shell for [oh-my-pi](https://github.com/can1357/oh-my-pi) (`omp`).
 Wraps the `omp --mode rpc` coding agent as a managed child process and serves the
