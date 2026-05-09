@@ -22,6 +22,7 @@
       { name: "plan",     hint: "draft a plan before writing code",   icon: "◇", group: "Mode"    },
       { name: "steer",    hint: "interrupt and redirect mid-tool",    icon: "↺", group: "Mode"    },
       { name: "compact",  hint: "compact context window",             icon: "▤", group: "Session" },
+      { name: "new",      hint: "start a fresh session (history kept on disk)", icon: "↺", group: "Session" },
       { name: "branch",   hint: "fork the session from current head", icon: "⑂", group: "Session" },
       { name: "model",    hint: "switch model",                       icon: "◉", group: "Agent"   },
       { name: "thinking", hint: "cycle thinking level",               icon: "✶", group: "Agent"   },
@@ -283,9 +284,14 @@
         notify();
       }
 
+    } else if (command === "new_session") {
+      // New session started — clear local state and re-fetch
+      _resetSessionVars();
+      _initFetch();
+      notify();
+
     } else if (command === "get_session_stats") {
-      // SessionStats has tokens.{input,output,...} but no cost field.
-      // Cost is accumulated from turn_end.message.usage.cost.total.
+      // SessionStats — no display action needed
     }
   }
 
@@ -588,6 +594,7 @@
     cycleModel()       { _send({ type: "cycle_model" }); },
     setThinking(level) { _send({ type: "set_thinking_level", level }); },
     compact()          { _send({ type: "compact" }); },
+    newSession()       { _send({ type: "new_session" }); },
     exportHtml()       { _send({ type: "export_html" }); },
     refreshModels()    { _initFetch(); },
 

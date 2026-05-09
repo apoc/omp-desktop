@@ -171,6 +171,7 @@ function App() {
     else if (c.name === "export")   { bridge?.exportHtml(); }
     else if (c.name === "thinking") { cycleThinking(); }
     else if (c.name === "model")    { bridge?.cycleModel(); }
+    else if (c.name === "new")      { bridge?.newSession(); }
   };
 
   const cycleThinking = () => {
