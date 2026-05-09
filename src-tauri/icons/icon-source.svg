@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a2238"></stop>
+      <stop offset="55%" stop-color="#0c1020"></stop>
+      <stop offset="100%" stop-color="#06080f"></stop>
+    </linearGradient>
+    
+    <linearGradient id="hi" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.18"></stop>
+      <stop offset="40%" stop-color="#ffffff" stop-opacity="0"></stop>
+    </linearGradient>
+    
+    <radialGradient id="warm" cx="0.78" cy="1.02" r="0.85">
+      <stop offset="0%" stop-color="#ff8a4c" stop-opacity="0.32"></stop>
+      <stop offset="60%" stop-color="#ff8a4c" stop-opacity="0"></stop>
+    </radialGradient>
+    
+    <linearGradient id="markGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"></stop>
+      <stop offset="100%" stop-color="#d4dbef"></stop>
+    </linearGradient>
+    
+    <radialGradient id="dotGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#ff8a4c" stop-opacity="0.65"></stop>
+      <stop offset="60%" stop-color="#ff8a4c" stop-opacity="0.15"></stop>
+      <stop offset="100%" stop-color="#ff8a4c" stop-opacity="0"></stop>
+    </radialGradient>
+    
+    <clipPath id="squircle">
+      <path d="M 512 0&#xA;               C 904 0, 1024 120, 1024 512&#xA;               C 1024 904, 904 1024, 512 1024&#xA;               C 120 1024, 0 904, 0 512&#xA;               C 0 120, 120 0, 512 0 Z"></path>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#squircle)">
+    
+    <rect width="1024" height="1024" fill="url(#bg)"></rect>
+    
+    <rect width="1024" height="1024" fill="url(#warm)"></rect>
+    
+    <g opacity="0.05" stroke="#7a8499" stroke-width="1">
+      <path d="M0 256 H1024 M0 512 H1024 M0 768 H1024 M256 0 V1024 M512 0 V1024 M768 0 V1024"></path>
+    </g>
+    
+    <rect width="1024" height="1024" fill="url(#hi)"></rect>
+
+    
+    
+    <g transform="translate(512, 512)">
+      
+      <circle cx="195" cy="-200" r="180" fill="url(#dotGlow)"></circle>
+
+      
+      <path d="M -160 -210 L 80 0 L -160 210" stroke="url(#markGrad)" stroke-width="120" stroke-linecap="round" stroke-linejoin="round" fill="none"></path>
+
+      
+      <circle cx="195" cy="-200" r="56" fill="#ff8a4c"></circle>
+      
+      <circle cx="180" cy="-216" r="22" fill="#ffffff" fill-opacity="0.35"></circle>
+    </g>
+
+    
+    <path d="M 512 4&#xA;             C 902 4, 1020 122, 1020 512&#xA;             C 1020 902, 902 1020, 512 1020&#xA;             C 122 1020, 4 902, 4 512&#xA;             C 4 122, 122 4, 512 4 Z" fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="2"></path>
+  </g>
+</svg>

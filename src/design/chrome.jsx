@@ -39,7 +39,7 @@ function WindowChrome({ project, peer, onCmd }) {
 
       <div className="chrome-right">
         <button className="btn ghost outlined" onClick={onCmd}>
-          <Icon name="cmd" size={11} /> bridge{" "}
+          <Icon name="command" size={11} /> bridge{" "}
           <span className="kbd">{IS_WIN ? "^K" : "⌘K"}</span>
         </button>
 

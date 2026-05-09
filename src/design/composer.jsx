@@ -82,7 +82,7 @@ function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, curr
           />
         </div>
         <button className="btn outlined" title="open command bridge (⌘K)" onClick={onOpenCmd}>
-          <Icon name="cmd" size={11} />
+          <Icon name="command" size={11} />
           <span className="kbd" style={{ marginLeft: 2 }}>K</span>
         </button>
         {isStreaming ? (
@@ -223,7 +223,7 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
     <div className="bridge-scrim" onClick={onClose}>
       <div className="bridge slide-in" onClick={(e) => e.stopPropagation()}>
         <div className="bridge-input-row">
-          <Icon name="cmd" size={14} color="var(--accent)" />
+          <Icon name="command" size={14} color="var(--accent)" />
           <input ref={inputRef} className="bridge-input mono"
             placeholder="cross the bridge — type to filter…" value={q}
             onChange={(e) => setQ(e.target.value)} />
