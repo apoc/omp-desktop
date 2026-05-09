@@ -38,7 +38,9 @@ function App() {
   const [bridgeOpen, setBridgeOpen] = React.useState(false);
   const [bridgeView, setBridgeView] = React.useState("commands");
   const [planOpen,   setPlanOpen]   = React.useState(false);
-  const [planPhase,  setPlanPhase]  = React.useState("review");
+  const [planPhase,  setPlanPhase]  = React.useState("intent");
+  const [planText,   setPlanText]   = React.useState("");
+  const [lastIntent, setLastIntent] = React.useState("");
   const [planMode,   setPlanMode]   = React.useState(false);
 
   // ── Live data (all per-session — driven by OMP_BRIDGE.onUpdate) ───────────
@@ -118,6 +120,21 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Auto-advance drafting → review when agent finishes streaming
+  React.useEffect(() => {
+    if (!streaming && planPhase === "drafting") setPlanPhase("review");
+  }, [streaming]);
+
+  // Track plan text from last assistant message while in plan mode
+  React.useEffect(() => {
+    if (!planMode) return;
+    const last = messages.length ? messages[messages.length - 1] : null;
+    if (!last || last.kind !== "assistant") return;
+    if (last.streaming) { setPlanText(last.text ?? ""); return; }
+    const txt = (last.blocks ?? []).filter(b => b.type === "text").map(b => b.text).join("\n\n");
+    if (txt) setPlanText(txt);
+  }, [messages, planMode]);
+
   // ── Derived values ────────────────────────────────────────────────────────
   const activeProject = sessions.find(s => s.id === activeSessionId) ?? sessions[0] ?? EMPTY_PROJECT;
   const todoCounts    = kanban.reduce(
@@ -141,7 +158,7 @@ function App() {
   const handlePickModel = m => { setModelState(m); bridge?.setModel(m); };
 
   const handleCommand = c => {
-    if      (c.name === "plan")     { setPlanMode(true); setPlanPhase("review"); setPlanOpen(true); }
+    if      (c.name === "plan")     { setPlanMode(true); setPlanPhase("intent"); setPlanOpen(true); }
     else if (c.name === "todo")     { setPlanOpen(true); }
     else if (c.name === "compact")  { bridge?.compact(); }
     else if (c.name === "export")   { bridge?.exportHtml(); }
@@ -155,7 +172,44 @@ function App() {
     bridge?.setThinking(next);
   };
 
-  const handleApprovePlan = () => setPlanMode(false);
+  const intentFraming = intent =>
+    `Please draft a plan for the following task. Write it in Markdown with clear sections: overview, approach, key steps, and risks. Do not start implementing yet — draft only for my review.\n\n---\n\n${intent.trim()}`;
+
+  const reviewFraming = (pText, annotations, overall) => {
+    const lineComments = Object.entries(annotations)
+      .sort(([a],[b]) => Number(a)-Number(b))
+      .map(([,{raw,comment}]) => {
+        const quoted = raw.split('\n').map(l => `> ${l}`).join('\n');
+        return `${quoted}\n→ ${comment.trim()}`;
+      }).join('\n\n');
+    const sections = [
+      'Please revise the plan based on this feedback.',
+      lineComments && 'Line comments:\n' + lineComments,
+      overall.trim() && 'Overall: ' + overall.trim(),
+      'Provide the full revised plan in Markdown.',
+    ].filter(Boolean);
+    return sections.join('\n\n');
+  };
+
+  const APPROVAL_PROMPT = 'Plan approved. Please proceed to execute it. Use your todo_write tool to track tasks as you go.';
+
+  const handleSubmitIntent = intent => {
+    setLastIntent(intent);
+    setPlanText("");
+    setPlanPhase("drafting");
+    bridge?.send(intentFraming(intent));
+  };
+
+  const handleSubmitReview = (annotations, overall, pText) => {
+    setPlanText("");
+    setPlanPhase("drafting");
+    bridge?.followUp(reviewFraming(pText, annotations, overall));
+  };
+
+  const handleApprovePlan = () => {
+    setPlanPhase("running");
+    bridge?.followUp(APPROVAL_PROMPT);
+  };
 
   // Tab select — switches the active session; bridge resets all per-session state
   // and re-fetches from the new session's omp → notify() pushes fresh data
@@ -212,7 +266,7 @@ function App() {
                 onTogglePlan={() => {
                   const next = !planMode;
                   setPlanMode(next);
-                  if (next) { setPlanPhase("review"); setPlanOpen(true); }
+                  if (next) { setPlanPhase("intent"); setPlanOpen(true); }
                 }}
                 onOpenCmd={() => openBridge("commands")}
                 onOpenModel={() => openBridge("models")}
@@ -264,10 +318,16 @@ function App() {
         <PlanKanban
           kanban={kanban}
           planMeta={planMeta}
-          mode={planPhase}
-          onMode={setPlanPhase}
-          onApprove={handleApprovePlan}
+          phase={planPhase}
+          onPhaseChange={setPlanPhase}
           onClose={() => setPlanOpen(false)}
+          planText={planText}
+          isStreaming={streaming}
+          onSubmitIntent={handleSubmitIntent}
+          onSubmitReview={handleSubmitReview}
+          onApprove={handleApprovePlan}
+          onAbort={handleAbort}
+          initialIntent={lastIntent}
         />
       )}
 

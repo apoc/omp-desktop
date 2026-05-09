@@ -582,6 +582,7 @@
       _send({ type: "prompt", message: text, images: images ?? [] });
     },
     abort()            { _send({ type: "abort" }); },
+    followUp(text)     { _send({ type: "follow_up", message: text }); },
     setModel(model)    { _send({ type: "set_model", provider: model.provider, modelId: model.id }); },
     cycleModel()       { _send({ type: "cycle_model" }); },
     setThinking(level) { _send({ type: "set_thinking_level", level }); },
