@@ -10,8 +10,8 @@
   const TOOL_NAME_MAP = {
     read: "read", search: "search", edit: "edit", bash: "bash",
     write: "write", todo_write: "todo", find: "search",
-    web_search: "search", task: "bash", ask: "bash",
-    debug: "bash", lsp: "search", eval: "bash",
+    web_search: "search", lsp: "search",
+    eval: "eval", task: "task", debug: "debug", ask: "ask",
   };
 
   function normalizeToolName(name) {

@@ -84,7 +84,11 @@ const TOOL_META = {
   edit:    { color: "var(--accent)",  icon: "diff",   label: "edit" },
   bash:    { color: "var(--amber)",   icon: "bash",   label: "bash" },
   write:   { color: "var(--magenta)", icon: "edit",   label: "write" },
-  todo:    { color: "var(--lime)",    icon: "plan",   label: "todo" },
+  todo:    { color: "var(--lime)",    icon: "plan",  label: "todo"  },
+  eval:    { color: "var(--rose)",    icon: "test",  label: "eval"  },
+  task:    { color: "var(--cyan)",    icon: "agent", label: "task"  },
+  debug:   { color: "var(--amber)",   icon: "bolt",  label: "debug" },
+  ask:     { color: "var(--fg-3)",    icon: "circle",label: "ask"   },
 };
 
 // ── Sparkline ─────────────────────────────────────────────────────────
