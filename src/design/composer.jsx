@@ -35,7 +35,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
 
   React.useEffect(() => {
     const ta = taRef.current;
-    if (!ta) return;
+    if (!ta || CSS.supports("field-sizing", "content")) return;
     ta.style.height = "auto";
     ta.style.height = `${Math.min(ta.scrollHeight, 320)}px`;
   }, [text]);

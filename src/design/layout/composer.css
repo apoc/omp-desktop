@@ -28,7 +28,10 @@
 .composer-input { flex: 1; padding: 4px 4px 4px 4px; }
 .composer-input textarea {
   width: 100%;
-  overflow-y: hidden;
+  field-sizing: content;
+  min-height: 1lh;
+  max-height: 320px;
+  overflow-y: auto;
   resize: none;
   font: inherit; font-size: var(--d-text);
   color: var(--fg);
@@ -38,7 +41,6 @@
 .composer-input textarea:focus-visible { outline: none; }
 
 .composer-foot {
-  display: flex; align-items: center; gap: 6px;
   padding: 6px 2px 0;
 }
 .composer-pill {
