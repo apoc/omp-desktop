@@ -172,8 +172,17 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
           </div>
           <div className="bridge-body">
             <div className="bridge-group">
-              <div className="bridge-group-head mono">
-                switch model · OMP_DATA: {window.OMP_DATA.models.length} · prop: {models.length}
+              <div className="bridge-group-head mono" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                switch model
+                <span style={{ color: "var(--fg-4)" }}>
+                  tauri:{window.__TAURI__ ? "✓" : "✗"}
+                  · connected:{window.OMP_BRIDGE?.isConnected ? "✓" : "✗"}
+                  · models:{window.OMP_DATA.models.length}
+                </span>
+                <button className="btn ghost" style={{ marginLeft: "auto", height: 18, fontSize: "var(--d-text-xs)", padding: "0 6px" }}
+                  onClick={() => window.OMP_BRIDGE?.refreshModels()}>
+                  refresh
+                </button>
               </div>
               {modelHits.map((m) => (
                 <button key={m.id}

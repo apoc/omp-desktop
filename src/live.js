@@ -581,6 +581,8 @@
       if (!window.__TAURI__) return;
       window.__TAURI__.core.invoke('stop_agent').catch(() => {});
     },
+
+    refreshModels() { _initFetch(); },
   };
 
   // ── Connect to Tauri IPC ──────────────────────────────────────────────────
