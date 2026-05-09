@@ -101,6 +101,7 @@ Trigger: 6th major component in one file, or 4th unrelated concern in one Rust m
 - Follow existing architectural patterns before introducing new ones. Optimize for clarity first, then allocation efficiency.
 - Run fmt + lint locally before finalizing any change. Don't ship code that fails fmt or clippy.
 - Only format files you actually modified. Never do bulk formatting-only rewrites.
+- Prefer surgical `edit` over full-file `write` when the file already exists. Full rewrites only when (a) creating a new file, (b) >~70% of lines genuinely change, or (c) restructuring would require so many anchors that `edit` becomes brittle. Never rewrite a file just to change a few lines — it loses formatting, drops invariants you didn't notice, and bloats diffs.
 
 **Rust:**
 - `cargo fmt` (stable) before commit; nightly clippy `pedantic`+`nursery` clean, `-D warnings`.
