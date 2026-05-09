@@ -253,6 +253,7 @@ function App() {
                 isStreaming={streaming}
                 onAbort={handleAbort}
                 onApprove={handleApprovePlan}
+                annotationCount={Object.keys(planAnnotations).length}
                 microcopy={data.microcopy}
               />
               <StatusBar

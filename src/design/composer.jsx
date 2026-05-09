@@ -5,7 +5,7 @@
 const { Icon } = window;
 
 // ── The composer (input + plan/steer modes + send) ────────────────────
-function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, microcopy }) {
+function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy }) {
   const [text, setText] = React.useState("");
   const [showSlash, setShowSlash] = React.useState(false);
   const taRef = React.useRef(null);
@@ -26,7 +26,8 @@ function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, curr
   }, [text]);
 
   const send = () => {
-    if (!text.trim() || isStreaming) return;
+    const canSend = text.trim() || (planMode && annotationCount > 0);
+    if (!canSend || isStreaming) return;
     onSend(text.trim());
     setText("");
   };
@@ -103,8 +104,12 @@ function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, curr
                 <Icon name="play" size={10} color="var(--amber)" /> approve
               </button>
             )}
-            <button className="btn primary" onClick={send} disabled={!text.trim()}>
-              {planMode ? "send feedback" : "send"} <Icon name="arrow" size={11} />
+            <button className="btn primary" onClick={send}
+              disabled={!(text.trim() || (planMode && annotationCount > 0))}>
+              {planMode
+                ? `send feedback${annotationCount > 0 ? ` · ${annotationCount} comment${annotationCount !== 1 ? "s" : ""}` : ""}`
+                : "send"}
+              {" "}<Icon name="arrow" size={11} />
             </button>
           </>
         )}
