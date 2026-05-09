@@ -52,7 +52,7 @@
     messages:       [],
     isStreaming:    false,
     model:          null,
-    thinkingLevel:  "auto",
+    thinkingLevel:  null,
     ctx:            { ...DEFAULT_DATA.ctx },
     kanban:         [],
     planMeta:       { ...DEFAULT_DATA.planMeta },
@@ -116,7 +116,7 @@
       messages:      [],
       isStreaming:   false,
       model:         null,
-      thinkingLevel: "auto",
+      thinkingLevel: null,
       ctx:           { ...DEFAULT_DATA.ctx },
       kanban:        [],
       planMeta:      { ...DEFAULT_DATA.planMeta },
@@ -310,6 +310,13 @@
         state.model  = _buildModelEntry(data.model);
         if (data.thinkingLevel != null) state.thinkingLevel = data.thinkingLevel;
         state.models = state.models.map(m => ({ ...m, current: m.id === data.model.id }));
+        notify();
+
+    } else if (command === "cycle_thinking_level") {
+      // data is { level: Effort } | null. null means thinking not supported
+      // by the current model — omp leaves the level unchanged in that case.
+      if (data?.level != null) {
+        state.thinkingLevel = data.level;
         notify();
       }
 
@@ -641,7 +648,7 @@
     followUp(text)     { _send({ type: "follow_up", message: text }); },
     setModel(model)    { _send({ type: "set_model", provider: model.provider, modelId: model.id }); },
     cycleModel()       { _send({ type: "cycle_model" }); },
-    setThinking(level) { _send({ type: "set_thinking_level", level }); },
+    cycleThinking()    { _send({ type: "cycle_thinking_level" }); },
     compact()          { _send({ type: "compact" }); },
     newSession()       { _send({ type: "new_session" }); },
     exportHtml()       { _send({ type: "export_html" }); },

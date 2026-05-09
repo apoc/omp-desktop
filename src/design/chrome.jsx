@@ -89,6 +89,7 @@ function TabBar({ projects, activeId, onSelect, onClose, peer, onNew }) {
 
 // ── Status bar (footer): connection, model, tokens, todos, extension ─
 function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel }) {
+  const thinkLabel = { off: "off", minimal: "min", low: "low", medium: "med", high: "high", xhigh: "max", inherit: "inherit" }[thinking] ?? "—";
   return (
     <div className="status">
       <span className="status-cell"><span className="dot live" /> connected</span>
@@ -98,7 +99,7 @@ function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel 
         <Icon name="chev" size={9} color="var(--fg-4)" />
       </button>
       <span className="status-sep">·</span>
-      <span className="status-cell"><Icon name="thinking" size={10} color="var(--lilac)" /> {thinking}</span>
+      <span className="status-cell"><Icon name="thinking" size={10} color="var(--lilac)" /> {thinkLabel}</span>
       <span className="status-sep">·</span>
       <span className="status-cell mono">
         <span style={{ color: "var(--fg-3)" }}>{ctx.label}</span>

@@ -182,11 +182,7 @@ function App() {
     else if (c.name === "new")      { bridge?.newSession(); }
   };
 
-  const cycleThinking = () => {
-    const next = thinkingLevel === "none" ? "auto" : thinkingLevel === "auto" ? "extended" : "none";
-    setThinkingLevel(next);
-    bridge?.setThinking(next);
-  };
+  const cycleThinking = () => bridge?.cycleThinking();
 
   const handleApprovePlan = () => {
     setPlanAnnotations({});
