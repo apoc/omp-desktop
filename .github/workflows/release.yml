@@ -94,7 +94,7 @@ jobs:
       - name: Cache Rust build artefacts
         uses: swatinem/rust-cache@v2
         with:
-          workdir: src-tauri
+          workspaces: src-tauri
           key: release-${{ matrix.label }}
 
       # ── Linux system deps ───────────────────────────────────────────────────
