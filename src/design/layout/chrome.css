@@ -31,17 +31,17 @@
 .light.red { background: #FF5F57; }
 .light.amber { background: #FEBC2E; }
 .light.green { background: #28C840; }
-.win-controls { display: flex; gap: 6px; align-items: center; }
+.win-controls { display: flex; gap: 2px; align-items: center; }
 .win-ctrl {
-  width: 12px; height: 12px; border-radius: 50%;
-  border: 0.5px solid rgba(0,0,0,0.35);
-  padding: 0; appearance: none; cursor: default;
-  position: relative;
+  appearance: none; border: 0; background: transparent;
+  width: 28px; height: 28px; font-size: 13px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 4px; cursor: default;
 }
-.win-ctrl:hover { filter: brightness(1.15); }
-.win-close { background: #FF5F57; }
-.win-min   { background: #FEBC2E; }
-.win-max   { background: #28C840; }
+.win-ctrl:hover { background: color-mix(in oklab, currentColor 12%, transparent); }
+.win-close { color: #FF5F57; }
+.win-min   { color: #FEBC2E; }
+.win-max   { color: #28C840; }
 .chrome-title { display: flex; align-items: center; gap: 6px; font-size: var(--d-text-sm); flex: 1; justify-content: center; }
 .chrome-right { display: flex; gap: 6px; }
 
