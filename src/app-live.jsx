@@ -1,14 +1,12 @@
 /* ═════════════════════════════════════════════════════════════════════
    app-live.jsx — live-wired root. Replaces design/app.jsx.
-   Changes from the prototype:
-     - Demo streaming-finisher timeout REMOVED
-     - Demo fake-reply handleSend REMOVED
-     - OMP_BRIDGE.onUpdate() drives all React state
-     - handleSend / handleAbort wired to OMP_BRIDGE
-     - Model switching wired to OMP_BRIDGE.setModel()
-     - kanban, planMeta, ctx, sparkline come from live data
-     - peer session hidden when peer is null (not in single-agent RPC)
-   Visual components (ChatView, Composer, AmbientRail, …) unchanged.
+
+   Session model: each tab owns one omp process. OMP_BRIDGE manages
+   session lifecycle; the tab list and active session come from the
+   bridge (snap.sessions / snap.activeSessionId). Switching tabs calls
+   bridge.activateSession() which resets ALL per-session state and
+   re-fetches from omp — so the right panel (sparkline, activity radar,
+   minimap, kanban, context gauge) always reflects the active session.
    ═════════════════════════════════════════════════════════════════════ */
 
 const {
@@ -27,71 +25,67 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "showRadar": true
 }/*EDITMODE-END*/;
 
-// Placeholder model: StatusBar reads model.name without a null guard.
-// Use "–" so the status bar slot shows something neutral, not "connecting…"
-// alongside the hardcoded "connected" dot (which would look contradictory).
-const NULL_MODEL = { id: "", name: "–", provider: "", note: "", latency: 0, current: false };
-
-// Fallback project for WindowChrome when no session is open yet.
-// Never shown as a tab — only used so WindowChrome never receives undefined.
+const NULL_MODEL   = { id: "", name: "–", provider: "", note: "", latency: 0, current: false };
 const EMPTY_PROJECT = { id: "", name: "OMP Desktop", path: "", color: "var(--accent)", branch: "" };
-
-// Placeholder peer for PeerSession — peer.activity must be a non-null string.
-const NULL_PEER = {
-  project: "—", title: "no peer session",
-  activity: "edit · idle", tps: 0, todo: { done: 0, total: 1 },
-};
+const NULL_PEER    = { project: "—", title: "no peer session", activity: "edit · idle", tps: 0, todo: { done: 0, total: 1 } };
 
 function App() {
-  const [t, setTweak]             = useTweaks(TWEAK_DEFAULTS);
-  const data                       = window.OMP_DATA;
-  const bridge                     = window.OMP_BRIDGE;
+  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  const data          = window.OMP_DATA;
+  const bridge        = window.OMP_BRIDGE;
 
   // ── UI state ──────────────────────────────────────────────────────────────
-  const [activeTabId, setActiveTabId] = React.useState("");
-  const [bridgeOpen,  setBridgeOpen]  = React.useState(false);
-  const [planOpen,    setPlanOpen]    = React.useState(false);
-  const [planPhase,   setPlanPhase]   = React.useState("review");
-  const [planMode,    setPlanMode]    = React.useState(false);
+  const [bridgeOpen, setBridgeOpen] = React.useState(false);
+  const [planOpen,   setPlanOpen]   = React.useState(false);
+  const [planPhase,  setPlanPhase]  = React.useState("review");
+  const [planMode,   setPlanMode]   = React.useState(false);
 
-  // ── Live data state (driven by OMP_BRIDGE) ────────────────────────────────
-  const [messages,      setMessages]      = React.useState(data.messages);
+  // ── Live data (all per-session — driven by OMP_BRIDGE.onUpdate) ───────────
+  const [messages,      setMessages]      = React.useState([]);
   const [streaming,     setStreaming]      = React.useState(false);
   const [model,         setModelState]    = React.useState(NULL_MODEL);
   const [thinkingLevel, setThinkingLevel] = React.useState("auto");
   const [ctx,           setCtx]           = React.useState(data.ctx);
-  const [kanban,        setKanban]        = React.useState(data.kanban);
+  const [kanban,        setKanban]        = React.useState([]);
   const [planMeta,      setPlanMeta]      = React.useState(data.planMeta);
-  const [models,        setModels]        = React.useState(data.models);
-  const [activity,      setActivity]      = React.useState(data.activity);
+  const [models,        setModels]        = React.useState([]);
+  const [activity,      setActivity]      = React.useState([]);
   const [sparkline,     setSparkline]     = React.useState(Array(30).fill(0));
-  const [projects,      setProjects]      = React.useState(data.projects);
 
-  // ── Subscribe to live bridge updates ─────────────────────────────────────
+  // ── Tab list — driven by bridge session registry ───────────────────────────
+  // Each entry: { id, name, path, color, branch }
+  const [sessions,        setSessions]       = React.useState([]);
+  const [activeSessionId, setActiveSessionId] = React.useState("");
+
+  // ── Subscribe to bridge ───────────────────────────────────────────────────
   React.useEffect(() => {
     if (!bridge) return;
     const unsub = bridge.onUpdate(snap => {
+      // Per-session state — ALL reset when switching tabs, then re-populated
       setMessages(snap.messages);
       setStreaming(snap.isStreaming);
-      if (snap.model)         setModelState(snap.model);
-      if (snap.thinkingLevel) setThinkingLevel(snap.thinkingLevel);
       setCtx(snap.ctx);
       setKanban(snap.kanban);
       setPlanMeta(snap.planMeta);
       setModels(snap.models);
       setActivity(snap.activity);
       setSparkline(snap.sparkline);
-      setProjects(snap.projects);
-      // Auto-select the first project tab when the agent sends initial state
-      if (snap.firstProjectId) {
-        setActiveTabId(id => id === "" ? snap.firstProjectId : id);
-      }
+      if (snap.model)         setModelState(snap.model);
+      else                    setModelState(NULL_MODEL);
+      if (snap.thinkingLevel) setThinkingLevel(snap.thinkingLevel);
 
-      // Auto-open kanban when todo_write creates the first phase
+      // Tab list — updated whenever a session is opened / closed / renamed
+      setSessions(snap.sessions ?? []);
+      if (snap.activeSessionId) setActiveSessionId(snap.activeSessionId);
+
+      // Kanban phase tracking
       if (snap.kanban.length > 0 && planMode) {
         const phase = window.derivePlanPhase?.(
-          snap.kanban.map(c => ({ tasks: c.tasks.map(t => ({ status:
-            t.status === "done" ? "completed" : t.status })) }))
+          snap.kanban.map(c => ({
+            tasks: c.tasks.map(tk => ({
+              status: tk.status === "done" ? "completed" : tk.status,
+            })),
+          }))
         ) ?? "review";
         setPlanPhase(phase);
       }
@@ -99,7 +93,7 @@ function App() {
     return unsub;
   }, [bridge]);
 
-  // ── Theme / density sync to <html> ────────────────────────────────────────
+  // ── Theme / density ────────────────────────────────────────────────────────
   React.useEffect(() => {
     const root = document.documentElement;
     root.classList.remove("theme-aurora", "theme-phosphor", "theme-daylight");
@@ -107,11 +101,11 @@ function App() {
     root.classList.remove("density-cozy", "density-compact", "density-dense");
     root.classList.add(`density-${t.density}`);
     if (t.monoChat) root.classList.add("mono-chat");
-    else root.classList.remove("mono-chat");
+    else            root.classList.remove("mono-chat");
     if (t.accent) root.style.setProperty("--accent", t.accent);
   }, [t.theme, t.density, t.accent, t.monoChat]);
 
-  // ── ⌘K global shortcut ───────────────────────────────────────────────────
+  // ── ⌘K shortcut ──────────────────────────────────────────────────────────
   React.useEffect(() => {
     const onKey = e => {
       if (e.key === "k" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); setBridgeOpen(v => !v); }
@@ -122,11 +116,11 @@ function App() {
   }, []);
 
   // ── Derived values ────────────────────────────────────────────────────────
-  const activeProject = projects.find(p => p.id === activeTabId) ?? projects[0] ?? EMPTY_PROJECT;
-  const todoCounts = kanban.reduce(
+  const activeProject = sessions.find(s => s.id === activeSessionId) ?? sessions[0] ?? EMPTY_PROJECT;
+  const todoCounts    = kanban.reduce(
     (acc, col) => {
       acc.total += col.tasks.length;
-      acc.done  += col.tasks.filter(t => t.status === "done").length;
+      acc.done  += col.tasks.filter(tk => tk.status === "done").length;
       return acc;
     },
     { total: 0, done: 0 }
@@ -135,38 +129,21 @@ function App() {
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleSend = text => {
     if (!text.trim()) return;
-    if (bridge?.isConnected) {
-      bridge.send(text);
-    } else {
-      // Demo mode: show user message only, no fake reply
-      setMessages(prev => [...prev, { kind: "user", time: _timeNow(), text }]);
-    }
+    if (bridge?.isConnected) bridge.send(text);
+    else setMessages(prev => [...prev, { kind: "user", time: _timeNow(), text }]);
   };
 
-  const handleAbort = () => {
-    bridge?.abort();
-    setStreaming(false);
-  };
+  const handleAbort = () => { bridge?.abort(); setStreaming(false); };
 
-  const handlePickModel = m => {
-    setModelState(m);
-    bridge?.setModel(m);
-  };
+  const handlePickModel = m => { setModelState(m); bridge?.setModel(m); };
 
   const handleCommand = c => {
-    if (c.name === "plan") {
-      setPlanMode(true); setPlanPhase("review"); setPlanOpen(true);
-    } else if (c.name === "todo") {
-      setPlanOpen(true);
-    } else if (c.name === "compact") {
-      bridge?.compact();
-    } else if (c.name === "export") {
-      bridge?.exportHtml();
-    } else if (c.name === "thinking") {
-      cycleThinking();
-    } else if (c.name === "model") {
-      bridge?.cycleModel();
-    }
+    if      (c.name === "plan")     { setPlanMode(true); setPlanPhase("review"); setPlanOpen(true); }
+    else if (c.name === "todo")     { setPlanOpen(true); }
+    else if (c.name === "compact")  { bridge?.compact(); }
+    else if (c.name === "export")   { bridge?.exportHtml(); }
+    else if (c.name === "thinking") { cycleThinking(); }
+    else if (c.name === "model")    { bridge?.cycleModel(); }
   };
 
   const cycleThinking = () => {
@@ -175,44 +152,34 @@ function App() {
     bridge?.setThinking(next);
   };
 
-  const handleApprovePlan = () => {
-    setPlanMode(false);
-    // In oh-my-pi, approving means sending a follow-up; the agent typically
-    // proceeds automatically after writing the plan, so this is a no-op here.
+  const handleApprovePlan = () => setPlanMode(false);
+
+  // Tab select — switches the active session; bridge resets all per-session state
+  // and re-fetches from the new session's omp → notify() pushes fresh data
+  const handleSelectTab = id => {
+    if (id === activeSessionId) return;
+    bridge?.activateSession(id);
+    // setActiveSessionId is driven by snap.activeSessionId from onUpdate
   };
 
+  // Open project → new session → new tab with its own omp process
   const handleNewProject = async () => {
-    const path = await bridge?.openProject();
+    if (!bridge) return;
+    const path = await bridge.pickFolder();
     if (!path) return;
-    const name = path.replace(/\\/g, '/').split('/').pop() || path;
-    const newProject = {
-      id: `p${Date.now()}`,
-      name,
-      path,
-      color: 'var(--lilac)',
-      branch: 'main',
-    };
-    setProjects(prev => [...prev, newProject]);
-    setActiveTabId(newProject.id);
+    await bridge.openSession(path);
+    // Tab list and activeSessionId are updated via onUpdate from the bridge
   };
 
+  // Close tab → kills that session's omp process; bridge updates tab list
   const handleCloseTab = id => {
-    setProjects(prev => {
-      const next = prev.filter(p => p.id !== id);
-      if (id === activeTabId && next.length > 0) {
-        setActiveTabId(next[next.length - 1].id);
-      }
-      return next;
-    });
+    bridge?.closeSession(id);
   };
 
   const showRail  = t.layout !== "focus";
   const showSplit = t.layout === "split" && data.peer !== null;
-  // Never pass null peer — PeerSession reads peer.activity unconditionally
   const safePeer  = data.peer ?? NULL_PEER;
-
-  // Merge live ctx into OMP_DATA so StatusBar reads the live version
-  const liveCtx = ctx ?? data.ctx;
+  const liveCtx   = ctx ?? data.ctx;
 
   return (
     <>
@@ -225,9 +192,9 @@ function App() {
             onCmd={() => setBridgeOpen(true)}
           />
           <TabBar
-            projects={projects}
-            activeId={activeTabId}
-            onSelect={setActiveTabId}
+            projects={sessions}
+            activeId={activeSessionId}
+            onSelect={handleSelectTab}
             peer={safePeer}
             onNew={handleNewProject}
             onClose={handleCloseTab}
@@ -264,7 +231,6 @@ function App() {
               />
             </main>
 
-            {/* Split peer pane — hidden when no peer (single-agent mode) */}
             {showSplit && data.peer && <SplitPeer peer={data.peer} />}
 
             {showRail && (
@@ -303,9 +269,7 @@ function App() {
 
       <TweaksPanel title="Tweaks" noDeckControls>
         <TweakSection label="Look">
-          <TweakRadio
-            label="theme"
-            value={t.theme}
+          <TweakRadio label="theme" value={t.theme}
             options={[
               { label: "aurora",   value: "aurora"   },
               { label: "phosphor", value: "phosphor" },
@@ -316,9 +280,7 @@ function App() {
               v === "phosphor" ? "#C4FF3F" : "#1F8A5B"
             })}
           />
-          <TweakRadio
-            label="density"
-            value={t.density}
+          <TweakRadio label="density" value={t.density}
             options={[
               { label: "cozy",    value: "cozy"    },
               { label: "compact", value: "compact" },
@@ -326,9 +288,7 @@ function App() {
             ]}
             onChange={v => setTweak("density", v)}
           />
-          <TweakColor
-            label="accent"
-            value={t.accent}
+          <TweakColor label="accent" value={t.accent}
             options={["#8AF0C8", "#6EE7FF", "#FF7AC6", "#FFC56E", "#B59BFF", "#C4FF3F"]}
             onChange={v => setTweak("accent", v)}
           />
@@ -336,9 +296,7 @@ function App() {
             onChange={v => setTweak("monoChat", v)} />
         </TweakSection>
         <TweakSection label="Layout">
-          <TweakRadio
-            label="layout"
-            value={t.layout}
+          <TweakRadio label="layout" value={t.layout}
             options={[
               { label: "rail",  value: "rail"  },
               { label: "split", value: "split" },
@@ -354,8 +312,7 @@ function App() {
 
 function _timeNow() {
   const d = new Date();
-  return [d.getHours(), d.getMinutes(), d.getSeconds()]
-    .map(n => String(n).padStart(2, "0")).join(":");
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => String(n).padStart(2, "0")).join(":");
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);

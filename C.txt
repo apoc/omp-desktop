@@ -1,0 +1,31 @@
+feat: per-tab omp process isolation
+
+Each tab now owns one omp process. Switching tabs resets ALL
+per-session state and re-fetches from omp, so the right panel
+(TPS sparkline, agent radar, minimap, kanban, context gauge,
+model, thinking level) always reflects the active session.
+
+Rust (agent.rs):
+- AgentBridge manages HashMap<session_id, BridgeInner>
+- start_session(id, cwd) spawns omp in project directory
+- stop_session(id) kills specific process
+- Events scoped per session-id (line and exit events)
+- Drop kills all sessions
+
+lib.rs:
+- send_command(session_id, json) routes to correct process
+- start_session / stop_session Tauri commands exposed
+- Default session started in setup
+
+live.js:
+- _resetSessionVars() wipes all per-session state
+- _switchToSession(id) unlisten, reset, listen, fetch
+- sessionRegistry drives tab list via snap.sessions
+- OMP_BRIDGE: openSession, activateSession, closeSession, pickFolder
+
+app-live.jsx:
+- Tab list from snap.sessions (not local React state)
+- handleSelectTab calls bridge.activateSession
+- handleNewProject calls bridge.openSession
+- handleCloseTab calls bridge.closeSession
+- All per-session state reset via onUpdate on switch
