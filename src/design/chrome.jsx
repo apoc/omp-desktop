@@ -106,7 +106,7 @@ function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel,
         <span className="status-bar-tube">
           <span className="status-bar-fill" style={{ width: `${ctx.pct}%` }} />
         </span>
-        <span style={{ color: "var(--fg-4)" }}>{ctx.pct}%</span>
+        <span style={{ color: "var(--fg-4)" }}>{(+ctx.pct).toFixed(1)}%</span>
       </span>
       <span className="status-sep">·</span>
       <span className="status-cell mono"><span style={{ color: "var(--fg-3)" }}>cost</span> {ctx.cost}</span>
