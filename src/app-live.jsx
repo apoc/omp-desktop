@@ -38,8 +38,14 @@ function App() {
   const [bridgeOpen, setBridgeOpen] = React.useState(false);
   const [bridgeView, setBridgeView] = React.useState("commands");
   const [planOpen,   setPlanOpen]   = React.useState(false);
-  const [planPhase,  setPlanPhase]  = React.useState("review");
   const [planMode,   setPlanMode]   = React.useState(false);
+  const planStartedRef = React.useRef(false); // true after first send in plan mode
+  const [planAnnotations, setPlanAnnotations] = React.useState({});
+  const handleAnnotate = (idx, value) => setPlanAnnotations(prev => {
+    const next = { ...prev };
+    if (value === null) delete next[idx]; else next[idx] = value;
+    return next;
+  });
 
   // ── Live data (all per-session — driven by OMP_BRIDGE.onUpdate) ───────────
   const [messages,      setMessages]      = React.useState([]);
@@ -57,6 +63,7 @@ function App() {
   // Each entry: { id, name, path, color, branch }
   const [sessions,        setSessions]       = React.useState([]);
   const [activeSessionId, setActiveSessionId] = React.useState("");
+
 
   // ── Subscribe to bridge ───────────────────────────────────────────────────
   React.useEffect(() => {
@@ -79,17 +86,7 @@ function App() {
       setSessions(snap.sessions ?? []);
       if (snap.activeSessionId) setActiveSessionId(snap.activeSessionId);
 
-      // Kanban phase tracking
-      if (snap.kanban.length > 0 && planMode) {
-        const phase = window.derivePlanPhase?.(
-          snap.kanban.map(c => ({
-            tasks: c.tasks.map(tk => ({
-              status: tk.status === "done" ? "completed" : tk.status,
-            })),
-          }))
-        ) ?? "review";
-        setPlanPhase(phase);
-      }
+      // kanban updated — PlanKanban derives running/done internally
     });
     return unsub;
   }, [bridge]);
@@ -118,6 +115,7 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+
   // ── Derived values ────────────────────────────────────────────────────────
   const activeProject = sessions.find(s => s.id === activeSessionId) ?? sessions[0] ?? EMPTY_PROJECT;
   const todoCounts    = kanban.reduce(
@@ -130,10 +128,36 @@ function App() {
   );
 
   // ── Handlers ──────────────────────────────────────────────────────────────
+  const intentFraming = intent =>
+    `Please draft a plan for the following task. Write it in Markdown with clear sections: overview, approach, key steps, and risks. Do not start implementing yet — draft only for my review.\n\n---\n\n${intent.trim()}`;
+
+  const APPROVAL_PROMPT = "Plan approved. Please proceed to execute it. Use your todo_write tool to track tasks as you go.";
+
   const handleSend = text => {
-    if (!text.trim()) return;
-    if (bridge?.isConnected) bridge.send(text);
-    else setMessages(prev => [...prev, { kind: "user", time: _timeNow(), text }]);
+    const hasAnnotations = Object.keys(planAnnotations).length > 0;
+    if (!text.trim() && !hasAnnotations) return;
+    let msg = text.trim();
+    if (planMode) {
+      if (hasAnnotations) {
+        // Feedback with block comments — always takes priority over intent framing
+        const lineComments = Object.entries(planAnnotations)
+          .sort(([a],[b]) => Number(a)-Number(b))
+          .map(([,{raw,comment}]) => {
+            const quoted = raw.split('\n').map(l => `> ${l}`).join('\n');
+            return `${quoted}\n→ ${comment.trim()}`;
+          }).join('\n\n');
+        const parts = ['Line comments:\n' + lineComments, text.trim()].filter(Boolean);
+        msg = parts.join('\n\n');
+        setPlanAnnotations({});
+        planStartedRef.current = true; // annotations imply plan is already in progress
+      } else if (!planStartedRef.current) {
+        // First clean send — wrap in intent framing
+        planStartedRef.current = true;
+        msg = intentFraming(text.trim());
+      }
+    }
+    if (bridge?.isConnected) bridge.send(msg);
+    else setMessages(prev => [...prev, { kind: "user", time: _timeNow(), text: msg }]);
   };
 
   const handleAbort = () => { bridge?.abort(); setStreaming(false); };
@@ -141,7 +165,7 @@ function App() {
   const handlePickModel = m => { setModelState(m); bridge?.setModel(m); };
 
   const handleCommand = c => {
-    if      (c.name === "plan")     { setPlanMode(true); setPlanPhase("review"); setPlanOpen(true); }
+    if      (c.name === "plan")     { setPlanMode(true); planStartedRef.current = false; }
     else if (c.name === "todo")     { setPlanOpen(true); }
     else if (c.name === "compact")  { bridge?.compact(); }
     else if (c.name === "export")   { bridge?.exportHtml(); }
@@ -155,7 +179,13 @@ function App() {
     bridge?.setThinking(next);
   };
 
-  const handleApprovePlan = () => setPlanMode(false);
+  const handleApprovePlan = () => {
+    setPlanAnnotations({});
+    bridge?.followUp(APPROVAL_PROMPT);
+    setPlanMode(false);
+    planStartedRef.current = false;
+    setPlanOpen(true);
+  };
 
   // Tab select — switches the active session; bridge resets all per-session state
   // and re-fetches from the new session's omp → notify() pushes fresh data
@@ -205,14 +235,18 @@ function App() {
 
           <div className={`stage ${showRail ? "with-rail" : ""}`}>
             <main className="session">
-              <ChatView messages={messages} />
+              <ChatView messages={messages}
+                planMode={planMode}
+                annotations={planAnnotations}
+                onAnnotate={handleAnnotate}
+              />
               <Composer
                 onSend={handleSend}
                 planMode={planMode}
                 onTogglePlan={() => {
                   const next = !planMode;
                   setPlanMode(next);
-                  if (next) { setPlanPhase("review"); setPlanOpen(true); }
+                  if (!next) planStartedRef.current = false;
                 }}
                 onOpenCmd={() => openBridge("commands")}
                 onOpenModel={() => openBridge("models")}
@@ -221,6 +255,8 @@ function App() {
                 onCycleThinking={cycleThinking}
                 isStreaming={streaming}
                 onAbort={handleAbort}
+                onApprove={handleApprovePlan}
+                annotationCount={Object.keys(planAnnotations).length}
                 microcopy={data.microcopy}
               />
               <StatusBar
@@ -264,10 +300,8 @@ function App() {
         <PlanKanban
           kanban={kanban}
           planMeta={planMeta}
-          mode={planPhase}
-          onMode={setPlanPhase}
-          onApprove={handleApprovePlan}
           onClose={() => setPlanOpen(false)}
+          onAbort={handleAbort}
         />
       )}
 

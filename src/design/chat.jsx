@@ -5,7 +5,7 @@
    · streaming token shimmer, caret blink
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TOOL_META, MarkdownContent } = window;
+const { Icon, TOOL_META, MarkdownContent, AnnotablePlan } = window;
 
 // ── User bubble — right-aligned, cool ─────────────────────────────────
 function UserBubble({ msg }) {
@@ -23,7 +23,7 @@ function UserBubble({ msg }) {
 }
 
 // ── Assistant block (text + plan + thoughts) ─────────────────────────
-function AssistantBubble({ msg }) {
+function AssistantBubble({ msg, annotable, annotations, onAnnotate }) {
   return (
     <div className="row assistant fade-up">
       <div className="ass-rail">
@@ -49,6 +49,14 @@ function AssistantBubble({ msg }) {
         )}
         {msg.blocks?.map((b, i) => {
           if (b.type === "text") {
+            // Last message in plan mode: render annotatable blocks (not streaming)
+            if (annotable && !msg.streaming) {
+              return (
+                <AnnotablePlan key={i} text={b.text}
+                  annotations={annotations}
+                  onAnnotate={onAnnotate} />
+              );
+            }
             return (
               <MarkdownContent key={i} text={b.text}
                 streaming={msg.streaming && i === msg.blocks.length - 1} />
@@ -246,14 +254,24 @@ function ScrubbableDiff({ msg }) {
 }
 
 // ── ChatView: wires everything ───────────────────────────────────────
-function ChatView({ messages }) {
+function ChatView({ messages, planMode, annotations, onAnnotate }) {
+  // Only the last completed assistant message is annotatable in plan mode
+  let lastAsstIdx = -1;
+  if (planMode) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].kind === "assistant" && !messages[i].streaming) { lastAsstIdx = i; break; }
+    }
+  }
   return (
     <div className="chat-scroll selectable">
       <div className="chat-pad">
         {messages.map((m, i) => {
           if (m.kind === "user") return <UserBubble key={i} msg={m} />;
           if (m.kind === "tool") return <ToolCard    key={i} msg={m} />;
-          return <AssistantBubble key={i} msg={m} />;
+          return <AssistantBubble key={i} msg={m}
+            annotable={i === lastAsstIdx}
+            annotations={annotations}
+            onAnnotate={onAnnotate} />;
         })}
         <div style={{ height: 24 }} />
       </div>
