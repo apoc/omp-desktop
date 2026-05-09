@@ -151,11 +151,12 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
 
   if (!open) return null;
 
-  const fil = (s) => s.toLowerCase().includes(q.toLowerCase());
+  const fil    = (s) => s.toLowerCase().includes(q.toLowerCase());
+  const models = window.OMP_DATA.models;
 
   // ── Model picker view ──────────────────────────────────────────────
   if (view === "models") {
-    const models    = window.OMP_DATA.models;
+    const modelHits = models.filter((m) => !q || fil(m.name) || fil(m.id));
     const modelHits = models.filter((m) => !q || fil(m.name) || fil(m.id));
     return (
       <div className="bridge-scrim" onClick={onClose}>
