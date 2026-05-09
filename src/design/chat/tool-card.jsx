@@ -202,6 +202,7 @@ function ToolCard({ msg, idx, highlighted }) {
         {msg.tool === "task" && msg.subagents?.length > 0 && (
           <TaskPanel subagents={msg.subagents} />
         )}
+      </div>
     </div>
   );
 }
