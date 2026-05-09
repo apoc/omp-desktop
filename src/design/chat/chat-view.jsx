@@ -3,27 +3,59 @@
    bubble component. The minimap-hover cross-highlight (mm-hot) flows
    through here via the `hoveredMsgIdx` prop. */
 
-const { UserBubble: _CV_UserBubble, ToolCard: _CV_ToolCard, AssistantBubble: _CV_AssistantBubble } = window;
+const { UserBubble: _CV_UserBubble, ToolCard: _CV_ToolCard, AssistantBubble: _CV_AssistantBubble, Icon: _CV_Icon } = window;
 
 function CompactRow({ msg }) {
-  const pending = msg.status === "pending";
-  const error   = msg.status === "error";
+  const [open, setOpen] = React.useState(false);
+  const pending  = msg.status === "pending";
+  const error    = msg.status === "error";
+  const COLOR    = error ? "var(--rose)" : "var(--lilac)";
+  const fmtTok   = n => n == null ? null
+    : n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}M`
+    : n >= 1_000     ? `${(n / 1_000).toFixed(1)}k`
+    : String(n);
+  const tok      = fmtTok(msg.tokensBefore);
+  const hasBody  = !!msg.summary && !pending && !error;
+
   return (
-    <div className="row compact-row">
-      <div className={`compact-card${pending ? " compact-pending" : error ? " compact-error" : ""}`}>
-        <span className="compact-icon mono">&#9636;</span>
-        {pending && <span>Compacting context…</span>}
-        {error   && <span>Compaction failed</span>}
-        {!pending && !error && (
-          <>
-            <span className="compact-label">Context compacted</span>
-            {msg.tokensBefore != null && (
-              <span className="chip muted mono" style={{ marginLeft: 4 }}>
-                {msg.tokensBefore.toLocaleString()} tokens
-              </span>
-            )}
-            {msg.summary && <span className="compact-summary">{msg.summary}</span>}
-          </>
+    <div className="row tool fade-up">
+      <div className="ass-rail">
+        <div className="tool-glyph" style={{ borderColor: COLOR, color: COLOR }}>
+          <_CV_Icon name={error ? "warn" : "context"} size={11} color={COLOR} />
+        </div>
+        <div className="ass-thread" />
+      </div>
+      <div className={`tool-card ${pending ? "running" : "ok"}`}
+        style={error ? { borderColor: "color-mix(in oklab, var(--rose) 35%, var(--line-bright))" } : {}}>
+        <div className="tool-card-head"
+          style={{ cursor: hasBody ? "pointer" : "default" }}
+          onClick={() => hasBody && setOpen(o => !o)}>
+          <span className="tool-tag" style={{
+            color: COLOR,
+            background: `color-mix(in oklab, ${COLOR} 14%, transparent)`,
+            borderColor: `color-mix(in oklab, ${COLOR} 30%, var(--line))`,
+          }}>compact</span>
+          <span className="tool-title">
+            {pending ? "compacting context\u2026"
+              : error   ? "compaction failed"
+              : (msg.shortSummary || "context compacted")}
+          </span>
+          <div className="tool-card-spacer" />
+          {pending && (
+            <span className="chip accent" style={{ animation: "pulseDot 1.4s infinite" }}>
+              <span className="dot live" />{" "}running
+            </span>
+          )}
+          {!pending && !error && tok && (
+            <span className="chip muted mono">{tok} before</span>
+          )}
+          {error && <span className="chip" style={{ color: "var(--rose)" }}>failed</span>}
+          {hasBody && <_CV_Icon name={open ? "chev" : "chevR"} size={10} color="var(--fg-4)" />}
+        </div>
+        {open && hasBody && (
+          <div className="compact-body selectable">
+            {msg.summary}
+          </div>
         )}
       </div>
     </div>

@@ -323,11 +323,8 @@
       }
       if (idx !== -1) {
         const d = resp.data ?? {};
-        const summary = resp.success
-          ? (d.shortSummary || (d.summary ?? "").split("\n")[0]).slice(0, 160)
-          : null;
         const update = resp.success
-          ? { status: "done", summary, tokensBefore: d.tokensBefore }
+          ? { status: "done", shortSummary: d.shortSummary || null, summary: d.summary || null, tokensBefore: d.tokensBefore }
           : { status: "error" };
         state.messages = state.messages.map((m, i) => i === idx ? { ...m, ...update } : m);
       }

@@ -356,27 +356,17 @@
   color: var(--fg-3); white-space: pre-wrap; word-break: break-all;
 }
 
-/* ── Compact system row ─────────────────────────────────────────────── */
-.compact-row { justify-content: center; }
-.compact-card {
-  display: flex; align-items: center; gap: 8px;
-  padding: 5px 12px;
-  border-radius: 20px;
-  border: 1px solid var(--line);
-  background: var(--bg-elevated);
-  font-size: var(--d-text-xs);
+/* ── Compact card body (expandable summary) ──────────────────────── */
+.compact-body {
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--line);
+  font-size: var(--d-text-sm);
   color: var(--fg-3);
-  max-width: 560px;
-  min-width: 0;
-  user-select: none;
+  line-height: var(--d-leading);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-bright) transparent;
 }
-.compact-icon { color: var(--fg-4); font-size: 10px; }
-.compact-label { color: var(--fg-2); font-weight: 500; }
-.compact-summary {
-  flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--fg-4);
-}
-.compact-error { border-color: color-mix(in oklab, var(--red) 30%, var(--line)); color: var(--red); }
-.compact-pending { animation: compact-pulse 1.6s ease-in-out infinite; }
-@keyframes compact-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
