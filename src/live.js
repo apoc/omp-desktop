@@ -397,6 +397,13 @@
       // URL to open in the system browser (e.g. OAuth auth page).
       if (ev.method === "open_url") {
         window.open(ev.url, "_blank");
+        if (ev.instructions) {
+          state.messages = [
+            ...state.messages,
+            { kind: "assistant", time: _timeNow(), text: ev.instructions, completed: true },
+          ];
+          notify();
+        }
         return;
       }
       // Code / text prompt (e.g. OAuth manual-code flows).
