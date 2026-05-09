@@ -14,10 +14,10 @@
   --d-row: 28px;
   --d-pad: 14px;
   --d-gap: 10px;
-  --d-text: 13px;
-  --d-text-sm: 11.5px;
-  --d-text-xs: 10.5px;
-  --d-text-lg: 14.5px;
+  --d-text:    0.8125rem;
+  --d-text-sm: 0.7188rem;
+  --d-text-xs: 0.6563rem;
+  --d-text-lg: 0.9063rem;
   --d-leading: 1.55;
 
   /* radius / shadow */
@@ -183,30 +183,30 @@
   --d-row: 32px;
   --d-pad: 18px;
   --d-gap: 12px;
-  --d-text: 13.5px;
-  --d-text-sm: 12px;
-  --d-text-xs: 10.5px;
-  --d-text-lg: 15px;
+  --d-text:    0.8438rem;
+  --d-text-sm: 0.75rem;
+  --d-text-xs: 0.6563rem;
+  --d-text-lg: 0.9375rem;
   --d-leading: 1.6;
 }
 .density-compact {
   --d-row: 26px;
   --d-pad: 12px;
   --d-gap: 8px;
-  --d-text: 12.5px;
-  --d-text-sm: 11px;
-  --d-text-xs: 10px;
-  --d-text-lg: 14px;
+  --d-text:    0.7813rem;
+  --d-text-sm: 0.6875rem;
+  --d-text-xs: 0.625rem;
+  --d-text-lg: 0.875rem;
   --d-leading: 1.5;
 }
 .density-dense {
   --d-row: 22px;
   --d-pad: 8px;
   --d-gap: 6px;
-  --d-text: 11.5px;
-  --d-text-sm: 10.5px;
-  --d-text-xs: 9.5px;
-  --d-text-lg: 13px;
+  --d-text:    0.7188rem;
+  --d-text-sm: 0.6563rem;
+  --d-text-xs: 0.5938rem;
+  --d-text-lg: 0.8125rem;
   --d-leading: 1.45;
 }
 
@@ -350,7 +350,7 @@ input, textarea { font: inherit; color: inherit; background: transparent; border
   min-width: 16px; height: 16px;
   padding: 0 4px;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 0.5938rem;
   color: var(--fg-3);
   background: var(--bg-elevated);
   border: 1px solid var(--line);
