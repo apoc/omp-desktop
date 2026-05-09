@@ -119,38 +119,125 @@ function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, curr
   );
 }
 
-// ── ⌘K Command bridge — fullscreen darkroom with sections ─────────────
+// ── ⌘K Command bridge — two views: commands → model picker ────────────
+//
+//  commands view  — lists all slash-commands; /model row drills into picker
+//  models view    — filterable model list; Esc returns to commands
+//
 function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
-  const [q, setQ] = React.useState("");
+  const [q, setQ]       = React.useState("");
+  const [view, setView] = React.useState("commands"); // "commands" | "models"
   const inputRef = React.useRef(null);
-  const cmds = window.OMP_DATA.commands;
-  const models = window.OMP_DATA.models;
 
+  // Reset to commands view and clear search on every open
   React.useEffect(() => {
-    if (open) { setQ(""); setTimeout(() => inputRef.current?.focus(), 30); }
+    if (open) {
+      setQ("");
+      setView("commands");
+      setTimeout(() => inputRef.current?.focus(), 30);
+    }
   }, [open]);
 
+  // Keyboard: Esc closes bridge from commands; goes back from models
   React.useEffect(() => {
     const onKey = (e) => {
-      if (e.key === "Escape" && open) onClose();
+      if (e.key !== "Escape" || !open) return;
+      if (view === "models") { setView("commands"); setQ(""); }
+      else onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, onClose, view]);
 
   if (!open) return null;
 
   const fil = (s) => s.toLowerCase().includes(q.toLowerCase());
-  const cmdHits = cmds.filter((c) => !q || fil(c.name) || fil(c.hint));
-  const modelHits = models.filter((m) => !q || fil(m.name) || fil(m.id));
 
-  // group commands by their `group` field
-  const groups = {};
+  // ── Model picker view ──────────────────────────────────────────────
+  if (view === "models") {
+    const models    = window.OMP_DATA.models;
+    const modelHits = models.filter((m) => !q || fil(m.name) || fil(m.id));
+    const current   = models.find((m) => m.id === currentModelId);
+
+    return (
+      <div className="bridge-scrim" onClick={onClose}>
+        <div className="bridge slide-in" onClick={(e) => e.stopPropagation()}>
+
+          <div className="bridge-input-row">
+            <button className="btn icon ghost" title="back to commands"
+              onClick={() => { setView("commands"); setQ(""); }}
+              style={{ marginRight: 4 }}>
+              <Icon name="chevR" size={12} color="var(--fg-3)"
+                style={{ transform: "rotate(180deg)", display: "block" }} />
+            </button>
+            <input
+              ref={inputRef}
+              className="bridge-input mono"
+              placeholder="filter models…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+            <span className="kbd">esc</span>
+          </div>
+
+          <div className="bridge-body">
+            {current && (
+              <div className="bridge-group">
+                <div className="bridge-group-head mono">current</div>
+                <div className="bridge-row active" style={{ cursor: "default" }}>
+                  <span className="bridge-glyph">
+                    <Icon name="check" size={10} color="var(--accent)" />
+                  </span>
+                  <span style={{ color: "var(--accent)" }}>{current.name}</span>
+                  <span className="mono" style={{ color: "var(--fg-4)" }}>{current.id}</span>
+                </div>
+              </div>
+            )}
+
+            <div className="bridge-group">
+              <div className="bridge-group-head mono">
+                {modelHits.length} model{modelHits.length !== 1 ? "s" : ""}
+              </div>
+              {modelHits.map((m) => m.id === currentModelId ? null : (
+                <button key={m.id} className="bridge-row"
+                  onClick={() => { onPickModel(m); onClose(); }}>
+                  <span className="bridge-glyph">
+                    <Icon name="bolt" size={10} color="var(--cyan)" />
+                  </span>
+                  <span style={{ color: "var(--fg)" }}>{m.name}</span>
+                  <span className="mono" style={{ color: "var(--fg-4)" }}>{m.id}</span>
+                  <span style={{ color: "var(--fg-3)", marginLeft: "auto" }}>· {m.note}</span>
+                </button>
+              ))}
+              {modelHits.filter(m => m.id !== currentModelId).length === 0 && (
+                <div className="bridge-empty">no other models match</div>
+              )}
+            </div>
+          </div>
+
+          <div className="bridge-foot mono">
+            <span className="kbd">↑↓</span> navigate
+            <span className="kbd">↵</span> switch
+            <span className="kbd">esc</span> back to commands
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Commands view ──────────────────────────────────────────────────
+  const cmds    = window.OMP_DATA.commands;
+  const cmdHits = cmds.filter((c) => !q || fil(c.name) || fil(c.hint));
+  const groups  = {};
   cmdHits.forEach((c) => { (groups[c.group] = groups[c.group] || []).push(c); });
+
+  // Display name of the active model as a hint on the /model row
+  const activeModelName = window.OMP_DATA.models.find((m) => m.id === currentModelId)?.name ?? "–";
 
   return (
     <div className="bridge-scrim" onClick={onClose}>
       <div className="bridge slide-in" onClick={(e) => e.stopPropagation()}>
+
         <div className="bridge-input-row">
           <Icon name="cmd" size={14} color="var(--accent)" />
           <input
@@ -162,46 +249,40 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
           />
           <span className="kbd">esc</span>
         </div>
-        <div className="bridge-body">
-          {modelHits.length > 0 && (
-            <div className="bridge-group">
-              <div className="bridge-group-head mono">switch model</div>
-              {modelHits.map((m) => (
-                <button key={m.id}
-                  className={`bridge-row ${m.id === currentModelId ? "active" : ""}`}
-                  onClick={() => { onPickModel(m); onClose(); }}>
-                  <span className="bridge-glyph">
-                    {m.id === currentModelId
-                      ? <Icon name="check" size={10} color="var(--accent)" />
-                      : <Icon name="bolt"  size={10} color="var(--cyan)"   />}
-                  </span>
-                  <span style={{ color: m.id === currentModelId ? "var(--accent)" : "var(--fg)" }}>{m.name}</span>
-                  <span className="mono" style={{ color: "var(--fg-4)" }}>{m.id}</span>
-                  <span style={{ color: "var(--fg-3)" }}>· {m.note}</span>
-                  <span className="chip muted" style={{ marginLeft: "auto" }}>{m.latency}ms</span>
-                </button>
-              ))}
-            </div>
-          )}
 
+        <div className="bridge-body">
           {Object.entries(groups).map(([g, list]) => (
             <div key={g} className="bridge-group">
               <div className="bridge-group-head mono">{g.toLowerCase()}</div>
-              {list.map((c) => (
-                <button key={c.name} className="bridge-row" onClick={() => { onPick(c); onClose(); }}>
-                  <span className="bridge-glyph">{c.icon}</span>
-                  <span className="mono" style={{ color: "var(--accent)" }}>/{c.name}</span>
-                  <span style={{ color: "var(--fg-3)" }}>{c.hint}</span>
-                  <Icon name="arrow" size={11} color="var(--fg-4)" style={{ marginLeft: "auto" }} />
-                </button>
-              ))}
+              {list.map((c) => {
+                const isModel = c.name === "model";
+                return (
+                  <button key={c.name} className="bridge-row"
+                    onClick={() => {
+                      if (isModel) { setQ(""); setView("models"); }
+                      else { onPick(c); onClose(); }
+                    }}>
+                    <span className="bridge-glyph">{c.icon}</span>
+                    <span className="mono" style={{ color: "var(--accent)" }}>/{c.name}</span>
+                    <span style={{ color: "var(--fg-3)" }}>{c.hint}</span>
+                    {isModel && (
+                      <span className="mono" style={{ color: "var(--fg-4)", marginLeft: "auto" }}>
+                        {activeModelName}
+                      </span>
+                    )}
+                    <Icon name={isModel ? "chevR" : "arrow"} size={11} color="var(--fg-4)"
+                      style={{ marginLeft: isModel ? 8 : "auto" }} />
+                  </button>
+                );
+              })}
             </div>
           ))}
 
-          {cmdHits.length === 0 && modelHits.length === 0 && (
+          {cmdHits.length === 0 && (
             <div className="bridge-empty">no luck — try `plan`, `branch`, `model`…</div>
           )}
         </div>
+
         <div className="bridge-foot mono">
           <span className="kbd">↑↓</span> navigate
           <span className="kbd">↵</span> run
