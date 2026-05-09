@@ -83,92 +83,63 @@ const _TA_CLR = {
   aborted:   "var(--amber)",
 };
 
+// Each subagent row manages its own open/scroll state.
+function TaskAgentRow({ sa }) {
+  const [isOpen, setIsOpen] = React.useState(false);
+  const bodyRef   = React.useRef(null);
+  const isRunning = sa.status === "running";
+  const lines     = sa._stream?.length ? sa._stream
+    : sa.output ? sa.output.split("\n") : [];
+  const hasBody   = lines.length > 0;
+  const clr       = _TA_CLR[sa.status] ?? "var(--fg-4)";
+  const hint      = isRunning ? sa.lastIntent
+    : (sa.status === "failed" || sa.status === "aborted") ? (sa.error ?? sa.status)
+    : sa.task;
+
+  // Auto-scroll the body div while the subagent is still running.
+  React.useEffect(() => {
+    if (isOpen && isRunning && bodyRef.current) {
+      bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+    }
+  }, [lines.length, isOpen, isRunning]);
+
+  return (
+    <div className={`ta-row ta-${sa.status}`}>
+      <button className="ta-hd" onClick={() => hasBody && setIsOpen(o => !o)}
+        style={{ cursor: hasBody ? "pointer" : "default" }}>
+        <span className="dot" style={{
+          background: clr, flexShrink: 0,
+          ...(isRunning ? { animation: "pulseDot 1.4s ease-in-out infinite" } : {}),
+        }} />
+        <span className="ta-agent">{sa.agent}</span>
+        {hint && <span className="ta-hint">· {hint}</span>}
+        <div style={{ flex: 1 }} />
+        {sa.toolCount  > 0 && <span className="chip muted mono ta-chip">{sa.toolCount}×</span>}
+        {sa.tokens     > 0 && <span className="chip muted mono ta-chip">{sa.tokens >= 1000 ? `${(sa.tokens/1000).toFixed(1)}k` : sa.tokens}t</span>}
+        {sa.durationMs > 0 && <span className="chip muted mono ta-chip">{sa.durationMs >= 1000 ? `${(sa.durationMs/1000).toFixed(1)}s` : `${sa.durationMs}ms`}</span>}
+        {hasBody && <_TC_Icon name={isOpen ? "chev" : "chevR"} size={10} color="var(--fg-4)" />}
+      </button>
+      {isOpen && hasBody && (
+        <div className="ta-body selectable" ref={bodyRef}>
+          {lines.map((l, i) => <div key={i} className="ta-stream-line">{l || "\u00a0"}</div>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TaskPanel({ subagents }) {
-  const [open, setOpen] = React.useState(new Set());
-  const toggle = i => setOpen(prev => {
-    const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n;
-  });
   return (
     <div className="task-panel">
-      {subagents.map(sa => {
-        const isOpen    = open.has(sa.index);
-        const clr       = _TA_CLR[sa.status] ?? "var(--fg-4)";
-        const isRunning = sa.status === "running";
-        const bodyText  = sa.output || (sa.recentOutput ?? []).join("\n");
-        const hasBody   = !!bodyText;
-        // Header secondary: show live intent while running, error text on failure,
-        // else truncated task description.
-        const hint = isRunning ? sa.lastIntent
-          : (sa.status === "failed" || sa.status === "aborted") ? (sa.error ?? sa.status)
-          : sa.task;
-        return (
-          <div key={sa.index} className={`ta-row ta-${sa.status}`}>
-            <button className="ta-hd" onClick={() => hasBody && toggle(sa.index)}
-              style={{ cursor: hasBody ? "pointer" : "default" }}>
-              <span className="dot" style={{
-                background: clr, flexShrink: 0,
-                ...(isRunning ? { animation: "pulseDot 1.4s ease-in-out infinite" } : {}),
-              }} />
-              <span className="ta-agent">{sa.agent}</span>
-              {hint && <span className="ta-hint">· {hint}</span>}
-              <div style={{ flex: 1 }} />
-              {sa.toolCount > 0  && <span className="chip muted mono ta-chip">{sa.toolCount}×</span>}
-              {sa.tokens    > 0  && <span className="chip muted mono ta-chip">{sa.tokens >= 1000 ? `${(sa.tokens/1000).toFixed(1)}k` : sa.tokens}t</span>}
-              {sa.durationMs > 0 && <span className="chip muted mono ta-chip">{sa.durationMs >= 1000 ? `${(sa.durationMs/1000).toFixed(1)}s` : `${sa.durationMs}ms`}</span>}
-              {hasBody && <_TC_Icon name={isOpen ? "chev" : "chevR"} size={10} color="var(--fg-4)" />}
-            </button>
-            {isOpen && bodyText && <pre className="ta-body selectable">{bodyText}</pre>}
-          </div>
-        );
-      })}
+      {subagents.map(sa => <TaskAgentRow key={sa.index} sa={sa} />)}
     </div>
   );
 }
-// ── Live stream log for task / quick_task ───────────────────────────
-function TaskStream({ subagents, running }) {
-  const streamRef = React.useRef(null);
-  const totalLines = (subagents ?? []).reduce((n, sa) => n + (sa._stream?.length ?? 0), 0);
-
-  // Auto-scroll the stream div (not the chat) while the task is running.
-  React.useEffect(() => {
-    if (running && streamRef.current) {
-      streamRef.current.scrollTop = streamRef.current.scrollHeight;
-    }
-  }, [totalLines, running]);
-
-  const hasAny = (subagents ?? []).some(sa => sa._stream?.length || sa.output);
-  return (
-    <div className="ta-stream selectable" ref={streamRef}>
-      {!hasAny && <span className="ta-stream-empty">waiting for output…</span>}
-      {(subagents ?? []).map(sa => {
-        const lines = sa._stream?.length ? sa._stream
-          : sa.output ? sa.output.split("\n") : [];
-        if (!lines.length) return null;
-        const clr = _TA_CLR[sa.status] ?? "var(--fg-4)";
-        return (
-          <div key={sa.index} className="ta-stream-block">
-            <div className="ta-stream-hd">
-              <span className="dot" style={{ background: clr, flexShrink: 0 }} />
-              <span className="ta-agent">{sa.agent}</span>
-              {sa.status === "running" && sa.lastIntent &&
-                <span className="ta-hint">· {sa.lastIntent}</span>}
-            </div>
-            {lines.map((l, i) => (
-              <div key={i} className="ta-stream-line">{l || "\u00a0"}</div>
-            ))}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 
 function ToolCard({ msg, idx, highlighted }) {
   const meta    = _TC_TOOL_META[msg.tool] || { color: "var(--fg-3)", icon: "circle", label: msg.tool };
   const running = msg.status === "running";
-  const isTask  = msg.tool === "task";
-  const [streamOpen, setStreamOpen] = React.useState(false);
+  return (
   return (
     <div className={`row tool fade-up${highlighted ? " mm-hot" : ""}`} data-msg-idx={idx}>
       <div className="ass-rail">
@@ -178,10 +149,7 @@ function ToolCard({ msg, idx, highlighted }) {
         <div className="ass-thread" />
       </div>
       <div className={`tool-card ${running ? "running" : "ok"}`}>
-        <div
-          className={`tool-card-head${isTask ? " task-head" : ""}`}
-          onClick={isTask ? () => setStreamOpen(o => !o) : undefined}
-        >
+        <div className="tool-card-head">
           <span className="tool-tag" style={{ color: meta.color, background: `color-mix(in oklab, ${meta.color} 14%, transparent)`, borderColor: `color-mix(in oklab, ${meta.color} 30%, var(--line))` }}>
             {meta.label}
           </span>
@@ -197,7 +165,6 @@ function ToolCard({ msg, idx, highlighted }) {
             </span>
           )}
           <span className="chip muted mono">{msg.time}</span>
-          {isTask && <_TC_Icon name={streamOpen ? "chev" : "chevR"} size={10} color="var(--fg-4)" style={{ marginLeft: 4 }} />}
         </div>
 
         {msg.tool === "search" && msg.preview && (
@@ -244,10 +211,7 @@ function ToolCard({ msg, idx, highlighted }) {
             {msg.cells.map((cell, i) => <_TC_EvalCell key={i} cell={cell} />)}
           </div>
         )}
-        {isTask && msg.subagents?.length > 0 && streamOpen && (
-          <TaskStream subagents={msg.subagents} running={running} />
-        )}
-        {isTask && msg.subagents?.length > 0 && !streamOpen && (
+        {msg.tool === "task" && msg.subagents?.length > 0 && (
           <TaskPanel subagents={msg.subagents} />
         )}
       </div>

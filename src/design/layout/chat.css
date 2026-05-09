@@ -318,11 +318,9 @@
 }
 .ta-chip { font-size: 10px !important; padding: 0 4px !important; height: 16px !important; min-width: 0 !important; }
 .ta-body {
-  margin: 0; padding: 6px 10px 8px;
-  font-family: var(--font-mono); font-size: 11px; line-height: 1.5;
-  color: var(--fg-3); background: var(--bg-input);
-  white-space: pre-wrap; word-break: break-all;
-  max-height: 240px; overflow-y: auto;
+  margin: 0; padding: 4px 0 6px;
+  background: var(--bg-input);
+  max-height: 300px; overflow-y: auto;
   border-top: 1px solid var(--line);
   scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
 }
@@ -330,9 +328,6 @@
 .ta-failed  .ta-agent { color: var(--rose); }
 .ta-aborted .ta-agent { color: var(--amber); }
 
-/* ── Task stream log (open when header clicked) ──────────────────── */
-.task-head { cursor: pointer; }
-.task-head:hover { background: var(--bg-hover); }
 .ta-stream {
   max-height: 360px; overflow-y: auto;
   background: var(--bg-input);
