@@ -124,7 +124,7 @@ function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, curr
 //  commands view  — lists all slash-commands; /model drills into picker
 //  models view    — filterable model list; Esc returns to commands
 //
-function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
+function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, initialView = "commands" }) {
   const [q, setQ]       = React.useState("");
   const [view, setView] = React.useState("commands");
   const inputRef = React.useRef(null);
@@ -132,7 +132,7 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
   React.useEffect(() => {
     if (open) {
       setQ("");
-      setView("commands");
+      setView(initialView);
       setTimeout(() => inputRef.current?.focus(), 30);
     }
   }, [open]);
@@ -140,7 +140,7 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
   React.useEffect(() => {
     const onKey = (e) => {
       if (e.key !== "Escape" || !open) return;
-      if (view === "models") { setView("commands"); setQ(""); }
+      if (view === "models") { if (initialView === "models") onClose(); else { setView("commands"); setQ(""); } }
       else onClose();
     };
     window.addEventListener("keydown", onKey);

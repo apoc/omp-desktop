@@ -36,6 +36,7 @@ function App() {
 
   // ── UI state ──────────────────────────────────────────────────────────────
   const [bridgeOpen, setBridgeOpen] = React.useState(false);
+  const [bridgeView, setBridgeView] = React.useState("commands");
   const [planOpen,   setPlanOpen]   = React.useState(false);
   const [planPhase,  setPlanPhase]  = React.useState("review");
   const [planMode,   setPlanMode]   = React.useState(false);
@@ -106,9 +107,11 @@ function App() {
   }, [t.theme, t.density, t.accent, t.monoChat]);
 
   // ── ⌘K shortcut ──────────────────────────────────────────────────────────
+  const openBridge = view => { setBridgeView(view); setBridgeOpen(true); };
+
   React.useEffect(() => {
     const onKey = e => {
-      if (e.key === "k" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); setBridgeOpen(v => !v); }
+      if (e.key === "k" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); setBridgeOpen(v => { if (!v) setBridgeView("commands"); return !v; }); }
       if (e.key === "Escape") setBridgeOpen(false);
     };
     window.addEventListener("keydown", onKey);
@@ -211,8 +214,8 @@ function App() {
                   setPlanMode(next);
                   if (next) { setPlanPhase("review"); setPlanOpen(true); }
                 }}
-                onOpenCmd={() => setBridgeOpen(true)}
-                onOpenModel={() => setBridgeOpen(true)}
+                onOpenCmd={() => openBridge("commands")}
+                onOpenModel={() => openBridge("models")}
                 currentModel={model}
                 thinking={thinkingLevel}
                 onCycleThinking={cycleThinking}
@@ -227,7 +230,7 @@ function App() {
                 todoDone={todoCounts.done}
                 todoTotal={todoCounts.total}
                 onTodo={() => setPlanOpen(true)}
-                onModel={() => setBridgeOpen(true)}
+                onModel={() => openBridge("models")}
               />
             </main>
 
@@ -250,6 +253,7 @@ function App() {
 
       <CommandBridge
         open={bridgeOpen}
+        initialView={bridgeView}
         onClose={() => setBridgeOpen(false)}
         onPick={handleCommand}
         onPickModel={handlePickModel}
