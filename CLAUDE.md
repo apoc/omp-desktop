@@ -97,18 +97,24 @@ Trigger: 6th major component in one file, or 4th unrelated concern in one Rust m
 
 ## Code style
 
+**General:**
+- Follow existing architectural patterns before introducing new ones. Optimize for clarity first, then allocation efficiency.
+- Run fmt + lint locally before finalizing any change. Don't ship code that fails fmt or clippy.
+- Only format files you actually modified. Never do bulk formatting-only rewrites.
+
 **Rust:**
 - `cargo fmt` (stable) before commit; nightly clippy `pedantic`+`nursery` clean, `-D warnings`.
 - No `unwrap`/`expect` in production paths unless failure is provably unrecoverable.
 - Prefer borrowing (`&str`, `&[T]`) over owned. `&str` for params unless ownership required. No needless `String`↔`&str` conversions.
 - No `.clone()` to bypass borrowck unless duplication is intentional.
-- No unnecessary `Arc`/`Mutex`/async primitives. Keep lifetimes simple and idiomatic.
+- No unnecessary `Arc`/`Mutex`/async primitives. Keep lifetimes simple and idiomatic — no complex lifetime abstractions without clear benefit.
 - Iterators/slices over intermediate `Vec` collections. `Cow` only when it meaningfully reduces allocations.
+- Minimize temporary allocations in hot paths (reader loop, per-line dispatch, IPC payload construction).
 - Idiomatic Rust over clever abstractions. Preserve existing module/naming conventions.
 - Module-level `#![allow(clippy::needless_pass_by_value)]` in `lib.rs` is intentional — Tauri `#[command]` requires owned types.
 
 **Frontend:**
-- Prettier for JS/TS; respect any present ESLint config.
+- Prettier for JS/TS; respect any present ESLint config. Use repo-configured npm scripts when present (none currently — no JS test/lint pipeline in this repo).
 - Don't reformat unrelated files. Preserve existing import ordering/style.
 - Prefer TS types over `any` (when TS is present; this repo is JSX).
 
