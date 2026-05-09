@@ -113,8 +113,13 @@ function App() {
         msg = INTENT_FRAMING(text.trim());
       }
     }
-    if (bridge?.isConnected) bridge.send(msg);
-    else setMessages(prev => [...prev, { kind: "user", time: _timeNow(), text: msg }]);
+    if (streaming) {
+      bridge?.steer(msg);
+    } else if (bridge?.isConnected) {
+      bridge.send(msg);
+    } else {
+      setMessages(prev => [...prev, { kind: "user", time: _timeNow(), text: msg }]);
+    }
   };
 
   const handleAbort      = () => { bridge?.abort(); setStreaming(false); };

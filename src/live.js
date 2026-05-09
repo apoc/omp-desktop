@@ -714,6 +714,12 @@
     },
     abort()            { _send({ type: "abort" }); },
     followUp(text)     { _send({ type: "follow_up", message: text }); },
+    steer(text) {
+      const userMsg = { kind: "user", time: _timeNow(), text };
+      state.messages = [...state.messages, userMsg];
+      notify();
+      _send({ type: "steer", message: text, images: [] });
+    },
     setModel(model)    { _send({ type: "set_model", provider: model.provider, modelId: model.id }); },
     cycleModel()       { _send({ type: "cycle_model" }); },
     cycleThinking()    { _send({ type: "cycle_thinking_level" }); },

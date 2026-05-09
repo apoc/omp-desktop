@@ -62,7 +62,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     // If the slash popup is open, Enter executes the highlighted command
     if (showSlash) { execCmd(filtered[clampedIdx]); return; }
     const canSend = text.trim() || (planMode && annotationCount > 0);
-    if (!canSend || isStreaming) return;
+    if (!canSend) return;
     onSend(expandPastes(text.trim()));
     setText("");
     pasteBlocksRef.current.clear();
@@ -162,9 +162,17 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
           <span className="kbd" style={{ marginLeft: 2 }}>K</span>
         </button>
         {isStreaming ? (
-          <button className="btn danger" onClick={onAbort}>
-            <Icon name="stop" size={10} /> abort <span className="kbd">⎋</span>
-          </button>
+          <>
+            {text.trim() && (
+              <button className="btn outlined" onClick={send}
+                style={{ color: "var(--amber)", borderColor: "color-mix(in oklab, var(--amber) 40%, var(--line))" }}>
+                <Icon name="arrow" size={10} color="var(--amber)" /> steer
+              </button>
+            )}
+            <button className="btn danger" onClick={onAbort}>
+              <Icon name="stop" size={10} /> abort <span className="kbd">⎋</span>
+            </button>
+          </>
         ) : (
           <>
             {planMode && (
@@ -200,7 +208,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
         </button>
         <div style={{ flex: 1 }} />
         <span className="mono" style={{ color: "var(--fg-4)", fontSize: "var(--d-text-xs)" }}>
-          ↵ send · ⇧↵ newline · ⎋ abort
+          {isStreaming && text.trim() ? "↵ steer · ⎋ abort" : "↵ send · ⇧↵ newline · ⎋ abort"}
         </span>
       </div>
     </div>
