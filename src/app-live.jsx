@@ -17,7 +17,7 @@
 const {
   Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar,
   StatusBar, AmbientRail, PlanKanban, useTweaks,
-  TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor,
+  TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, NULL_PEER,
   INTENT_FRAMING, APPROVAL_PROMPT,
   useBridgeSnapshot, useThemeEffect, useCommandShortcut,
@@ -288,6 +288,9 @@ function App() {
           />
           <TweakToggle label="mono chat font" value={t.monoChat}
             onChange={v => setTweak("monoChat", v)} />
+          <TweakSlider label="font size" value={t.fontSize ?? 100}
+            min={75} max={150} step={5} unit="%"
+            onChange={v => setTweak("fontSize", v)} />
         </TweakSection>
         <TweakSection label="Layout">
           <TweakRadio label="layout" value={t.layout}

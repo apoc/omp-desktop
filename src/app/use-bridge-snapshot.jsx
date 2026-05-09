@@ -40,8 +40,9 @@ function useThemeEffect(t) {
     root.classList.add(`density-${t.density}`);
     if (t.monoChat) root.classList.add("mono-chat");
     else            root.classList.remove("mono-chat");
-    if (t.accent) root.style.setProperty("--accent", t.accent);
-  }, [t.theme, t.density, t.accent, t.monoChat]);
+    if (t.accent)   root.style.setProperty("--accent", t.accent);
+    if (t.fontSize) root.style.fontSize = `${t.fontSize}%`;
+  }, [t.theme, t.density, t.accent, t.monoChat, t.fontSize]);
 }
 
 function useCommandShortcut(setBridgeOpen, setBridgeView) {

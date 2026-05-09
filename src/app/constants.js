@@ -17,7 +17,8 @@
     "accent": "#8AF0C8",
     "monoChat": false,
     "scanlines": true,
-    "showRadar": true
+    "showRadar": true,
+    "fontSize": 100
   }/*EDITMODE-END*/;
 
   const NULL_MODEL    = { id: "", name: "–", provider: "", note: "", latency: 0, current: false };
