@@ -39,19 +39,21 @@ function ScrubbableDiff({ msg }) {
         </span>
       </div>
       <div className="diff-body mono">
-        {msg.diff.slice(0, visiblePos).map((l, i) => (
-          <div key={i} className={`diff-line k-${l.kind} fade-up`}>
-            <span className="diff-gutter">{l.line}</span>
-            <span className="diff-mark">{l.kind === "add" ? "+" : l.kind === "rem" ? "−" : " "}</span>
-            <span className="diff-code">{l.text}</span>
-          </div>
-        ))}
-        {visiblePos < total && Array.from({ length: total - visiblePos }, (_, i) => (
-          <div key={`g-${i}`} className="diff-line ghost">
-            <span className="diff-gutter">·</span><span className="diff-mark"> </span>
-            <span className="diff-code">━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>
-          </div>
-        ))}
+        <div className="diff-lines">
+          {msg.diff.slice(0, visiblePos).map((l, i) => (
+            <div key={i} className={`diff-line k-${l.kind} fade-up`}>
+              <span className="diff-gutter">{l.line}</span>
+              <span className="diff-mark">{l.kind === "add" ? "+" : l.kind === "rem" ? "−" : " "}</span>
+              <span className="diff-code">{l.text}</span>
+            </div>
+          ))}
+          {visiblePos < total && Array.from({ length: total - visiblePos }, (_, i) => (
+            <div key={`g-${i}`} className="diff-line ghost">
+              <span className="diff-gutter">·</span><span className="diff-mark"> </span>
+              <span className="diff-code">━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>
+            </div>
+          ))}
+        </div>
       </div>
       <div className="diff-track-wrap">
         <span className="mono" style={{ color: "var(--fg-4)", fontSize: "var(--d-text-xs)" }}>scrub</span>

@@ -3,6 +3,7 @@
 /* ── Stage layout ────────────────────────────────────────────────────── */
 .stage {
   flex: 1;
+  min-width: 0;
   display: grid;
   grid-template-columns: 1fr;
   min-height: 0;
@@ -20,6 +21,8 @@
 /* ── Session column ─────────────────────────────────────────────────── */
 .session {
   display: flex; flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
   background: var(--bg-window);
   min-height: 0;
   position: relative;

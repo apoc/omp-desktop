@@ -3,7 +3,7 @@
 /* ── Chat ───────────────────────────────────────────────────────────── */
 .chat-scroll {
   flex: 1;
-  overflow-y: auto;
+  overflow-y: auto; overflow-x: hidden;
   background: var(--bg-window);
 }
 .chat-pad {
@@ -123,6 +123,7 @@
 /* ── Tool card ─────────────────────────────────────────────────────── */
 .tool-card {
   flex: 1;
+  min-width: 0;
   background: var(--bg-surface);
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -235,14 +236,19 @@
   font-size: var(--d-text-sm);
   line-height: 1.55;
   padding: 4px 0;
-  max-height: 260px; overflow-y: auto;
+  max-height: 260px; overflow-y: auto; overflow-x: auto;
 }
 .diff-line {
   display: grid;
-  grid-template-columns: 44px 14px 1fr;
+  grid-template-columns: 44px 14px auto;
   align-items: center;
   padding: 1px 0 1px 4px;
   white-space: pre;
+}
+.diff-lines {
+  display: inline-block;
+  min-width: 100%;
+  vertical-align: top;
 }
 .diff-line.k-add { background: var(--diff-add-bg); }
 .diff-line.k-rem { background: var(--diff-rm-bg); }
