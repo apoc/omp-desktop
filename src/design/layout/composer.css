@@ -29,6 +29,7 @@
 .composer-input textarea {
   width: 100%;
   min-height: 22px; max-height: 180px;
+  overflow-y: hidden;
   resize: none;
   font: inherit; font-size: var(--d-text);
   color: var(--fg);
