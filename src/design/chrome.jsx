@@ -160,8 +160,26 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
             opacity = 0.4 + 0.6 * Math.max(0, Math.min(1, t));
           }
 
-          const tokensLabel = m.tokens ? ` · ${m.tokens.toLocaleString()} tok` : "";
-          const title = `${m.title || m.kind}${tokensLabel}`;
+          // Per-kind tooltip — tools don't carry their own tokens (the
+          // LLM cost lives on the assistant message that invoked them),
+          // so they get tool-specific info instead of a token chip.
+          let title;
+          if (m.kind === "assistant") {
+            const tok  = m.tokens ? `${m.tokens.toLocaleString()} tok` : "—";
+            const inOut = (m.tokensIn != null || m.tokensOut != null)
+              ? ` (${(m.tokensIn ?? 0).toLocaleString()} in · ${(m.tokensOut ?? 0).toLocaleString()} out)`
+              : "";
+            title = `assistant · ${tok}${inOut}${m.time ? " · " + m.time : ""}`;
+          } else if (m.kind === "tool") {
+            const dur = m.duration ? ` · ${(m.duration / 1000).toFixed(1)}s` : "";
+            const status = m.status === "running" ? " · running" : (m.status === "ok" ? "" : ` · ${m.status}`);
+            title = `${m.tool ?? "tool"}${m.title ? " " + m.title : ""}${dur}${status}`;
+          } else if (m.kind === "user") {
+            const preview = m.text ? ` · ${m.text.slice(0, 80)}${m.text.length > 80 ? "…" : ""}` : "";
+            title = `you${preview}`;
+          } else {
+            title = m.kind;
+          }
           const cls = `minimap-cell ${m.kind} ${m.streaming ? "live" : ""} ${hoveredIdx === i ? "hot" : ""}`.trim();
 
           return (
