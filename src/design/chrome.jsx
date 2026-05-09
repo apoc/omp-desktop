@@ -122,8 +122,23 @@ function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel 
   );
 }
 
-// ── Minimap of the session: little colored rectangles, one per msg ───
-function SessionMinimap({ messages }) {
+// ── Minimap of the session: dense grid, one cell per message ─────────
+// Hue encodes role/tool color (same palette as the chat). For assistant
+// messages, opacity is log-scaled by tokens used so expensive turns pop
+// against cheap ones. Click scrolls the chat to that message; hover
+// highlights it via shared hoveredIdx state.
+function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
+  // Log-scaled max across assistant messages so heatmap variance is
+  // visible even when one compaction turn dwarfs the rest.
+  const maxTokens = React.useMemo(() => {
+    let max = 0;
+    for (const m of messages) {
+      if (m.kind === "assistant" && m.tokens && m.tokens > max) max = m.tokens;
+    }
+    return max;
+  }, [messages]);
+  const logMax = Math.log10(maxTokens + 1) || 1;
+
   return (
     <div className="minimap">
       <div className="minimap-head">
@@ -131,21 +146,32 @@ function SessionMinimap({ messages }) {
         <span className="mono" style={{ color: "var(--fg-3)" }}>session</span>
         <span className="mono" style={{ marginLeft: "auto", color: "var(--fg-4)" }}>{messages.length}</span>
       </div>
-      <div className="minimap-body">
+      <div className="minimap-grid">
         {messages.map((m, i) => {
-          let color = "var(--fg-5)";
-          let height = 8;
-          if (m.kind === "user") { color = "var(--fg-3)"; height = 14; }
-          else if (m.kind === "assistant") { color = "var(--accent)"; height = 12; }
-          else if (m.kind === "tool") {
-            color = TOOL_META[m.tool]?.color || "var(--fg-4)";
-            height = m.tool === "edit" ? 18 : 10;
+          let hue = "var(--fg-5)";
+          if      (m.kind === "user")      hue = "var(--fg-3)";
+          else if (m.kind === "assistant") hue = "var(--accent)";
+          else if (m.kind === "tool")      hue = TOOL_META[m.tool]?.color || "var(--fg-4)";
+
+          // Brightness: assistant cells modulate by log(tokens), others flat.
+          let opacity = 0.7;
+          if (m.kind === "assistant" && m.tokens && maxTokens > 0) {
+            const t = Math.log10(m.tokens + 1) / logMax;
+            opacity = 0.4 + 0.6 * Math.max(0, Math.min(1, t));
           }
+
+          const tokensLabel = m.tokens ? ` · ${m.tokens.toLocaleString()} tok` : "";
+          const title = `${m.title || m.kind}${tokensLabel}`;
+          const cls = `minimap-cell ${m.kind} ${m.streaming ? "live" : ""} ${hoveredIdx === i ? "hot" : ""}`.trim();
+
           return (
             <div key={i}
-              className={`minimap-row ${m.streaming ? "live" : ""}`}
-              style={{ background: color, height, opacity: m.streaming ? 1 : 0.85 }}
-              title={m.title || m.kind} />
+              className={cls}
+              style={{ background: hue, opacity }}
+              title={title}
+              onMouseEnter={() => onHover?.(i)}
+              onMouseLeave={() => onHover?.(null)}
+              onClick={() => onClick?.(i)} />
           );
         })}
       </div>
@@ -182,7 +208,7 @@ function PeerSession({ peer }) {
 }
 
 // ── Right rail: ambient peripherals stacked ──────────────────────────
-function AmbientRail({ ctx, activity, peer, messages, microcopy, onClose, sparklineValues }) {
+function AmbientRail({ ctx, activity, peer, messages, microcopy, onClose, sparklineValues, hoveredMsgIdx, onMinimapHover, onMinimapClick }) {
   // Use live tps samples. Before the first turn, sparklineValues is all zeros
   // which renders as a flat baseline — honest, not fake random data.
   const sparkVals = (sparklineValues && sparklineValues.length > 0)
@@ -239,7 +265,7 @@ function AmbientRail({ ctx, activity, peer, messages, microcopy, onClose, sparkl
           <Icon name="minimap" size={11} color="var(--fg-3)" />
           <span className="mono" style={{ color: "var(--fg-2)" }}>minimap</span>
         </div>
-        <SessionMinimap messages={messages} />
+        <SessionMinimap messages={messages} hoveredIdx={hoveredMsgIdx} onHover={onMinimapHover} onClick={onMinimapClick} />
       </div>
     </aside>
   );

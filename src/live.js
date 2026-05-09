@@ -416,6 +416,8 @@
 
     if (type === "message_end") {
       const msg = ev.message;
+      const usage = msg?.usage;
+      const tokens = usage ? ((usage.input ?? 0) + (usage.output ?? 0)) : null;
       if (streamingBubble && msg) {
         const blocks = Array.isArray(msg.content) ? msg.content : [];
         const thought = blocks.find(b => b.type === "thinking")?.thinking ?? streamingBubble.thought;
@@ -425,10 +427,13 @@
           streaming: false, thought,
           lead:   thought ? "thinking" : null,
           blocks: designBlocks.length > 0 ? designBlocks : streamingBubble.blocks,
+          tokens,
+          tokensIn:  usage?.input  ?? null,
+          tokensOut: usage?.output ?? null,
         }];
         streamingBubble = null;
       } else if (streamingBubble) {
-        state.messages = [...state.messages.slice(0, -1), { ...streamingBubble, streaming: false }];
+        state.messages = [...state.messages.slice(0, -1), { ...streamingBubble, streaming: false, tokens }];
         streamingBubble = null;
       }
       notify();

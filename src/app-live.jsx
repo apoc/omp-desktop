@@ -47,6 +47,14 @@ function App() {
     return next;
   });
 
+  // Cross-component highlight: hovering a minimap cell lights up the
+  // matching chat bubble; clicking scrolls to it.
+  const [hoveredMsgIdx, setHoveredMsgIdx] = React.useState(null);
+  const handleMinimapClick = (idx) => {
+    const el = document.querySelector(`[data-msg-idx="${idx}"]`);
+    el?.scrollIntoView({ block: "center", behavior: "smooth" });
+  };
+
   // ── Live data (all per-session — driven by OMP_BRIDGE.onUpdate) ───────────
   const [messages,      setMessages]      = React.useState([]);
   const [streaming,     setStreaming]      = React.useState(false);
@@ -240,6 +248,7 @@ function App() {
                 planMode={planMode}
                 annotations={planAnnotations}
                 onAnnotate={handleAnnotate}
+                hoveredMsgIdx={hoveredMsgIdx}
               />
               <Composer
                 onSend={handleSend}
@@ -283,6 +292,9 @@ function App() {
                 microcopy={data.microcopy}
                 sparklineValues={sparkline}
                 onClose={() => setTweak("layout", "focus")}
+                hoveredMsgIdx={hoveredMsgIdx}
+                onMinimapHover={setHoveredMsgIdx}
+                onMinimapClick={handleMinimapClick}
               />
             )}
           </div>

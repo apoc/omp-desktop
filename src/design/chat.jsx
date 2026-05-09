@@ -8,9 +8,9 @@
 const { Icon, TOOL_META, MarkdownContent, AnnotablePlan } = window;
 
 // ── User bubble — right-aligned, cool ─────────────────────────────────
-function UserBubble({ msg }) {
+function UserBubble({ msg, idx, highlighted }) {
   return (
-    <div className="row user fade-up">
+    <div className={`row user fade-up${highlighted ? " mm-hot" : ""}`} data-msg-idx={idx}>
       <div className="user-bubble selectable">
         <div className="user-meta">
           <span className="mono" style={{ color: "var(--fg-4)" }}>{msg.time}</span>
@@ -23,9 +23,9 @@ function UserBubble({ msg }) {
 }
 
 // ── Assistant block (text + plan + thoughts) ─────────────────────────
-function AssistantBubble({ msg, annotable, annotations, onAnnotate }) {
+function AssistantBubble({ msg, idx, highlighted, annotable, annotations, onAnnotate }) {
   return (
-    <div className="row assistant fade-up">
+    <div className={`row assistant fade-up${highlighted ? " mm-hot" : ""}`} data-msg-idx={idx}>
       <div className="ass-rail">
         <div className="ass-glyph"><Icon name="sparkle" size={11} color="var(--accent)" /></div>
         <div className="ass-thread" />
@@ -108,11 +108,11 @@ function InlinePlan({ plan }) {
 }
 
 // ── Tool card (Linear / Raycast feeling) ─────────────────────────────
-function ToolCard({ msg }) {
+function ToolCard({ msg, idx, highlighted }) {
   const meta = TOOL_META[msg.tool] || { color: "var(--fg-3)", icon: "circle", label: msg.tool };
   const running = msg.status === "running";
   return (
-    <div className={`row tool fade-up`}>
+    <div className={`row tool fade-up${highlighted ? " mm-hot" : ""}`} data-msg-idx={idx}>
       <div className="ass-rail">
         <div className="tool-glyph" style={{ borderColor: meta.color, color: meta.color }}>
           <Icon name={meta.icon} size={11} color={meta.color} />
@@ -254,7 +254,7 @@ function ScrubbableDiff({ msg }) {
 }
 
 // ── ChatView: wires everything ───────────────────────────────────────
-function ChatView({ messages, planMode, annotations, onAnnotate }) {
+function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx }) {
   const scrollRef    = React.useRef(null);
   const atBottomRef  = React.useRef(true);   // assume start at bottom
   const prevCountRef = React.useRef(0);
@@ -292,9 +292,10 @@ function ChatView({ messages, planMode, annotations, onAnnotate }) {
     <div className="chat-scroll selectable" ref={scrollRef} onScroll={onScroll}>
       <div className="chat-pad">
         {messages.map((m, i) => {
-          if (m.kind === "user") return <UserBubble key={i} msg={m} />;
-          if (m.kind === "tool") return <ToolCard    key={i} msg={m} />;
-          return <AssistantBubble key={i} msg={m}
+          const hl = hoveredMsgIdx === i;
+          if (m.kind === "user") return <UserBubble key={i} idx={i} highlighted={hl} msg={m} />;
+          if (m.kind === "tool") return <ToolCard    key={i} idx={i} highlighted={hl} msg={m} />;
+          return <AssistantBubble key={i} idx={i} highlighted={hl} msg={m}
             annotable={i === lastAsstIdx}
             annotations={annotations}
             onAnnotate={onAnnotate} />;

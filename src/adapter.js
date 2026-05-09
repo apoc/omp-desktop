@@ -238,11 +238,18 @@
           // tool_use blocks already rendered as separate tool cards; skip here
         }
         if (designBlocks.length > 0 || thought) {
+          // omp's persisted AgentMessage may carry usage in either RPC shape
+          // ({input, output}) or raw Anthropic shape ({input_tokens, output_tokens}).
+          const u = msg.usage;
+          const tokensIn  = u?.input  ?? u?.input_tokens  ?? null;
+          const tokensOut = u?.output ?? u?.output_tokens ?? null;
+          const tokens = (tokensIn != null || tokensOut != null) ? (tokensIn ?? 0) + (tokensOut ?? 0) : null;
           result.push({
             kind: "assistant", time, thought,
             lead: thought ? "thinking" : null,
             blocks: designBlocks,
             streaming: false,
+            tokens, tokensIn, tokensOut,
           });
         }
       }

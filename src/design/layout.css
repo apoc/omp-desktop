@@ -553,22 +553,45 @@
 .peer-title { color: var(--fg); font-size: var(--d-text-sm); }
 .peer-row { display: flex; align-items: center; gap: 6px; font-size: var(--d-text-xs); }
 
-/* minimap */
+/* ── Minimap (dense token-heatmap grid) ───────────────────────────── */
 .minimap { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
 .minimap-head { display: flex; align-items: center; gap: 6px; font-size: var(--d-text-xs); }
-.minimap-body {
-  display: flex; flex-direction: column; gap: 2px;
+
+.minimap-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14px, 1fr));
+  gap: 2px;
   flex: 1; min-height: 0; overflow-y: auto;
   padding: 6px; border-radius: 6px;
   background: var(--bg-input);
   border: 1px solid var(--line);
 }
-.minimap-row {
-  border-radius: 1px;
-  width: 100%;
+.minimap-cell {
+  aspect-ratio: 1 / 1;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: transform 80ms ease, outline-color 80ms ease;
+  outline: 1px solid transparent;
+  position: relative;
 }
-.minimap-row.live {
+.minimap-cell:hover,
+.minimap-cell.hot {
+  transform: scale(1.6);
+  outline-color: var(--fg-2);
+  z-index: 2;
+  opacity: 1 !important;
+}
+.minimap-cell.live {
   animation: pulseDot 1.8s ease-in-out infinite;
+}
+
+/* Reverse highlight: hovering a minimap cell lights up the chat bubble. */
+.row.mm-hot .user-bubble,
+.row.mm-hot .ass-body,
+.row.mm-hot .tool-card {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 70%, transparent);
+  border-radius: 8px;
+  transition: box-shadow 80ms ease;
 }
 
 /* ── Split pane (peer session full pane) ───────────────────────────── */
