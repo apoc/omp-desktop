@@ -1,0 +1,51 @@
+# CI — runs on every push and PR.
+# Does a fast cargo check across all three platforms.
+# No full bundle build here — that lives in release.yml.
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'src-tauri/**'
+      - 'src/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  check:
+    name: cargo check · ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artefacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workdir: src-tauri
+
+      # WebKit + GTK are required to compile the Tauri crate on Linux
+      - name: Install system dependencies (Linux only)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --locked
