@@ -112,6 +112,7 @@
     const { type } = obj;
 
     if (type === "ready") {
+      console.log("[live] ready received");
       _initFetch();
       return;
     }
@@ -144,6 +145,7 @@
         current: state.rpcState?.model?.id === m.id,
       }));
       notify();
+      console.log("[live] models loaded:", state.models.length, state.models.map(m => m.id));
 
     } else if (command === "set_model") {
       // data: Model — update immediately so next notify() doesn't revert
@@ -463,6 +465,7 @@
   // page load to recover state after a hot-reload (omp keeps running, no
   // second `ready` fires, so we must fetch without waiting for the signal).
   function _initFetch() {
+    console.log("[live] _initFetch called");
     _send({ type: "get_state" });
     _send({ type: "get_messages" });
     _send({ type: "get_available_models" });

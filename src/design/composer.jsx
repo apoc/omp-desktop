@@ -172,7 +172,9 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
           </div>
           <div className="bridge-body">
             <div className="bridge-group">
-              <div className="bridge-group-head mono">switch model</div>
+              <div className="bridge-group-head mono">
+                switch model · OMP_DATA: {window.OMP_DATA.models.length} · prop: {models.length}
+              </div>
               {modelHits.map((m) => (
                 <button key={m.id}
                   className={`bridge-row ${m.id === currentModelId ? "active" : ""}`}
