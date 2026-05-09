@@ -40,6 +40,11 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     ta.style.height = `${Math.min(ta.scrollHeight, 320)}px`;
   }, [text]);
 
+  // Restore focus when the agent finishes streaming and the textarea re-enables.
+  React.useEffect(() => {
+    if (!isStreaming) requestAnimationFrame(() => taRef.current?.focus());
+  }, [isStreaming]);
+
   const execCmd = (cmd) => {
     setText("");
     setActiveIdx(0);
@@ -62,6 +67,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     setText("");
     pasteBlocksRef.current.clear();
     pasteCounterRef.current = 0;
+    requestAnimationFrame(() => taRef.current?.focus());
   };
 
   // Collapse long pastes into a token so the textarea stays navigable.
