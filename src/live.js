@@ -80,6 +80,39 @@
   let activeSessionId  = null;
   let activeListeners  = [];          // unlisten functions for current session
 
+  // ── ID-keyed response correlation ─────────────────────────────────────────
+  // Used by _sendWithResponse to correlate commands that need a typed reply.
+  const _pendingResponses = new Map(); // id → { resolve, reject }
+  let _nextCmdId = 1;
+
+  /**
+   * Send a command and return a Promise that resolves with the response data
+   * or rejects with an Error on failure. Uses the RPC id field for correlation.
+   * @param {object}  cmd         Command body (type + args, no id).
+   * @param {number}  [timeout]   Ms to wait before rejecting (0 = no timeout).
+   */
+  function _sendWithResponse(cmd, timeout = 120000) {
+    return new Promise((resolve, reject) => {
+      if (!window.__TAURI__ || !activeSessionId) {
+        reject(new Error("Not connected"));
+        return;
+      }
+      const id = `d${_nextCmdId++}`;
+      let timer;
+      if (timeout > 0) {
+        timer = setTimeout(() => {
+          _pendingResponses.delete(id);
+          reject(new Error(`Command '${cmd.type}' timed out after ${timeout}ms`));
+        }, timeout);
+      }
+      _pendingResponses.set(id, {
+        resolve(data) { clearTimeout(timer); resolve(data); },
+        reject(err)   { clearTimeout(timer); reject(err);   },
+      });
+      _send({ ...cmd, id });
+    });
+  }
+
   // ── Subscriber system ─────────────────────────────────────────────────────
   const subscribers = new Set();
 
@@ -271,6 +304,17 @@
 
   // ── RPC response handler ──────────────────────────────────────────────────
   function _handleResponse(resp) {
+    // ID-keyed correlation — resolve or reject the waiting _sendWithResponse call.
+    if (resp.id && _pendingResponses.has(resp.id)) {
+      const handler = _pendingResponses.get(resp.id);
+      _pendingResponses.delete(resp.id);
+      if (resp.success) {
+        handler.resolve(resp.data ?? null);
+      } else {
+        handler.reject(new Error(resp.error ?? `Command '${resp.command}' failed`));
+      }
+      return;
+    }
     if (!resp.success) return;
     const { command, data } = resp;
 
@@ -350,7 +394,23 @@
     const time = _timeNow();
 
     if (type === "extension_ui_request") {
-      const NEEDS_RESPONSE = ["select", "confirm", "input", "editor"];
+      // URL to open in the system browser (e.g. OAuth auth page).
+      if (ev.method === "open_url") {
+        window.open(ev.url, "_blank");
+        return;
+      }
+      // Code / text prompt (e.g. OAuth manual-code flows).
+      if (ev.method === "input") {
+        const value = window.prompt(ev.title ?? ev.placeholder ?? "Enter value:");
+        if (value !== null) {
+          _send({ type: "extension_ui_response", id: ev.id, value });
+        } else {
+          _send({ type: "extension_ui_response", id: ev.id, cancelled: true });
+        }
+        return;
+      }
+      // Dialogs we cannot show — cancel them so the server doesn't hang.
+      const NEEDS_RESPONSE = ["select", "confirm", "editor"];
       if (NEEDS_RESPONSE.includes(ev.method)) {
         _send({ type: "extension_ui_response", id: ev.id, cancelled: true });
       }
@@ -654,6 +714,23 @@
     newSession()       { _send({ type: "new_session" }); },
     exportHtml()       { _send({ type: "export_html" }); },
     refreshModels()    { _initFetch(); },
+
+    // ── Login ─────────────────────────────────────────────────────────────────
+
+    /** Returns the list of OAuth providers and their current auth status. */
+    getLoginProviders() {
+      return _sendWithResponse({ type: "get_login_providers" });
+    },
+
+    /**
+     * Trigger OAuth login for a provider.
+     * Resolves when login completes (omp opens the auth URL via open_url event).
+     * Rejects on failure.
+     * @param {string} providerId
+     */
+    login(providerId) {
+      return _sendWithResponse({ type: "login", providerId }, 300000);
+    },
 
     // ── Session management ───────────────────────────────────────────────────
 
