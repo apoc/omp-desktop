@@ -74,6 +74,57 @@ function ScrubbableDiff({ msg }) {
   );
 }
 
+// ── Subagent progress panel (task / quick_task) ─────────────────────
+const _TA_CLR = {
+  pending:   "var(--fg-5)",
+  running:   "var(--accent)",
+  completed: "var(--fg-3)",
+  failed:    "var(--rose)",
+  aborted:   "var(--amber)",
+};
+
+function TaskPanel({ subagents }) {
+  const [open, setOpen] = React.useState(new Set());
+  const toggle = i => setOpen(prev => {
+    const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n;
+  });
+  return (
+    <div className="task-panel">
+      {subagents.map(sa => {
+        const isOpen    = open.has(sa.index);
+        const clr       = _TA_CLR[sa.status] ?? "var(--fg-4)";
+        const isRunning = sa.status === "running";
+        const bodyText  = sa.output || (sa.recentOutput ?? []).join("\n");
+        const hasBody   = !!bodyText;
+        // Header secondary: show live intent while running, error text on failure,
+        // else truncated task description.
+        const hint = isRunning ? sa.lastIntent
+          : (sa.status === "failed" || sa.status === "aborted") ? (sa.error ?? sa.status)
+          : sa.task;
+        return (
+          <div key={sa.index} className={`ta-row ta-${sa.status}`}>
+            <button className="ta-hd" onClick={() => hasBody && toggle(sa.index)}
+              style={{ cursor: hasBody ? "pointer" : "default" }}>
+              <span className="dot" style={{
+                background: clr, flexShrink: 0,
+                ...(isRunning ? { animation: "pulseDot 1.4s ease-in-out infinite" } : {}),
+              }} />
+              <span className="ta-agent">{sa.agent}</span>
+              {hint && <span className="ta-hint">· {hint}</span>}
+              <div style={{ flex: 1 }} />
+              {sa.toolCount > 0  && <span className="chip muted mono ta-chip">{sa.toolCount}×</span>}
+              {sa.tokens    > 0  && <span className="chip muted mono ta-chip">{sa.tokens >= 1000 ? `${(sa.tokens/1000).toFixed(1)}k` : sa.tokens}t</span>}
+              {sa.durationMs > 0 && <span className="chip muted mono ta-chip">{sa.durationMs >= 1000 ? `${(sa.durationMs/1000).toFixed(1)}s` : `${sa.durationMs}ms`}</span>}
+              {hasBody && <_TC_Icon name={isOpen ? "chev" : "chevR"} size={10} color="var(--fg-4)" />}
+            </button>
+            {isOpen && bodyText && <pre className="ta-body selectable">{bodyText}</pre>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function ToolCard({ msg, idx, highlighted }) {
   const meta = _TC_TOOL_META[msg.tool] || { color: "var(--fg-3)", icon: "circle", label: msg.tool };
   const running = msg.status === "running";
@@ -148,7 +199,9 @@ function ToolCard({ msg, idx, highlighted }) {
             {msg.cells.map((cell, i) => <_TC_EvalCell key={i} cell={cell} />)}
           </div>
         )}
-      </div>
+        {msg.tool === "task" && msg.subagents?.length > 0 && (
+          <TaskPanel subagents={msg.subagents} />
+        )}
     </div>
   );
 }

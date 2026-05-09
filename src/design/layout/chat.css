@@ -295,3 +295,37 @@
   transition: left 80ms var(--ease-out);
 }
 
+
+/* ── Task subagent panel ──────────────────────────────────────────── */
+.task-panel { border-top: 1px solid var(--line); }
+.ta-row { border-bottom: 1px solid var(--line); }
+.ta-row:last-child { border-bottom: 0; }
+.ta-hd {
+  appearance: none; border: 0; background: transparent;
+  display: flex; align-items: center; gap: 6px;
+  width: 100%; padding: 5px 10px;
+  font: inherit; color: inherit; text-align: left;
+}
+.ta-hd:hover { background: var(--bg-hover); }
+.ta-agent {
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  color: var(--fg-2); flex-shrink: 0;
+}
+.ta-hint {
+  font-size: 11px; color: var(--fg-4);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0; max-width: 260px;
+}
+.ta-chip { font-size: 10px !important; padding: 0 4px !important; height: 16px !important; min-width: 0 !important; }
+.ta-body {
+  margin: 0; padding: 6px 10px 8px;
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.5;
+  color: var(--fg-3); background: var(--bg-input);
+  white-space: pre-wrap; word-break: break-all;
+  max-height: 240px; overflow-y: auto;
+  border-top: 1px solid var(--line);
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.ta-running .ta-agent { color: var(--accent); }
+.ta-failed  .ta-agent { color: var(--rose); }
+.ta-aborted .ta-agent { color: var(--amber); }

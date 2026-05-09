@@ -11,7 +11,7 @@
     read: "read", search: "search", edit: "edit", bash: "bash",
     write: "write", todo_write: "todo", find: "search",
     web_search: "search", lsp: "search",
-    eval: "eval", task: "task", debug: "debug", ask: "ask",
+    eval: "eval", task: "task", quick_task: "task", debug: "debug", ask: "ask",
   };
 
   function normalizeToolName(name) {
@@ -164,12 +164,13 @@
       duration: null,
       time,
       _toolCallId: event.toolCallId,
+      _startMs: Date.now(),
     };
   }
 
   // ── tool_execution_end → finalized tool card ──────────────────────────────
   function finalizeToolCard(card, event) {
-    const duration = event.duration ?? 0;
+    const duration = card._startMs ? Date.now() - card._startMs : (event.duration ?? 0);
     const details  = event.result?.details;
     const extra    = {};
 
@@ -220,6 +221,34 @@
     if (card.tool === "read") {
       extra.summary = details?.lines ? `${details.lines} lines` : card.summary;
     }
+    if (card.tool === "task") {
+      const progress = details?.progress ?? card.subagents ?? [];
+      const results  = details?.results  ?? [];
+      const byIdx    = new Map(results.map(r => [r.index, r]));
+      // Build subagent list from progress (rich) or results-only (fallback)
+      const base = progress.length > 0 ? progress : results.map((r, i) => ({
+        index: r.index ?? i, id: r.id, agent: r.agent ?? "",
+        status: "completed", task: r.task ?? "",
+        lastIntent: null, currentTool: null,
+        toolCount: 0, tokens: r.tokens ?? 0, durationMs: r.durationMs ?? 0,
+        recentOutput: [], output: r.output ?? null, error: r.error ?? null,
+      }));
+      if (base.length > 0) {
+        extra.subagents = base.map(p => {
+          const r = byIdx.get(p.index);
+          if (!r) return { ...p };
+          const failed = r.error || r.exitCode !== 0 || r.aborted;
+          return {
+            ...p,
+            status:    r.aborted ? "aborted" : failed ? "failed" : "completed",
+            tokens:    r.tokens    ?? p.tokens    ?? 0,
+            durationMs:r.durationMs ?? p.durationMs ?? 0,
+            output:    r.output    ?? null,
+            error:     r.error     ?? null,
+          };
+        });
+      }
+    }
 
     return { ...card, status: "ok", duration, ...extra };
   }
@@ -229,7 +258,9 @@
   // bash output tail). Status stays "running"; finalization is left to
   // finalizeToolCard on tool_execution_end.
   function updateToolCard(card, event) {
-    const details = event.details;
+    // partialResult wraps { content, details } per the RPC protocol
+    const pr      = event.partialResult ?? {};
+    const details = pr.details;
     if (!details) return card;
     const extra = {};
     if (card.tool === "eval" && details.cells) {
@@ -242,7 +273,7 @@
       }));
     }
     if (card.tool === "bash") {
-      const text = event.content?.[0]?.text ?? "";
+      const text = pr.content?.[0]?.text ?? "";
       if (text) {
         extra.output = text.split("\n").slice(-20).map(line => ({
           line,
@@ -251,6 +282,23 @@
                : "fg-3",
         }));
       }
+    }
+    if (card.tool === "task" && details.progress?.length) {
+      extra.subagents = details.progress.map(p => ({
+        index:      p.index,
+        id:         p.id,
+        agent:      p.agent,
+        status:     p.status,
+        task:       p.task ?? "",
+        lastIntent: p.lastIntent ?? null,
+        currentTool:p.currentTool ?? null,
+        toolCount:  p.toolCount ?? 0,
+        tokens:     p.tokens ?? 0,
+        durationMs: p.durationMs ?? 0,
+        recentOutput: p.recentOutput ?? [],
+        output:     null,
+        error:      null,
+      }));
     }
     return { ...card, ...extra };
   }
