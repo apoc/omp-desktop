@@ -177,9 +177,22 @@
       }));
     }
     if (card.tool === "edit") {
-      extra.adds = details?.adds ?? 0;
-      extra.rems = details?.rems ?? 0;
-      if (details?.diff) extra.diff = details.diff;
+      // details.diff is a unified diff STRING (from Diff.structuredPatch in omp).
+      // ScrubbableDiff expects { kind, line, text }[] — parse it here.
+      const diffStr = details?.diff ?? details?.perFileResults?.[0]?.diff ?? "";
+      if (diffStr) {
+        const parsed = _parseUnifiedDiff(diffStr);
+        extra.diff = parsed;
+        extra.adds = parsed.filter(l => l.kind === "add").length;
+        extra.rems = parsed.filter(l => l.kind === "rem").length;
+      } else {
+        extra.adds = 0;
+        extra.rems = 0;
+      }
+      // Target path from args (richer than the generic target field)
+      if (details?.perFileResults?.length > 0) {
+        extra.target = details.perFileResults.map(r => r.path).join(", ");
+      }
     }
     if (card.tool === "bash" && details?.output) {
       extra.output = String(details.output).split("\n").slice(0, 20).map(line => ({
@@ -232,6 +245,36 @@
             streaming: false,
           });
         }
+      }
+    }
+    return result;
+  }
+
+
+  // ── Unified diff parser ───────────────────────────────────────────────────
+  // Converts a unified diff string (from omp's Diff.structuredPatch) into the
+  // { kind: "add"|"rem"|"ctx", line: number, text: string }[] array that
+  // ScrubbableDiff expects.
+  function _parseUnifiedDiff(diffStr) {
+    const result = [];
+    let newLine = 0;
+    for (const raw of diffStr.split("\n")) {
+      if (raw.startsWith("@@")) {
+        // @@ -oldStart,oldCount +newStart,newCount @@
+        const m = raw.match(/@@ [^\s]+ \+(\d+)/);
+        if (m) newLine = parseInt(m[1], 10) - 1;
+        continue;
+      }
+      // Skip file header lines (--- / +++)
+      if (raw.startsWith("---") || raw.startsWith("+++")) continue;
+      if (raw.startsWith("+")) {
+        newLine++;
+        result.push({ kind: "add", line: newLine, text: raw.slice(1) });
+      } else if (raw.startsWith("-")) {
+        result.push({ kind: "rem", line: newLine, text: raw.slice(1) });
+      } else if (raw.startsWith(" ")) {
+        newLine++;
+        result.push({ kind: "ctx", line: newLine, text: raw.slice(1) });
       }
     }
     return result;
