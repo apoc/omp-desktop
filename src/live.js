@@ -76,6 +76,7 @@
   // { id, name, path, color, branch }
   const sessionRegistry = new Map();
   const sessionSnapshots = new Map(); // id -> saved state + volatile vars
+  const gitListeners = new Map();  // session_id → Tauri unlisten fn for git://branch/{id}
 
   let activeSessionId  = null;
   let activeListeners  = [];          // unlisten functions for current session
@@ -773,11 +774,28 @@
       const id   = `session-${Date.now()}`;
       const name = cwd ? cwd.replace(/\\/g, "/").split("/").pop() || cwd : "new session";
       // Register in tab list before starting omp so the tab shows immediately
-      sessionRegistry.set(id, { id, name, path: cwd ?? "", color: "var(--lilac)", branch: "main" });
+      // Register with null branch — chip hidden until git resolves
+      sessionRegistry.set(id, { id, name, path: cwd ?? "", color: "var(--lilac)", branch: null });
       // Spawn omp for this project
       await window.__TAURI__.core.invoke("start_session", {
         sessionId: id, cwd: cwd ?? "",
       });
+      // Git: read initial branch and arm the HEAD watcher (fire-and-forget errors)
+      if (cwd) {
+        const branch = await window.__TAURI__.core
+          .invoke("start_git_watch", { sessionId: id, path: cwd })
+          .catch(() => null);
+        const entry = sessionRegistry.get(id);
+        if (entry) sessionRegistry.set(id, { ...entry, branch: branch ?? null });
+        // Live updates: re-emitted by Rust whenever .git/HEAD changes
+        const { listen } = window.__TAURI__.event;
+        const unlisten = await listen(`git://branch/${id}`, ev => {
+          const e = sessionRegistry.get(id);
+          if (e) sessionRegistry.set(id, { ...e, branch: ev.payload });
+          notify();
+        });
+        gitListeners.set(id, unlisten);
+      }
       // Activate
       await _switchToSession(id);
       return id;
@@ -793,8 +811,11 @@
     /** Close a tab and kill its omp process. */
     async closeSession(id) {
       if (window.__TAURI__) {
-        window.__TAURI__.core.invoke("stop_session", { sessionId: id }).catch(() => {});
+        window.__TAURI__.core.invoke("stop_session",   { sessionId: id }).catch(() => {});
+        window.__TAURI__.core.invoke("stop_git_watch", { sessionId: id }).catch(() => {});
       }
+      const gitUnlisten = gitListeners.get(id);
+      if (gitUnlisten) { gitUnlisten(); gitListeners.delete(id); }
       sessionRegistry.delete(id);
       sessionSnapshots.delete(id);
       if (id === activeSessionId) {
@@ -849,7 +870,7 @@
 
     // Register the "default" session that lib.rs::setup already started
     sessionRegistry.set("default", {
-      id: "default", name: "OMP Desktop", path: "", color: "var(--accent)", branch: "main",
+      id: "default", name: "OMP Desktop", path: "", color: "var(--accent)", branch: null,
     });
 
     // Activate it — registers listener + fetches initial state

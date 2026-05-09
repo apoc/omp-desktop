@@ -84,10 +84,17 @@ impl AgentBridge {
         // Atomic install: drop any previous BridgeInner under the lock,
         // install the new one in the same critical section.
         let prev = {
-            let mut s = self.sessions.lock().map_err(|_| "lock poisoned".to_string())?;
+            let mut s = self
+                .sessions
+                .lock()
+                .map_err(|_| "lock poisoned".to_string())?;
             s.insert(
                 session_id.clone(),
-                BridgeInner { gen, stdin: Some(stdin_arc), child: Some(child) },
+                BridgeInner {
+                    gen,
+                    stdin: Some(stdin_arc),
+                    child: Some(child),
+                },
             )
         };
         if let Some(mut prev) = prev {
@@ -95,7 +102,10 @@ impl AgentBridge {
             if let Some(mut c) = prev.child.take() {
                 // Reap off-thread so the Tauri command thread is never
                 // blocked by a stuck process.
-                thread::spawn(move || { let _ = c.kill(); let _ = c.wait(); });
+                thread::spawn(move || {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                });
             }
         }
 
@@ -113,13 +123,18 @@ impl AgentBridge {
             // Best-effort cleanup: silently bail on a poisoned lock
             // rather than panicking. The map is only readable in error
             // paths from this point on anyway.
-            let Ok(mut s) = self.sessions.lock() else { return };
+            let Ok(mut s) = self.sessions.lock() else {
+                return;
+            };
             s.remove(session_id)
         };
         if let Some(mut inner) = removed {
             inner.stdin = None;
             if let Some(mut c) = inner.child.take() {
-                thread::spawn(move || { let _ = c.kill(); let _ = c.wait(); });
+                thread::spawn(move || {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                });
             }
         }
         self.clear_error(session_id);
@@ -133,7 +148,10 @@ impl AgentBridge {
     /// "session not found" so the frontend gets the real reason.
     pub fn send(&self, session_id: &str, line: &str) -> Result<(), String> {
         let stdin_arc = {
-            let s = self.sessions.lock().map_err(|_| "lock poisoned".to_string())?;
+            let s = self
+                .sessions
+                .lock()
+                .map_err(|_| "lock poisoned".to_string())?;
             if let Some(inner) = s.get(session_id) {
                 inner.stdin.clone()
             } else {
@@ -153,7 +171,9 @@ impl AgentBridge {
         // (which is invalid JSON anyway).
         let trimmed = line.trim_end_matches(['\r', '\n']);
 
-        let mut stdin = stdin_arc.lock().map_err(|_| "stdin lock poisoned".to_string())?;
+        let mut stdin = stdin_arc
+            .lock()
+            .map_err(|_| "stdin lock poisoned".to_string())?;
         writeln!(*stdin, "{trimmed}").map_err(|e| e.to_string())?;
         // ChildStdin is unbuffered, but flush() costs nothing and keeps
         // the contract explicit.
@@ -164,7 +184,9 @@ impl AgentBridge {
     /// Returns `None` if the session is currently running cleanly (or
     /// has never been started for this id).
     pub fn last_error(&self, session_id: &str) -> Option<String> {
-        let Ok(errs) = self.last_errors.lock() else { return None };
+        let Ok(errs) = self.last_errors.lock() else {
+            return None;
+        };
         errs.get(session_id).cloned()
     }
 
@@ -182,7 +204,9 @@ impl AgentBridge {
 }
 
 impl Default for AgentBridge {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Drop for AgentBridge {

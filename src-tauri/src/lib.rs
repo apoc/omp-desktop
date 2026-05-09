@@ -5,13 +5,20 @@
 #![allow(clippy::needless_pass_by_value)]
 
 mod agent;
+mod git;
+mod git_watcher;
 
 use agent::AgentBridge;
+use git_watcher::GitWatcherState;
 use tauri::{Manager, State};
 
 /// Write a JSON command to a specific session's omp stdin.
 #[tauri::command]
-fn send_command(session_id: String, json: String, bridge: State<'_, AgentBridge>) -> Result<(), String> {
+fn send_command(
+    session_id: String,
+    json: String,
+    bridge: State<'_, AgentBridge>,
+) -> Result<(), String> {
     bridge.send(&session_id, &json)
 }
 
@@ -70,6 +77,34 @@ fn open_project(app: tauri::AppHandle) -> Result<Option<String>, String> {
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
+/// Start watching `.git/HEAD` for a session's project path.
+///
+/// Returns the short branch name at call time, or `None` when `path` is
+/// not inside a git repo or HEAD is detached.  The watcher fires
+/// `"git://branch/{session_id}"` events on every subsequent HEAD change.
+/// Watcher errors are silently ignored — the branch chip simply won't
+/// update live.
+#[tauri::command]
+fn start_git_watch(
+    session_id: String,
+    path: String,
+    watcher: State<'_, GitWatcherState>,
+    app: tauri::AppHandle,
+) -> Option<String> {
+    let p = std::path::Path::new(&path);
+    let (branch, head) = git::probe(p);
+    if let Some(h) = head {
+        let _ = watcher.start(&session_id, p, h, app);
+    }
+    branch
+}
+
+/// Stop the HEAD watcher for a session.  No-op when none is active.
+#[tauri::command]
+fn stop_git_watch(session_id: String, watcher: State<'_, GitWatcherState>) {
+    watcher.stop(&session_id);
+}
+
 /// Run the Tauri application. Panics if the runtime fails to initialise.
 ///
 /// # Panics
@@ -81,12 +116,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AgentBridge::new())
+        .manage(GitWatcherState::new())
         .invoke_handler(tauri::generate_handler![
             send_command,
             start_session,
             stop_session,
             session_status,
             open_project,
+            start_git_watch,
+            stop_git_watch,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

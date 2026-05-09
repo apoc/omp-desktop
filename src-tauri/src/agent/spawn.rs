@@ -17,7 +17,11 @@ pub(super) fn spawn_omp(cwd: Option<&str>) -> Result<Child, String> {
     // it leaves the omp process orphaned when the parent cmd.exe is
     // killed, since Windows does not propagate process termination to
     // descendants without a Job Object.
-    let candidates: &[&str] = if cfg!(windows) { &["omp.exe", "omp"] } else { &["omp"] };
+    let candidates: &[&str] = if cfg!(windows) {
+        &["omp.exe", "omp"]
+    } else {
+        &["omp"]
+    };
     let mut last_err = String::from("no candidates tried");
     for name in candidates {
         let mut cmd = Command::new(name);

@@ -46,7 +46,9 @@ pub(super) fn spawn_stdout_reader(
                     while matches!(buf.last(), Some(b'\n' | b'\r')) {
                         buf.pop();
                     }
-                    if buf.is_empty() { continue; }
+                    if buf.is_empty() {
+                        continue;
+                    }
                     let text = String::from_utf8_lossy(&buf).into_owned();
                     let _ = app.emit(&line_event, text);
                 }
@@ -106,12 +108,16 @@ fn read_until_capped<R: BufRead>(
             Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         };
-        if avail.is_empty() { return Ok((total, truncated)); }
+        if avail.is_empty() {
+            return Ok((total, truncated));
+        }
         let room = max.saturating_sub(out.len());
         let used = if let Some(i) = avail.iter().position(|&b| b == delim) {
             // Found the delimiter — frame the line and return.
             let take = (i + 1).min(room);
-            if take < i + 1 { truncated = true; }
+            if take < i + 1 {
+                truncated = true;
+            }
             out.extend_from_slice(&avail[..take]);
             let used = i + 1;
             r.consume(used);
@@ -120,8 +126,12 @@ fn read_until_capped<R: BufRead>(
         } else {
             // No delimiter in the available chunk — keep reading.
             let take = avail.len().min(room);
-            if take < avail.len() { truncated = true; }
-            if take > 0 { out.extend_from_slice(&avail[..take]); }
+            if take < avail.len() {
+                truncated = true;
+            }
+            if take > 0 {
+                out.extend_from_slice(&avail[..take]);
+            }
             avail.len()
         };
         r.consume(used);
