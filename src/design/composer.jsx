@@ -121,15 +121,14 @@ function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, curr
 
 // ── ⌘K Command bridge — two views: commands → model picker ────────────
 //
-//  commands view  — lists all slash-commands; /model row drills into picker
+//  commands view  — lists all slash-commands; /model drills into picker
 //  models view    — filterable model list; Esc returns to commands
 //
 function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
   const [q, setQ]       = React.useState("");
-  const [view, setView] = React.useState("commands"); // "commands" | "models"
+  const [view, setView] = React.useState("commands");
   const inputRef = React.useRef(null);
 
-  // Reset to commands view and clear search on every open
   React.useEffect(() => {
     if (open) {
       setQ("");
@@ -138,7 +137,6 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
     }
   }, [open]);
 
-  // Keyboard: Esc closes bridge from commands; goes back from models
   React.useEffect(() => {
     const onKey = (e) => {
       if (e.key !== "Escape" || !open) return;
@@ -157,12 +155,11 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
   // ── Model picker view ──────────────────────────────────────────────
   if (view === "models") {
     const modelHits = models.filter((m) => !q || fil(m.name) || fil(m.id));
-    const modelHits = models.filter((m) => !q || fil(m.name) || fil(m.id));
     return (
       <div className="bridge-scrim" onClick={onClose}>
         <div className="bridge slide-in" onClick={(e) => e.stopPropagation()}>
           <div className="bridge-input-row">
-            <button className="btn icon ghost" title="back to commands"
+            <button className="btn icon ghost" title="back"
               onClick={() => { setView("commands"); setQ(""); }}
               style={{ marginRight: 4 }}>
               <Icon name="chevR" size={12} color="var(--fg-3)"
@@ -197,7 +194,7 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
           <div className="bridge-foot mono">
             <span className="kbd">↑↓</span> navigate
             <span className="kbd">↵</span> switch
-            <span className="kbd">esc</span> back to commands
+            <span className="kbd">esc</span> back
           </div>
         </div>
       </div>
@@ -209,26 +206,18 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
   const cmdHits = cmds.filter((c) => !q || fil(c.name) || fil(c.hint));
   const groups  = {};
   cmdHits.forEach((c) => { (groups[c.group] = groups[c.group] || []).push(c); });
-
-  // Display name of the active model as a hint on the /model row
   const activeModelName = models.find((m) => m.id === currentModelId)?.name ?? "–";
 
   return (
     <div className="bridge-scrim" onClick={onClose}>
       <div className="bridge slide-in" onClick={(e) => e.stopPropagation()}>
-
         <div className="bridge-input-row">
           <Icon name="cmd" size={14} color="var(--accent)" />
-          <input
-            ref={inputRef}
-            className="bridge-input mono"
-            placeholder="cross the bridge — type to filter…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
+          <input ref={inputRef} className="bridge-input mono"
+            placeholder="cross the bridge — type to filter…" value={q}
+            onChange={(e) => setQ(e.target.value)} />
           <span className="kbd">esc</span>
         </div>
-
         <div className="bridge-body">
           {Object.entries(groups).map(([g, list]) => (
             <div key={g} className="bridge-group">
@@ -256,12 +245,10 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
               })}
             </div>
           ))}
-
           {cmdHits.length === 0 && (
             <div className="bridge-empty">no luck — try `plan`, `branch`, `model`…</div>
           )}
         </div>
-
         <div className="bridge-foot mono">
           <span className="kbd">↑↓</span> navigate
           <span className="kbd">↵</span> run
