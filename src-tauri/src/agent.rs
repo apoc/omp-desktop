@@ -1,119 +1,131 @@
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter};
 
+/// Hard cap on a single RPC line. Defends the reader thread from runaway
+/// agent output that could otherwise allocate unbounded memory.
+const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
+
 struct BridgeInner {
-    stdin: Option<std::process::ChildStdin>,
+    /// Generation token bumped every time a session is started for this id.
+    /// Reader threads carry their own generation and only mutate the map
+    /// when it still matches — a stale thread for a previous incarnation
+    /// must never clobber the entry of a freshly started session that
+    /// happens to share an id.
+    gen: u64,
+    /// Stdin wrapped in its own mutex so writes never serialize through
+    /// the bridge map lock. A blocked write on a slow consumer can no
+    /// longer deadlock concurrent start_session / stop_session calls.
+    stdin: Option<Arc<Mutex<ChildStdin>>>,
+    /// Live child handle. Cleared once reaped on a background thread.
     child: Option<Child>,
 }
 
 /// Manages one omp process per tab session.
-/// Events are emitted as "agent://line/{session_id}" and "agent://exit/{session_id}".
+/// Events are emitted as `agent://line/{session_id}` and `agent://exit/{session_id}`.
 pub struct AgentBridge {
     sessions: Arc<Mutex<HashMap<String, BridgeInner>>>,
+    next_gen: AtomicU64,
 }
 
 impl AgentBridge {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            next_gen: AtomicU64::new(1),
         }
     }
 
-    /// Spawn omp for a new session. If a session with this ID already exists it is
-    /// killed first (hot-reload / restart safety).
+    /// Spawn omp for a session. If a session with this id already exists
+    /// it is replaced atomically; the previous child is reaped on a
+    /// background thread so this never blocks.
     pub fn start_session(
         &self,
         session_id: String,
         cwd: Option<String>,
         app: AppHandle,
     ) -> Result<(), String> {
-        self.stop_session_inner(&session_id);
-
+        // Spawn first — if this fails, the existing session (if any) stays
+        // intact rather than getting torn down for nothing.
         let mut child = spawn_omp(cwd.as_deref())?;
-
         let stdin  = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
+        let stdin_arc = Arc::new(Mutex::new(stdin));
+        let gen = self.next_gen.fetch_add(1, Ordering::SeqCst);
 
-        {
-            let mut sessions = self.sessions.lock().unwrap();
-            sessions.insert(
+        // Atomic install: drop any previous BridgeInner under the lock,
+        // install the new one in the same critical section.
+        let prev = {
+            let mut s = self.sessions.lock().map_err(|_| "lock poisoned".to_string())?;
+            s.insert(
                 session_id.clone(),
-                BridgeInner { stdin: Some(stdin), child: Some(child) },
-            );
+                BridgeInner { gen, stdin: Some(stdin_arc), child: Some(child) },
+            )
+        };
+        if let Some(mut prev) = prev {
+            prev.stdin = None;
+            if let Some(mut c) = prev.child.take() {
+                // Reap off-thread so the Tauri command thread is never
+                // blocked by a stuck process.
+                thread::spawn(move || { let _ = c.kill(); let _ = c.wait(); });
+            }
         }
 
-        // Stdout reader — emits "agent://line/{session_id}" for each JSON line
-        let sessions_out  = self.sessions.clone();
-        let sid_out       = session_id.clone();
-        let app_out       = app.clone();
-        thread::spawn(move || {
-            let reader     = BufReader::new(stdout);
-            let line_event = format!("agent://line/{sid_out}");
-            let exit_event = format!("agent://exit/{sid_out}");
-            for line in reader.lines() {
-                match line {
-                    Ok(l) if !l.trim().is_empty() => {
-                        app_out.emit(&line_event, l).ok();
-                    }
-                    Ok(_)  => {}          // blank line — skip
-                    Err(_) => break,      // IO error — process exited
-                }
-            }
-            // Clear handles so send() fails cleanly after process death
-            if let Ok(mut sessions) = sessions_out.lock() {
-                if let Some(inner) = sessions.get_mut(&sid_out) {
-                    inner.stdin = None;
-                    inner.child = None;
-                }
-            }
-            app_out.emit(&exit_event, ()).ok();
-        });
-
-        // Stderr reader — logs to terminal only
-        let sid_err = session_id.clone();
-        thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                if let Ok(l) = line {
-                    eprintln!("[omp/{sid_err}] {l}");
-                }
-            }
-        });
-
+        spawn_stdout_reader(self.sessions.clone(), session_id.clone(), gen, app.clone(), stdout);
+        spawn_stderr_reader(session_id, stderr);
         Ok(())
     }
 
     pub fn stop_session(&self, session_id: &str) {
-        self.stop_session_inner(session_id);
-    }
-
-    pub fn send(&self, session_id: &str, line: &str) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().map_err(|_| "lock poisoned".to_string())?;
-        match sessions.get_mut(session_id) {
-            Some(inner) => match inner.stdin.as_mut() {
-                Some(stdin) => writeln!(stdin, "{line}").map_err(|e| e.to_string()),
-                None        => Err("agent not running".to_string()),
-            },
-            None => Err(format!("session '{session_id}' not found")),
-        }
-    }
-
-    fn stop_session_inner(&self, session_id: &str) {
-        if let Ok(mut sessions) = self.sessions.lock() {
-            if let Some(mut inner) = sessions.remove(session_id) {
-                inner.stdin = None;
-                if let Some(mut child) = inner.child.take() {
-                    child.kill().ok();
-                    child.wait().ok();
-                }
+        let removed = {
+            let mut s = match self.sessions.lock() { Ok(g) => g, Err(_) => return };
+            s.remove(session_id)
+        };
+        if let Some(mut inner) = removed {
+            inner.stdin = None;
+            if let Some(mut c) = inner.child.take() {
+                thread::spawn(move || { let _ = c.kill(); let _ = c.wait(); });
             }
         }
     }
+
+    /// Write a JSON line to the session's stdin. The map lock is held only
+    /// long enough to clone the per-session stdin Arc; the actual write
+    /// happens without the map lock so a blocked pipe never deadlocks
+    /// concurrent management calls.
+    pub fn send(&self, session_id: &str, line: &str) -> Result<(), String> {
+        let stdin_arc = {
+            let s = self.sessions.lock().map_err(|_| "lock poisoned".to_string())?;
+            match s.get(session_id) {
+                Some(inner) => inner.stdin.clone(),
+                None => return Err(format!("session '{session_id}' not found")),
+            }
+        };
+        let stdin_arc = stdin_arc.ok_or_else(|| "agent not running".to_string())?;
+
+        // Strip any trailing CR/LF the caller appended. The omp RPC parser
+        // is line-framed — a stray blank line corrupts the stream and a
+        // newline embedded inside `line` would split one logical message
+        // across two frames. We only handle the trailing case here; the
+        // frontend is responsible for not embedding raw newlines in JSON
+        // (which is invalid JSON anyway).
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+
+        let mut stdin = stdin_arc.lock().map_err(|_| "stdin lock poisoned".to_string())?;
+        writeln!(*stdin, "{trimmed}").map_err(|e| e.to_string())?;
+        // ChildStdin is unbuffered, but flush() costs nothing and keeps
+        // the contract explicit.
+        stdin.flush().map_err(|e| e.to_string())
+    }
+}
+
+impl Default for AgentBridge {
+    fn default() -> Self { Self::new() }
 }
 
 impl Drop for AgentBridge {
@@ -121,47 +133,136 @@ impl Drop for AgentBridge {
         if let Ok(mut sessions) = self.sessions.lock() {
             for (_, mut inner) in sessions.drain() {
                 inner.stdin = None;
-                if let Some(mut child) = inner.child.take() {
-                    child.kill().ok();
-                    child.wait().ok();
+                if let Some(mut c) = inner.child.take() {
+                    let _ = c.kill();
+                    let _ = c.wait();
                 }
             }
         }
     }
 }
 
-fn spawn_omp(cwd: Option<&str>) -> Result<Child, String> {
-    let mut cmd = Command::new("omp");
-    cmd.args(["--mode", "rpc"])
-       .stdin(Stdio::piped())
-       .stdout(Stdio::piped())
-       .stderr(Stdio::piped());
-    if let Some(dir) = cwd {
-        if !dir.is_empty() {
-            cmd.current_dir(dir);
+fn spawn_stdout_reader(
+    sessions: Arc<Mutex<HashMap<String, BridgeInner>>>,
+    sid: String,
+    gen: u64,
+    app: AppHandle,
+    stdout: ChildStdout,
+) {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let line_event = format!("agent://line/{sid}");
+        let exit_event = format!("agent://exit/{sid}");
+        let mut buf: Vec<u8> = Vec::with_capacity(8192);
+
+        loop {
+            buf.clear();
+            match read_until_capped(&mut reader, b'\n', &mut buf, MAX_LINE_BYTES) {
+                Ok(0)  => break, // EOF — pipe closed, child exited
+                Ok(_)  => {}
+                Err(_) => break, // pipe error
+            }
+            // Strip trailing CR/LF.
+            while matches!(buf.last(), Some(b'\n') | Some(b'\r')) { buf.pop(); }
+            if buf.is_empty() { continue; }
+            let text = String::from_utf8_lossy(&buf).into_owned();
+            let _ = app.emit(&line_event, text);
         }
-    }
 
-    if let Ok(child) = cmd.spawn() {
-        return Ok(child);
-    }
+        // Process exited. Only remove our own map entry — if start_session
+        // already replaced this session with a fresh incarnation (higher
+        // generation), leave it alone.
+        if let Ok(mut s) = sessions.lock() {
+            if let Some(inner) = s.get(&sid) {
+                if inner.gen == gen {
+                    s.remove(&sid);
+                }
+            }
+        }
+        let _ = app.emit(&exit_event, "");
+    });
+}
 
-    #[cfg(target_os = "windows")]
-    {
-        let mut cmd2 = Command::new("cmd");
-        cmd2.args(["/C", "omp", "--mode", "rpc"])
+fn spawn_stderr_reader(sid: String, stderr: ChildStderr) {
+    thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            eprintln!("[omp/{sid}] {line}");
+        }
+    });
+}
+
+/// `BufRead::read_until` with a hard byte cap. Once the cap is reached
+/// further bytes are consumed off the pipe but discarded — readers never
+/// allocate unbounded memory on runaway output. Returns the total number
+/// of bytes consumed (including the delimiter).
+fn read_until_capped<R: BufRead>(
+    r: &mut R,
+    delim: u8,
+    out: &mut Vec<u8>,
+    max: usize,
+) -> std::io::Result<usize> {
+    let mut total = 0;
+    loop {
+        let avail = match r.fill_buf() {
+            Ok(b) => b,
+            Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if avail.is_empty() { return Ok(total); }
+        let used = match avail.iter().position(|&b| b == delim) {
+            Some(i) => {
+                let room = max.saturating_sub(out.len());
+                let take = (i + 1).min(room);
+                out.extend_from_slice(&avail[..take]);
+                let used = i + 1;
+                r.consume(used);
+                total += used;
+                return Ok(total);
+            }
+            None => {
+                let room = max.saturating_sub(out.len());
+                let take = avail.len().min(room);
+                if take > 0 { out.extend_from_slice(&avail[..take]); }
+                avail.len()
+            }
+        };
+        r.consume(used);
+        total += used;
+    }
+}
+
+fn spawn_omp(cwd: Option<&str>) -> Result<Child, String> {
+    // On Windows, Command::new resolves bare "omp" against PATH and
+    // PATHEXT (.exe etc.) via CreateProcess. We try the explicit ".exe"
+    // name first because some systems have weird PATHEXT handling, then
+    // fall back to bare "omp". We do NOT use `cmd /C` as a fallback —
+    // it leaves the omp process orphaned when the parent cmd.exe is
+    // killed, since Windows does not propagate process termination to
+    // descendants without a Job Object.
+    let candidates: &[&str] = if cfg!(windows) { &["omp.exe", "omp"] } else { &["omp"] };
+    let mut last_err = String::from("no candidates tried");
+    for name in candidates {
+        let mut cmd = Command::new(name);
+        cmd.args(["--mode", "rpc"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if let Some(dir) = cwd {
             if !dir.is_empty() {
-                cmd2.current_dir(dir);
+                cmd.current_dir(dir);
             }
         }
-        return cmd2.spawn()
-            .map_err(|e| format!("failed to spawn omp: {e}"));
+        match cmd.spawn() {
+            Ok(child) => return Ok(child),
+            Err(e) => {
+                let msg = format!("{name}: {e}");
+                eprintln!("[omp-desktop] spawn attempt failed: {msg}");
+                last_err = msg;
+            }
+        }
     }
-
-    #[allow(unreachable_code)]
-    Err("omp not found in PATH.".to_string())
+    Err(format!(
+        "failed to spawn omp ({last_err}). Make sure omp is installed and on PATH."
+    ))
 }

@@ -208,9 +208,18 @@
 
     const { listen } = window.__TAURI__.event;
     const ulLine = await listen(`agent://line/${id}`, ev => handleLine(ev.payload));
-    const ulExit = await listen(`agent://exit/${id}`, () => {
-      console.warn(`[live] session '${id}' omp process exited`);
+    const ulExit = await listen(`agent://exit/${id}`, ev => {
+      const reason = (ev?.payload && String(ev.payload).trim()) || "";
+      console.warn(`[live] session '${id}' omp process exited${reason ? ": " + reason : ""}`);
       state.isStreaming = false;
+      if (reason) {
+        state.messages.push({
+          kind: "assistant",
+          time: _timeNow(),
+          text: `**Agent process exited:** ${reason}`,
+          completed: true,
+        });
+      }
       notify();
     });
     activeListeners = [ulLine, ulExit];

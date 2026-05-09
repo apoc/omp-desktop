@@ -1,7 +1,9 @@
 mod agent;
 
 use agent::AgentBridge;
-use tauri::{Manager, State};
+use std::thread;
+use std::time::Duration;
+use tauri::{Emitter, Manager, State};
 
 /// Write a JSON command to a specific session's omp stdin.
 #[tauri::command]
@@ -10,7 +12,7 @@ fn send_command(session_id: String, json: String, bridge: State<'_, AgentBridge>
 }
 
 /// Start an omp process for a new tab session.
-/// cwd: absolute path to the project folder (empty string = omp's default).
+/// `cwd`: absolute path to the project folder (empty string = omp's default).
 #[tauri::command]
 fn start_session(
     session_id: String,
@@ -32,12 +34,18 @@ fn stop_session(session_id: String, bridge: State<'_, AgentBridge>) {
 #[tauri::command]
 fn open_project(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
+    // Use into_path() rather than to_string() so we get a real PathBuf
+    // and convert through to_string_lossy(). Avoids platform-specific
+    // FilePath::to_string formatting (URL encoding, UNC prefix quirks)
+    // that could diverge from what std::fs and the rest of the app
+    // expect downstream.
     let path = app
         .dialog()
         .file()
         .set_title("Open Project Folder")
         .blocking_pick_folder()
-        .map(|p| p.to_string());
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned());
     Ok(path)
 }
 
@@ -60,8 +68,19 @@ pub fn run() {
             // Start the default session (no cwd = omp's working directory).
             // The frontend activates this session on load via OMP_BRIDGE.activateSession("default").
             let bridge = app.state::<AgentBridge>();
-            if let Err(e) = bridge.start_session("default".into(), None, app.handle().clone()) {
+            let app_handle = app.handle().clone();
+            if let Err(e) = bridge.start_session("default".into(), None, app_handle.clone()) {
                 eprintln!("[omp-desktop] failed to start default session: {e}");
+                // Defer the exit emit so the frontend has time to attach
+                // its agent://exit/default listener (which runs from
+                // activateSession on load). 1.5s is generous; if listeners
+                // somehow miss it, the next send_command surfaces the
+                // "session not found" error and the user can retry.
+                let err_msg = e;
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(1500));
+                    let _ = app_handle.emit("agent://exit/default", err_msg);
+                });
             }
             Ok(())
         })
