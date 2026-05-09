@@ -35,6 +35,7 @@
   line-height: 1.5;
 }
 .composer-input textarea::placeholder { color: var(--fg-4); }
+.composer-input textarea:focus-visible { outline: none; }
 
 .composer-foot {
   display: flex; align-items: center; gap: 6px;
