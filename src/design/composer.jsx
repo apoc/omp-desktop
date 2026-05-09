@@ -5,7 +5,7 @@
 const { Icon } = window;
 
 // ── The composer (input + plan/steer modes + send) ────────────────────
-function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, microcopy }) {
+function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, microcopy }) {
   const [text, setText] = React.useState("");
   const [showSlash, setShowSlash] = React.useState(false);
   const taRef = React.useRef(null);
@@ -73,7 +73,13 @@ function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, curr
           <textarea
             ref={taRef}
             rows="1"
-            placeholder={isStreaming ? microcopy.streamingTip : "what should we ship?  ·  / for commands  ·  ⌘K for the bridge"}
+            placeholder={
+              planMode && !isStreaming
+                ? (microcopy?.planTip ?? "describe what to build, or give feedback on the plan…")
+                : isStreaming
+                  ? microcopy?.streamingTip
+                  : (microcopy?.paletteTip ?? "what should we ship?  ·  / for commands  ·  ⌘K for the bridge")
+            }
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKey}
@@ -90,9 +96,17 @@ function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, curr
             <Icon name="stop" size={10} /> abort <span className="kbd">⎋</span>
           </button>
         ) : (
-          <button className="btn primary" onClick={send} disabled={!text.trim()}>
-            send <Icon name="arrow" size={11} />
-          </button>
+          <>
+            {planMode && (
+              <button className="btn outlined" onClick={onApprove}
+                style={{ color: "var(--amber)", borderColor: "color-mix(in oklab, var(--amber) 40%, var(--line))" }}>
+                <Icon name="play" size={10} color="var(--amber)" /> approve
+              </button>
+            )}
+            <button className="btn primary" onClick={send} disabled={!text.trim()}>
+              {planMode ? "send feedback" : "send"} <Icon name="arrow" size={11} />
+            </button>
+          </>
         )}
       </div>
 

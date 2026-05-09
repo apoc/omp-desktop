@@ -38,10 +38,8 @@ function App() {
   const [bridgeOpen, setBridgeOpen] = React.useState(false);
   const [bridgeView, setBridgeView] = React.useState("commands");
   const [planOpen,   setPlanOpen]   = React.useState(false);
-  const [planPhase,  setPlanPhase]  = React.useState("intent");
-  const [planText,   setPlanText]   = React.useState("");
-  const [lastIntent, setLastIntent] = React.useState("");
   const [planMode,   setPlanMode]   = React.useState(false);
+  const planStartedRef = React.useRef(false); // true after first send in plan mode
 
   // ── Live data (all per-session — driven by OMP_BRIDGE.onUpdate) ───────────
   const [messages,      setMessages]      = React.useState([]);
@@ -60,9 +58,6 @@ function App() {
   const [sessions,        setSessions]       = React.useState([]);
   const [activeSessionId, setActiveSessionId] = React.useState("");
 
-  // Ref so onUpdate (mounted once) can read current planPhase without stale closure
-  const planPhaseRef = React.useRef(planPhase);
-  React.useEffect(() => { planPhaseRef.current = planPhase; }, [planPhase]);
 
   // ── Subscribe to bridge ───────────────────────────────────────────────────
   React.useEffect(() => {
@@ -85,17 +80,7 @@ function App() {
       setSessions(snap.sessions ?? []);
       if (snap.activeSessionId) setActiveSessionId(snap.activeSessionId);
 
-      // running → done: only fires when agent finishes all tasks
-      if (snap.kanban.length > 0 && planPhaseRef.current === "running") {
-        const derived = window.derivePlanPhase?.(
-          snap.kanban.map(c => ({
-            tasks: c.tasks.map(tk => ({
-              status: tk.status === "done" ? "completed" : tk.status,
-            })),
-          }))
-        );
-        if (derived === "done") setPlanPhase("done");
-      }
+      // kanban updated — PlanKanban derives running/done internally
     });
     return unsub;
   }, [bridge]);
@@ -124,20 +109,6 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Auto-advance drafting → review when agent finishes streaming
-  React.useEffect(() => {
-    if (!streaming && planPhase === "drafting") setPlanPhase("review");
-  }, [streaming]);
-
-  // Track plan text from last assistant message while in plan mode
-  React.useEffect(() => {
-    if (!planMode) return;
-    const last = messages.length ? messages[messages.length - 1] : null;
-    if (!last || last.kind !== "assistant") return;
-    if (last.streaming) { setPlanText(last.text ?? ""); return; }
-    const txt = (last.blocks ?? []).filter(b => b.type === "text").map(b => b.text).join("\n\n");
-    if (txt) setPlanText(txt);
-  }, [messages, planMode]);
 
   // ── Derived values ────────────────────────────────────────────────────────
   const activeProject = sessions.find(s => s.id === activeSessionId) ?? sessions[0] ?? EMPTY_PROJECT;
@@ -151,9 +122,19 @@ function App() {
   );
 
   // ── Handlers ──────────────────────────────────────────────────────────────
+  const intentFraming = intent =>
+    `Please draft a plan for the following task. Write it in Markdown with clear sections: overview, approach, key steps, and risks. Do not start implementing yet — draft only for my review.\n\n---\n\n${intent.trim()}`;
+
+  const APPROVAL_PROMPT = "Plan approved. Please proceed to execute it. Use your todo_write tool to track tasks as you go.";
+
   const handleSend = text => {
     if (!text.trim()) return;
-    if (bridge?.isConnected) bridge.send(text);
+    let msg = text.trim();
+    if (planMode && !planStartedRef.current) {
+      planStartedRef.current = true;
+      msg = intentFraming(text.trim());
+    }
+    if (bridge?.isConnected) bridge.send(msg);
     else setMessages(prev => [...prev, { kind: "user", time: _timeNow(), text }]);
   };
 
@@ -162,7 +143,7 @@ function App() {
   const handlePickModel = m => { setModelState(m); bridge?.setModel(m); };
 
   const handleCommand = c => {
-    if      (c.name === "plan")     { setPlanMode(true); setPlanPhase("intent"); setPlanOpen(true); }
+    if      (c.name === "plan")     { setPlanMode(true); planStartedRef.current = false; }
     else if (c.name === "todo")     { setPlanOpen(true); }
     else if (c.name === "compact")  { bridge?.compact(); }
     else if (c.name === "export")   { bridge?.exportHtml(); }
@@ -176,43 +157,11 @@ function App() {
     bridge?.setThinking(next);
   };
 
-  const intentFraming = intent =>
-    `Please draft a plan for the following task. Write it in Markdown with clear sections: overview, approach, key steps, and risks. Do not start implementing yet — draft only for my review.\n\n---\n\n${intent.trim()}`;
-
-  const reviewFraming = (pText, annotations, overall) => {
-    const lineComments = Object.entries(annotations)
-      .sort(([a],[b]) => Number(a)-Number(b))
-      .map(([,{raw,comment}]) => {
-        const quoted = raw.split('\n').map(l => `> ${l}`).join('\n');
-        return `${quoted}\n→ ${comment.trim()}`;
-      }).join('\n\n');
-    const sections = [
-      'Please revise the plan based on this feedback.',
-      lineComments && 'Line comments:\n' + lineComments,
-      overall.trim() && 'Overall: ' + overall.trim(),
-      'Provide the full revised plan in Markdown.',
-    ].filter(Boolean);
-    return sections.join('\n\n');
-  };
-
-  const APPROVAL_PROMPT = 'Plan approved. Please proceed to execute it. Use your todo_write tool to track tasks as you go.';
-
-  const handleSubmitIntent = intent => {
-    setLastIntent(intent);
-    setPlanText("");
-    setPlanPhase("drafting");
-    bridge?.send(intentFraming(intent));
-  };
-
-  const handleSubmitReview = (annotations, overall, pText) => {
-    setPlanText("");
-    setPlanPhase("drafting");
-    bridge?.followUp(reviewFraming(pText, annotations, overall));
-  };
-
   const handleApprovePlan = () => {
-    setPlanPhase("running");
     bridge?.followUp(APPROVAL_PROMPT);
+    setPlanMode(false);
+    planStartedRef.current = false;
+    setPlanOpen(true); // open the kanban to track execution
   };
 
   // Tab select — switches the active session; bridge resets all per-session state
@@ -270,7 +219,7 @@ function App() {
                 onTogglePlan={() => {
                   const next = !planMode;
                   setPlanMode(next);
-                  if (next) { setPlanPhase("intent"); setPlanOpen(true); }
+                  if (!next) planStartedRef.current = false;
                 }}
                 onOpenCmd={() => openBridge("commands")}
                 onOpenModel={() => openBridge("models")}
@@ -279,6 +228,7 @@ function App() {
                 onCycleThinking={cycleThinking}
                 isStreaming={streaming}
                 onAbort={handleAbort}
+                onApprove={handleApprovePlan}
                 microcopy={data.microcopy}
               />
               <StatusBar
@@ -322,16 +272,8 @@ function App() {
         <PlanKanban
           kanban={kanban}
           planMeta={planMeta}
-          phase={planPhase}
-          onPhaseChange={setPlanPhase}
           onClose={() => setPlanOpen(false)}
-          planText={planText}
-          isStreaming={streaming}
-          onSubmitIntent={handleSubmitIntent}
-          onSubmitReview={handleSubmitReview}
-          onApprove={handleApprovePlan}
           onAbort={handleAbort}
-          initialIntent={lastIntent}
         />
       )}
 

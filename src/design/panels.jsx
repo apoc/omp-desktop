@@ -1,245 +1,17 @@
 /* ═════════════════════════════════════════════════════════════════════
-   panels.jsx — Plan surface: intent → drafting → review → running → done
+   panels.jsx — Kanban execution surface (running → done)
+   Opened after plan approval; populated by agent's todo_write tool.
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TOOL_META, MarkdownContent } = window;
-
-// ── Intent phase ─────────────────────────────────────────────────────
-function IntentPhase({ onSubmit, onClose, initialIntent = "" }) {
-  const [text, setText] = React.useState(initialIntent);
-  const ref = React.useRef(null);
-  React.useEffect(() => { ref.current?.focus(); }, []);
-  const submit = () => { if (text.trim()) onSubmit(text.trim()); };
-  return (
-    <div className="plan-intent-wrap">
-      <div className="plan-intent-card">
-        <textarea
-          ref={ref}
-          className="plan-intent-textarea selectable"
-          placeholder="Describe what you want to build or change. Be as specific as you like — the agent will draft a plan before writing any code."
-          value={text}
-          onChange={e => setText(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } }}
-        />
-        <div className="plan-intent-meta">
-          <span className="mono" style={{ color: "var(--fg-4)" }}>shift+↵ newline</span>
-          <span className="mono" style={{ color: "var(--fg-4)" }}>⌘↵ draft plan</span>
-        </div>
-      </div>
-      <div className="plan-intent-foot">
-        <button className="btn ghost" onClick={onClose}>cancel</button>
-        <button className="btn primary" onClick={submit} disabled={!text.trim()}>
-          <Icon name="plan" size={11} /> draft plan
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ── Drafting phase ────────────────────────────────────────────────────
-function DraftingPhase({ text, onAbort }) {
-  return (
-    <div className="plan-draft-wrap">
-      <div className="plan-draft-status">
-        <span className="dot live" />
-        <span className="mono" style={{ color: "var(--lilac)" }}>drafting plan…</span>
-        <button className="btn ghost" style={{ marginLeft: "auto", height: 22 }} onClick={onAbort}>
-          <Icon name="stop" size={10} /> abort
-        </button>
-      </div>
-      <div className="plan-draft-scroll">
-        <MarkdownContent text={text || ""} streaming={true} />
-      </div>
-    </div>
-  );
-}
-
-// ── Block segmentation ────────────────────────────────────────────────
-function segmentPlan(text) {
-  if (!text) return [];
-  try {
-    if (!window.marked) throw new Error("marked unavailable");
-    const tokens = window.marked.lexer(text);
-    return tokens
-      .filter(t => t.type !== "space")
-      .map((t, i) => ({
-        index: i,
-        kind:  t.type,
-        raw:   t.raw ?? "",
-        html:  window.marked.parser([t]),
-      }));
-  } catch {
-    return [{ index: 0, kind: "paragraph", raw: text, html: `<pre>${text.replace(/</g,"&lt;")}</pre>` }];
-  }
-}
-
-// ── Annotable plan ────────────────────────────────────────────────────
-function AnnotablePlan({ text, annotations, onAnnotate, selectedBlock, onSelectBlock }) {
-  const blocks = React.useMemo(() => segmentPlan(text), [text]);
-
-  if (blocks.length === 0) {
-    return (
-      <div className="plan-empty-state">
-        <Icon name="info" size={14} color="var(--fg-4)" />
-        <span className="mono" style={{ color: "var(--fg-4)" }}>the agent didn't produce a plan. submit feedback or edit your intent.</span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="plan-annot-blocks">
-      {blocks.map(block => {
-        const ann    = annotations[block.index];
-        const isOpen = selectedBlock === block.index;
-        const isHr   = block.kind === "hr";
-        return (
-          <div
-            key={block.index}
-            className={`plan-block${isOpen ? " is-selected" : ""}${ann ? " has-comment" : ""}`}
-          >
-            <div className="plan-block-body md-content"
-              dangerouslySetInnerHTML={{ __html: block.html }} />
-            {!isHr && (
-              <button
-                className="plan-block-add"
-                title={ann ? "edit comment" : "add comment"}
-                onClick={() => onSelectBlock(isOpen ? null : block.index)}
-              >
-                {ann
-                  ? <Icon name="edit" size={9} color="var(--amber)" />
-                  : <Icon name="plus" size={9} color="var(--fg-3)" />}
-              </button>
-            )}
-            {ann && !isOpen && (
-              <div className="plan-comment-chip" onClick={() => onSelectBlock(block.index)}>
-                <Icon name="edit" size={8} color="var(--lilac)" />
-                <span>{ann.comment}</span>
-              </div>
-            )}
-            {isOpen && (
-              <CommentForm
-                block={block}
-                initial={ann?.comment ?? ""}
-                onSave={(comment) => {
-                  onAnnotate(block.index, comment ? { raw: block.raw, comment } : null);
-                  onSelectBlock(null);
-                }}
-                onCancel={() => onSelectBlock(null)}
-              />
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function CommentForm({ block, initial, onSave, onCancel }) {
-  const [text, setText] = React.useState(initial);
-  const ref = React.useRef(null);
-  React.useEffect(() => { ref.current?.focus(); }, []);
-  return (
-    <div className="plan-comment-form">
-      <div className="plan-comment-form-quote mono">{block.raw.split("\n")[0].trim().slice(0, 80)}{block.raw.length > 80 ? "…" : ""}</div>
-      <textarea
-        ref={ref}
-        className="plan-comment-form-area"
-        value={text}
-        placeholder="your comment…"
-        onChange={e => setText(e.target.value)}
-        onKeyDown={e => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onSave(text.trim()); }
-          if (e.key === "Escape") { e.stopPropagation(); onCancel(); }
-        }}
-      />
-      <div className="plan-comment-form-foot">
-        {initial && (
-          <button className="btn ghost" style={{ color: "var(--rose)" }} onClick={() => onSave(null)}>
-            <Icon name="trash" size={9} /> remove
-          </button>
-        )}
-        <div style={{ flex: 1 }} />
-        <button className="btn ghost" onClick={onCancel}>cancel</button>
-        <button className="btn outlined" onClick={() => onSave(text.trim())}
-          disabled={!text.trim() && !initial}>
-          save <span className="kbd" style={{ marginLeft: 2 }}>⌘↵</span>
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ── Review phase ──────────────────────────────────────────────────────
-function ReviewPhase({ text, annotations, onAnnotate, onSubmitReview, onApprove }) {
-  const [selectedBlock, setSelectedBlock] = React.useState(null);
-  const [overall, setOverall] = React.useState("");
-  const commentCount = Object.keys(annotations).length;
-  const canSubmit = commentCount > 0 || overall.trim().length > 0;
-
-  // ⌘↵ = approve (when no comment form open); ⌘⇧↵ = submit review
-  React.useEffect(() => {
-    const onKey = e => {
-      if (!e.metaKey && !e.ctrlKey) return;
-      if (e.key === "Enter" && !e.shiftKey && selectedBlock === null) {
-        e.preventDefault(); onApprove();
-      }
-      if (e.key === "Enter" && e.shiftKey && canSubmit) {
-        e.preventDefault(); onSubmitReview(annotations, overall, text);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [selectedBlock, canSubmit, annotations, overall, text]);
-
-  return (
-    <div className="plan-review-wrap">
-      <div className="plan-review-scroll">
-        <AnnotablePlan
-          text={text}
-          annotations={annotations}
-          onAnnotate={onAnnotate}
-          selectedBlock={selectedBlock}
-          onSelectBlock={setSelectedBlock}
-        />
-      </div>
-      <div className="plan-review-foot">
-        <div className="plan-overall">
-          <span className="mono" style={{ color: "var(--fg-4)", fontSize: "var(--d-text-xs)", marginBottom: 4, display: "block" }}>overall comment</span>
-          <textarea
-            className="plan-overall-area"
-            placeholder="anything else to add? (optional)"
-            value={overall}
-            onChange={e => setOverall(e.target.value)}
-          />
-        </div>
-        <div className="plan-review-actions">
-          <span className="mono" style={{ color: "var(--fg-4)", fontSize: "var(--d-text-xs)" }}>
-            {commentCount > 0 ? `${commentCount} comment${commentCount !== 1 ? "s" : ""}` : "no comments"}
-          </span>
-          <div style={{ flex: 1 }} />
-          <button className="btn outlined" onClick={() => onSubmitReview(annotations, overall, text)} disabled={!canSubmit}>
-            <Icon name="refresh" size={10} /> submit review
-          </button>
-          <button className="btn primary" onClick={onApprove}>
-            <Icon name="play" size={10} /> approve &amp; execute
-            <span className="kbd" style={{ marginLeft: 4 }}>⌘↵</span>
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+const { Icon, TOOL_META } = window;
 
 // ── Phase pill ────────────────────────────────────────────────────────
 function PhasePill({ phase }) {
   const map = {
-    intent:   { color: "var(--fg-2)",    icon: "edit",     label: "intent"   },
-    drafting: { color: "var(--lilac)",   icon: "thinking", label: "drafting" },
-    review:   { color: "var(--amber)",   icon: "edit",     label: "review"   },
-    running:  { color: "var(--cyan)",    icon: "play",     label: "running"  },
-    done:     { color: "var(--accent)",  icon: "check",    label: "done"     },
+    running: { color: "var(--cyan)",   icon: "play",  label: "running" },
+    done:    { color: "var(--accent)", icon: "check", label: "done"    },
   };
-  const m = map[phase] ?? map.intent;
+  const m = map[phase] ?? map.running;
   return (
     <span className="chip" style={{
       color: m.color,
@@ -251,41 +23,15 @@ function PhasePill({ phase }) {
   );
 }
 
-// ── Plan kanban (orchestrator) ────────────────────────────────────────
-function PlanKanban({
-  kanban, planMeta, onClose,
-  phase = "intent", onPhaseChange,
-  planText = "", isStreaming = false,
-  onSubmitIntent, onSubmitReview, onApprove, onAbort,
-  initialIntent = "",
-  // legacy compat
-  mode, onMode,
-}) {
-  // legacy prop shim
-  const currentPhase = phase ?? mode ?? "intent";
-  const setPhase     = onPhaseChange ?? onMode ?? (() => {});
-
-  const [annotations, setAnnotations] = React.useState({});
-
-  // Clear annotations when entering a new drafting cycle
-  React.useEffect(() => {
-    if (currentPhase === "drafting") setAnnotations({});
-  }, [currentPhase]);
-
-  const handleAnnotate = (idx, value) => {
-    setAnnotations(prev => {
-      const next = { ...prev };
-      if (value === null) delete next[idx]; else next[idx] = value;
-      return next;
-    });
-  };
-
+// ── Plan kanban ───────────────────────────────────────────────────────
+function PlanKanban({ kanban, planMeta, onClose, onAbort }) {
   const total  = kanban.reduce((n, c) => n + c.tasks.length, 0);
   const done   = kanban.reduce((n, c) => n + c.tasks.filter(t => t.status === "done").length, 0);
   const inProg = kanban.reduce((n, c) => n + c.tasks.filter(t => t.status === "in_progress").length, 0);
 
-  const titles = { intent: "new plan", drafting: "drafting plan", review: "review plan", running: "executing plan", done: "plan complete" };
-  const annotCount = Object.keys(annotations).length;
+  // Derive phase from task data — no external state needed
+  const allDone = total > 0 && done === total;
+  const phase   = allDone ? "done" : "running";
 
   return (
     <div className="kanban-scrim" onClick={onClose}>
@@ -296,18 +42,15 @@ function PlanKanban({
           <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Icon name="plan" size={16} color="var(--accent)" />
-              <span style={{ fontSize: "var(--d-text-lg)", fontWeight: 600 }}>{titles[currentPhase] ?? "plan"}</span>
-              <PhasePill phase={currentPhase} />
-              {(currentPhase === "running" || currentPhase === "done") && (
-                <span className="chip muted mono">{done}/{total}{inProg ? ` · ${inProg} live` : ""}</span>
-              )}
-              {currentPhase === "review" && annotCount > 0 && (
-                <span className="chip" style={{ color: "var(--amber)", borderColor: "color-mix(in oklab, var(--amber) 30%, var(--line))" }}>
-                  {annotCount} comment{annotCount !== 1 ? "s" : ""}
-                </span>
-              )}
+              <span style={{ fontSize: "var(--d-text-lg)", fontWeight: 600 }}>
+                {phase === "done" ? "plan complete" : "executing plan"}
+              </span>
+              <PhasePill phase={phase} />
+              <span className="chip muted mono">
+                {done}/{total}{inProg ? ` · ${inProg} live` : ""}
+              </span>
             </div>
-            {planMeta?.ask && (currentPhase === "review" || currentPhase === "running" || currentPhase === "done") && (
+            {planMeta?.ask && (
               <div className="plan-ask selectable">
                 <span className="mono" style={{ color: "var(--fg-4)" }}>ask &nbsp;</span>
                 <span style={{ color: "var(--fg-2)" }}>{planMeta.ask}</span>
@@ -319,71 +62,61 @@ function PlanKanban({
           </button>
         </div>
 
-        {/* Phase body */}
-        {currentPhase === "intent" && (
-          <IntentPhase
-            onSubmit={onSubmitIntent}
-            onClose={onClose}
-            initialIntent={initialIntent}
-          />
+        {/* Risks */}
+        {planMeta?.risks?.length > 0 && (
+          <div className="plan-risks">
+            <span className="mono" style={{ color: "var(--amber)" }}>risks</span>
+            {planMeta.risks.map((r, i) => (
+              <span key={i} className="chip" style={{
+                color: `var(--${r.tone})`,
+                borderColor: `color-mix(in oklab, var(--${r.tone}) 30%, var(--line))`,
+                background:  `color-mix(in oklab, var(--${r.tone}) 8%, transparent)`,
+              }}>{r.text}</span>
+            ))}
+          </div>
         )}
 
-        {currentPhase === "drafting" && (
-          <DraftingPhase text={planText} onAbort={onAbort} />
-        )}
+        {/* Progress rail */}
+        <div className="kanban-progress">
+          <div className="kanban-progress-fill"
+            style={{ width: total ? `${(done / total) * 100}%` : "0%" }} />
+        </div>
 
-        {currentPhase === "review" && (
-          <ReviewPhase
-            text={planText}
-            annotations={annotations}
-            onAnnotate={handleAnnotate}
-            onSubmitReview={onSubmitReview}
-            onApprove={onApprove}
-          />
-        )}
-
-        {(currentPhase === "running" || currentPhase === "done") && (
-          <>
-            {planMeta?.risks?.length > 0 && (
-              <div className="plan-risks">
-                <span className="mono" style={{ color: "var(--amber)" }}>risks</span>
-                {planMeta.risks.map((r, i) => (
-                  <span key={i} className="chip" style={{
-                    color: `var(--${r.tone})`,
-                    borderColor: `color-mix(in oklab, var(--${r.tone}) 30%, var(--line))`,
-                    background:  `color-mix(in oklab, var(--${r.tone}) 8%, transparent)`,
-                  }}>{r.text}</span>
-                ))}
+        {/* Columns */}
+        <div className="kanban-cols">
+          {kanban.length > 0
+            ? kanban.map((col, idx) => (
+                <KanbanCol key={col.id} col={col} idx={idx} mode={phase} />
+              ))
+            : (
+              <div style={{ padding: "32px 24px", color: "var(--fg-4)", fontFamily: "var(--font-mono)", fontSize: "var(--d-text-sm)" }}>
+                waiting for agent to write tasks…
               </div>
-            )}
-            <div className="kanban-progress">
-              <div className="kanban-progress-fill" style={{ width: total ? `${(done/total)*100}%` : "0%" }} />
-            </div>
-            <div className="kanban-cols">
-              {kanban.map((col, idx) => (
-                <KanbanCol key={col.id} col={col} idx={idx} mode={currentPhase} />
-              ))}
-            </div>
-            <div className="kanban-foot mono">
-              {currentPhase === "running" && (
-                <>
-                  <span style={{ color: "var(--fg-4)" }}>agent is executing the plan</span>
-                  <div style={{ flex: 1 }} />
-                  <button className="btn danger" onClick={onAbort}>
-                    <Icon name="stop" size={10} /> abort
-                  </button>
-                </>
-              )}
-              {currentPhase === "done" && (
-                <>
-                  <span style={{ color: "var(--accent)" }}>plan complete · {done}/{total} tasks shipped</span>
-                  <div style={{ flex: 1 }} />
-                  <button className="btn primary" onClick={onClose}>close</button>
-                </>
-              )}
-            </div>
-          </>
-        )}
+            )
+          }
+        </div>
+
+        {/* Footer */}
+        <div className="kanban-foot mono">
+          {phase === "running" && (
+            <>
+              <span style={{ color: "var(--fg-4)" }}>agent is executing the plan</span>
+              <div style={{ flex: 1 }} />
+              <button className="btn danger" onClick={onAbort}>
+                <Icon name="stop" size={10} /> abort
+              </button>
+            </>
+          )}
+          {phase === "done" && (
+            <>
+              <span style={{ color: "var(--accent)" }}>
+                plan complete · {done}/{total} tasks shipped
+              </span>
+              <div style={{ flex: 1 }} />
+              <button className="btn primary" onClick={onClose}>close</button>
+            </>
+          )}
+        </div>
 
       </div>
     </div>
@@ -404,9 +137,6 @@ function KanbanCol({ col, idx, mode }) {
       {col.tasks.map((t, i) => (
         <KanbanCard key={t.id} task={t} idx={idx * 8 + i} mode={mode} />
       ))}
-      {mode === "running" && (
-        <button className="kanban-add">+ add task</button>
-      )}
     </div>
   );
 }
