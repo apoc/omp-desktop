@@ -60,6 +60,10 @@ function App() {
   const [sessions,        setSessions]       = React.useState([]);
   const [activeSessionId, setActiveSessionId] = React.useState("");
 
+  // Ref so onUpdate (mounted once) can read current planPhase without stale closure
+  const planPhaseRef = React.useRef(planPhase);
+  React.useEffect(() => { planPhaseRef.current = planPhase; }, [planPhase]);
+
   // ── Subscribe to bridge ───────────────────────────────────────────────────
   React.useEffect(() => {
     if (!bridge) return;
@@ -81,16 +85,16 @@ function App() {
       setSessions(snap.sessions ?? []);
       if (snap.activeSessionId) setActiveSessionId(snap.activeSessionId);
 
-      // Kanban phase tracking
-      if (snap.kanban.length > 0 && planMode) {
-        const phase = window.derivePlanPhase?.(
+      // running → done: only fires when agent finishes all tasks
+      if (snap.kanban.length > 0 && planPhaseRef.current === "running") {
+        const derived = window.derivePlanPhase?.(
           snap.kanban.map(c => ({
             tasks: c.tasks.map(tk => ({
               status: tk.status === "done" ? "completed" : tk.status,
             })),
           }))
-        ) ?? "review";
-        setPlanPhase(phase);
+        );
+        if (derived === "done") setPlanPhase("done");
       }
     });
     return unsub;
