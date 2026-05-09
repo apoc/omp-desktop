@@ -1,0 +1,1158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>OMP Desktop · Plan Mode · Design Mockup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+<style>
+/* ─────────────────────────────────────────────────────────────────────
+   Design tokens — aurora dark theme, hex-baked so this file is fully
+   self-contained and renders without the live styles.css/layout.css.
+   Values mirror src/design/styles.css (theme-aurora).
+   ─────────────────────────────────────────────────────────────────── */
+:root {
+  --font-sans: "Geist","Inter",-apple-system,BlinkMacSystemFont,"SF Pro Display",sans-serif;
+  --font-mono: "JetBrains Mono","Berkeley Mono",ui-monospace,"SF Mono",Menlo,monospace;
+
+  --bg-app:      #060709;
+  --bg-window:   #0B0D14;
+  --bg-surface:  #11141D;
+  --bg-elevated: #161A27;
+  --bg-input:    #0D1019;
+  --bg-hover:    #1A1F2E;
+
+  --line:        #1C2030;
+  --line-soft:   #161A27;
+  --line-bright: #2A3045;
+
+  --fg:   #E6E9F2;
+  --fg-2: #B7BDD0;
+  --fg-3: #7B8298;
+  --fg-4: #545A70;
+  --fg-5: #393E54;
+
+  --accent:      #8AF0C8;
+  --accent-deep: #2BD49A;
+  --accent-soft: rgba(138,240,200,0.12);
+  --accent-glow: rgba(138,240,200,0.45);
+
+  --magenta: #FF7AC6;
+  --cyan:    #6EE7FF;
+  --amber:   #FFC56E;
+  --lilac:   #B59BFF;
+  --rose:    #FF8896;
+  --lime:    #C4FF6E;
+
+  --r-1: 6px;
+  --r-2: 10px;
+  --r-3: 14px;
+  --r-pill: 999px;
+  --shadow-pop: 0 8px 24px -8px rgba(0,0,0,0.6), 0 1px 0 rgba(255,255,255,0.04) inset;
+  --shadow-card: 0 1px 0 rgba(255,255,255,0.04) inset, 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-window: 0 30px 90px -20px rgba(0,0,0,0.7), 0 8px 24px -8px rgba(0,0,0,0.5);
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  color-scheme: dark;
+}
+
+/* reset */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; min-height: 100%; }
+body {
+  background: var(--bg-app);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+button { font: inherit; color: inherit; cursor: pointer; }
+textarea, input { font: inherit; color: inherit; background: transparent; border: 0; outline: none; resize: none; }
+.mono { font-family: var(--font-mono); font-feature-settings: "ss01"; }
+.selectable, .selectable * { user-select: text; }
+
+/* aurora wash + grain — matches .app-backdrop */
+.backdrop {
+  position: fixed; inset: 0;
+  background:
+    radial-gradient(1200px 700px at 80% -10%, rgba(138,240,200,0.10), transparent 60%),
+    radial-gradient(900px 500px at -10% 100%, rgba(255,122,198,0.06), transparent 60%),
+    var(--bg-app);
+  z-index: -1;
+}
+
+/* page container */
+.mockup {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 48px 24px 96px;
+  display: flex; flex-direction: column; gap: 56px;
+}
+.mockup-head {
+  display: flex; flex-direction: column; gap: 6px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+.mockup-head h1 {
+  margin: 0;
+  font-size: 17px; font-weight: 600;
+  color: var(--fg);
+  letter-spacing: -0.01em;
+}
+.mockup-head p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+.mockup-head .crumb {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono); font-size: 10.5px;
+  color: var(--fg-4);
+  letter-spacing: 0.06em; text-transform: lowercase;
+}
+.mockup-head .dot {
+  width: 4px; height: 4px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+.phase-section { display: flex; flex-direction: column; gap: 14px; }
+.phase-caption {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+}
+.phase-caption .num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-4);
+  letter-spacing: 0.08em;
+}
+.phase-caption .title {
+  font-size: 14.5px; font-weight: 600;
+  color: var(--fg);
+}
+.phase-caption .desc {
+  font-size: 12px;
+  color: var(--fg-3);
+}
+.phase-caption .desc code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   Kanban panel chrome — mirrors layout.css (.kanban-scrim/.kanban)
+   ─────────────────────────────────────────────────────────────────── */
+.scrim {
+  position: relative;
+  background: rgba(6,7,9,0.65);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  padding: 28px;
+  display: flex; align-items: center; justify-content: center;
+  min-height: 760px;
+}
+.scrim::before {
+  content: ""; position: absolute; inset: 0;
+  background:
+    radial-gradient(600px 300px at 90% 0%, rgba(110,231,255,0.05), transparent 70%),
+    radial-gradient(500px 250px at 0% 100%, rgba(181,155,255,0.05), transparent 70%);
+  border-radius: var(--r-3);
+  pointer-events: none;
+}
+.kanban {
+  position: relative;
+  width: min(1100px, 100%);
+  height: 700px;
+  background: var(--bg-window);
+  border: 1px solid var(--line-bright);
+  border-radius: var(--r-3);
+  box-shadow: var(--shadow-window);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.kanban-head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.head-title {
+  display: flex; flex-direction: column; gap: 6px;
+  flex: 1; min-width: 0;
+}
+.head-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.head-name {
+  font-size: 14.5px; font-weight: 600;
+  color: var(--fg);
+}
+.plan-ask {
+  font-size: 11.5px;
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--fg-2);
+}
+.plan-ask .label {
+  font-family: var(--font-mono);
+  color: var(--fg-4);
+  margin-right: 6px;
+  letter-spacing: 0.04em;
+}
+
+/* chip + kbd + button — match styles.css */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  color: var(--fg-2);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.chip.muted { color: var(--fg-3); }
+.chip svg { display: block; }
+
+.kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 16px; height: 16px;
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--fg-3);
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+}
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; height: 24px;
+  border-radius: var(--r-1);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  transition: background 120ms var(--ease-out), color 120ms, border-color 120ms;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--bg-hover); color: var(--fg); }
+.btn.ghost { color: var(--fg-3); }
+.btn.icon { width: 24px; height: 24px; padding: 0; justify-content: center; }
+.btn.outlined { border-color: var(--line); }
+.btn.outlined:hover { border-color: var(--line-bright); }
+.btn.primary {
+  background: var(--accent); color: #06241B;
+  border-color: var(--accent); font-weight: 600;
+}
+.btn.primary:hover { background: var(--accent-deep); border-color: var(--accent-deep); }
+.btn.danger { color: var(--rose); }
+.btn.danger:hover { background: rgba(255,136,150,0.15); }
+
+/* phase pill */
+.phase-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  font-family: var(--font-mono);
+}
+.phase-pill.intent {
+  color: var(--fg-2);
+  border: 1px solid color-mix(in oklab, var(--fg-3) 30%, var(--line));
+  background: color-mix(in oklab, var(--fg-3) 8%, transparent);
+}
+.phase-pill.drafting {
+  color: var(--lilac);
+  border: 1px solid color-mix(in oklab, var(--lilac) 35%, var(--line));
+  background: color-mix(in oklab, var(--lilac) 12%, transparent);
+}
+.phase-pill.review {
+  color: var(--amber);
+  border: 1px solid color-mix(in oklab, var(--amber) 35%, var(--line));
+  background: color-mix(in oklab, var(--amber) 12%, transparent);
+}
+.phase-pill.running {
+  color: var(--cyan);
+  border: 1px solid color-mix(in oklab, var(--cyan) 35%, var(--line));
+  background: color-mix(in oklab, var(--cyan) 12%, transparent);
+}
+.phase-pill.done {
+  color: var(--accent);
+  border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--line));
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+}
+
+/* dots / pulses */
+.dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--fg-4); }
+.dot.live { background: var(--accent); box-shadow: 0 0 0 0 var(--accent-glow); animation: pulseDot 1.4s ease-in-out infinite; }
+.dot.draft { background: var(--lilac); box-shadow: 0 0 8px rgba(181,155,255,0.6); animation: pulseDot 1.4s ease-in-out infinite; }
+@keyframes pulseDot {
+  0%,100% { opacity: 1; transform: scale(1); }
+  50%     { opacity: 0.55; transform: scale(0.8); }
+}
+.shimmer-text {
+  background: linear-gradient(90deg, rgba(230,233,242,0.7) 0%, rgba(138,240,200,0.9) 50%, rgba(230,233,242,0.7) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 2.4s linear infinite;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.caret {
+  display: inline-block;
+  width: 7px; height: 14px;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  margin-left: 2px;
+  animation: caret 1.05s steps(1) infinite;
+}
+@keyframes caret { 0%,50% { opacity: 1; } 50.01%,100% { opacity: 0; } }
+
+/* ─────────────────────────────────────────────────────────────────────
+   Phase 1 — Intent
+   ─────────────────────────────────────────────────────────────────── */
+.phase-body {
+  flex: 1;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+.intent-wrap {
+  flex: 1;
+  display: flex; flex-direction: column;
+  padding: 28px 28px 0;
+  gap: 14px;
+  min-height: 0;
+}
+.intent-prompt {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12.5px;
+  color: var(--fg-2);
+}
+.intent-prompt .lilac {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--lilac);
+  letter-spacing: 0.06em;
+}
+.intent-card {
+  flex: 1;
+  display: flex; flex-direction: column;
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  min-height: 0;
+  transition: border-color 120ms var(--ease-out), box-shadow 120ms var(--ease-out);
+}
+.intent-card:focus-within {
+  border-color: color-mix(in oklab, var(--accent) 50%, var(--line-bright));
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.intent-textarea {
+  flex: 1;
+  width: 100%;
+  padding: 16px 18px;
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--fg);
+  min-height: 240px;
+}
+.intent-textarea::placeholder {
+  color: var(--fg-4);
+}
+.intent-meta {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px dashed var(--line);
+  font-size: 11px;
+  color: var(--fg-4);
+}
+.intent-meta .mono { color: var(--fg-3); }
+
+.intent-tips {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+  font-size: 11.5px;
+  color: var(--fg-3);
+}
+.intent-tip {
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.intent-tip .label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--lilac);
+  letter-spacing: 0.06em;
+}
+.intent-tip p { margin: 0; color: var(--fg-2); }
+
+/* ─────────────────────────────────────────────────────────────────────
+   Phase 2 — Drafting
+   ─────────────────────────────────────────────────────────────────── */
+.draft-status {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(181,155,255,0.04), transparent);
+}
+.draft-status .label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--lilac);
+  letter-spacing: 0.04em;
+}
+.draft-status .meta {
+  margin-left: auto;
+  display: flex; align-items: center; gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-4);
+}
+.draft-md {
+  flex: 1;
+  overflow-y: auto;
+  padding: 22px 28px 28px;
+}
+
+/* shared markdown styles for draft + review */
+.md {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-2);
+}
+.md h1, .md h2, .md h3 {
+  color: var(--fg);
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  margin: 22px 0 10px;
+  line-height: 1.3;
+}
+.md h1 { font-size: 18px; margin-top: 0; }
+.md h2 {
+  font-size: 14px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: var(--fg);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.md h3 { font-size: 13px; color: var(--fg); }
+.md p { margin: 0 0 12px; }
+.md ul, .md ol { margin: 0 0 14px; padding-left: 20px; }
+.md li { margin-bottom: 4px; }
+.md code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--cyan);
+}
+.md pre {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.md pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--fg);
+  font-size: 11.5px;
+}
+.md blockquote {
+  margin: 0 0 14px;
+  padding: 8px 14px;
+  border-left: 2px solid var(--lilac);
+  background: rgba(181,155,255,0.05);
+  color: var(--fg-2);
+  border-radius: 0 6px 6px 0;
+}
+.md strong { color: var(--fg); font-weight: 600; }
+.md em { color: var(--lilac); font-style: normal; }
+.md hr { border: 0; border-top: 1px dashed var(--line); margin: 18px 0; }
+
+/* ─────────────────────────────────────────────────────────────────────
+   Phase 3 — Review (annotatable plan)
+   ─────────────────────────────────────────────────────────────────── */
+.review-md {
+  flex: 1;
+  overflow-y: auto;
+  padding: 22px 28px 22px;
+}
+.review-md .md { padding-right: 36px; /* margin for + button */ }
+
+.plan-block {
+  position: relative;
+  padding: 4px 0;
+  border-radius: 6px;
+  transition: background 120ms var(--ease-out);
+}
+.plan-block:hover {
+  background: rgba(255,255,255,0.015);
+}
+.plan-block.is-selected {
+  background: color-mix(in oklab, var(--amber) 6%, transparent);
+  box-shadow: -2px 0 0 var(--amber);
+}
+.plan-block.has-comment {
+  box-shadow: -2px 0 0 var(--lilac);
+}
+
+.block-add {
+  position: absolute;
+  top: 6px;
+  right: -28px;
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  color: var(--fg-3);
+  font-size: 14px; line-height: 1;
+  opacity: 0;
+  transition: opacity 120ms var(--ease-out), color 120ms, border-color 120ms;
+  cursor: pointer;
+}
+.plan-block:hover .block-add { opacity: 1; }
+.block-add:hover { color: var(--amber); border-color: color-mix(in oklab, var(--amber) 50%, var(--line)); }
+.plan-block.is-selected .block-add { opacity: 1; color: var(--amber); border-color: var(--amber); }
+
+/* inline comment form */
+.comment-form {
+  margin: 6px 0 12px;
+  background: color-mix(in oklab, var(--amber) 5%, var(--bg-input));
+  border: 1px solid color-mix(in oklab, var(--amber) 35%, var(--line));
+  border-radius: 8px;
+  overflow: hidden;
+}
+.comment-form .quoted {
+  padding: 8px 12px;
+  border-bottom: 1px dashed color-mix(in oklab, var(--amber) 30%, var(--line));
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-4);
+  background: rgba(0,0,0,0.15);
+  display: flex; align-items: center; gap: 8px;
+}
+.comment-form .quoted .arrow { color: var(--amber); }
+.comment-form .quoted .raw {
+  color: var(--fg-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  flex: 1;
+}
+.comment-form textarea {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--fg);
+  min-height: 64px;
+}
+.comment-form textarea::placeholder { color: var(--fg-4); }
+.comment-form .actions {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px;
+  border-top: 1px dashed color-mix(in oklab, var(--amber) 30%, var(--line));
+  background: rgba(0,0,0,0.15);
+}
+.comment-form .actions .spacer { flex: 1; }
+.comment-form .actions .hint {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-4);
+  margin-left: 4px;
+}
+
+/* saved comment chip */
+.comment-chip {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin: 6px 0 12px;
+  padding: 8px 10px;
+  background: color-mix(in oklab, var(--lilac) 6%, var(--bg-surface));
+  border: 1px solid color-mix(in oklab, var(--lilac) 30%, var(--line));
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: border-color 120ms;
+}
+.comment-chip:hover { border-color: color-mix(in oklab, var(--lilac) 50%, var(--line-bright)); }
+.comment-chip .glyph {
+  font-family: var(--font-mono);
+  color: var(--lilac);
+  font-size: 11px;
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+.comment-chip .text { flex: 1; }
+.comment-chip .actions {
+  display: flex; gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 120ms;
+}
+.comment-chip:hover .actions { opacity: 1; }
+.comment-chip .actions button {
+  width: 18px; height: 18px;
+  border-radius: 4px;
+  background: transparent; border: 0;
+  color: var(--fg-4);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px;
+}
+.comment-chip .actions button:hover { background: var(--bg-hover); color: var(--fg-2); }
+
+/* sticky review footer */
+.review-foot {
+  border-top: 1px solid var(--line);
+  background: linear-gradient(180deg, transparent, rgba(0,0,0,0.25));
+  padding: 12px 20px 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.overall-row {
+  display: flex; gap: 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  transition: border-color 120ms;
+}
+.overall-row:focus-within {
+  border-color: color-mix(in oklab, var(--accent) 50%, var(--line-bright));
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.overall-row .glyph {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-4);
+  letter-spacing: 0.04em;
+  padding-top: 4px;
+  flex-shrink: 0;
+}
+.overall-row textarea {
+  flex: 1;
+  font-size: 12.5px;
+  color: var(--fg);
+  min-height: 36px;
+  max-height: 96px;
+  padding: 4px 0;
+}
+.overall-row textarea::placeholder { color: var(--fg-4); }
+
+.review-actions {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px;
+  color: var(--fg-4);
+}
+.review-actions .summary {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono);
+}
+.review-actions .summary .count {
+  color: var(--lilac);
+  font-weight: 500;
+}
+.review-actions .spacer { flex: 1; }
+
+/* generic kanban-foot for non-review phases */
+.kanban-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--line);
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  color: var(--fg-4);
+}
+.kanban-foot .spacer { flex: 1; }
+
+/* small icon helper (text-glyph icon) */
+.glyph-i {
+  display: inline-block;
+  width: 14px; height: 14px;
+  text-align: center;
+  font-family: var(--font-mono);
+  color: var(--accent);
+}
+
+/* state-machine diagram strip */
+.state-strip {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 18px;
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-3);
+  flex-wrap: wrap;
+}
+.state-strip .node {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  color: var(--fg-2);
+}
+.state-strip .node .dot { background: var(--fg-4); }
+.state-strip .node.intent .dot   { background: var(--fg-3); }
+.state-strip .node.drafting .dot { background: var(--lilac); }
+.state-strip .node.review .dot   { background: var(--amber); }
+.state-strip .node.running .dot  { background: var(--cyan); }
+.state-strip .node.done .dot     { background: var(--accent); }
+.state-strip .arrow { color: var(--fg-5); }
+.state-strip .label {
+  font-size: 10px;
+  color: var(--fg-4);
+  margin-left: auto;
+  letter-spacing: 0.04em;
+}
+
+/* scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--line-bright); border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+
+<div class="backdrop"></div>
+
+<div class="mockup">
+
+  <!-- ── Page header ─────────────────────────────────────────────────── -->
+  <header class="mockup-head">
+    <span class="crumb"><span class="dot"></span>omp · desktop · plan-mode · 2026-05-09</span>
+    <h1>Plan mode — UI specification</h1>
+    <p>Five-phase workflow: <span class="mono" style="color:var(--fg-2)">intent → drafting → review → running → done</span>. Mockups below cover the three phases this design introduces; running &amp; done reuse the existing <code style="font-family:var(--font-mono);color:var(--cyan)">PlanKanban</code>.</p>
+
+    <div class="state-strip" style="margin-top: 14px;">
+      <span class="node intent"><span class="dot"></span>intent</span>
+      <span class="arrow">→</span>
+      <span class="node drafting"><span class="dot"></span>drafting</span>
+      <span class="arrow">⇄</span>
+      <span class="node review"><span class="dot"></span>review</span>
+      <span class="arrow">→</span>
+      <span class="node running"><span class="dot"></span>running</span>
+      <span class="arrow">→</span>
+      <span class="node done"><span class="dot"></span>done</span>
+      <span class="label">esc closes · ⌘↵ advances</span>
+    </div>
+  </header>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       PHASE 1 — INTENT
+       ═════════════════════════════════════════════════════════════════ -->
+  <section class="phase-section">
+    <div class="phase-caption">
+      <span class="num">PHASE 01</span>
+      <span class="title">Intent</span>
+      <span class="desc">User describes the task in their own words. Submit wraps it in a plan-framing prompt and ships it via <code>bridge.send()</code>.</span>
+    </div>
+
+    <div class="scrim">
+      <div class="kanban">
+        <!-- header -->
+        <div class="kanban-head">
+          <div class="head-title">
+            <div class="head-row">
+              <!-- plan icon -->
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#8AF0C8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="3" width="3" height="10"></rect>
+                <rect x="6.5" y="3" width="3" height="6"></rect>
+                <rect x="11" y="3" width="3" height="8"></rect>
+                <circle cx="12.5" cy="3" r="1.6" fill="#8AF0C8" stroke="none"></circle>
+              </svg>
+              <span class="head-name">The Plan</span>
+              <span class="phase-pill intent"><span class="dot"></span> intent</span>
+              <span class="chip muted mono">draft a new plan</span>
+              <span class="chip muted">
+                <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="#7B8298" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="4" cy="3" r="1.5"></circle><circle cx="4" cy="13" r="1.5"></circle><circle cx="12" cy="8" r="1.5"></circle><path d="M4 4.5v7M4 8h2a4 4 0 0 0 4-4"></path></svg>
+                <span class="mono">main · 7e3a91c</span>
+              </span>
+            </div>
+          </div>
+          <button class="btn ghost icon" title="close (esc)">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"></path></svg>
+          </button>
+        </div>
+
+        <!-- body -->
+        <div class="phase-body">
+          <div class="intent-wrap">
+            <div class="intent-prompt">
+              <span class="lilac">describe</span>
+              <span>what you want to build, change, or investigate. the agent will draft a plan for review — nothing ships until you approve.</span>
+            </div>
+
+            <div class="intent-card">
+              <textarea class="intent-textarea" spellcheck="false" placeholder="e.g. the streaming tool calls are landing twice in the timeline. find the duplicate-write path, fix it without breaking the existing reducer tests, and call out anything risky.">the streaming tool calls are landing twice in the timeline. find the duplicate-write path, fix it without breaking the existing reducer tests, and call out anything risky before touching production reducers.</textarea>
+              <div class="intent-meta">
+                <span class="mono">218 chars</span>
+                <span style="color:var(--fg-5)">·</span>
+                <span>shift+↵ for newline · ⌘↵ to submit</span>
+                <span style="margin-left:auto;color:var(--fg-3)" class="mono">claude-sonnet-4-7 · ✶ thinking auto</span>
+              </div>
+            </div>
+
+            <div class="intent-tips">
+              <div class="intent-tip">
+                <span class="label">// what</span>
+                <p>state the outcome, not the steps. let the agent figure out approach.</p>
+              </div>
+              <div class="intent-tip">
+                <span class="label">// constraints</span>
+                <p>list anything that <em style="color:var(--rose);font-style:normal">must not</em> change. tests, public APIs, perf budgets.</p>
+              </div>
+              <div class="intent-tip">
+                <span class="label">// signal</span>
+                <p>mention files, repros, recent changes — anything to anchor on.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- footer -->
+        <div class="kanban-foot">
+          <span>plan mode is active · agent will draft &amp; wait for your review before executing</span>
+          <div class="spacer"></div>
+          <button class="btn outlined">cancel</button>
+          <button class="btn primary">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#06241B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8l12-5-5 12-2-5z"></path></svg>
+            draft plan
+            <span class="kbd" style="background:rgba(0,0,0,0.2);color:#06241B;border-color:transparent;border-bottom-color:rgba(0,0,0,0.3);margin-left:4px">⌘↵</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       PHASE 2 — DRAFTING
+       ═════════════════════════════════════════════════════════════════ -->
+  <section class="phase-section">
+    <div class="phase-caption">
+      <span class="num">PHASE 02</span>
+      <span class="title">Drafting</span>
+      <span class="desc">Agent is streaming markdown via <code>message_update</code>. Live render with <code>&lt;MarkdownContent streaming&gt;</code>; auto-advance to review on <code>turn_end</code>.</span>
+    </div>
+
+    <div class="scrim">
+      <div class="kanban">
+        <!-- header -->
+        <div class="kanban-head">
+          <div class="head-title">
+            <div class="head-row">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#8AF0C8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="3" width="3" height="10"></rect><rect x="6.5" y="3" width="3" height="6"></rect><rect x="11" y="3" width="3" height="8"></rect>
+                <circle cx="12.5" cy="3" r="1.6" fill="#8AF0C8" stroke="none"></circle>
+              </svg>
+              <span class="head-name">The Plan</span>
+              <span class="phase-pill drafting"><span class="dot draft"></span> drafting</span>
+              <span class="chip muted mono">v1 · streaming</span>
+            </div>
+            <div class="plan-ask selectable">
+              <span class="label mono">ask</span>
+              <span>the streaming tool calls are landing twice in the timeline. find the duplicate-write path, fix it without breaking the reducer tests, and call out anything risky.</span>
+            </div>
+          </div>
+          <button class="btn ghost icon" title="close (esc)">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"></path></svg>
+          </button>
+        </div>
+
+        <!-- status row -->
+        <div class="draft-status">
+          <span class="dot draft"></span>
+          <span class="label">drafting plan…</span>
+          <span class="shimmer-text">analysing reducer paths · examining tool-call lifecycle</span>
+          <div class="meta">
+            <span>↑ 218 tok</span>
+            <span style="color:var(--fg-5)">·</span>
+            <span>↓ 1,142 tok</span>
+            <span style="color:var(--fg-5)">·</span>
+            <span style="color:var(--lilac)">14.2s</span>
+          </div>
+        </div>
+
+        <!-- streaming markdown -->
+        <div class="draft-md">
+          <div class="md selectable">
+            <h1>Fix duplicate streaming tool-call writes</h1>
+
+            <h2>overview</h2>
+            <p>The reducer is appending a fresh <code>ToolCallState</code> on every streaming delta instead of upserting against the call's stable id. Two writers (<code>tool_call_started</code> and <code>tool_call_finalized</code>) race the same id; both fall through the append branch because the lookup keys mismatch — <code>finalized</code> uses <code>callId</code>, <code>started</code> writes <code>id</code>.</p>
+
+            <h2>approach</h2>
+            <ol>
+              <li>Normalise the lookup key once at the boundary (RPC adapter), not in the reducer.</li>
+              <li>Change the reducer's tool-call branch to upsert by id, removing the redundant <code>pendingToolCalls</code> queue.</li>
+              <li>Route <code>tool_call_finalized</code> through the active map; preserve the existing <code>ToolCallState</code> shape so the renderer doesn't flicker.</li>
+            </ol>
+
+            <h2>key steps</h2>
+            <ul>
+              <li><strong>adapter</strong> — collapse <code>id</code>/<code>callId</code> to a single canonical field at parse time</li>
+              <li><strong>reducer</strong> — replace <code>append</code> with <code>upsertById</code> in the streaming branch</li>
+              <li><strong>store/session</strong> — drop <code>pendingToolCalls</code>; assert it's empty in the migration test</li>
+              <li><strong>tests</strong> — add a regression test that fires <code>started</code> + 3× <code>delta</code> + <code>finalized</code> and asserts a single entry<span class="caret"></span></li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- footer -->
+        <div class="kanban-foot">
+          <span>auto-advances to review when streaming stops · or abort to discard draft and edit intent</span>
+          <div class="spacer"></div>
+          <button class="btn outlined">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12V14h2l8-8-2-2-8 8z"></path></svg>
+            edit intent
+          </button>
+          <button class="btn danger">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="8" height="8" rx="1"></rect></svg>
+            abort
+            <span class="kbd" style="margin-left:4px">⌘.</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       PHASE 3 — REVIEW
+       ═════════════════════════════════════════════════════════════════ -->
+  <section class="phase-section">
+    <div class="phase-caption">
+      <span class="num">PHASE 03</span>
+      <span class="title">Review</span>
+      <span class="desc">Plan is split into block-level segments via <code>marked.lexer()</code>. Hover a block to attach a comment. Submit revises (loop) or approve to execute.</span>
+    </div>
+
+    <div class="scrim">
+      <div class="kanban">
+        <!-- header -->
+        <div class="kanban-head">
+          <div class="head-title">
+            <div class="head-row">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#8AF0C8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="3" width="3" height="10"></rect><rect x="6.5" y="3" width="3" height="6"></rect><rect x="11" y="3" width="3" height="8"></rect>
+                <circle cx="12.5" cy="3" r="1.6" fill="#8AF0C8" stroke="none"></circle>
+              </svg>
+              <span class="head-name">The Plan</span>
+              <span class="phase-pill review">
+                <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="#FFC56E" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12V14h2l8-8-2-2-8 8z"></path></svg>
+                review
+              </span>
+              <span class="chip muted mono">v2 · 2 comments</span>
+              <span class="chip" style="color:var(--lilac);border-color:rgba(181,155,255,0.35);background:rgba(181,155,255,0.08)">
+                <span class="dot draft"></span>
+                <span class="mono">unsaved review</span>
+              </span>
+            </div>
+            <div class="plan-ask selectable">
+              <span class="label mono">ask</span>
+              <span>the streaming tool calls are landing twice in the timeline. find the duplicate-write path, fix it without breaking the reducer tests, and call out anything risky.</span>
+            </div>
+          </div>
+          <button class="btn ghost icon" title="close (esc)">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"></path></svg>
+          </button>
+        </div>
+
+        <!-- annotated markdown -->
+        <div class="review-md">
+          <div class="md selectable">
+
+            <!-- block 0: h1 -->
+            <div class="plan-block">
+              <h1>Fix duplicate streaming tool-call writes</h1>
+              <span class="block-add" title="add comment">+</span>
+            </div>
+
+            <!-- block 1: h2 overview -->
+            <div class="plan-block">
+              <h2>overview</h2>
+              <span class="block-add" title="add comment">+</span>
+            </div>
+
+            <!-- block 2: paragraph (with saved comment) -->
+            <div class="plan-block has-comment">
+              <p>The reducer is appending a fresh <code>ToolCallState</code> on every streaming delta instead of upserting against the call's stable id. Two writers (<code>tool_call_started</code> and <code>tool_call_finalized</code>) race the same id; both fall through the append branch because the lookup keys mismatch — <code>finalized</code> uses <code>callId</code>, <code>started</code> writes <code>id</code>.</p>
+              <span class="block-add" title="edit comment">+</span>
+            </div>
+            <!-- saved comment chip rendered just below the commented block -->
+            <div class="comment-chip" title="click to edit · ⌫ to remove">
+              <span class="glyph">→</span>
+              <span class="text">double-check whether <code style="font-family:var(--font-mono);background:var(--bg-elevated);border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--cyan)">callId</code> appears anywhere else — i remember a third writer in <code style="font-family:var(--font-mono);background:var(--bg-elevated);border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--cyan)">store/session.ts</code> that uses both keys.</span>
+              <span class="actions">
+                <button title="edit">✎</button>
+                <button title="remove">×</button>
+              </span>
+            </div>
+
+            <!-- block 3: h2 approach -->
+            <div class="plan-block">
+              <h2>approach</h2>
+              <span class="block-add" title="add comment">+</span>
+            </div>
+
+            <!-- block 4: ordered list — selected, comment form open -->
+            <div class="plan-block is-selected">
+              <ol>
+                <li>Normalise the lookup key once at the boundary (RPC adapter), not in the reducer.</li>
+                <li>Change the reducer's tool-call branch to upsert by id, removing the redundant <code>pendingToolCalls</code> queue.</li>
+                <li>Route <code>tool_call_finalized</code> through the active map; preserve the existing <code>ToolCallState</code> shape so the renderer doesn't flicker.</li>
+              </ol>
+              <span class="block-add" title="cancel">+</span>
+            </div>
+
+            <!-- inline comment form (open state) -->
+            <div class="comment-form">
+              <div class="quoted">
+                <span class="arrow">▍</span>
+                <span class="raw">1. Normalise the lookup key once at the boundary (RPC adapter), not in the reducer. 2. Change the reducer's…</span>
+              </div>
+              <textarea spellcheck="false" placeholder="leave a comment for the agent on this block…">prefer keeping the normalisation in the reducer — adapter should be transport-only. otherwise we'll have two places to look when keys drift.</textarea>
+              <div class="actions">
+                <span class="hint">⌘↵ save · esc cancel</span>
+                <span class="spacer"></span>
+                <button class="btn ghost">cancel</button>
+                <button class="btn outlined">save comment</button>
+              </div>
+            </div>
+
+            <!-- block 5: h2 key steps -->
+            <div class="plan-block">
+              <h2>key steps</h2>
+              <span class="block-add" title="add comment">+</span>
+            </div>
+
+            <!-- block 6: bullet list -->
+            <div class="plan-block">
+              <ul>
+                <li><strong>adapter</strong> — collapse <code>id</code>/<code>callId</code> to a single canonical field at parse time</li>
+                <li><strong>reducer</strong> — replace <code>append</code> with <code>upsertById</code> in the streaming branch</li>
+                <li><strong>store/session</strong> — drop <code>pendingToolCalls</code>; assert it's empty in the migration test</li>
+                <li><strong>tests</strong> — add a regression test that fires <code>started</code> + 3× <code>delta</code> + <code>finalized</code> and asserts a single entry</li>
+              </ul>
+              <span class="block-add" title="add comment">+</span>
+            </div>
+
+            <!-- block 7: h2 risks -->
+            <div class="plan-block">
+              <h2>risks</h2>
+              <span class="block-add" title="add comment">+</span>
+            </div>
+
+            <!-- block 8: blockquote (with saved comment) -->
+            <div class="plan-block has-comment">
+              <blockquote>If <code>pendingToolCalls</code> is referenced by a downstream selector we don't see, removing it could break the activity-radar render. Plan to grep all callers before deletion.</blockquote>
+              <span class="block-add" title="edit comment">+</span>
+            </div>
+            <div class="comment-chip" title="click to edit · ⌫ to remove">
+              <span class="glyph">→</span>
+              <span class="text">good — and please add a quick smoke check that the radar still updates after the migration. that's the most likely break.</span>
+              <span class="actions">
+                <button title="edit">✎</button>
+                <button title="remove">×</button>
+              </span>
+            </div>
+
+            <!-- block 9: code fence -->
+            <div class="plan-block">
+              <pre><code><span style="color:var(--syntax-comment, #5C6480)">// before — append branch</span>
+<span style="color:var(--lilac)">case</span> <span style="color:var(--cyan)">"tool_call_delta"</span>:
+  <span style="color:var(--lilac)">return</span> { ...state, toolCalls: [...state.toolCalls, ev] };
+
+<span style="color:var(--syntax-comment, #5C6480)">// after — upsertById</span>
+<span style="color:var(--lilac)">case</span> <span style="color:var(--cyan)">"tool_call_delta"</span>:
+  <span style="color:var(--lilac)">return</span> upsertById(state, ev.callId, ev);</code></pre>
+              <span class="block-add" title="add comment">+</span>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- review footer -->
+        <div class="review-foot">
+          <div class="overall-row">
+            <span class="glyph">// overall</span>
+            <textarea spellcheck="false" placeholder="general feedback for the agent (optional). e.g. 'tighten risks section' or 'split the reducer change into two PRs'.">tighten the risks section — i want one bullet per concrete failure mode, not prose. also: prefer two PRs (adapter, reducer) over one mega change.</textarea>
+          </div>
+          <div class="review-actions">
+            <span class="summary">
+              <span class="count">2</span>
+              <span style="color:var(--fg-4)">block comments</span>
+              <span style="color:var(--fg-5)">·</span>
+              <span style="color:var(--fg-3)">overall feedback added</span>
+            </span>
+            <span class="spacer"></span>
+            <span style="color:var(--fg-4);margin-right:4px">v2 → v3</span>
+            <button class="btn outlined">
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8a5 5 0 0 1 8.5-3.5L13 6"></path><path d="M13 3v3h-3"></path><path d="M13 8a5 5 0 0 1-8.5 3.5L3 10"></path><path d="M3 13v-3h3"></path></svg>
+              submit review
+            </button>
+            <button class="btn primary" title="approve & execute (⌘↵)">
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#06241B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l8 5-8 5z"></path></svg>
+              approve &amp; execute
+              <span class="kbd" style="background:rgba(0,0,0,0.2);color:#06241B;border-color:transparent;border-bottom-color:rgba(0,0,0,0.3);margin-left:4px">⌘↵</span>
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       FOOTNOTE — running / done reuse existing PlanKanban
+       ═════════════════════════════════════════════════════════════════ -->
+  <section class="phase-section">
+    <div class="phase-caption">
+      <span class="num">PHASE 04 — 05</span>
+      <span class="title">Running &amp; Done</span>
+      <span class="desc">No new mockup. Existing kanban view in <code>src/design/panels.jsx</code> takes over once the agent runs <code>todo_write</code> after approval. Phase pill, footer copy, and progress rail are the only deltas.</span>
+    </div>
+    <div class="state-strip">
+      <span class="node running"><span class="dot"></span>running</span>
+      <span class="arrow">→</span>
+      <span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-3)">tool_execution_end with tool == 'todo_write' → buildKanban() → setKanban() → derivePlanPhase() → 'running' until all tasks 'done'</span>
+      <span class="arrow">→</span>
+      <span class="node done"><span class="dot"></span>done</span>
+    </div>
+  </section>
+
+</div>
+
+</body>
+</html>
