@@ -36,7 +36,7 @@
       if (!window.marked || !window.hljs) return;
       window.marked.use({
         renderer: {
-          code({ text, lang }) {
+          code(text, lang) {
             const code     = text ?? '';
             const language = (lang ?? '').split(/\s/)[0];
             let highlighted;
