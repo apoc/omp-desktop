@@ -14,6 +14,9 @@
   <link rel="stylesheet" href="design/styles.css" />
   <link rel="stylesheet" href="design/layout.css" />
   <link rel="stylesheet" href="platform.css" />
+
+  <!-- Syntax highlighting theme (atom-one-dark) -->
+  <link rel="stylesheet" href="highlight-theme.css" />
 </head>
 <body>
   <div id="root"></div>
@@ -22,6 +25,39 @@
   <script src="react.development.js"></script>
   <script src="react-dom.development.js"></script>
   <script src="babel.min.js"></script>
+
+  <!-- Markdown + syntax highlighting — must load before design components -->
+  <script src="marked.min.js"></script>
+  <script src="highlight.min.js"></script>
+  <script>
+    // Wire marked v12 to use highlight.js for code blocks.
+    // Runs after DOMContentLoaded so both libs are parsed.
+    (function () {
+      if (!window.marked || !window.hljs) return;
+      window.marked.use({
+        renderer: {
+          code({ text, lang }) {
+            const code     = text ?? '';
+            const language = (lang ?? '').split(/\s/)[0];
+            let highlighted;
+            try {
+              highlighted = language && hljs.getLanguage(language)
+                ? hljs.highlight(code, { language }).value
+                : hljs.highlightAuto(code).value;
+            } catch (_) {
+              highlighted = code
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+            }
+            const cls = language ? ' language-' + language : '';
+            return '<pre class="code-block"><code class="hljs' + cls + '">' +
+                   highlighted + '</code></pre>';
+          }
+        }
+      });
+    })();
+  </script>
 
   <!-- Design components (unchanged — from src/design/ copy) -->
   <script type="text/babel" src="design/tweaks-panel.jsx"></script>

@@ -5,7 +5,7 @@
    · streaming token shimmer, caret blink
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TOOL_META } = window;
+const { Icon, TOOL_META, MarkdownContent } = window;
 
 // ── User bubble — right-aligned, cool ─────────────────────────────────
 function UserBubble({ msg }) {
@@ -50,9 +50,8 @@ function AssistantBubble({ msg }) {
         {msg.blocks?.map((b, i) => {
           if (b.type === "text") {
             return (
-              <p key={i} className={`ass-text selectable ${msg.streaming && i === msg.blocks.length - 1 ? "caret-blink" : ""}`}>
-                {b.text}
-              </p>
+              <MarkdownContent key={i} text={b.text}
+                streaming={msg.streaming && i === msg.blocks.length - 1} />
             );
           }
           if (b.type === "plan") {

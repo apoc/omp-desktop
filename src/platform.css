@@ -81,3 +81,78 @@
 .bridge-row.active:hover {
   background: color-mix(in oklab, var(--accent) 14%, transparent);
 }
+
+/* ── Markdown content rendering ───────────────────────────────────────────── */
+
+.md-content { line-height: 1.65; color: var(--fg); }
+.md-content p  { margin: 0 0 0.75em; }
+.md-content p:last-child { margin-bottom: 0; }
+
+.md-content h1, .md-content h2, .md-content h3, .md-content h4 {
+  font-weight: 600; line-height: 1.3;
+  margin: 1.1em 0 0.4em; color: var(--fg);
+}
+.md-content h1 { font-size: 1.25em; }
+.md-content h2 { font-size: 1.1em;  }
+.md-content h3 { font-size: 1.0em;  }
+.md-content h4 { font-size: 0.95em; color: var(--fg-2); }
+
+.md-content ul, .md-content ol {
+  margin: 0 0 0.75em 1.4em; padding: 0;
+}
+.md-content li { margin-bottom: 0.2em; }
+.md-content li > ul, .md-content li > ol { margin-bottom: 0; margin-top: 0.2em; }
+
+.md-content blockquote {
+  margin: 0.5em 0; padding: 0.4em 0.75em;
+  border-left: 3px solid var(--line-bright);
+  color: var(--fg-3); font-style: italic;
+}
+
+/* Inline code */
+.md-content code:not(.hljs) {
+  font-family: var(--font-mono); font-size: 0.88em;
+  padding: 0.15em 0.4em; border-radius: 4px;
+  background: color-mix(in oklab, var(--accent) 10%, var(--bg-elevated));
+  color: var(--accent); border: 1px solid var(--line);
+}
+
+/* Fenced code blocks */
+.md-content .code-block {
+  margin: 0.6em 0; border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #1a1d23;               /* slightly darker than atom-one-dark */
+  overflow: hidden;
+}
+.md-content .code-block code.hljs {
+  background: transparent; padding: 0.9em 1em;
+  font-family: var(--font-mono); font-size: 0.83em;
+  line-height: 1.55; display: block; overflow-x: auto;
+}
+
+.md-content a  { color: var(--cyan); text-decoration: underline; text-underline-offset: 2px; }
+.md-content a:hover { color: var(--fg); }
+
+.md-content table { border-collapse: collapse; width: 100%; margin: 0.6em 0; font-size: 0.9em; }
+.md-content th { background: var(--bg-elevated); font-weight: 600; }
+.md-content th, .md-content td {
+  padding: 0.4em 0.75em; border: 1px solid var(--line); text-align: left;
+}
+
+.md-content hr { border: none; border-top: 1px solid var(--line); margin: 0.75em 0; }
+
+.md-content strong { font-weight: 600; color: var(--fg); }
+.md-content em     { font-style: italic; color: var(--fg-2); }
+
+/* Streaming caret appended after the last block */
+.md-streaming::after {
+  content: '▌';
+  display: inline-block;
+  color: var(--accent);
+  animation: caret-blink 0.9s step-end infinite;
+  margin-left: 1px;
+}
+@keyframes caret-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
