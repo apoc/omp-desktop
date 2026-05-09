@@ -1,25 +1,40 @@
 // tweaks/use-tweaks.js — source-of-truth hook for tweak values.
+// Persists to localStorage under the key below; merged over defaults
+// so new keys added to TWEAK_DEFAULTS are picked up on first load.
 
-// Wrapped in an IIFE so `useTweaks` doesn't leak into the document's
-// script-scope and collide with the destructure in app-live.jsx.
+// Wrapped in an IIFE so `useTweaks` doesn't leak into document scope.
 (function () {
-// ── useTweaks ───────────────────────────────────────────────────────────────
-// Single source of truth for tweak values. setTweak persists via the host
-// (__edit_mode_set_keys → host rewrites the EDITMODE block on disk).
+
+const STORAGE_KEY = "omp-desktop:tweaks";
+
+function _load(defaults) {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return defaults;
+    return { ...defaults, ...JSON.parse(raw) };
+  } catch {
+    return defaults;
+  }
+}
+
+function _save(values) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(values)); } catch {}
+}
+
 function useTweaks(defaults) {
-  const [values, setValues] = React.useState(defaults);
-  // Accepts either setTweak('key', value) or setTweak({ key: value, ... }) so a
-  // useState-style call doesn't write a "[object Object]" key into the persisted
-  // JSON block.
+  const [values, setValues] = React.useState(() => _load(defaults));
+
   const setTweak = React.useCallback((keyOrEdits, val) => {
-    const edits = typeof keyOrEdits === 'object' && keyOrEdits !== null
+    const edits = typeof keyOrEdits === "object" && keyOrEdits !== null
       ? keyOrEdits : { [keyOrEdits]: val };
-    setValues((prev) => ({ ...prev, ...edits }));
-    window.parent.postMessage({ type: '__edit_mode_set_keys', edits }, '*');
-    // Same-window signal so in-page listeners (deck-stage rail thumbnails)
-    // can react — the parent message only reaches the host, not peers.
-    window.dispatchEvent(new CustomEvent('tweakchange', { detail: edits }));
+    setValues(prev => {
+      const next = { ...prev, ...edits };
+      _save(next);
+      return next;
+    });
+    window.dispatchEvent(new CustomEvent("tweakchange", { detail: edits }));
   }, []);
+
   return [values, setTweak];
 }
 
