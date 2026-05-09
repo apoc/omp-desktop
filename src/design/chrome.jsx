@@ -46,9 +46,9 @@ function WindowChrome({ project, peer, onCmd }) {
         {/* Windows controls — right side, hidden on macOS/Linux */}
         {IS_WIN && (
           <div className="win-controls">
-            <button className="win-ctrl win-min" title="Minimize">&#8211;</button>
-            <button className="win-ctrl win-max" title="Maximize / Restore">&#9633;</button>
-            <button className="win-ctrl win-close" title="Close">&#10005;</button>
+            <button className="win-ctrl win-close" title="Close" />
+            <button className="win-ctrl win-min"   title="Minimize" />
+            <button className="win-ctrl win-max"   title="Maximize / Restore" />
           </div>
         )}
       </div>
