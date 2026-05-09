@@ -124,7 +124,7 @@ function Composer({ onSend, planMode, onTogglePlan, onOpenCmd, onOpenModel, curr
 //  commands view  — lists all slash-commands; /model row drills into picker
 //  models view    — filterable model list; Esc returns to commands
 //
-function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, models = [] }) {
+function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId }) {
   const [q, setQ]       = React.useState("");
   const [view, setView] = React.useState("commands"); // "commands" | "models"
   const inputRef = React.useRef(null);
@@ -155,13 +155,11 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, mod
 
   // ── Model picker view ──────────────────────────────────────────────
   if (view === "models") {
+    const models    = window.OMP_DATA.models;
     const modelHits = models.filter((m) => !q || fil(m.name) || fil(m.id));
-    const current   = models.find((m) => m.id === currentModelId);
-
     return (
       <div className="bridge-scrim" onClick={onClose}>
         <div className="bridge slide-in" onClick={(e) => e.stopPropagation()}>
-
           <div className="bridge-input-row">
             <button className="btn icon ghost" title="back to commands"
               onClick={() => { setView("commands"); setQ(""); }}
@@ -169,51 +167,32 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, mod
               <Icon name="chevR" size={12} color="var(--fg-3)"
                 style={{ transform: "rotate(180deg)", display: "block" }} />
             </button>
-            <input
-              ref={inputRef}
-              className="bridge-input mono"
-              placeholder="filter models…"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
+            <input ref={inputRef} className="bridge-input mono"
+              placeholder="filter models…" value={q}
+              onChange={(e) => setQ(e.target.value)} />
             <span className="kbd">esc</span>
           </div>
-
           <div className="bridge-body">
-            {current && (
-              <div className="bridge-group">
-                <div className="bridge-group-head mono">current</div>
-                <div className="bridge-row active" style={{ cursor: "default" }}>
-                  <span className="bridge-glyph">
-                    <Icon name="check" size={10} color="var(--accent)" />
-                  </span>
-                  <span style={{ color: "var(--accent)" }}>{current.name}</span>
-                  <span className="mono" style={{ color: "var(--fg-4)" }}>{current.id}</span>
-                </div>
-              </div>
-            )}
-
             <div className="bridge-group">
-              <div className="bridge-group-head mono">
-                {modelHits.length} model{modelHits.length !== 1 ? "s" : ""}
-              </div>
-              {modelHits.map((m) => m.id === currentModelId ? null : (
-                <button key={m.id} className="bridge-row"
+              <div className="bridge-group-head mono">switch model</div>
+              {modelHits.map((m) => (
+                <button key={m.id}
+                  className={`bridge-row ${m.id === currentModelId ? "active" : ""}`}
                   onClick={() => { onPickModel(m); onClose(); }}>
                   <span className="bridge-glyph">
-                    <Icon name="bolt" size={10} color="var(--cyan)" />
+                    {m.id === currentModelId
+                      ? <Icon name="check" size={10} color="var(--accent)" />
+                      : <Icon name="bolt"  size={10} color="var(--cyan)" />}
                   </span>
-                  <span style={{ color: "var(--fg)" }}>{m.name}</span>
+                  <span style={{ color: m.id === currentModelId ? "var(--accent)" : "var(--fg)" }}>{m.name}</span>
                   <span className="mono" style={{ color: "var(--fg-4)" }}>{m.id}</span>
-                  <span style={{ color: "var(--fg-3)", marginLeft: "auto" }}>· {m.note}</span>
+                  <span style={{ color: "var(--fg-3)" }}>· {m.note}</span>
+                  <span className="chip muted" style={{ marginLeft: "auto" }}>{m.latency}ms</span>
                 </button>
               ))}
-              {modelHits.filter(m => m.id !== currentModelId).length === 0 && (
-                <div className="bridge-empty">no other models match</div>
-              )}
+              {modelHits.length === 0 && <div className="bridge-empty">no models found</div>}
             </div>
           </div>
-
           <div className="bridge-foot mono">
             <span className="kbd">↑↓</span> navigate
             <span className="kbd">↵</span> switch
