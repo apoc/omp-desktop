@@ -112,10 +112,7 @@
     const { type } = obj;
 
     if (type === "ready") {
-      // Agent is up — fetch initial data
-      _send({ type: "get_state" });
-      _send({ type: "get_messages" });
-      _send({ type: "get_available_models" });
+      _initFetch();
       return;
     }
 
@@ -462,6 +459,15 @@
     state.ctx = window.buildCtx(state.rpcState, state.sessionCost, state.currentTps);
   }
 
+  // Send the three bootstrap commands. Called on `ready` and proactively on
+  // page load to recover state after a hot-reload (omp keeps running, no
+  // second `ready` fires, so we must fetch without waiting for the signal).
+  function _initFetch() {
+    _send({ type: "get_state" });
+    _send({ type: "get_messages" });
+    _send({ type: "get_available_models" });
+  }
+
   // ── Send a command to the agent ───────────────────────────────────────────
   function _send(cmd) {
     if (!window.__TAURI__) return;
@@ -580,6 +586,11 @@
     // React's first paint — eliminates the "window in window" flash.
     document.documentElement.classList.add("tauri-native");
     const { listen } = window.__TAURI__.event;
+
+    // Proactive fetch handles hot-reload: WebView reloads but omp keeps running
+    // so no second `ready` fires. Send init commands immediately on page load
+    // (small delay so the listener above is registered first).
+    setTimeout(_initFetch, 300);
 
     listen("agent://line", event => handleLine(event.payload));
     listen("agent://exit", ()    => {
