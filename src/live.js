@@ -72,6 +72,7 @@
   let tpsSamples      = Array(30).fill(0);
   let turnStartTime   = null;
   let activityLog     = [];           // [{ts, toolName}], pruned to 60s
+  let _msgSeq = 0;  // monotonic counter — stable React keys for message bubbles
 
   // ── Minimap / message-history trim ───────────────────────────────────────
   const MINIMAP_COLS = 13;
@@ -142,6 +143,12 @@
 
   function notify() {
     _trimMessages();
+    // Stamp stable IDs on any message that doesn't have one yet (new pushes,
+    // restored sessions, or messages from get_messages). O(N) but N ≤ 169 and
+    // is a no-op for already-stamped entries — essentially free.
+    for (const m of state.messages) {
+      if (!m._id) m._id = ++_msgSeq;
+    }
     const snap = {
       messages:        state.messages,
       isStreaming:     state.isStreaming,
