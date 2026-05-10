@@ -136,7 +136,7 @@
     state.messages = state.messages.slice(drop);
     for (const [id, idx] of activeToolCards) {
       const shifted = idx - drop;
-      if (shifted < 0) activeToolCards.delete(id); // guard: should never happen
+      if (shifted < 0) activeToolCards.delete(id); // guard: possible on abort (no tool_execution_end)
       else activeToolCards.set(id, shifted);
     }
   }

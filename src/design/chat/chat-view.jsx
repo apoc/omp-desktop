@@ -109,6 +109,11 @@ function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, 
   return (
     <div className="chat-scroll selectable" ref={scrollRef} onScroll={onScroll}>
       <div className="chat-pad">
+        {/* Note: after a trim, idx shifts for all surviving messages, causing a full
+           re-render of memo'd bubbles in that notify cycle (bounded at MINIMAP_MAX -
+           MINIMAP_COLS = 156). Streaming re-renders are unaffected. Driving annotable
+           and scroll-targeting off _id instead of idx would make trim zero-cost for
+           history, but requires a larger refactor. */}
         {messages.map((m, i) => {
           const hl = hoveredMsgIdx === i;
           if (m.kind === "user")    return <_CV_UserBubble_M    key={m._id ?? i} idx={i} highlighted={hl} msg={m} />;
