@@ -5,7 +5,16 @@
 
 const { UserBubble: _CV_UserBubble, ToolCard: _CV_ToolCard, AssistantBubble: _CV_AssistantBubble, AskBubble: _CV_AskBubble, Icon: _CV_Icon } = window;
 
-function CompactRow({ msg }) {
+// ── Per-bubble memo wrappers ────────────────────────────────────────────────
+// Primary streaming-perf win: only the live tail (new object ref per
+// message_update) re-renders; stable messages bail out automatically.
+// Created once at module load — React.memo returns a stable component type.
+const _CV_UserBubble_M      = React.memo(_CV_UserBubble);
+const _CV_ToolCard_M        = React.memo(_CV_ToolCard);
+const _CV_AssistantBubble_M = React.memo(_CV_AssistantBubble);
+const _CV_AskBubble_M       = React.memo(_CV_AskBubble);
+
+const CompactRow = React.memo(function CompactRow({ msg }) {
   const [open, setOpen] = React.useState(false);
   const pending  = msg.status === "pending";
   const error    = msg.status === "error";
@@ -60,7 +69,7 @@ function CompactRow({ msg }) {
       </div>
     </div>
   );
-}
+});
 
 function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, onAskAnswer }) {
   const scrollRef    = React.useRef(null);
@@ -100,13 +109,18 @@ function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, 
   return (
     <div className="chat-scroll selectable" ref={scrollRef} onScroll={onScroll}>
       <div className="chat-pad">
+        {/* Note: after a trim, idx shifts for all surviving messages, causing a full
+           re-render of memo'd bubbles in that notify cycle (bounded at MINIMAP_MAX -
+           MINIMAP_COLS = 156). Streaming re-renders are unaffected. Driving annotable
+           and scroll-targeting off _id instead of idx would make trim zero-cost for
+           history, but requires a larger refactor. */}
         {messages.map((m, i) => {
           const hl = hoveredMsgIdx === i;
-          if (m.kind === "user") return <_CV_UserBubble key={i} idx={i} highlighted={hl} msg={m} />;
-          if (m.kind === "compact") return <CompactRow key={i} msg={m} />;
-          if (m.kind === "tool") return <_CV_ToolCard    key={i} idx={i} highlighted={hl} msg={m} />;
-          if (m.kind === "ask")  return <_CV_AskBubble  key={i} idx={i} highlighted={hl} msg={m} onAnswer={onAskAnswer} />;
-          return <_CV_AssistantBubble key={i} idx={i} highlighted={hl} msg={m}
+          if (m.kind === "user")    return <_CV_UserBubble_M    key={m._id ?? i} idx={i} highlighted={hl} msg={m} />;
+          if (m.kind === "compact") return <CompactRow          key={m._id ?? i} msg={m} />;
+          if (m.kind === "tool")    return <_CV_ToolCard_M      key={m._id ?? i} idx={i} highlighted={hl} msg={m} />;
+          if (m.kind === "ask")     return <_CV_AskBubble_M     key={m._id ?? i} idx={i} highlighted={hl} msg={m} onAnswer={onAskAnswer} />;
+          return <_CV_AssistantBubble_M key={m._id ?? i} idx={i} highlighted={hl} msg={m}
             annotable={i === lastAsstIdx}
             annotations={annotations}
             onAnnotate={onAnnotate} />;

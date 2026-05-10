@@ -35,11 +35,11 @@ function App() {
   const [planMode,   setPlanMode]   = React.useState(false);
   const planStartedRef = React.useRef(false); // true after first send in plan mode
   const [planAnnotations, setPlanAnnotations] = React.useState({});
-  const handleAnnotate = (idx, value) => setPlanAnnotations(prev => {
+  const handleAnnotate = React.useCallback((idx, value) => setPlanAnnotations(prev => {
     const next = { ...prev };
     if (value === null) delete next[idx]; else next[idx] = value;
     return next;
-  });
+  }), []);
 
   // Cross-component highlight: hovering a minimap cell lights up the
   // matching chat bubble; clicking scrolls to it.
@@ -134,7 +134,7 @@ function App() {
 
   const handleAbort      = () => { bridge?.abort(); setStreaming(false); };
   const handlePickModel  = m  => { setModelState(m); bridge?.setModel(m); };
-  const handleAskAnswer  = (id, value) => { bridge?.answerAsk(id, value); };
+  const handleAskAnswer  = React.useCallback((id, value) => { bridge?.answerAsk(id, value); }, [bridge]); // bridge = window.OMP_BRIDGE, assigned once before React renders — stable ref
   const handlePickLogin = async (provider) => {
     if (!bridge) return;
     try {

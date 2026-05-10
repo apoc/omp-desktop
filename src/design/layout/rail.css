@@ -105,7 +105,7 @@
 
 .minimap-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(14px, 1fr));
+  grid-template-columns: repeat(13, 1fr);
   gap: 2px;
   flex: 1; min-height: 0; overflow-y: auto;
   padding: 6px; border-radius: 6px;

@@ -72,6 +72,11 @@
   let tpsSamples      = Array(30).fill(0);
   let turnStartTime   = null;
   let activityLog     = [];           // [{ts, toolName}], pruned to 60s
+  let _msgSeq = 0;  // monotonic counter — stable React keys for message bubbles
+
+  // ── Minimap / message-history trim ───────────────────────────────────────
+  const MINIMAP_COLS = 13;
+  const MINIMAP_MAX  = MINIMAP_COLS * MINIMAP_COLS; // 169 — one full 13×13 grid
 
   // ── Session registry ───────────────────────────────────────────────────────
   // Tracks all open tabs. The tab list in the UI is derived from this.
@@ -119,7 +124,31 @@
   // ── Subscriber system ─────────────────────────────────────────────────────
   const subscribers = new Set();
 
+  // Drop the oldest row of messages once the 13×13 grid is full and the
+  // current turn is complete. Only called from notify() so the trim is
+  // always reflected in the same snapshot that React receives.
+  // Active tool-card indices are shifted so in-flight updates stay correct;
+  // completed cards are already removed from the map and are unaffected.
+  function _trimMessages() {
+    if (state.isStreaming) return;                  // wait for clean turn boundary
+    if (state.messages.length <= MINIMAP_MAX) return;
+    const drop = MINIMAP_COLS;                      // evict one full row (13)
+    state.messages = state.messages.slice(drop);
+    for (const [id, idx] of activeToolCards) {
+      const shifted = idx - drop;
+      if (shifted < 0) activeToolCards.delete(id); // guard: possible on abort (no tool_execution_end)
+      else activeToolCards.set(id, shifted);
+    }
+  }
+
   function notify() {
+    _trimMessages();
+    // Stamp stable IDs on any message that doesn't have one yet (new pushes,
+    // restored sessions, or messages from get_messages). O(N) but N ≤ 169 and
+    // is a no-op for already-stamped entries — essentially free.
+    for (const m of state.messages) {
+      if (!m._id) m._id = ++_msgSeq;
+    }
     const snap = {
       messages:        state.messages,
       isStreaming:     state.isStreaming,

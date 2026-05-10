@@ -194,7 +194,7 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
           const cls = `minimap-cell ${m.kind} ${m.streaming ? "live" : ""} ${hoveredIdx === i ? "hot" : ""}`.trim();
 
           return (
-            <div key={i}
+            <div key={m._id ?? i}
               className={cls}
               style={{ background: hue, opacity }}
               title={title}
