@@ -151,3 +151,16 @@ All non-trivial code **must** have test coverage before committing. This is not 
 
 - `.github/workflows/ci.yml` — `cargo check --locked` + `cargo test --locked` on win/linux/mac for `src-tauri/**`, `src/**`, or workflow changes.
 - `.github/workflows/release.yml` — bundles via `tauri build`.
+
+## Changelog workflow
+
+`CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+**During development:** every user-facing change goes into the `[Unreleased]` section at the top, grouped under `### Added`, `### Fixed`, or `### Changed`.
+
+**On release** (triggered by the user saying "release X.Y.Z"):
+1. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` (today's date).
+2. Insert a new empty `## [Unreleased]` section above it.
+3. Commit: `git add CHANGELOG.md && git commit -m "chore: release vX.Y.Z"`.
+4. Tag: `git tag vX.Y.Z`.
+5. Push: `git push origin master --tags`.
