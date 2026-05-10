@@ -68,6 +68,7 @@
 
   let streamingBubble = null;
   let activeToolCards = new Map();    // toolCallId → message index
+  let pendingAskBubble = null;   // buffered until tool_execution_start so order is [tool_card, ask_bubble]
   let tpsSamples      = Array(30).fill(0);
   let turnStartTime   = null;
   let activityLog     = [];           // [{ts, toolName}], pruned to 60s
@@ -164,6 +165,7 @@
       currentTps:    0,
     });
     streamingBubble = null;
+    pendingAskBubble = null;
     activeToolCards = new Map();
     tpsSamples      = Array(30).fill(0);
     turnStartTime   = null;
@@ -411,6 +413,7 @@
     const now  = Date.now();
     const time = _timeNow();
 
+
     if (type === "extension_ui_request") {
       // URL to open in the system browser (e.g. OAuth auth page).
       if (ev.method === "open_url") {
@@ -448,8 +451,42 @@
         }
         return;
       }
+      // Agent asks the user to pick from a list.
+      // Buffered in pendingAskBubble instead of pushed immediately — omp emits
+      // extension_ui_request.select BEFORE tool_execution_start, so pushing now
+      // would place the ask bubble above the tool card. tool_execution_start
+      // flushes it so the order is always [tool_card, ask_bubble].
+      if (ev.method === "select") {
+        const OTHER_OPT = "Other (type your own)";
+        pendingAskBubble = {
+          kind: "ask",
+          id: ev.id,
+          time: _timeNow(),
+          title: ev.title,
+          options: (ev.options ?? []).filter(o => o !== OTHER_OPT),
+          answered: false,
+          cancelled: false,
+          answer: null,
+        };
+        return;
+      }
+      // Agent cancelled a pending UI request (e.g. turn aborted while waiting for input).
+      if (ev.method === "cancel") {
+        // If the ask was cancelled before tool_execution_start flushed it, just drop it.
+        if (pendingAskBubble && pendingAskBubble.id === ev.targetId) {
+          pendingAskBubble = null;
+          return;
+        }
+        state.messages = state.messages.map(m =>
+          m.kind === "ask" && m.id === ev.targetId && !m.answered
+            ? { ...m, cancelled: true }
+            : m
+        );
+        notify();
+        return;
+      }
       // Dialogs we cannot show — cancel them so the server doesn't hang.
-      const NEEDS_RESPONSE = ["select", "confirm", "editor"];
+      const NEEDS_RESPONSE = ["confirm", "editor"];
       if (NEEDS_RESPONSE.includes(ev.method)) {
         _send({ type: "extension_ui_response", id: ev.id, cancelled: true });
       }
@@ -536,7 +573,17 @@
       streamingBubble.blocks  = designBlocks.length > 0 ? designBlocks : [{ type: "text", text: "" }];
 
       const updated = { ...streamingBubble, blocks: [...streamingBubble.blocks] };
-      state.messages = [...state.messages.slice(0, -1), updated];
+      // Find by streaming flag — indexOf fails after the first update because
+      // each update replaces the entry with a new copy; ask bubbles may also
+      // sit after the streaming bubble in state.messages.
+      const uidx = state.messages.findLastIndex(m => m.streaming === true);
+      if (uidx !== -1) {
+        const msgs = [...state.messages];
+        msgs[uidx] = updated;
+        state.messages = msgs;
+      } else {
+        state.messages = [...state.messages.slice(0, -1), updated];
+      }
       notify();
       return;
     }
@@ -549,7 +596,9 @@
         const blocks = Array.isArray(msg.content) ? msg.content : [];
         const thought = blocks.find(b => b.type === "thinking")?.thinking ?? streamingBubble.thought;
         const designBlocks = blocks.filter(b => b.type === "text" && b.text?.trim()).map(b => ({ type: "text", text: b.text }));
-        state.messages = [...state.messages.slice(0, -1), {
+        // Find by streaming flag — extension_ui_request.select may have pushed
+        // an ask bubble after the streaming bubble before message_end arrives.
+        const completed = {
           ...streamingBubble,
           streaming: false, thought,
           lead:   thought ? "thinking" : null,
@@ -557,10 +606,26 @@
           tokens,
           tokensIn:  usage?.input  ?? null,
           tokensOut: usage?.output ?? null,
-        }];
+        };
+        const eidx = state.messages.findLastIndex(m => m.streaming === true);
+        if (eidx !== -1) {
+          const msgs = [...state.messages];
+          msgs[eidx] = completed;
+          state.messages = msgs;
+        } else {
+          state.messages = [...state.messages.slice(0, -1), completed];
+        }
         streamingBubble = null;
       } else if (streamingBubble) {
-        state.messages = [...state.messages.slice(0, -1), { ...streamingBubble, streaming: false, tokens }];
+        const completed2 = { ...streamingBubble, streaming: false, tokens };
+        const eidx2 = state.messages.findLastIndex(m => m.streaming === true);
+        if (eidx2 !== -1) {
+          const msgs = [...state.messages];
+          msgs[eidx2] = completed2;
+          state.messages = msgs;
+        } else {
+          state.messages = [...state.messages.slice(0, -1), completed2];
+        }
         streamingBubble = null;
       }
       notify();
@@ -573,6 +638,12 @@
       const idx  = state.messages.length;
       activeToolCards.set(ev.toolCallId, idx);
       state.messages = [...state.messages, card];
+      // Flush any pending ask bubble AFTER the tool card so chat order is
+      // [tool_card, ask_bubble] — omp emits select before tool_execution_start.
+      if (pendingAskBubble) {
+        state.messages = [...state.messages, pendingAskBubble];
+        pendingAskBubble = null;
+      }
 
       activityLog.push({ ts: now, toolName: ev.toolName ?? "" });
       const cutoff = now - 60_000;
@@ -780,6 +851,23 @@
      */
     login(providerId) {
       return _sendWithResponse({ type: "login", providerId }, 300000);
+    },
+
+    /**
+     * Respond to a pending ask bubble (extension_ui_request method=select).
+     * Marks the message as answered in state so it survives subsequent notify() calls,
+     * then sends the extension_ui_response to omp.
+     * @param {string} id     The extension_ui_request id.
+     * @param {string} value  The chosen option text or custom typed answer.
+     */
+    answerAsk(id, value) {
+      state.messages = state.messages.map(m =>
+        m.kind === "ask" && m.id === id && !m.answered && !m.cancelled
+          ? { ...m, answered: true, answer: value }
+          : m
+      );
+      notify();
+      _send({ type: "extension_ui_response", id, value });
     },
 
     /**

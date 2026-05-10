@@ -161,6 +161,7 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
           let hue = "var(--fg-5)";
           if      (m.kind === "user")      hue = "var(--fg-3)";
           else if (m.kind === "assistant") hue = "var(--accent)";
+          else if (m.kind === "ask")       hue = "var(--amber)";
           else if (m.kind === "tool")      hue = TOOL_META[m.tool]?.color || "var(--fg-4)";
 
           // Brightness: assistant cells modulate by log(tokens), others flat.

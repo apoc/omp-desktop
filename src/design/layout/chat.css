@@ -370,3 +370,99 @@
   scrollbar-width: thin;
   scrollbar-color: var(--line-bright) transparent;
 }
+
+/* ── Ask bubble ─────────────────────────────────────────────────────── */
+.ask-glyph {
+  background: color-mix(in oklab, var(--amber) 12%, var(--bg-elevated));
+  border-color: color-mix(in oklab, var(--amber) 40%, var(--line));
+}
+
+.ask-question {
+  font-size: var(--d-text);
+  color: var(--fg);
+  line-height: 1.5;
+  margin-bottom: 10px;
+  font-weight: 500;
+}
+
+.ask-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.ask-opt {
+  appearance: none;
+  border: 1px solid var(--line-bright);
+  background: var(--bg-elevated);
+  color: var(--fg-2);
+  font-family: var(--font-sans);
+  font-size: var(--d-text-sm);
+  padding: 5px 12px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: border-color 120ms, color 120ms, background 120ms;
+}
+.ask-opt:hover:not(:disabled) {
+  border-color: var(--amber);
+  color: var(--amber);
+  background: color-mix(in oklab, var(--amber) 8%, var(--bg-elevated));
+}
+.ask-opt.done-opt { border-style: dashed; }
+.ask-opt.selected {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.ask-opt.dimmed { opacity: 0.3; }
+.ask-opt:disabled { cursor: default; }
+
+.ask-other {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.ask-other-input {
+  flex: 1;
+  appearance: none;
+  border: 1px solid var(--line-bright);
+  background: var(--bg-input);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--d-text-sm);
+  padding: 6px 10px;
+  border-radius: var(--r-2);
+  outline: none;
+  transition: border-color 120ms;
+}
+.ask-other-input:focus {
+  border-color: color-mix(in oklab, var(--amber) 50%, var(--line));
+}
+.ask-other-input:disabled { opacity: 0.35; cursor: default; }
+
+.ask-submit {
+  appearance: none;
+  border: 1px solid color-mix(in oklab, var(--amber) 40%, var(--line));
+  background: color-mix(in oklab, var(--amber) 8%, transparent);
+  color: var(--amber);
+  font-family: var(--font-sans);
+  font-size: var(--d-text-sm);
+  padding: 5px 12px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition: background 120ms;
+}
+.ask-submit:hover { background: color-mix(in oklab, var(--amber) 15%, transparent); }
+
+/* Custom free-text echo shown after answering with typed text */
+.ask-custom-echo {
+  font-size: var(--d-text-sm);
+  color: var(--accent);
+  padding: 5px 0;
+}

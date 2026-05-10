@@ -12,9 +12,10 @@ Tauri 2 desktop shell for `omp` (oh-my-pi). React UI loaded from `src/` by Tauri
 | Rust check (CI) | `cd src-tauri && cargo check --locked` |
 | Rust fmt | `cd src-tauri && cargo fmt` |
 | Rust lint (must stay clean) | `cd src-tauri && cargo +nightly clippy --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery -D warnings` |
+| Rust tests | `cd src-tauri && cargo test` |
 | Probe omp RPC | `node test-rpc.mjs` |
 
-`omp` must be on PATH (`%LOCALAPPDATA%\omp\omp.exe` on Win). No JS test suite. CI = `cargo check` on win/linux/mac.
+`omp` must be on PATH (`%LOCALAPPDATA%\omp\omp.exe` on Win). CI = `cargo check` + `cargo test` on win/linux/mac.
 
 ## Architecture
 
@@ -127,7 +128,26 @@ Trigger: 6th major component in one file, or 4th unrelated concern in one Rust m
 
 **Disallowed unless justified:** clone-heavy ownership; owned `String`/`Vec` params where borrows suffice; collecting only to iterate once; unneeded boxing; async tasks without lifecycle justification; large formatting-only rewrites; formatting unrelated files.
 
+## Tests
+
+All non-trivial code **must** have test coverage before committing. This is not optional.
+
+**Rust:**
+- Every pure/logic function gets a `#[cfg(test)] mod tests` block in the same file.
+- Integration behaviour (spawn, IPC, reader) gets at least one test verifying the happy path and one for the main failure mode.
+- Run `cargo test` before every commit. A commit that adds logic without tests is rejected.
+
+**Frontend (JS/JSX):**
+- Pure state-transformation functions (message mapping, event handlers, bridge methods) are extracted so they can be tested in isolation.
+- Use the `eval` kernel (`===== js =====` cells) to exercise logic inline when no test framework is wired.
+- Non-trivial `live.js` additions (new event handlers, new bridge methods) must be accompanied by a notebook-style proof-of-correctness cell or a note explaining why the function is too side-effectful to test directly.
+
+**What counts:**
+- A test that imports the function and asserts on its output counts.
+- A test that only verifies the function doesn't throw does not count.
+- Snapshot tests and "it renders" checks do not count as logic coverage.
+
 ## CI / release
 
-- `.github/workflows/ci.yml` — `cargo check --locked` on win/linux/mac for `src-tauri/**`, `src/**`, or workflow changes.
+- `.github/workflows/ci.yml` — `cargo check --locked` + `cargo test --locked` on win/linux/mac for `src-tauri/**`, `src/**`, or workflow changes.
 - `.github/workflows/release.yml` — bundles via `tauri build`.

@@ -3,7 +3,7 @@
    bubble component. The minimap-hover cross-highlight (mm-hot) flows
    through here via the `hoveredMsgIdx` prop. */
 
-const { UserBubble: _CV_UserBubble, ToolCard: _CV_ToolCard, AssistantBubble: _CV_AssistantBubble, Icon: _CV_Icon } = window;
+const { UserBubble: _CV_UserBubble, ToolCard: _CV_ToolCard, AssistantBubble: _CV_AssistantBubble, AskBubble: _CV_AskBubble, Icon: _CV_Icon } = window;
 
 function CompactRow({ msg }) {
   const [open, setOpen] = React.useState(false);
@@ -62,7 +62,7 @@ function CompactRow({ msg }) {
   );
 }
 
-function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx }) {
+function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, onAskAnswer }) {
   const scrollRef    = React.useRef(null);
   const atBottomRef  = React.useRef(true);   // assume start at bottom
   const prevCountRef = React.useRef(0);
@@ -105,6 +105,7 @@ function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx }
           if (m.kind === "user") return <_CV_UserBubble key={i} idx={i} highlighted={hl} msg={m} />;
           if (m.kind === "compact") return <CompactRow key={i} msg={m} />;
           if (m.kind === "tool") return <_CV_ToolCard    key={i} idx={i} highlighted={hl} msg={m} />;
+          if (m.kind === "ask")  return <_CV_AskBubble  key={i} idx={i} highlighted={hl} msg={m} onAnswer={onAskAnswer} />;
           return <_CV_AssistantBubble key={i} idx={i} highlighted={hl} msg={m}
             annotable={i === lastAsstIdx}
             annotations={annotations}

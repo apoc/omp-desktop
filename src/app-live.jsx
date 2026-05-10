@@ -134,6 +134,7 @@ function App() {
 
   const handleAbort      = () => { bridge?.abort(); setStreaming(false); };
   const handlePickModel  = m  => { setModelState(m); bridge?.setModel(m); };
+  const handleAskAnswer  = (id, value) => { bridge?.answerAsk(id, value); };
   const handlePickLogin = async (provider) => {
     if (!bridge) return;
     try {
@@ -220,6 +221,7 @@ function App() {
                 planMode={planMode}
                 annotations={planAnnotations}
                 onAnnotate={handleAnnotate}
+                onAskAnswer={handleAskAnswer}
                 hoveredMsgIdx={hoveredMsgIdx}
               />
               <Composer
