@@ -34,3 +34,6 @@ desktop.ini
 
 # Throw-away commit-message scratch files used by the agent harness
 .git-commit-msg.tmp
+
+# Agent-internal plans and superpowers docs (never commit)
+docs/superpowers/
