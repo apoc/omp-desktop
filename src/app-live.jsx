@@ -60,6 +60,7 @@ function App() {
   const [models,        setModels]        = React.useState([]);
   const [activity,      setActivity]      = React.useState([]);
   const [sparkline,     setSparkline]     = React.useState(Array(30).fill(0));
+  const [loginProviders, setLoginProviders] = React.useState(null);
 
   // ── Tab list — driven by bridge session registry ──────────────────────────
   // Each entry: { id, name, path, color, branch }
@@ -75,6 +76,15 @@ function App() {
   });
   useThemeEffect(t);
   useCommandShortcut(setBridgeOpen, setBridgeView);
+
+  // Fetch OAuth providers whenever the login view opens (ensures fresh auth status)
+  React.useEffect(() => {
+    if (!bridgeOpen || bridgeView !== "login") return;
+    setLoginProviders(null);
+    bridge?.getLoginProviders()
+      .then(data => setLoginProviders(data?.providers ?? []))
+      .catch(() => setLoginProviders([]));
+  }, [bridgeOpen, bridgeView]);
 
   const openBridge = view => { setBridgeView(view); setBridgeOpen(true); };
 
@@ -124,6 +134,21 @@ function App() {
 
   const handleAbort      = () => { bridge?.abort(); setStreaming(false); };
   const handlePickModel  = m  => { setModelState(m); bridge?.setModel(m); };
+  const handlePickLogin = async (provider) => {
+    if (!bridge) return;
+    try {
+      // OMP_BRIDGE.login resolves when OAuth completes (≤300 s).
+      // live.js handles extension_ui_request.open_url via open_url_external (system browser).
+      // For already-authenticated providers omp refreshes the token silently (no browser).
+      // Use bridge.addAssistantMessage — writes into state.messages so the message
+      // survives any subsequent notify() call (e.g. model registry refresh after login).
+      await bridge.login(provider.id);
+      bridge.addAssistantMessage(`Logged in to **${provider.name}**.`);
+    } catch (err) {
+      const msg = err?.message ?? String(err);
+      bridge.addAssistantMessage(`**Login failed (${provider.name}):** ${msg}`);
+    }
+  };
   const cycleThinking    = () => bridge?.cycleThinking();
 
   const handleCommand = c => {
@@ -133,6 +158,7 @@ function App() {
     else if (c.name === "export")   { bridge?.exportHtml(); }
     else if (c.name === "thinking") { cycleThinking(); }
     else if (c.name === "model")    { openBridge("models"); }
+    else if (c.name === "login")    { openBridge("login"); }
     else if (c.name === "new")      { bridge?.newSession(); }
   };
 
@@ -256,6 +282,8 @@ function App() {
         onClose={() => setBridgeOpen(false)}
         onPick={handleCommand}
         onPickModel={handlePickModel}
+        onPickLogin={handlePickLogin}
+        loginProviders={loginProviders}
         currentModelId={model.id}
       />
 

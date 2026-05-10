@@ -105,6 +105,15 @@ fn stop_git_watch(session_id: String, watcher: State<'_, GitWatcherState>) {
     watcher.stop(&session_id);
 }
 
+/// Open a URL in the system default browser.
+/// Uses the `open` crate (ShellExecute on Windows, xdg-open on Linux, open on macOS).
+/// `window.open(url, "_blank")` creates a Tauri webview instead — this is the correct
+/// path for OAuth flows and any external URL that must open in the user's real browser.
+#[tauri::command]
+fn open_url_external(url: String) -> Result<(), String> {
+    open::that(&url).map_err(|e| e.to_string())
+}
+
 /// Run the Tauri application. Panics if the runtime fails to initialise.
 ///
 /// # Panics
@@ -125,6 +134,7 @@ pub fn run() {
             open_project,
             start_git_watch,
             stop_git_watch,
+            open_url_external,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

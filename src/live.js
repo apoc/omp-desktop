@@ -26,6 +26,7 @@
       { name: "branch",   hint: "fork the session from current head", icon: "⑂", group: "Session" },
       { name: "model",    hint: "switch model",                       icon: "◉", group: "Agent"   },
       { name: "thinking", hint: "cycle thinking level",               icon: "✶", group: "Agent"   },
+      { name: "login",    hint: "authenticate with a model provider",   icon: "⊙", group: "Agent"   },
       { name: "todo",     hint: "open the kanban surface",            icon: "▦", group: "View"    },
       { name: "export",   hint: "export this session to HTML",        icon: "⇪", group: "View"    },
     ],
@@ -413,11 +414,25 @@
     if (type === "extension_ui_request") {
       // URL to open in the system browser (e.g. OAuth auth page).
       if (ev.method === "open_url") {
-        window.open(ev.url, "_blank");
+        // In Tauri, window.open() creates a webview rather than opening the system
+        // browser. Use the open_url_external Rust command (open crate → ShellExecute
+        // on Windows) so OAuth URLs open in the user's actual browser.
+        if (window.__TAURI__) {
+          window.__TAURI__.core.invoke("open_url_external", { url: ev.url }).catch(e => {
+            console.error("[live] open_url_external failed:", e);
+          });
+        } else {
+          window.open(ev.url, "_blank");
+        }
         if (ev.instructions) {
           state.messages = [
             ...state.messages,
-            { kind: "assistant", time: _timeNow(), text: ev.instructions, completed: true },
+            {
+              kind: "assistant", time: _timeNow(),
+              model: state.model?.name ?? null,
+              blocks: [{ type: "text", text: ev.instructions }],
+              thought: null, lead: null, streaming: false, completed: true,
+            },
           ];
           notify();
         }
@@ -765,6 +780,23 @@
      */
     login(providerId) {
       return _sendWithResponse({ type: "login", providerId }, 300000);
+    },
+
+    /**
+     * Push a system-generated assistant message into the session message log.
+     * Writes to state.messages (not just React state) so it survives subsequent
+     * notify() calls from live event processing (e.g. model registry refresh).
+     * @param {string} text  Markdown text.
+     */
+    addAssistantMessage(text) {
+      state.messages = [...state.messages, {
+        kind: "assistant",
+        time: _timeNow(),
+        model: state.model?.name ?? null,
+        blocks: [{ type: "text", text }],
+        thought: null, lead: null, streaming: false, completed: true,
+      }];
+      notify();
     },
 
     // ── Session management ───────────────────────────────────────────────────

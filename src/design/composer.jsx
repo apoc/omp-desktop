@@ -220,7 +220,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
 //  commands view  — lists all slash-commands; /model drills into picker
 //  models view    — filterable model list; Esc returns to commands
 //
-function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, initialView = "commands" }) {
+function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, onPickLogin, loginProviders, initialView = "commands" }) {
   const [q, setQ]       = React.useState("");
   const [view, setView] = React.useState("commands");
   const inputRef = React.useRef(null);
@@ -237,6 +237,7 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, ini
     const onKey = (e) => {
       if (e.key !== "Escape" || !open) return;
       if (view === "models") { if (initialView === "models") onClose(); else { setView("commands"); setQ(""); } }
+      else if (view === "login") { if (initialView === "login") onClose(); else { setView("commands"); setQ(""); } }
       else onClose();
     };
     window.addEventListener("keydown", onKey);
@@ -308,6 +309,61 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, ini
     );
   }
 
+  // ── Login view ───────────────────────────────────────────────────────────
+  if (view === "login") {
+    return (
+      <div className="bridge-scrim" onClick={onClose}>
+        <div className="bridge slide-in" onClick={(e) => e.stopPropagation()}>
+          <div className="bridge-input-row">
+            <button className="btn icon ghost" title="back"
+              onClick={() => { setView("commands"); setQ(""); }}
+              style={{ marginRight: 4 }}>
+              <Icon name="chevR" size={12} color="var(--fg-3)"
+                style={{ transform: "rotate(180deg)", display: "block" }} />
+            </button>
+            <span className="bridge-input mono" style={{ cursor: "default", lineHeight: "normal" }}>
+              login
+            </span>
+            <span className="kbd">esc</span>
+          </div>
+          <div className="bridge-body">
+            <div className="bridge-group">
+              <div className="bridge-group-head mono">select provider</div>
+              {loginProviders === null && (
+                <div className="bridge-empty" style={{ padding: "16px 32px" }}>loading providers…</div>
+              )}
+              {loginProviders !== null && loginProviders.length === 0 && (
+                <div className="bridge-empty">no providers available</div>
+              )}
+              {loginProviders !== null && loginProviders.map((p) => (
+                <button key={p.id}
+                  className={`bridge-row ${p.authenticated ? "active" : ""}`}
+                  onClick={() => { if (p.available) { onPickLogin(p); onClose(); } }}>
+                  <span className="bridge-glyph">
+                    {p.authenticated
+                      ? <Icon name="check" size={10} color="var(--accent)" />
+                      : <Icon name="bolt"  size={10} color={p.available ? "var(--cyan)" : "var(--fg-5)"} />}
+                  </span>
+                  <span style={{ color: p.authenticated ? "var(--accent)" : p.available ? "var(--fg)" : "var(--fg-4)" }}>
+                    {p.name}
+                  </span>
+                  <span className="mono" style={{ color: "var(--fg-4)" }}>{p.id}</span>
+                  <span className="chip muted" style={{ marginLeft: "auto" }}>
+                    {p.authenticated ? "logged in" : p.available ? "available" : "unavailable"}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="bridge-foot mono">
+            <span className="kbd">↵</span> authenticate
+            <span className="kbd">esc</span> back
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // ── Commands view ──────────────────────────────────────────────────
   const cmds    = window.OMP_DATA.commands;
   const cmdHits = cmds.filter((c) => !q || fil(c.name) || fil(c.hint));
@@ -331,10 +387,13 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, ini
               <div className="bridge-group-head mono">{g.toLowerCase()}</div>
               {list.map((c) => {
                 const isModel = c.name === "model";
+                const isLogin = c.name === "login";
+                const drillsIn = isModel || isLogin;
                 return (
                   <button key={c.name} className="bridge-row"
                     onClick={() => {
                       if (isModel) { setQ(""); setView("models"); }
+                      else if (isLogin) { setQ(""); setView("login"); }
                       else { onPick(c); onClose(); }
                     }}>
                     <span className="bridge-glyph">{c.icon}</span>
@@ -345,8 +404,8 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, ini
                         {activeModelName}
                       </span>
                     )}
-                    <Icon name={isModel ? "chevR" : "arrow"} size={11} color="var(--fg-4)"
-                      style={{ marginLeft: isModel ? 8 : "auto" }} />
+                    <Icon name={drillsIn ? "chevR" : "arrow"} size={11} color="var(--fg-4)"
+                      style={{ marginLeft: drillsIn ? 8 : "auto" }} />
                   </button>
                 );
               })}
