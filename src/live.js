@@ -73,6 +73,10 @@
   let turnStartTime   = null;
   let activityLog     = [];           // [{ts, toolName}], pruned to 60s
 
+  // ── Minimap / message-history trim ───────────────────────────────────────
+  const MINIMAP_COLS = 13;
+  const MINIMAP_MAX  = MINIMAP_COLS * MINIMAP_COLS; // 169 — one full 13×13 grid
+
   // ── Session registry ───────────────────────────────────────────────────────
   // Tracks all open tabs. The tab list in the UI is derived from this.
   // { id, name, path, color, branch }
@@ -119,7 +123,25 @@
   // ── Subscriber system ─────────────────────────────────────────────────────
   const subscribers = new Set();
 
+  // Drop the oldest row of messages once the 13×13 grid is full and the
+  // current turn is complete. Only called from notify() so the trim is
+  // always reflected in the same snapshot that React receives.
+  // Active tool-card indices are shifted so in-flight updates stay correct;
+  // completed cards are already removed from the map and are unaffected.
+  function _trimMessages() {
+    if (state.isStreaming) return;                  // wait for clean turn boundary
+    if (state.messages.length <= MINIMAP_MAX) return;
+    const drop = MINIMAP_COLS;                      // evict one full row (13)
+    state.messages = state.messages.slice(drop);
+    for (const [id, idx] of activeToolCards) {
+      const shifted = idx - drop;
+      if (shifted < 0) activeToolCards.delete(id); // guard: should never happen
+      else activeToolCards.set(id, shifted);
+    }
+  }
+
   function notify() {
+    _trimMessages();
     const snap = {
       messages:        state.messages,
       isStreaming:     state.isStreaming,
