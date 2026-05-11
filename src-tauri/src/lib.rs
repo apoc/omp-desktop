@@ -55,20 +55,36 @@ fn session_status(session_id: String, bridge: State<'_, AgentBridge>) -> Option<
 }
 
 /// Native folder picker — returns the chosen path or null.
+///
+/// On macOS, `AppKit` requires all `NSOpenPanel` calls to originate from
+/// the main thread. `blocking_pick_folder` invokes the dialog directly
+/// on the calling command-handler thread — an `AppKit` threading-model
+/// violation that causes an indefinite hang (spinning beach ball + high CPU).
+///
+/// The callback-based `pick_folder` dispatches the dialog to the main
+/// thread correctly. We bridge the callback to our async context with
+/// an `mpsc` channel + `spawn_blocking` so the async executor is never
+/// stalled.
 #[tauri::command]
-fn open_project(app: tauri::AppHandle) -> Result<Option<String>, String> {
+async fn open_project(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = std::sync::mpsc::channel();
     // Use into_path() rather than to_string() so we get a real PathBuf
     // and convert through to_string_lossy(). Avoids platform-specific
     // FilePath::to_string formatting (URL encoding, UNC prefix quirks)
     // that could diverge from what std::fs and the rest of the app
     // expect downstream.
-    let Some(picked) = app
-        .dialog()
+    app.dialog()
         .file()
         .set_title("Open Project Folder")
-        .blocking_pick_folder()
-    else {
+        .pick_folder(move |result| {
+            let _ = tx.send(result);
+        });
+    let picked = tauri::async_runtime::spawn_blocking(move || rx.recv())
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+        .map_err(|e| format!("channel error: {e}"))?;
+    let Some(picked) = picked else {
         return Ok(None);
     };
     let path = picked
@@ -106,7 +122,7 @@ fn stop_git_watch(session_id: String, watcher: State<'_, GitWatcherState>) {
 }
 
 /// Open a URL in the system default browser.
-/// Uses the `open` crate (ShellExecute on Windows, xdg-open on Linux, open on macOS).
+/// Uses the `open` crate (`ShellExecute` on Windows, `xdg-open` on Linux, `open` on macOS).
 /// `window.open(url, "_blank")` creates a Tauri webview instead — this is the correct
 /// path for OAuth flows and any external URL that must open in the user's real browser.
 #[tauri::command]
