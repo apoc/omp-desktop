@@ -20,7 +20,7 @@ const {
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, NULL_PEER,
   INTENT_FRAMING, APPROVAL_PROMPT,
-  useBridgeSnapshot, useThemeEffect, useCommandShortcut,
+  useBridgeSnapshot, useThemeEffect, useCommandShortcut, timeNow,
 } = window;
 
 function App() {
@@ -128,7 +128,7 @@ function App() {
     } else if (bridge?.isConnected) {
       bridge.send(msg);
     } else {
-      setMessages(prev => [...prev, { kind: "user", time: _timeNow(), text: msg }]);
+      setMessages(prev => [...prev, { kind: "user", time: timeNow(), text: msg }]);
     }
   };
 
@@ -344,9 +344,5 @@ function App() {
   );
 }
 
-function _timeNow() {
-  const d = new Date();
-  return [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => String(n).padStart(2, "0")).join(":");
-}
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);

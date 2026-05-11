@@ -11,6 +11,7 @@
 
 (function () {
   "use strict";
+  const { timeNow } = window;
 
   // ── Safe defaults so design components never crash on missing fields ──────
   const DEFAULT_DATA = {
@@ -281,7 +282,7 @@
       if (reason) {
         state.messages.push({
           kind: "assistant",
-          time: _timeNow(),
+          time: timeNow(),
           text: `**Agent process exited:** ${reason}`,
           completed: true,
         });
@@ -301,7 +302,7 @@
         console.warn(`[live] session '${id}' startup error: ${startupError}`);
         state.messages.push({
           kind: "assistant",
-          time: _timeNow(),
+          time: timeNow(),
           text: `**Agent failed to start:** ${startupError}`,
           completed: true,
         });
@@ -440,7 +441,7 @@
   function _handleEvent(ev) {
     const { type } = ev;
     const now  = Date.now();
-    const time = _timeNow();
+    const time = timeNow();
 
 
     if (type === "extension_ui_request") {
@@ -460,7 +461,7 @@
           state.messages = [
             ...state.messages,
             {
-              kind: "assistant", time: _timeNow(),
+              kind: "assistant", time: timeNow(),
               model: state.model?.name ?? null,
               blocks: [{ type: "text", text: ev.instructions }],
               thought: null, lead: null, streaming: false, completed: true,
@@ -490,7 +491,7 @@
         pendingAskBubble = {
           kind: "ask",
           id: ev.id,
-          time: _timeNow(),
+          time: timeNow(),
           title: ev.title,
           options: (ev.options ?? []).filter(o => o !== OTHER_OPT),
           answered: false,
@@ -839,7 +840,7 @@
 
     // ── Messaging ────────────────────────────────────────────────────────────
     send(text, images) {
-      const userMsg = { kind: "user", time: _timeNow(), text };
+      const userMsg = { kind: "user", time: timeNow(), text };
       state.messages = [...state.messages, userMsg];
       notify();
       _send({ type: "prompt", message: text, images: images ?? [] });
@@ -847,7 +848,7 @@
     abort()            { _send({ type: "abort" }); },
     followUp(text)     { _send({ type: "follow_up", message: text }); },
     steer(text) {
-      const userMsg = { kind: "user", time: _timeNow(), text };
+      const userMsg = { kind: "user", time: timeNow(), text };
       state.messages = [...state.messages, userMsg];
       notify();
       _send({ type: "steer", message: text, images: [] });
@@ -857,7 +858,7 @@
     cycleThinking()    { _send({ type: "cycle_thinking_level" }); },
     compact() {
       const id  = "cmpct-" + (_nextCmdId++);
-      state.messages = [...state.messages, { kind: "compact", status: "pending", id, time: _timeNow() }];
+      state.messages = [...state.messages, { kind: "compact", status: "pending", id, time: timeNow() }];
       notify();
       _send({ type: "compact", id });
     },
@@ -908,7 +909,7 @@
     addAssistantMessage(text) {
       state.messages = [...state.messages, {
         kind: "assistant",
-        time: _timeNow(),
+        time: timeNow(),
         model: state.model?.name ?? null,
         blocks: [{ type: "text", text }],
         thought: null, lead: null, streaming: false, completed: true,
@@ -1036,9 +1037,4 @@
     console.log("[live] Demo mode (no Tauri runtime)");
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
-  function _timeNow() {
-    const d = new Date();
-    return [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => String(n).padStart(2, "0")).join(":");
-  }
 })();

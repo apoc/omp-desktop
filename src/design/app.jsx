@@ -6,6 +6,7 @@ const {
   Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar,
   StatusBar, AmbientRail, PlanKanban, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakSelect, TweakToggle, TweakColor,
+  useCommandShortcut,
 } = window;
 
 // EDITMODE block — tweak defaults
@@ -25,6 +26,7 @@ function App() {
 
   const [activeTabId, setActiveTabId] = React.useState("p1");
   const [bridgeOpen, setBridgeOpen] = React.useState(false);
+  const [bridgeView, setBridgeView] = React.useState("commands");
   const [planOpen, setPlanOpen] = React.useState(false);
   const [planPhase, setPlanPhase] = React.useState("review"); // review | running | done
   const [planMode, setPlanMode] = React.useState(false);
@@ -59,17 +61,7 @@ function App() {
     return () => clearTimeout(id);
   }, []);
 
-  // ⌘K global
-  React.useEffect(() => {
-    const onKey = (e) => {
-      if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault(); setBridgeOpen((v) => !v);
-      }
-      if (e.key === "Escape") setBridgeOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  useCommandShortcut(setBridgeOpen, setBridgeView);
 
   const project = data.projects.find((p) => p.id === activeTabId);
   const todoCounts = data.kanban.reduce(

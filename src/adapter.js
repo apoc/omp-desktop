@@ -414,16 +414,16 @@
     return result;
   }
 
-  // ── Internal helpers ──────────────────────────────────────────────────────
+  // ── Time helper (exported so live.js and app-live.jsx share one copy) ────
   function _formatTime(ts) {
-    if (!ts) return _timeNow();
+    if (!ts) return timeNow();
     const d = ts instanceof Date ? ts : new Date(ts);
-    if (isNaN(d.getTime())) return _timeNow();
+    if (isNaN(d.getTime())) return timeNow();
     return [d.getHours(), d.getMinutes(), d.getSeconds()]
       .map(n => String(n).padStart(2, "0")).join(":");
   }
 
-  function _timeNow() {
+  function timeNow() {
     const d = new Date();
     return [d.getHours(), d.getMinutes(), d.getSeconds()]
       .map(n => String(n).padStart(2, "0")).join(":");
@@ -445,5 +445,6 @@
     finalizeToolCard,
     updateToolCard,
     adaptAgentMessages,
+    timeNow,
   });
 })();
