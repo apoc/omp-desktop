@@ -153,6 +153,8 @@ mod tests {
     fn accepts_rpc_ui_anywhere_in_text() {
         // Position in the string should not matter
         assert!(help_text_supports_rpc_ui("rpc-ui mode enables ask tool"));
-        assert!(help_text_supports_rpc_ui("supported modes: rpc-ui, rpc, text"));
+        assert!(help_text_supports_rpc_ui(
+            "supported modes: rpc-ui, rpc, text"
+        ));
     }
 }

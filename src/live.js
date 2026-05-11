@@ -373,11 +373,34 @@
 
     } else if (command === "get_messages") {
       const completed = window.adaptAgentMessages(data.messages ?? []);
-      // Preserve any in-progress streaming bubble — omp doesn't persist
-      // incomplete turns, so get_messages won't include it.
-      state.messages = streamingBubble
-        ? [...completed, streamingBubble]
-        : completed;
+      // Tool/ask/compact cards exist only in live event state — omp never
+      // persists them and get_messages never returns them. Walk the current
+      // snapshot in order: preserve tool/ask/compact entries in-place and
+      // replace each text entry (user/assistant) with the ground-truth copy
+      // from `completed`. Any new turns that arrived while we were on another
+      // tab (missed live events) are appended at the end. activeToolCards
+      // indices are rebuilt so in-flight tool_execution_update events keep
+      // landing on the right array slot.
+      const pending = [...completed];
+      const merged = [];
+      for (const m of state.messages) {
+        if (m.streaming) continue; // streaming bubble handled separately below
+        if (m.kind === "tool" || m.kind === "ask" || m.kind === "compact") {
+          merged.push(m);
+        } else if (pending.length > 0) {
+          merged.push(pending.shift());
+        }
+      }
+      merged.push(...pending); // turns that completed while we were away
+      // Rebuild activeToolCards — new entries may have been appended from pending
+      activeToolCards = new Map();
+      for (let i = 0; i < merged.length; i++) {
+        const m = merged[i];
+        if (m.kind === "tool" && m.status === "running" && m._toolCallId) {
+          activeToolCards.set(m._toolCallId, i);
+        }
+      }
+      state.messages = streamingBubble ? [...merged, streamingBubble] : merged;
       notify();
 
     } else if (command === "get_available_models") {
@@ -752,6 +775,15 @@
     if (!rpcState) return;
     state.rpcState      = rpcState;
     state.isStreaming   = rpcState.isStreaming ?? false;
+    // If the turn completed while we were away (snapshot had streamingBubble
+    // with streaming:true, but omp now says isStreaming:false), retire the
+    // bubble immediately. The completed text arrives with get_messages; the
+    // stale ghost is removed from state.messages here so the minimap doesn't
+    // show a pulsating cell until get_messages lands.
+    if (!state.isStreaming && streamingBubble) {
+      streamingBubble = null;
+      state.messages = state.messages.filter(m => !m.streaming);
+    }
     state.thinkingLevel = rpcState.thinkingLevel ?? "auto";
 
     if (rpcState.model) {
