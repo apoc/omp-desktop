@@ -24,6 +24,7 @@
       { name: "steer",    hint: "interrupt and redirect mid-tool",    icon: "↺", group: "Mode"    },
       { name: "compact",  hint: "compact context window",             icon: "▤", group: "Session" },
       { name: "new",      hint: "start a fresh session (history kept on disk)", icon: "↺", group: "Session" },
+      { name: "history",  hint: "browse and resume saved sessions",   icon: "clock", group: "Session" },
       { name: "branch",   hint: "fork the session from current head", icon: "⑂", group: "Session" },
       { name: "model",    hint: "switch model",                       icon: "◉", group: "Agent"   },
       { name: "thinking", hint: "cycle thinking level",               icon: "✶", group: "Agent"   },
@@ -1067,6 +1068,48 @@
       if (id === activeSessionId) return;
       if (!sessionRegistry.has(id)) return;
       await _switchToSession(id);
+    },
+
+    /** List saved sessions on disk (~/.omp/agent/sessions). */
+    async listSavedSessions(cwd = null) {
+      if (!window.__TAURI__) return [];
+      try {
+        const sessions = await window.__TAURI__.core.invoke("list_saved_sessions", { cwd: cwd || null });
+        return sessions || [];
+      } catch (err) {
+        console.error("[live] listSavedSessions error:", err);
+        return [];
+      }
+    },
+
+    /** Resume a saved session into a new tab. */
+    async resumeSession(session) {
+      if (!session || !session.path) return null;
+      const id = `session-${Date.now()}`;
+      const cwd = session.cwd || "";
+      const name = session.title || (cwd ? cwd.replace(/\\/g, "/").split("/").pop() || cwd : "resumed");
+      sessionRegistry.set(id, { id, name, path: cwd, color: "var(--cyan)", branch: null });
+      await window.__TAURI__.core.invoke("start_session", {
+        sessionId: id,
+        cwd: cwd,
+        resume: session.path,
+      });
+      if (cwd) {
+        const branch = await window.__TAURI__.core
+          .invoke("start_git_watch", { sessionId: id, path: cwd })
+          .catch(() => null);
+        const entry = sessionRegistry.get(id);
+        if (entry) sessionRegistry.set(id, { ...entry, branch: branch ?? null });
+        const { listen } = window.__TAURI__.event;
+        const unlisten = await listen(`git://branch/${id}`, ev => {
+          const e = sessionRegistry.get(id);
+          if (e) sessionRegistry.set(id, { ...e, branch: ev.payload });
+          notify();
+        });
+        gitListeners.set(id, unlisten);
+      }
+      await _switchToSession(id);
+      return id;
     },
 
     /** Close a tab and kill its omp process. */

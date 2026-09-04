@@ -7,6 +7,7 @@
 mod agent;
 mod git;
 mod git_watcher;
+mod saved_sessions;
 
 use agent::AgentBridge;
 use git_watcher::GitWatcherState;
@@ -24,15 +25,26 @@ fn send_command(
 
 /// Start an omp process for a new tab session.
 /// `cwd`: absolute path to the project folder (empty string = omp's default).
+/// `resume`: optional file path or session ID to resume an existing session.
 #[tauri::command]
 fn start_session(
     session_id: String,
     cwd: String,
+    resume: Option<String>,
     bridge: State<'_, AgentBridge>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let cwd_opt = if cwd.is_empty() { None } else { Some(cwd) };
-    bridge.start_session(session_id, cwd_opt.as_deref(), app)
+    let cwd_opt = if cwd.is_empty() { None } else { Some(cwd.as_str()) };
+    bridge.start_session(session_id, cwd_opt, resume.as_deref(), app)
+}
+
+/// List saved sessions from disk (~/.omp/agent/sessions).
+#[tauri::command]
+fn list_saved_sessions(
+    cwd: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<saved_sessions::SavedSession>, String> {
+    saved_sessions::scan_saved_sessions(&app, cwd.as_deref())
 }
 
 /// Kill the omp process for a tab session.
@@ -151,6 +163,7 @@ pub fn run() {
             start_git_watch,
             stop_git_watch,
             open_url_external,
+            list_saved_sessions,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
@@ -165,7 +178,7 @@ pub fn run() {
             // session_status on attach and surfaces the cached reason
             // if any — no event timing race, no delayed emit thread.
             let bridge = app.state::<AgentBridge>();
-            if let Err(e) = bridge.start_session("default".into(), None, app.handle().clone()) {
+            if let Err(e) = bridge.start_session("default".into(), None, None, app.handle().clone()) {
                 eprintln!("[omp-desktop] failed to start default session: {e}");
             }
             Ok(())

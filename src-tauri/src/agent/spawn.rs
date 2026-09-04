@@ -134,7 +134,8 @@ fn probe_rpc_ui() -> bool {
 // ── session spawn ─────────────────────────────────────────────────────────────
 
 /// Spawn omp for a live session using the best available RPC mode.
-pub(super) fn spawn_omp(cwd: Option<&str>) -> Result<Child, String> {
+/// If `resume` is specified, `--resume <path_or_id>` is passed to resume an existing session.
+pub(super) fn spawn_omp(cwd: Option<&str>, resume: Option<&str>) -> Result<Child, String> {
     // On Windows, `Command::new` resolves bare "omp" against PATH and
     // PATHEXT (.exe etc.) via CreateProcess. We try the explicit ".exe"
     // name first because some systems have weird PATHEXT handling, then
@@ -146,8 +147,13 @@ pub(super) fn spawn_omp(cwd: Option<&str>) -> Result<Child, String> {
     let mut last_err = String::from("no candidates tried");
     for name in CANDIDATES {
         let mut cmd = Command::new(name);
-        cmd.args(["--mode", mode])
-            .stdin(Stdio::piped())
+        cmd.args(["--mode", mode]);
+        if let Some(r) = resume {
+            if !r.is_empty() {
+                cmd.args(["--resume", r]);
+            }
+        }
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         apply_omp_path(&mut cmd);

@@ -10,6 +10,7 @@ React UI as a connected, live interface — no browser, no Electron, ~8 MB binar
 - Per-tab session isolation — each tab owns its own `omp --mode rpc` process
 - Full session snapshots: switch tabs, state is preserved including in-flight streams
 - `/new` command starts a fresh session (history kept on disk)
+- Conversation history panel (`Ctrl+H` / `⌘H` / `/history`) to browse, search, and resume past sessions in new tabs
 - Model picker with two-view command bridge; cycle or pick directly from the status bar
 - Thinking-level control: cycle through `off / minimal / low / medium / high / xhigh` (per-model — omp picks the supported subset)
 - Streaming token display with tokens/sec sparkline and context-window gauge
