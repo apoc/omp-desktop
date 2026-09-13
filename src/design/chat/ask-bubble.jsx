@@ -137,12 +137,12 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, on
             disabled={done}
             onChange={e => setDraft(e.target.value)}
             onKeyDown={e => {
-              if (e.key === "Enter" && !e.nativeEvent?.isComposing && e.keyCode !== 229) { e.preventDefault(); submit(draft); }
+              if (e.key === "Enter" && !e.nativeEvent?.isComposing && e.keyCode !== 229 && draft.trim()) { e.preventDefault(); submit(draft); }
             }}
           />
           {!done && (
             <>
-              <button className="ask-submit" onClick={() => submit(draft)}>Submit</button>
+              {draft.trim() && <button className="ask-submit" onClick={() => submit(draft)}>Submit</button>}
               <button className="ask-opt" onClick={decline}>Cancel</button>
             </>
           )}
@@ -198,26 +198,28 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, on
 
         {/* Free-text input — skips the "Other (type your own)" round-trip:
             typing here sends the text directly as the select response value. */}
-        <div className="ask-other">
-          <input
-            className="ask-other-input"
-            type="text"
-            placeholder="Or type your own answer…"
-            value={custom}
-            disabled={done}
-            onChange={e => setCustom(e.target.value)}
-            onKeyDown={handleKey}
-          />
-          {!done && custom.trim() && (
-            <button className="ask-submit" onClick={() => submit(custom.trim())}>
-              Submit
-            </button>
-          )}
-          {/* Show custom answer inline when the user typed rather than clicked */}
-          {done && msg.answer && !msg.options.includes(msg.answer) && (
-            <span className="ask-custom-echo">{msg.answer}</span>
-          )}
-        </div>
+        {!isApproval && (
+          <div className="ask-other">
+            <input
+              className="ask-other-input"
+              type="text"
+              placeholder="Or type your own answer…"
+              value={custom}
+              disabled={done}
+              onChange={e => setCustom(e.target.value)}
+              onKeyDown={handleKey}
+            />
+            {!done && custom.trim() && (
+              <button className="ask-submit" onClick={() => submit(custom.trim())}>
+                Submit
+              </button>
+            )}
+            {/* Show custom answer inline when the user typed rather than clicked */}
+            {done && msg.answer && !msg.options.includes(msg.answer) && (
+              <span className="ask-custom-echo">{msg.answer}</span>
+            )}
+          </div>
+        )}
       </>
     );
   }

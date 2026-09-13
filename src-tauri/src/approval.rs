@@ -204,9 +204,10 @@ impl RuleBook {
     }
 
     /// Where past versions of a project's rules file are kept — see
-    /// [`json_store::SnapshotRing`]. Consulted by `load_project_rules` when
-    /// the primary file is missing/corrupt, and written to by
-    /// `persist_project_rules` before every overwrite.
+    /// [`json_store::SnapshotRing`]. Consulted by `load_project_rules` only
+    /// when the primary file exists but fails to parse (corrupt), never
+    /// when it's merely missing, and written to by `persist_project_rules`
+    /// before every overwrite.
     fn snapshot_ring(&self, project_root: &Path) -> json_store::SnapshotRing {
         json_store::SnapshotRing::new(
             self.config_root
@@ -243,9 +244,18 @@ impl RuleBook {
     }
 
     /// Load (or return the cached copy of) a project's persisted rules. A
-    /// primary file that's missing or fails to parse falls back to the
-    /// most recent valid snapshot (see [`Self::snapshot_ring`]) before
-    /// giving up and treating the project as having no rules at all.
+    /// missing primary file means a genuinely empty (fresh) project — the
+    /// snapshot ring is never consulted for it, since a missing file is
+    /// never grounds to resurrect *any* prior state (see
+    /// [`Self::persist_project_rules`] for why the ring is otherwise safe
+    /// to consult: it holds the incoming content of each write, so its
+    /// newest entry always mirrors the latest legitimate state rather than
+    /// one a later write superseded). A primary file that exists but fails
+    /// to parse (corrupt/truncated) is the one case the ring's "recover
+    /// from a bad write" purpose serves, so that's the only failure mode
+    /// that falls back to [`Self::snapshot_ring`]; if the ring has nothing
+    /// valid either, the project is treated as having no rules at all
+    /// (fail closed).
     fn load_project_rules(&self, project_root: &Path) -> Vec<Rule> {
         let Ok(mut cache) = self.project_rules.lock() else {
             return Vec::new();
@@ -255,11 +265,16 @@ impl RuleBook {
             return rules.clone();
         }
         let path = self.project_file_path(project_root);
-        let raw = std::fs::read(&path).ok().or_else(|| {
-            self.snapshot_ring(project_root)
-                .restore_latest()
-                .ok()
-                .flatten()
+        let raw = std::fs::read(&path).ok().and_then(|bytes| {
+            if serde_json::from_slice::<ProjectRulesFile>(&bytes).is_ok() {
+                Some(bytes)
+            } else {
+                // File exists but is corrupt: only now does the ring apply.
+                self.snapshot_ring(project_root)
+                    .restore_latest()
+                    .ok()
+                    .flatten()
+            }
         });
         let rules: Vec<Rule> = raw
             .and_then(|bytes| serde_json::from_slice::<ProjectRulesFile>(&bytes).ok())
@@ -278,9 +293,20 @@ impl RuleBook {
         rules
     }
 
-    /// Snapshot the file's current on-disk contents (if any) before
-    /// overwriting it — recovery path for `load_project_rules` above — then
-    /// write the new contents atomically.
+    /// Snapshot the new contents before writing them, then write them
+    /// atomically — recovery path for `load_project_rules` above (consulted
+    /// there only when the primary file exists but fails to parse).
+    ///
+    /// Deliberately snapshots the *incoming* bytes, not the outgoing ones
+    /// being replaced: the ring's purpose is to recover whatever should
+    /// currently be on disk if the primary file is later found corrupt, and
+    /// that's always the most recently written state, never a state a
+    /// subsequent write superseded. Snapshotting the outgoing content
+    /// instead would mean a grant-then-revoke sequence leaves the ring's
+    /// newest entry holding the pre-revoke (more permissive) rule set, so a
+    /// later corruption of the primary file could resurrect an
+    /// already-revoked grant — snapshotting the incoming content keeps the
+    /// ring's latest entry always in sync with the latest legitimate write.
     fn persist_project_rules(&self, project_root: &Path, rules: &[Rule]) -> Result<(), String> {
         let file = ProjectRulesFile {
             version: RULES_FILE_VERSION,
@@ -297,13 +323,9 @@ impl RuleBook {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        if let Ok(existing) = std::fs::read(&path) {
-            // Best-effort — a failed snapshot must never block the actual
-            // write, it only narrows future recovery options.
-            let _ = self
-                .snapshot_ring(project_root)
-                .snapshot(&existing, "pre-write");
-        }
+        // Best-effort — a failed snapshot must never block the actual
+        // write, it only narrows future recovery options.
+        let _ = self.snapshot_ring(project_root).snapshot(&bytes, "write");
         json_store::write_atomic(&path, &bytes).map_err(|e| e.to_string())
     }
 
@@ -590,6 +612,49 @@ mod tests {
         let book = RuleBook::new(dir);
         std::fs::write(book.project_file_path(&project), b"not json").unwrap();
         assert!(!book.is_granted("sess-a", Some(&project), "bash"));
+    }
+
+    #[test]
+    fn missing_project_rules_file_is_not_resurrected_from_snapshot_ring() {
+        // A missing primary file must be treated as a genuinely empty
+        // project, never resurrected from the snapshot ring — even though
+        // the ring holds an earlier state that included a grant.
+        let dir = scratch_dir();
+        let project = scratch_dir();
+        let book = RuleBook::new(dir.clone());
+        book.grant("sess-a", Some(&project), "bash", RuleScope::Project)
+            .unwrap();
+        // Second write snapshots the incoming content ([bash, read]) but
+        // the ring's first entry (from the first write) already holds
+        // [bash] alone — either way the ring has a non-empty entry now.
+        book.grant("sess-a", Some(&project), "read", RuleScope::Project)
+            .unwrap();
+        std::fs::remove_file(book.project_file_path(&project)).unwrap();
+        // Fresh instance so the in-memory cache can't mask the on-disk state.
+        let book2 = RuleBook::new(dir);
+        assert!(!book2.is_granted("sess-a", Some(&project), "bash"));
+        assert!(!book2.is_granted("sess-a", Some(&project), "read"));
+        assert!(book2.list("sess-a", Some(&project)).is_empty());
+    }
+
+    #[test]
+    fn revoke_then_corrupt_does_not_resurrect_stale_pre_revoke_grant() {
+        // A tool granted and then revoked must stay revoked even if the
+        // primary file is later corrupted and the corrupt-file fallback
+        // consults the snapshot ring: the ring's newest entry is the
+        // *incoming* content of each write (see `persist_project_rules`),
+        // so after a revoke it holds the post-revoke (empty) state, not
+        // the pre-revoke (granted) one.
+        let dir = scratch_dir();
+        let project = scratch_dir();
+        let book = RuleBook::new(dir.clone());
+        book.grant("sess-a", Some(&project), "bash", RuleScope::Project)
+            .unwrap();
+        book.revoke("sess-a", Some(&project), "bash", RuleScope::Project)
+            .unwrap();
+        std::fs::write(book.project_file_path(&project), b"not json").unwrap();
+        let book2 = RuleBook::new(dir);
+        assert!(!book2.is_granted("sess-a", Some(&project), "bash"));
     }
 
     #[test]

@@ -167,21 +167,8 @@ impl AgentBridge {
                 },
             )
         };
-        if let Some(mut prev) = prev {
-            prev.stdin = None;
-            let prev_supervisor = prev.supervisor.take();
-            if let Some(mut c) = prev.child.take() {
-                // Reap off-thread so the Tauri command thread is never
-                // blocked by a stuck process. The supervisor moves in too:
-                // its Drop kills the whole tree (subagents, tool-call
-                // children) before the direct child.kill()/wait() below
-                // reaps the now-dead process's zombie entry.
-                thread::spawn(move || {
-                    drop(prev_supervisor);
-                    let _ = c.kill();
-                    let _ = c.wait();
-                });
-            }
+        if let Some(prev) = prev {
+            reap_and_clear_grants(&session_id, prev, &rule_book);
         }
 
         // Successful spawn — clear any cached error from a previous
@@ -363,6 +350,37 @@ impl Drop for AgentBridge {
     }
 }
 
+/// Reap `prev`'s process tree off-thread (so the Tauri command thread is
+/// never blocked by a stuck process) and drop its session-scoped
+/// approval grants. A session id being replaced means a brand-new
+/// process is taking over; whatever the previous occupant's user was
+/// granted (e.g. "always allow bash for this session") must not
+/// silently carry over and auto-approve prompts the new process never
+/// actually got consent for — mirrors the same `clear_session` call
+/// `AgentBridge::stop_session` makes. Extracted as its own function so
+/// this is unit-testable without spawning a real child process or a
+/// Tauri `AppHandle`.
+fn reap_and_clear_grants(
+    session_id: &str,
+    mut prev: BridgeInner,
+    rule_book: &crate::approval::RuleBook,
+) {
+    rule_book.clear_session(session_id);
+    prev.stdin = None;
+    let prev_supervisor = prev.supervisor.take();
+    if let Some(mut c) = prev.child.take() {
+        // The supervisor moves in too: its Drop kills the whole tree
+        // (subagents, tool-call children) before the direct
+        // child.kill()/wait() below reaps the now-dead process's zombie
+        // entry.
+        thread::spawn(move || {
+            drop(prev_supervisor);
+            let _ = c.kill();
+            let _ = c.wait();
+        });
+    }
+}
+
 /// Parse `trimmed` as JSON, require a string `type` field, and check it
 /// against [`ALLOWED_COMMAND_TYPES`]. Extracted as a pure function so the
 /// validation logic is unit-testable without a running child process.
@@ -425,5 +443,39 @@ mod tests {
         let bridge = AgentBridge::new();
         let err = bridge.replay_events("nope", 0).unwrap_err();
         assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn replacing_a_session_clears_its_rule_book_session_grants() {
+        let dir = std::env::temp_dir().join(format!(
+            "omp-desktop-agent-mod-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let rule_book = crate::approval::RuleBook::new(dir);
+        rule_book
+            .grant("sess-x", None, "bash", crate::approval::RuleScope::Session)
+            .unwrap();
+        assert!(rule_book.is_granted("sess-x", None, "bash"));
+
+        // Same shape `start_session` inserts on a fresh spawn — a session
+        // with id "sess-x" being replaced without an intervening
+        // `stop_session`.
+        let prev = BridgeInner {
+            gen: 1,
+            stdin: None,
+            child: None,
+            supervisor: None,
+            journal: Arc::new(Mutex::new(EventJournal::new(EVENT_JOURNAL_CAPACITY))),
+        };
+        reap_and_clear_grants("sess-x", prev, &rule_book);
+
+        assert!(
+            !rule_book.is_granted("sess-x", None, "bash"),
+            "replacing a session must drop its previous occupant's session-scoped grants"
+        );
     }
 }

@@ -341,7 +341,15 @@
 
     const { listen } = window.__TAURI__.event;
     const ulLine = await listen(`agent://line/${id}`, ev => handleLine(ev.payload));
-    if (_switchGen !== myGen) return; // superseded by a newer switch
+    if (_switchGen !== myGen) {
+      // Superseded while this call's own listener was still being attached —
+      // it was never stored into activeListeners, so nothing else will ever
+      // tear it down. Without this it keeps dispatching the abandoned
+      // session's stdout lines into whichever tab is now active and
+      // corrupts that tab's lastSeq cursor.
+      try { await ulLine(); } catch (_) {}
+      return;
+    }
     const ulExit = await listen(`agent://exit/${id}`, ev => {
       const reason = (ev?.payload && String(ev.payload).trim()) || "";
       console.warn(`[live] session '${id}' omp process exited${reason ? ": " + reason : ""}`);
@@ -357,7 +365,13 @@
       }
       notify();
     });
-    if (_switchGen !== myGen) return; // superseded by a newer switch
+    if (_switchGen !== myGen) {
+      // Same leak as above, but both listeners for this call exist and
+      // haven't been committed to activeListeners yet.
+      try { await ulLine(); } catch (_) {}
+      try { await ulExit(); } catch (_) {}
+      return;
+    }
     activeListeners = [ulLine, ulExit];
 
     // Catch up on events the journal captured while this tab had no live
@@ -1044,13 +1058,13 @@
       // note was a silently empty bubble. Shape matches addAssistantMessage.
       // Proven with an eval-kernel cell (2/2 cases: old `{text}` shape
       // renders empty, new `{blocks}` shape renders the text).
-      state.messages.push({
+      state.messages = [...state.messages, {
         kind: "assistant",
         time,
         model: state.model?.name ?? null,
         blocks: [{ type: "text", text: `Auto-approved **${ev.tool}** via your approval rule.` }],
         thought: null, lead: null, streaming: false, completed: true,
-      });
+      }];
       notify();
       return;
     }

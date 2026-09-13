@@ -231,12 +231,21 @@ mod tests {
         }
     }
 
-    /// True while process `pid` still exists (`/proc/<pid>` present).
-    /// Reaped zombies still have a `/proc` entry, but for this test the
+    /// True while process `pid` still exists and is signal-reachable from
+    /// this process. Uses `kill(pid, 0)` — the POSIX null-signal existence
+    /// probe: it performs the usual permission checks and returns `0` if
+    /// the process exists, without actually delivering a signal to it.
+    /// Portable across every Unix target this crate supports; a
+    /// `/proc/<pid>` existence check only works on Linux and always
+    /// returns `false` on macOS, which silently broke this test there.
+    /// Reaped zombies still respond to signal 0, but for this test the
     /// distinction doesn't matter: we only care that the descendant was
     /// actually torn down, not lingering as a runnable process.
     fn process_alive(pid: u32) -> bool {
-        std::path::Path::new(&format!("/proc/{pid}")).exists()
+        let pid = libc::pid_t::try_from(pid).unwrap_or(0);
+        // SAFETY: plain-integer FFI call. Signal `0` never actually
+        // signals the target; it only probes existence/permission.
+        unsafe { libc::kill(pid, 0) == 0 }
     }
 
     /// Spawn `sh -c 'sleep 30 & sleep 30 & wait'`, returning the shell's

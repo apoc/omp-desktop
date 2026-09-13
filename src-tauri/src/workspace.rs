@@ -65,12 +65,22 @@ pub fn validate_relative_path(repo_root: &Path, rel: &str) -> Result<PathBuf, St
         return Err("path must not be a drive-letter path".to_string());
     }
 
-    let normalized = rel.replace('\\', "/");
+    let normalized = if cfg!(windows) {
+        rel.replace('\\', "/")
+    } else {
+        rel.to_string()
+    };
     if normalized
         .split('/')
         .any(|seg| seg == ".." || seg.is_empty())
     {
         return Err("path must not contain '..' or empty components".to_string());
+    }
+    if normalized
+        .split('/')
+        .any(|seg| seg.eq_ignore_ascii_case(".git"))
+    {
+        return Err("path must not reference the .git directory".to_string());
     }
 
     let canonical_root = std::fs::canonicalize(repo_root)
@@ -129,7 +139,12 @@ fn to_repo_relative(work_dir: &Path, abs: &Path) -> Result<String, String> {
     let rel = abs
         .strip_prefix(&canonical_root)
         .map_err(|_| "path escapes repository root".to_string())?;
-    Ok(rel.to_string_lossy().replace('\\', "/"))
+    let rel_str = rel.to_string_lossy();
+    Ok(if cfg!(windows) {
+        rel_str.replace('\\', "/")
+    } else {
+        rel_str.into_owned()
+    })
 }
 
 /// Open `repo_root` with gix (same discovery pattern as [`crate::git::probe`])
@@ -189,7 +204,13 @@ pub fn status(repo_root: &Path) -> Result<StatusResult, String> {
 
     let output = Command::new("git")
         .current_dir(&work_dir)
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        .args([
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+        ])
         .output()
         .map_err(|e| format!("failed to run git status: {e}"))?;
     if !output.status.success() {
@@ -218,7 +239,7 @@ fn parse_porcelain_z(bytes: &[u8]) -> StatusResult {
         let x = entry[0];
         let y = entry[1];
         let path = String::from_utf8_lossy(&entry[3..]).into_owned();
-        if x == b'R' || x == b'C' {
+        if x == b'R' || x == b'C' || y == b'R' || y == b'C' {
             // Rename/copy entries carry a paired original path in the
             // next NUL-delimited field; consume and discard it (only the
             // current path is part of our `FileStatus` surface).
@@ -293,13 +314,34 @@ pub fn diff(repo_root: &Path, rel_path: &str) -> Result<DiffResult, String> {
     let abs = validate_relative_path(&work_dir, rel_path)?;
     let rel_norm = to_repo_relative(&work_dir, &abs)?;
 
+    // `HEAD` may not resolve yet (a freshly initialized repo with zero
+    // commits, i.e. "unborn HEAD") — `git diff HEAD` fails outright in
+    // that case, so diff against git's well-known empty-tree object
+    // instead, which makes every staged/worktree file show up as a
+    // plain addition, exactly like a first-ever diff should.
+    let head_resolved = Command::new("git")
+        .current_dir(&work_dir)
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("failed to run git rev-parse: {e}"))?
+        .success();
+    let diff_target = if head_resolved {
+        "HEAD"
+    } else {
+        "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+    };
+
     let output = Command::new("git")
         .current_dir(&work_dir)
         .args([
             "--literal-pathspecs",
             "diff",
-            "HEAD",
+            diff_target,
             "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
             "--",
             &rel_norm,
         ])
@@ -425,6 +467,9 @@ pub fn accept(repo_root: &Path, rel_path: &str) -> Result<(), String> {
     let work_dir = discover_work_dir(repo_root)?;
     let abs = validate_relative_path(&work_dir, rel_path)?;
     let rel_norm = to_repo_relative(&work_dir, &abs)?;
+    if std::fs::symlink_metadata(&abs).is_ok_and(|m| m.is_dir()) {
+        return Err(format!("{rel_norm} is a directory, not a file"));
+    }
 
     let output = Command::new("git")
         .current_dir(&work_dir)
@@ -473,6 +518,9 @@ pub fn reject(repo_root: &Path, rel_path: &str) -> Result<(), String> {
     let work_dir = discover_work_dir(repo_root)?;
     let abs = validate_relative_path(&work_dir, rel_path)?;
     let rel_norm = to_repo_relative(&work_dir, &abs)?;
+    if std::fs::symlink_metadata(&abs).is_ok_and(|m| m.is_dir()) {
+        return Err(format!("{rel_norm} is a directory, not a file"));
+    }
 
     // `-e` only needs the exit status; a missing path is an expected,
     // non-error outcome here (see the doc comment above), so stdout and
@@ -502,6 +550,56 @@ pub fn reject(repo_root: &Path, rel_path: &str) -> Result<(), String> {
         return Ok(());
     }
 
+    // The path has no `HEAD` blob at this exact location, but it might
+    // still be a rename/copy *destination* — the original content then
+    // lives at a different `HEAD` path, not at this one. Falling
+    // through to the delete-the-worktree-file branch below would
+    // permanently destroy that content (it exists in no git object at
+    // this path) and leave the rename source staged as a plain
+    // deletion — a strictly worse state than before. Detect this first
+    // (checking the staged case, then the working-tree-detected case,
+    // e.g. after `git add -N`) and restore non-destructively instead.
+    let rename_source = match find_rename_source(&work_dir, &rel_norm, true)? {
+        Some(src) => Some(src),
+        None => find_rename_source(&work_dir, &rel_norm, false)?,
+    };
+    if let Some(old_path) = rename_source {
+        let reset = Command::new("git")
+            .current_dir(&work_dir)
+            .args(["--literal-pathspecs", "reset", "--", &rel_norm])
+            .output()
+            .map_err(|e| format!("failed to run git reset: {e}"))?;
+        if !reset.status.success() {
+            return Err(format!(
+                "git reset failed: {}",
+                String::from_utf8_lossy(&reset.stderr)
+            ));
+        }
+
+        let checkout = Command::new("git")
+            .current_dir(&work_dir)
+            .args(["--literal-pathspecs", "checkout", "HEAD", "--", &old_path])
+            .output()
+            .map_err(|e| format!("failed to run git checkout: {e}"))?;
+        if !checkout.status.success() {
+            return Err(format!(
+                "git checkout failed: {}",
+                String::from_utf8_lossy(&checkout.stderr)
+            ));
+        }
+
+        // The physical file was moved to the new name; now that the
+        // original has been restored at its own path, remove it there.
+        if abs.exists() {
+            match std::fs::remove_file(&abs) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("failed to remove {rel_norm}: {e}")),
+            }
+        }
+        return Ok(());
+    }
+
     // No `HEAD` version exists: unstage (no-op if never staged) then
     // delete the working-tree file — see the destructive-footgun note
     // above.
@@ -522,6 +620,60 @@ pub fn reject(repo_root: &Path, rel_path: &str) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("failed to remove {rel_norm}: {e}")),
     }
+}
+
+/// Whether `rel_norm` is the *destination* of a rename/copy detected by
+/// `git diff --name-status -M -z` (staged when `staged` is `true`,
+/// otherwise worktree vs index). The diff is intentionally run
+/// unfiltered (no trailing pathspec) and scanned for a matching
+/// destination: pathspec-limiting the diff to just `rel_norm` would
+/// exclude the rename's source path from the compared set, which
+/// silently defeats git's own rename detection (verified against a
+/// real repository — `git diff --name-status -M -z -- <dest>` reports
+/// a plain add, not a rename, once the source is filtered out).
+fn find_rename_source(
+    work_dir: &Path,
+    rel_norm: &str,
+    staged: bool,
+) -> Result<Option<String>, String> {
+    let mut args = vec!["--literal-pathspecs", "diff"];
+    if staged {
+        args.push("--cached");
+    }
+    args.extend(["--name-status", "-M", "-z"]);
+
+    let output = Command::new("git")
+        .current_dir(work_dir)
+        .args(&args)
+        .output()
+        .map_err(|e| format!("failed to run git diff --name-status: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git diff --name-status failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let mut fields = output.stdout.split(|&b| b == 0).filter(|f| !f.is_empty());
+    while let Some(status_field) = fields.next() {
+        let is_rename_or_copy = status_field
+            .first()
+            .is_some_and(|&b| b == b'R' || b == b'C');
+        if is_rename_or_copy {
+            let old_path = fields
+                .next()
+                .map(|f| String::from_utf8_lossy(f).into_owned());
+            let new_path = fields
+                .next()
+                .map(|f| String::from_utf8_lossy(f).into_owned());
+            if new_path.as_deref() == Some(rel_norm) {
+                return Ok(old_path);
+            }
+        } else {
+            let _ = fields.next(); // single-path record; consume and skip
+        }
+    }
+    Ok(None)
 }
 
 // ── tests ────────────────────────────────────────────────────────────────────
@@ -947,6 +1099,225 @@ mod tests {
         };
         assert!(accept(&repo, "../outside.txt").is_err());
         assert!(reject(&repo, "../outside.txt").is_err());
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    // ── .git path guard (bug #1) ─────────────────────────────────────────
+
+    #[test]
+    fn validate_relative_path_rejects_dot_git_component() {
+        let root = std::env::temp_dir();
+        assert!(validate_relative_path(&root, ".git/config").is_err());
+        assert!(validate_relative_path(&root, ".git/HEAD").is_err());
+        assert!(validate_relative_path(&root, ".git").is_err());
+        assert!(validate_relative_path(&root, "sub/.git/index").is_err());
+        // NTFS/APFS resolve ".GIT" to the same directory as ".git".
+        assert!(validate_relative_path(&root, ".GIT/config").is_err());
+    }
+
+    #[test]
+    fn accept_reject_diff_refuse_dot_git_paths() {
+        let Some(repo) = init_repo("dot-git-guard") else {
+            return;
+        };
+        for p in [".git/config", ".git/HEAD", ".git"] {
+            assert!(accept(&repo, p).is_err(), "accept({p}) should be rejected");
+            assert!(reject(&repo, p).is_err(), "reject({p}) should be rejected");
+            assert!(diff(&repo, p).is_err(), "diff({p}) should be rejected");
+        }
+        // The real git index must be untouched by the rejected attempts
+        // above — this is the actual data-loss scenario the guard
+        // prevents (`reject(repo, ".git/index")` used to delete it).
+        assert!(repo.join(".git").join("index").exists());
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    // ── Y-column rename parsing (bug #2) ─────────────────────────────────
+
+    #[test]
+    fn parse_porcelain_z_consumes_y_column_rename_pair() {
+        // " R renamed.txt\0committed.txt\0" — a rename detected only in
+        // the worktree-vs-index comparison (Y column), matching real
+        // `git status --porcelain=v1 -z` output for `mv a b; git add -N
+        // b` (verified against a real git binary). Before the fix, only
+        // the X column was checked, so the paired source path
+        // "committed.txt" was left unconsumed and re-parsed as its own
+        // bogus status record.
+        let raw = b" R renamed.txt\0committed.txt\0";
+        let result = parse_porcelain_z(raw);
+        assert!(!result.truncated);
+        assert_eq!(result.files.len(), 1, "phantom entry: {:?}", result.files);
+        assert_eq!(result.files[0].path, "renamed.txt");
+        assert_eq!(result.files[0].kind, StatusKind::Renamed);
+    }
+
+    #[test]
+    fn status_handles_y_column_rename_without_phantom_entries() {
+        let Some(repo) = init_repo("status-y-column-rename") else {
+            return;
+        };
+        std::fs::rename(repo.join("committed.txt"), repo.join("renamed.txt"))
+            .expect("rename tracked file on disk");
+        run_git(&repo, &["add", "-N", "renamed.txt"]);
+
+        let result = status(&repo).expect("status should succeed");
+        assert_eq!(
+            result.files.len(),
+            1,
+            "unconsumed rename-source field produced a phantom entry: {:?}",
+            result.files
+        );
+        assert_eq!(result.files[0].path, "renamed.txt");
+        assert_eq!(result.files[0].kind, StatusKind::Renamed);
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    // ── non-destructive reject on rename destinations (bug #3) ──────────
+
+    #[test]
+    fn reject_restores_rename_source_instead_of_deleting_content() {
+        let Some(repo) = init_repo("reject-rename-destination") else {
+            return;
+        };
+        // committed.txt -> renamed.txt via a staged `git mv`, then
+        // further edited, so "renamed.txt" has no HEAD blob and would
+        // otherwise fall into the destructive "no HEAD version" delete
+        // branch.
+        run_git(&repo, &["mv", "committed.txt", "renamed.txt"]);
+        let mut edited = std::fs::read_to_string(repo.join("renamed.txt")).expect("read renamed");
+        edited.push_str("extra edit\n");
+        std::fs::write(repo.join("renamed.txt"), &edited).expect("append edit");
+
+        reject(&repo, "renamed.txt").expect("reject should succeed");
+
+        assert!(
+            !repo.join("renamed.txt").exists(),
+            "renamed.txt should no longer exist"
+        );
+        let restored = std::fs::read_to_string(repo.join("committed.txt"))
+            .expect("committed.txt should be restored at its original path");
+        assert_eq!(restored, "base content\n");
+
+        let status_output = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["status", "--porcelain=v1"])
+            .output()
+            .expect("git status");
+        assert!(
+            status_output.stdout.is_empty(),
+            "git status should be clean, got: {}",
+            String::from_utf8_lossy(&status_output.stdout)
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    // ── diff on unborn HEAD (bug #4) ─────────────────────────────────────
+
+    #[test]
+    fn diff_succeeds_on_unborn_head() {
+        if !git_available() {
+            return;
+        }
+        let repo = unique_temp_dir("diff-unborn-head");
+        std::fs::create_dir_all(&repo).expect("create repo dir");
+        run_git(&repo, &["init", "-q"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Test"]);
+        std::fs::write(repo.join("new_file.txt"), "hello\n").expect("write file");
+        run_git(&repo, &["add", "new_file.txt"]);
+
+        let result = diff(&repo, "new_file.txt").expect("diff should succeed on unborn HEAD");
+        assert_eq!(result.kind, DiffKind::Text);
+        let content = result.content.expect("text diff has content");
+        assert!(
+            content.contains("+hello"),
+            "diff should show the file as an addition: {content}"
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    // ── lower-priority hardening (bugs #5-#8) ────────────────────────────
+
+    #[test]
+    #[cfg(unix)]
+    fn validate_relative_path_treats_backslash_as_literal_on_unix() {
+        let Some(repo) = init_repo("validate-backslash-literal") else {
+            return;
+        };
+        // On Unix, `\` is a legal filename byte, not a separator. Before
+        // the fix, `rel.replace('\\', "/")` ran unconditionally and
+        // split this into a "a" directory plus "b.txt" file, silently
+        // resolving to the wrong path.
+        let resolved = validate_relative_path(&repo, "a\\b.txt")
+            .expect("should validate as one literal path component");
+        assert_eq!(
+            resolved.file_name().and_then(|n| n.to_str()),
+            Some("a\\b.txt")
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn accept_and_reject_refuse_directory_targets() {
+        let Some(repo) = init_repo("accept-reject-directory-guard") else {
+            return;
+        };
+        std::fs::create_dir_all(repo.join("subdir")).expect("create subdir");
+        std::fs::write(repo.join("subdir/file.txt"), "content\n").expect("write file in subdir");
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-q", "-m", "add subdir"]);
+        std::fs::write(repo.join("subdir/file.txt"), "changed\n").expect("modify file in subdir");
+
+        assert!(
+            accept(&repo, "subdir").is_err(),
+            "accept on a directory should be rejected"
+        );
+        assert!(
+            reject(&repo, "subdir").is_err(),
+            "reject on a directory should be rejected"
+        );
+
+        // The file inside the directory must be untouched by the
+        // rejected whole-directory operation — before the fix,
+        // `git checkout HEAD -- subdir` would have reverted the entire
+        // subtree from a single call.
+        let content = std::fs::read_to_string(repo.join("subdir/file.txt")).expect("read back");
+        assert_eq!(content, "changed\n");
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn diff_does_not_execute_external_textconv_driver() {
+        let Some(repo) = init_repo("diff-no-textconv") else {
+            return;
+        };
+        let marker = repo.join("textconv_ran.marker");
+        std::fs::write(repo.join(".gitattributes"), "committed.txt diff=marker\n")
+            .expect("write .gitattributes");
+        run_git(
+            &repo,
+            &[
+                "config",
+                "diff.marker.textconv",
+                &format!("touch {}", marker.display()),
+            ],
+        );
+        std::fs::write(repo.join("committed.txt"), "changed content\n").expect("modify file");
+
+        diff(&repo, "committed.txt").expect("diff should succeed");
+
+        assert!(
+            !marker.exists(),
+            "a repository-configured textconv driver must not execute"
+        );
+
         std::fs::remove_dir_all(&repo).ok();
     }
 }

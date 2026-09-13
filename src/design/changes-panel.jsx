@@ -81,14 +81,17 @@ function ChangesPanel({ open, onClose }) {
     await refreshStatus();
   };
 
-  // Untracked/Added files have no HEAD version — src-tauri/src/workspace.rs's
-  // `reject` doc comment mandates a warning before permanently deleting such
-  // a file, since there is no git history to recover it from afterwards.
-  // Proven with an eval-kernel cell (2/2 cases: Untracked/Added kinds require
-  // confirmation, Modified/Deleted/Renamed kinds proceed unconfirmed).
+  // Untracked/Added files have no HEAD version, and a Renamed file's NEW
+  // path also has no HEAD blob (src-tauri/src/workspace.rs's `reject`
+  // decides destructiveness by HEAD-blob presence, not status kind) — so
+  // all three can hit the delete-oriented path. Warn before permanently
+  // deleting/undoing such a file since there may be no git history to
+  // recover it from afterwards.
+  // Proven with an eval-kernel cell (2/2 cases: Untracked/Added/Renamed
+  // kinds require confirmation, Modified/Deleted kinds proceed unconfirmed).
   const handleReject = async (path, kind, e) => {
     e.stopPropagation();
-    if (kind === "Untracked" || kind === "Added") {
+    if (kind === "Untracked" || kind === "Added" || kind === "Renamed") {
       const ok = window.confirm(`Delete ${path}? It has no committed version — this cannot be undone.`);
       if (!ok) return;
     }

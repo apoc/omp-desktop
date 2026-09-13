@@ -162,9 +162,10 @@ fn fetch_help_text() -> String {
 ///
 /// `cwd` is passed explicitly as `--cwd=<value>` *in addition to* the
 /// child process's OS-level working directory (set separately via
-/// `Command::current_dir` in `spawn_omp`) — redundant in the common case,
-/// but makes omp's own project-root resolution independent of whatever a
-/// given OS/launcher does with an inherited working directory. deliberately
+/// `Command::current_dir` in `spawn_omp`) — both consumers are always
+/// given the *same already-resolved absolute path* (see `resolve_cwd`),
+/// never a raw relative one, so the two applications can never compound
+/// into a nonexistent nested directory. deliberately
 /// NOT doing the equivalent for `--session-dir`: omp already resolves its
 /// session storage location from `PI_CODING_AGENT_DIR`
 /// (`saved_sessions::sessions_root_dir` reads the same variable to locate
@@ -207,6 +208,26 @@ fn omp_args(
 
 // ── session spawn ─────────────────────────────────────────────────────────────
 
+/// Resolve `dir` to an absolute path so it can be handed to *both*
+/// `Command::current_dir` and `--cwd=` without the two applying it
+/// twice. `current_dir` runs an OS-level chdir before the child even
+/// starts; omp then interprets `--cwd=<value>` relative to whatever
+/// directory it actually finds itself launched in. If `dir` is
+/// relative, that means the OS chdir consumes it once and omp's own
+/// `--cwd` handling consumes it a second time against the
+/// already-changed directory, producing a nonexistent nested path (e.g.
+/// `proj` becomes `proj/proj`). Resolving it once up front makes both
+/// consumers agree on the same absolute target regardless of whether
+/// the caller passed a relative or absolute `dir`. Falls back to the
+/// raw string if resolution fails, so a spawn attempt is never turned
+/// into a hard failure by this step alone.
+fn resolve_cwd(dir: &str) -> String {
+    std::path::absolute(dir)
+        .ok()
+        .and_then(|p| p.into_os_string().into_string().ok())
+        .unwrap_or_else(|| dir.to_string())
+}
+
 /// Spawn omp for a live session using the best available RPC mode.
 /// If `resume` is specified, `--resume=<path_or_id>` is passed to resume an
 /// existing session (a single token, not two separate argv entries — see
@@ -227,7 +248,10 @@ pub(super) fn spawn_omp(
     // descendants without a Job Object.
     let mode = rpc_mode();
     let approval_mode = approval_mode_supported().then_some("write");
-    let args = omp_args(mode, resume, cwd, approval_mode);
+    // Resolve once so `current_dir` and `--cwd=` (see `resolve_cwd`) can
+    // never disagree or compound a relative value into a nested path.
+    let resolved_cwd = cwd.filter(|dir| !dir.is_empty()).map(resolve_cwd);
+    let args = omp_args(mode, resume, resolved_cwd.as_deref(), approval_mode);
     let mut last_err = String::from("no candidates tried");
     for name in CANDIDATES {
         let mut cmd = Command::new(name);
@@ -240,10 +264,8 @@ pub(super) fn spawn_omp(
         // otherwise attach to a console-subsystem child of a GUI parent.
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
-        if let Some(dir) = cwd {
-            if !dir.is_empty() {
-                cmd.current_dir(dir);
-            }
+        if let Some(dir) = resolved_cwd.as_deref() {
+            cmd.current_dir(dir);
         }
         // Unix: must run before spawn() (installs the child as its own
         // process-group leader). No-op on Windows.
@@ -269,7 +291,7 @@ pub(super) fn spawn_omp(
 
 #[cfg(test)]
 mod tests {
-    use super::{help_text_supports_rpc_ui, omp_args};
+    use super::{help_text_supports_rpc_ui, omp_args, resolve_cwd};
 
     #[test]
     fn detects_rpc_ui_in_mode_line() {
@@ -420,6 +442,59 @@ mod tests {
                 "--cwd=/proj",
                 "--approval-mode=write",
             ]
+        );
+    }
+
+    #[test]
+    fn resolve_cwd_leaves_absolute_path_unchanged() {
+        let abs = if cfg!(windows) {
+            r"C:\tmp\project"
+        } else {
+            "/tmp/project"
+        };
+        assert_eq!(resolve_cwd(abs), abs);
+    }
+
+    #[test]
+    fn resolve_cwd_resolves_relative_path_against_current_dir() {
+        let base = std::env::current_dir().expect("current dir");
+        let resolved = resolve_cwd("some-relative-project");
+        assert_eq!(
+            std::path::Path::new(&resolved),
+            base.join("some-relative-project")
+        );
+    }
+
+    /// Regression test for the double-application bug: `spawn_omp` used to
+    /// hand the *raw* (possibly relative) `cwd` to both `Command::current_dir`
+    /// (an OS-level chdir applied before the child starts) and `--cwd=`
+    /// (interpreted by omp relative to whatever directory it's actually
+    /// launched in). For a relative value that applies it twice, nesting
+    /// `proj` into `proj/proj`. `resolve_cwd` must absolutise the value once
+    /// so both consumers agree on the same path and a second application is
+    /// a no-op (`Path::join` with an absolute argument replaces the base
+    /// entirely, it never nests).
+    #[test]
+    fn resolved_cwd_is_idempotent_under_double_application() {
+        let base = std::env::current_dir().expect("current dir");
+        let dir = "child-project";
+
+        // Sanity check on the bug itself: applying the raw relative value
+        // twice (once as an OS chdir, once as omp's own relative --cwd)
+        // nests it one level deeper than intended.
+        let buggy_double_apply = base.join(dir).join(dir);
+        assert_eq!(buggy_double_apply, base.join(dir).join(dir));
+        assert_ne!(buggy_double_apply, base.join(dir));
+
+        // The fix: resolve once, and the same absolute value survives a
+        // second application unchanged.
+        let resolved = resolve_cwd(dir);
+        let resolved_path = std::path::Path::new(&resolved);
+        assert_eq!(resolved_path, base.join(dir));
+        assert_eq!(
+            resolved_path.join(&resolved),
+            resolved_path,
+            "an already-absolute cwd must be idempotent under a second application"
         );
     }
 }

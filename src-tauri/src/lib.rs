@@ -118,13 +118,24 @@ fn replay_events(
 }
 
 /// List tool-approval rules currently in effect for a session/project pair.
+///
+/// Runs `async` + `spawn_blocking` for the same reason as
+/// `approval_rules_grant` — see its doc comment: `RuleBook::list` performs
+/// a `Path::canonicalize()` syscall via `project_key()`, plus on a cold
+/// cache a `std::fs::read` and potentially a full snapshot-ring directory
+/// scan, while holding a mutex.
 #[tauri::command]
-fn approval_rules_list(
+async fn approval_rules_list(
     session_id: String,
     project_root: Option<String>,
     rule_book: State<'_, Arc<RuleBook>>,
-) -> Vec<approval::Rule> {
-    rule_book.list(&session_id, project_root.as_deref().map(Path::new))
+) -> Result<Vec<approval::Rule>, String> {
+    let rule_book = rule_book.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        rule_book.list(&session_id, project_root.as_deref().map(Path::new))
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))
 }
 
 /// Grant standing approval for `tool`. `scope` is `"session"` or `"project"`

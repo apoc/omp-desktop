@@ -372,50 +372,5 @@ pub fn validate_resume(app: &AppHandle, resume: &str) -> Result<(), String> {
     validate_resume_against_root(&root, resume)
 }
 
-/// Encode a paging cursor for streaming a `.jsonl` session file in pages.
-///
-/// The cursor embeds the file size observed at issue time so
-/// [`decode_cursor`] can detect a file that was appended to (or truncated)
-/// between page requests — trusting a raw byte `offset` against a session
-/// file that has since grown would silently return wrong or duplicate
-/// history to a "load more" caller.
-///
-/// No caller exists yet — `list_saved_sessions` returns whole-session
-/// metadata, not paged message content; this is the size-bound cursor
-/// primitive a future "load more history" command would build on. Kept
-/// (fully tested below) rather than deleted since the identity discipline
-/// it encodes — never trust a raw offset against a file that may have
-/// grown — is exactly the bug class this module's own doc comment warns
-/// against reintroducing.
-#[allow(dead_code)]
-pub fn encode_cursor(file_size: u64, offset: u64) -> String {
-    format!("{file_size}:{offset}")
-}
-
-/// Decode a paging cursor produced by [`encode_cursor`]. See its doc
-/// comment for why this doesn't have a caller yet either.
-///
-/// Rejects the cursor with `Err("stale cursor")` if `current_file_size`
-/// no longer matches the size recorded in the cursor — the file changed
-/// since the cursor was issued, so the caller must not trust `offset`.
-/// Also rejects a malformed cursor string (missing separator, non-numeric
-/// parts) rather than panicking or returning a garbage offset.
-#[allow(dead_code)]
-pub fn decode_cursor(cursor: &str, current_file_size: u64) -> Result<u64, String> {
-    let (size_str, offset_str) = cursor
-        .split_once(':')
-        .ok_or_else(|| format!("malformed cursor: {cursor:?}"))?;
-    let size: u64 = size_str
-        .parse()
-        .map_err(|_| format!("malformed cursor: {cursor:?}"))?;
-    let offset: u64 = offset_str
-        .parse()
-        .map_err(|_| format!("malformed cursor: {cursor:?}"))?;
-    if size != current_file_size {
-        return Err("stale cursor".to_string());
-    }
-    Ok(offset)
-}
-
 #[cfg(test)]
 mod tests;

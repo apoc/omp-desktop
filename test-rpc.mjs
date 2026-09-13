@@ -26,10 +26,11 @@ const EVIDENCE_MODE = process.argv.includes("--evidence");
 const EVIDENCE_PATH = "docs/agents/evidence/get-state-shape.json";
 
 // Mirrors src-tauri/src/agent/reader.rs::REDACTED_KEYS.
-const REDACTED_KEYS = new Set([
+const REDACTED_KEYS = [
   "headers", "authorization", "apikey", "accesstoken", "refreshtoken",
   "idtoken", "password", "secret", "credential", "credentials",
-]);
+  "secretkey", "accesskey", "privatekey", "apisecret",
+];
 const REDACTED_PLACEHOLDER = "[REDACTED]";
 
 function normalizeKey(key) {
@@ -38,13 +39,19 @@ function normalizeKey(key) {
 
 // Recursively replace the value of any object key matching REDACTED_KEYS —
 // same shape as Rust's sanitize_frame, redacted subtrees are not descended
-// into.
+// into. A key matches when its normalized form *ends with* one of
+// REDACTED_KEYS (not just equals one), so compound spellings like
+// `x-api-key`/`OPENAI_API_KEY` (normalizing to `xapikey`/`openaiapikey`,
+// both ending in `apikey`) are caught too, mirroring Rust's `ends_with` match.
 function redact(value) {
   if (Array.isArray(value)) return value.map(redact);
   if (value && typeof value === "object") {
     const out = {};
     for (const [k, v] of Object.entries(value)) {
-      out[k] = REDACTED_KEYS.has(normalizeKey(k)) ? REDACTED_PLACEHOLDER : redact(v);
+      const normalized = normalizeKey(k);
+      out[k] = REDACTED_KEYS.some((rk) => normalized.endsWith(rk))
+        ? REDACTED_PLACEHOLDER
+        : redact(v);
     }
     return out;
   }
