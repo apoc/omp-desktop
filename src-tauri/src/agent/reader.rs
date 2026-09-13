@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, ErrorKind, Write as _};
+use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::PathBuf;
 use std::process::{ChildStderr, ChildStdin, ChildStdout};
 use std::sync::{Arc, Mutex};
@@ -18,10 +18,17 @@ const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 /// Object keys whose values are redacted before a frame ever reaches the
 /// webview. Matched case-insensitively after stripping `_`/`-` separators,
 /// so `Authorization`, `api_key`, `api-key`, and `apiKey` are all caught by
-/// one entry. `headers` is redacted wholesale (not walked) because a model
-/// provider's request headers routinely carry `Authorization` alongside
-/// harmless entries, and there is no benefit to preserving the harmless
-/// ones once the object as a whole must be treated as sensitive.
+/// one entry. Matching is by *suffix*, not exact equality, so compound
+/// provider-credential spellings like `x-api-key`, `OPENAI_API_KEY`, and
+/// `client_secret` (normalizing to `xapikey`, `openaiapikey`, and
+/// `clientsecret`) are caught by the `apikey`/`secret` entries without
+/// needing one entry per provider. A few spellings put the sensitive word
+/// anywhere but the suffix (`secretkey`, `accesskey`, `privatekey`,
+/// `apisecret`) — those get their own explicit entries. `headers` is
+/// redacted wholesale (not walked) because a model provider's request
+/// headers routinely carry `Authorization` alongside harmless entries, and
+/// there is no benefit to preserving the harmless ones once the object as
+/// a whole must be treated as sensitive.
 const REDACTED_KEYS: &[&str] = &[
     "headers",
     "authorization",
@@ -33,6 +40,10 @@ const REDACTED_KEYS: &[&str] = &[
     "secret",
     "credential",
     "credentials",
+    "secretkey",
+    "accesskey",
+    "privatekey",
+    "apisecret",
 ];
 
 const REDACTED_PLACEHOLDER: &str = "[REDACTED]";
@@ -55,13 +66,24 @@ fn normalize_key(key: &str) -> String {
 }
 
 /// Recursively replace the value of any object key matching [`REDACTED_KEYS`]
-/// with [`REDACTED_PLACEHOLDER`]. Redacted subtrees are not descended into —
-/// once a key is sensitive, nothing under it is worth preserving.
+/// with [`REDACTED_PLACEHOLDER`]. A key matches when its normalized form
+/// *ends with* one of [`REDACTED_KEYS`] — not just when it equals one —
+/// so compound spellings like `x-api-key`/`OPENAI_API_KEY` (normalizing to
+/// `xapikey`/`openaiapikey`, both ending in `apikey`) are caught, without a
+/// bare substring/`contains` match that would also catch unrelated fields
+/// such as `input_tokens`/`output_tokens` if a `token` entry were ever
+/// added. Redacted subtrees are not descended into — once a key is
+/// sensitive, nothing under it is worth preserving.
 fn sanitize_frame(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
             for (key, val) in map.iter_mut() {
-                if REDACTED_KEYS.contains(&normalize_key(key).as_str()) {
+                let normalized = normalize_key(key);
+                if REDACTED_KEYS
+                    .iter()
+                    .copied()
+                    .any(|k| normalized.ends_with(k))
+                {
                     *val = serde_json::Value::String(REDACTED_PLACEHOLDER.to_string());
                 } else {
                     sanitize_frame(val);
@@ -115,12 +137,19 @@ fn strip_trailing_crlf(buf: &mut Vec<u8>) {
 /// human still sees *that* it happened. Returns `None` for every frame
 /// that isn't an approval prompt, or is one the rule book doesn't cover —
 /// those fall through to the human exactly as before.
-fn try_auto_approve(
+///
+/// Generic over the stdin writer (`W: Write`) rather than hard-coded to
+/// `ChildStdin` so unit tests can pass a `Mutex<Vec<u8>>` and assert on the
+/// bytes written, instead of spawning a real child process (`cat` isn't
+/// available on Windows) purely to obtain a writable handle. The real call
+/// site passes `&Arc<Mutex<ChildStdin>>`, which still derefs to
+/// `&Mutex<ChildStdin>` — `W = ChildStdin` there, unchanged behavior.
+fn try_auto_approve<W: std::io::Write>(
     frame: &serde_json::Value,
     rule_book: &RuleBook,
     sid: &str,
     project_root: Option<&std::path::Path>,
-    stdin: &Mutex<ChildStdin>,
+    stdin: &Mutex<W>,
 ) -> Option<String> {
     let tool = approval::approval_tool_name(frame)?;
     if !rule_book.is_granted(sid, project_root, tool) {
@@ -343,6 +372,39 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_redacts_compound_provider_credential_key_names() {
+        // Suffix-matching `normalize_key`'s output against REDACTED_KEYS
+        // catches these compound spellings where the old exact-equality
+        // check let all of them through unredacted.
+        for key in [
+            "x-api-key",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "client_secret",
+        ] {
+            let raw = json!({ key: "should-not-survive" }).to_string();
+            let (out, _) = sanitize_line(raw.as_bytes());
+            assert!(
+                !out.contains("should-not-survive"),
+                "key {key} leaked a secret"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_leaves_usage_token_counts_unredacted() {
+        // A broad `contains`/suffix rule on "token" would also catch these
+        // legitimate usage-stats fields — this guards against ever
+        // "simplifying" the suffix match back to that.
+        let raw = json!({ "usage": { "input_tokens": 42, "output_tokens": 7 } }).to_string();
+        let (out, parsed) = sanitize_line(raw.as_bytes());
+        assert!(!out.contains(REDACTED_PLACEHOLDER));
+        let parsed = parsed.expect("valid JSON parses");
+        assert_eq!(parsed["usage"]["input_tokens"], 42);
+        assert_eq!(parsed["usage"]["output_tokens"], 7);
+    }
+
+    #[test]
     fn sanitize_redacts_inside_arrays() {
         let raw = json!({ "items": [{ "password": "hunter2" }] }).to_string();
         let (out, _) = sanitize_line(raw.as_bytes());
@@ -441,14 +503,11 @@ mod tests {
             .grant("sess-1", None, "bash", approval::RuleScope::Session)
             .unwrap();
 
-        // A real ChildStdin can't be constructed without a live child in a
-        // unit test; use a piped process purely as a writable stdin handle.
-        let mut child = std::process::Command::new("cat")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn cat");
-        let stdin = Mutex::new(child.stdin.take().unwrap());
+        // A plain `Mutex<Vec<u8>>` stands in for the real `ChildStdin` now
+        // that `try_auto_approve` is generic over `W: Write` — no child
+        // process needed (a spawned `cat` doesn't exist on Windows), and
+        // the bytes actually written are directly inspectable below.
+        let stdin: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
         let frame = json!({
             "type": "extension_ui_request", "id": "req-9", "method": "select",
@@ -460,8 +519,18 @@ mod tests {
         assert_eq!(notice["type"], "desktop_auto_approval");
         assert_eq!(notice["tool"], "bash");
 
-        let _ = child.kill();
-        let _ = child.wait();
+        // The wire shape written to stdin must stay compatible with what
+        // `src/live.js`'s `answerAsk` sends: a single `extension_ui_response`
+        // line carrying the original request `id` and the chosen `value`.
+        let line = std::str::from_utf8(&stdin.lock().unwrap())
+            .unwrap()
+            .to_owned();
+        assert_eq!(line.matches('\n').count(), 1, "exactly one line written");
+        let sent: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(
+            sent,
+            json!({ "type": "extension_ui_response", "id": "req-9", "value": "Approve" })
+        );
     }
 
     #[test]
@@ -472,21 +541,17 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let rule_book = RuleBook::new(dir);
-        let mut child = std::process::Command::new("cat")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn cat");
-        let stdin = Mutex::new(child.stdin.take().unwrap());
+        let stdin: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
         let frame = json!({
             "type": "extension_ui_request", "id": "req-9", "method": "select",
             "title": "Allow tool: bash", "options": ["Approve", "Deny"]
         });
         assert!(try_auto_approve(&frame, &rule_book, "sess-1", None, &stdin).is_none());
-
-        let _ = child.kill();
-        let _ = child.wait();
+        assert!(
+            stdin.lock().unwrap().is_empty(),
+            "no rule granted — nothing should be written to stdin"
+        );
     }
 
     #[test]

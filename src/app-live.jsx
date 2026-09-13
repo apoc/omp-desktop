@@ -240,6 +240,7 @@ function App() {
                 onCancelAsk={handleCancelAsk}
                 onGrantApproval={handleGrantApproval}
                 hoveredMsgIdx={hoveredMsgIdx}
+                hasProjectPath={!!activeProject?.path}
               />
               <Composer
                 onSend={handleSend}

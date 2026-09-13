@@ -39,14 +39,19 @@ use std::process::Command;
 /// - any path containing a `..` component.
 ///
 /// Separators are normalized to `/` before joining onto `repo_root`. The
-/// joined candidate is then resolved and checked to still live inside
-/// `repo_root`, guarding against symlink escapes: components of the path
-/// that exist on disk are fully canonicalized (resolving any symlinks),
-/// and only the non-existent tail (which by definition cannot be a
-/// symlink) is joined on lexically. This lets validation succeed for
-/// paths that don't exist yet — e.g. a working-tree file already deleted,
-/// pending a `reject`-triggered restore from `HEAD` — while still
-/// defeating symlink escapes for every path segment that does exist.
+/// joined candidate's parent directory is then resolved and checked to
+/// still live inside `repo_root`, guarding against symlink escapes:
+/// components of the parent path that exist on disk are fully
+/// canonicalized (resolving any symlinks), and only the non-existent
+/// tail (which by definition cannot be a symlink) is joined on
+/// lexically. The final path component itself is deliberately *never*
+/// canonicalized/resolved — if it is a symlink, callers must operate on
+/// the link itself (matching what `git status` reports), not silently
+/// follow it to some other tracked file elsewhere in the repository.
+/// This lets validation succeed for paths that don't exist yet — e.g. a
+/// working-tree file already deleted, pending a `reject`-triggered
+/// restore from `HEAD` — while still defeating symlink escapes for
+/// every directory segment.
 pub fn validate_relative_path(repo_root: &Path, rel: &str) -> Result<PathBuf, String> {
     if rel.is_empty() {
         return Err("path must not be empty".to_string());
@@ -71,13 +76,22 @@ pub fn validate_relative_path(repo_root: &Path, rel: &str) -> Result<PathBuf, St
     let canonical_root = std::fs::canonicalize(repo_root)
         .map_err(|e| format!("failed to canonicalize repository root: {e}"))?;
     let candidate = canonical_root.join(&normalized);
-    let resolved =
-        weakly_canonicalize(&candidate).map_err(|e| format!("failed to resolve path: {e}"))?;
+    // Split off the final component so a symlink named there is never
+    // followed — only the (guaranteed-directory) parent is canonicalized.
+    let file_name = candidate
+        .file_name()
+        .ok_or_else(|| "path must not be empty".to_string())?
+        .to_owned();
+    let parent = candidate
+        .parent()
+        .ok_or_else(|| "path must not be empty".to_string())?;
+    let parent_resolved =
+        weakly_canonicalize(parent).map_err(|e| format!("failed to resolve path: {e}"))?;
 
-    if !resolved.starts_with(&canonical_root) {
+    if !parent_resolved.starts_with(&canonical_root) {
         return Err("path escapes repository root".to_string());
     }
-    Ok(resolved)
+    Ok(parent_resolved.join(file_name))
 }
 
 /// Canonicalize the longest existing ancestor of `path`, then lexically
@@ -275,13 +289,20 @@ pub struct DiffResult {
 /// formatting and a binary-sniffing heuristic ourselves for no behavioral
 /// benefit, so we shell out for this specific operation.
 pub fn diff(repo_root: &Path, rel_path: &str) -> Result<DiffResult, String> {
-    let abs = validate_relative_path(repo_root, rel_path)?;
     let work_dir = discover_work_dir(repo_root)?;
+    let abs = validate_relative_path(&work_dir, rel_path)?;
     let rel_norm = to_repo_relative(&work_dir, &abs)?;
 
     let output = Command::new("git")
         .current_dir(&work_dir)
-        .args(["diff", "HEAD", "--no-color", "--", &rel_norm])
+        .args([
+            "--literal-pathspecs",
+            "diff",
+            "HEAD",
+            "--no-color",
+            "--",
+            &rel_norm,
+        ])
         .output()
         .map_err(|e| format!("failed to run git diff: {e}"))?;
     // `git diff` (without `--exit-code`) only returns non-zero on a real
@@ -337,7 +358,7 @@ pub fn diff(repo_root: &Path, rel_path: &str) -> Result<DiffResult, String> {
 fn is_tracked(work_dir: &Path, rel_norm: &str) -> Result<bool, String> {
     let output = Command::new("git")
         .current_dir(work_dir)
-        .args(["ls-files", "--", rel_norm])
+        .args(["--literal-pathspecs", "ls-files", "--", rel_norm])
         .output()
         .map_err(|e| format!("failed to run git ls-files: {e}"))?;
     if !output.status.success() {
@@ -401,13 +422,13 @@ fn cap_diff_text(text: &str) -> (String, bool) {
 /// Shelling out for this single mutating call avoids re-implementing
 /// index-writing by hand.
 pub fn accept(repo_root: &Path, rel_path: &str) -> Result<(), String> {
-    let abs = validate_relative_path(repo_root, rel_path)?;
     let work_dir = discover_work_dir(repo_root)?;
+    let abs = validate_relative_path(&work_dir, rel_path)?;
     let rel_norm = to_repo_relative(&work_dir, &abs)?;
 
     let output = Command::new("git")
         .current_dir(&work_dir)
-        .args(["add", "--", &rel_norm])
+        .args(["--literal-pathspecs", "add", "--", &rel_norm])
         .output()
         .map_err(|e| format!("failed to run git add: {e}"))?;
     if !output.status.success() {
@@ -449,8 +470,8 @@ pub fn accept(repo_root: &Path, rel_path: &str) -> Result<(), String> {
 /// which git's own checkout/reset machinery already implements
 /// correctly and atomically.
 pub fn reject(repo_root: &Path, rel_path: &str) -> Result<(), String> {
-    let abs = validate_relative_path(repo_root, rel_path)?;
     let work_dir = discover_work_dir(repo_root)?;
+    let abs = validate_relative_path(&work_dir, rel_path)?;
     let rel_norm = to_repo_relative(&work_dir, &abs)?;
 
     // `-e` only needs the exit status; a missing path is an expected,
@@ -469,7 +490,7 @@ pub fn reject(repo_root: &Path, rel_path: &str) -> Result<(), String> {
     if head_has_file {
         let output = Command::new("git")
             .current_dir(&work_dir)
-            .args(["checkout", "HEAD", "--", &rel_norm])
+            .args(["--literal-pathspecs", "checkout", "HEAD", "--", &rel_norm])
             .output()
             .map_err(|e| format!("failed to run git checkout: {e}"))?;
         if !output.status.success() {
@@ -486,7 +507,7 @@ pub fn reject(repo_root: &Path, rel_path: &str) -> Result<(), String> {
     // above.
     let reset = Command::new("git")
         .current_dir(&work_dir)
-        .args(["reset", "--", &rel_norm])
+        .args(["--literal-pathspecs", "reset", "--", &rel_norm])
         .output()
         .map_err(|e| format!("failed to run git reset: {e}"))?;
     if !reset.status.success() {
@@ -599,6 +620,26 @@ mod tests {
         let canonical_root = std::fs::canonicalize(&repo).expect("canonicalize root");
         assert!(resolved.starts_with(&canonical_root));
         assert!(resolved.ends_with("committed.txt"));
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn validate_relative_path_rejects_symlink_directory_escape() {
+        let Some(repo) = init_repo("validate-symlink-escape") else {
+            return;
+        };
+        let outside = unique_temp_dir("validate-symlink-escape-outside");
+        std::fs::create_dir_all(&outside).expect("create outside dir");
+        std::os::unix::fs::symlink(&outside, repo.join("escape")).expect("create symlink");
+
+        // "escape" is a symlink to a directory outside the repo; a path
+        // walking *through* it must still be rejected, since the
+        // directory component is canonicalized (only the final path
+        // component is exempt from symlink resolution).
+        assert!(validate_relative_path(&repo, "escape/x").is_err());
+
+        std::fs::remove_dir_all(&outside).ok();
         std::fs::remove_dir_all(&repo).ok();
     }
 
@@ -798,6 +839,105 @@ mod tests {
         assert!(!path.exists());
 
         std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn reject_on_untracked_symlink_does_not_touch_symlink_target() {
+        let Some(repo) = init_repo("reject-symlink-target") else {
+            return;
+        };
+        std::fs::write(repo.join("b.txt"), "b base\n").expect("write b.txt");
+        run_git(&repo, &["add", "b.txt"]);
+        run_git(&repo, &["commit", "-q", "-m", "add b"]);
+        std::fs::write(repo.join("b.txt"), "b uncommitted change\n")
+            .expect("modify tracked file b.txt");
+
+        std::os::unix::fs::symlink("b.txt", repo.join("link_a")).expect("create symlink");
+
+        reject(&repo, "link_a").expect("reject should succeed");
+
+        // The symlink itself is untracked, so `reject` removes it — but
+        // must not follow it. The old, buggy `validate_relative_path`
+        // resolved through the symlink to "b.txt" and would instead run
+        // `git checkout HEAD -- b.txt`, silently discarding b.txt's
+        // uncommitted change while leaving the symlink untouched.
+        assert!(std::fs::symlink_metadata(repo.join("link_a")).is_err());
+        let b_content = std::fs::read_to_string(repo.join("b.txt")).expect("read b.txt back");
+        assert_eq!(b_content, "b uncommitted change\n");
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn reject_with_glob_metacharacter_path_does_not_affect_other_files() {
+        let Some(repo) = init_repo("reject-literal-pathspec") else {
+            return;
+        };
+        std::fs::write(repo.join("a?.txt"), "a base\n").expect("write a?.txt");
+        std::fs::write(repo.join("ab.txt"), "ab base\n").expect("write ab.txt");
+        run_git(&repo, &["add", "a?.txt", "ab.txt"]);
+        run_git(&repo, &["commit", "-q", "-m", "add a? and ab"]);
+
+        std::fs::write(repo.join("a?.txt"), "a changed\n").expect("modify a?.txt");
+        std::fs::write(repo.join("ab.txt"), "ab changed\n").expect("modify ab.txt");
+
+        reject(&repo, "a?.txt").expect("reject should succeed");
+
+        // Without `--literal-pathspecs`, "a?.txt" is a wildmatch glob
+        // that also matches "ab.txt", so `git checkout HEAD -- a?.txt`
+        // would collaterally revert ab.txt's uncommitted change too.
+        let glob_target_content =
+            std::fs::read_to_string(repo.join("a?.txt")).expect("read a?.txt back");
+        assert_eq!(glob_target_content, "a base\n");
+        let sibling_content =
+            std::fs::read_to_string(repo.join("ab.txt")).expect("read ab.txt back");
+        assert_eq!(sibling_content, "ab changed\n");
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    // ── status/diff/accept/reject path-root consistency ─────────────────
+
+    #[test]
+    fn status_then_diff_succeed_when_project_path_is_repo_subdirectory() {
+        if !git_available() {
+            return;
+        }
+        let parent = unique_temp_dir("subdir-repo-parent");
+        std::fs::create_dir_all(&parent).expect("create parent repo dir");
+        run_git(&parent, &["init", "-q"]);
+        run_git(&parent, &["config", "user.email", "test@example.com"]);
+        run_git(&parent, &["config", "user.name", "Test"]);
+
+        let child = parent.join("child");
+        std::fs::create_dir_all(&child).expect("create child dir");
+        std::fs::write(child.join("foo.txt"), "base\n").expect("write child file");
+        run_git(&parent, &["add", "."]);
+        run_git(&parent, &["commit", "-q", "-m", "init"]);
+
+        std::fs::write(child.join("foo.txt"), "changed\n").expect("modify child file");
+
+        // `status` discovers the real repo root (`parent`) and reports
+        // paths relative to it, e.g. "child/foo.txt" — not relative to
+        // the "project path" (`child`) passed in by the caller.
+        let result = status(&child).expect("status should succeed");
+        let reported = result
+            .files
+            .iter()
+            .find(|f| f.path == "child/foo.txt")
+            .expect("modified child file reported relative to repo root");
+        assert_eq!(reported.kind, StatusKind::Modified);
+
+        // `diff` must resolve that same reported path successfully even
+        // though `child` (not `parent`) is the "project path" argument.
+        let diff_result = diff(&child, &reported.path).expect("diff should succeed");
+        assert_eq!(diff_result.kind, DiffKind::Text);
+        let content = diff_result.content.expect("text diff has content");
+        assert!(content.contains("changed"));
+
+        std::fs::remove_dir_all(&parent).ok();
     }
 
     #[test]

@@ -151,17 +151,22 @@
   // user-facing states — the tab bar previously showed only a color dot, so
   // a backgrounded tab streaming, blocked on an unanswered ask, or crashed
   // was indistinguishable from an idle one. Order matters: a fatal exit
-  // outranks streaming (a process that died mid-turn is "failed", not
-  // "running"), and streaming outranks a stale unanswered ask (an ask from
-  // a completed/aborted turn shouldn't mask that the agent is working again).
-  // Pure — proven with an eval-kernel cell (see comment above the call site
-  // in notify()) rather than a permanent test file, per this file's existing
-  // convention for extracted decision logic (_startProjectSession's tabName).
+  // outranks everything (a process that died mid-turn is "failed" even with
+  // a stale ask still open), and an unanswered ask outranks isStreaming —
+  // every ask (select/confirm/input/editor) is emitted mid-turn and
+  // isStreaming only clears on turn_end/exit/get_state, none of which fire
+  // while the ask is open, so checking isStreaming first made "waiting-user"
+  // unreachable in practice.
+  // Pure — proven with an eval-kernel cell (4/4 cases: streaming+no-ask →
+  // running, streaming+open-ask → waiting-user, streaming+answered-ask →
+  // running, not-streaming+exitReason → failed) rather than a permanent test
+  // file, per this file's existing convention for extracted decision logic
+  // (_startProjectSession's tabName).
   function runStateOf({ isStreaming, exitReason, messages }) {
     if (exitReason) return "failed";
-    if (isStreaming) return "running";
     const waitingUser = messages.some(m => m.kind === "ask" && !m.answered && !m.cancelled);
     if (waitingUser) return "waiting-user";
+    if (isStreaming) return "running";
     return "idle";
   }
 
@@ -298,14 +303,27 @@
   }
 
   // ── Session switching ─────────────────────────────────────────────────────
+  // Generation counter guards against overlapping switches: _switchToSession
+  // is async with multiple await points and writes shared module state
+  // (_replayBuffer, lastSeq, activeSessionId, activeListeners). Without this,
+  // fast tab switches (A→B→C) can interleave at their awaits and let a
+  // later-resolving call for an earlier click overwrite state for the
+  // now-current session, permanently corrupting its lastSeq cursor so future
+  // live events are dropped as stale duplicates. Proven with an eval-kernel
+  // cell (2/2 cases: unguarded stale call clobbers the current session's
+  // state after a newer switch already took over; guarded stale call detects
+  // the generation mismatch and bails without touching shared state).
+  let _switchGen = 0;
   async function _switchToSession(id) {
     if (!window.__TAURI__) return;
+    const myGen = ++_switchGen;
 
     // Snapshot current session so we can restore it when switching back
     _saveCurrentSession();
 
     // Tear down old listeners
     for (const ul of activeListeners) { try { await ul(); } catch (_) {} }
+    if (_switchGen !== myGen) return; // superseded by a newer switch
     activeListeners = [];
     _chunkAcc = null; // drop any partial chunk run from the previous session
 
@@ -323,6 +341,7 @@
 
     const { listen } = window.__TAURI__.event;
     const ulLine = await listen(`agent://line/${id}`, ev => handleLine(ev.payload));
+    if (_switchGen !== myGen) return; // superseded by a newer switch
     const ulExit = await listen(`agent://exit/${id}`, ev => {
       const reason = (ev?.payload && String(ev.payload).trim()) || "";
       console.warn(`[live] session '${id}' omp process exited${reason ? ": " + reason : ""}`);
@@ -338,6 +357,7 @@
       }
       notify();
     });
+    if (_switchGen !== myGen) return; // superseded by a newer switch
     activeListeners = [ulLine, ulExit];
 
     // Catch up on events the journal captured while this tab had no live
@@ -349,6 +369,7 @@
     // gone for good; get_messages still recovers the persisted text below.
     try {
       const replay = await window.__TAURI__.core.invoke("replay_events", { sessionId: id, afterSeq: lastSeq });
+      if (_switchGen !== myGen) return; // superseded by a newer switch
       if (replay.dropped) {
         console.warn(`[live] session '${id}' replay desynced — recovered ${replay.events.length} event(s); earlier ones fell outside the journal window`);
       }
@@ -356,6 +377,7 @@
     } catch (e) {
       console.warn(`[live] replay_events failed for '${id}':`, e);
     }
+    if (_switchGen !== myGen) return; // superseded by a newer switch
 
     // Drain live events buffered while the replay fetch was in flight,
     // de-duplicated against lastSeq inside _dispatchEnvelope.
@@ -370,6 +392,7 @@
     // synchronously — no event timing race.
     try {
       const startupError = await window.__TAURI__.core.invoke("session_status", { sessionId: id });
+      if (_switchGen !== myGen) return; // superseded by a newer switch
       if (startupError) {
         console.warn(`[live] session '${id}' startup error: ${startupError}`);
         state.messages.push({
@@ -382,6 +405,7 @@
     } catch (e) {
       console.warn(`[live] session_status query failed:`, e);
     }
+    if (_switchGen !== myGen) return; // superseded by a newer switch
 
     // Re-fetch to pick up events missed while not listening.
     // get_messages handler merges completed turns with the cached streaming bubble.
@@ -1015,11 +1039,17 @@
     // forwarded the original ask — this synthetic note is the only trace of
     // it the human sees.
     if (type === "desktop_auto_approval") {
+      // Bug fix: bare `text` field rendered nothing — AssistantBubble only
+      // reads `msg.blocks` (no `text` fallback), so every auto-approval
+      // note was a silently empty bubble. Shape matches addAssistantMessage.
+      // Proven with an eval-kernel cell (2/2 cases: old `{text}` shape
+      // renders empty, new `{blocks}` shape renders the text).
       state.messages.push({
         kind: "assistant",
         time,
-        text: `Auto-approved **${ev.tool}** via your approval rule.`,
-        completed: true,
+        model: state.model?.name ?? null,
+        blocks: [{ type: "text", text: `Auto-approved **${ev.tool}** via your approval rule.` }],
+        thought: null, lead: null, streaming: false, completed: true,
       });
       notify();
       return;

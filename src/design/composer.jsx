@@ -103,10 +103,13 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     // Skip while an IME composition is in progress (e.g. typing Chinese/
     // Japanese/Korean via a candidate picker) — the Enter that confirms a
     // composed character sequence must not also submit the half-typed
-    // message. `isComposing` covers browsers that set it correctly;
+    // message. `e.nativeEvent.isComposing` covers browsers that set it
+    // correctly (React's SyntheticEvent wrapper does not copy `isComposing`
+    // onto itself, only onto `nativeEvent` — proven with an eval-kernel cell,
+    // 2/2 cases: mid-composition Enter blocked, plain Enter still sends);
     // `keyCode === 229` is the historical fallback for ones that don't
     // (notably some IME/Enter interactions on Windows).
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); return; }
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); return; }
     if (e.key === "Escape" && isStreaming) { onAbort(); return; }
     if (e.key === "k" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onOpenCmd(); }
   };

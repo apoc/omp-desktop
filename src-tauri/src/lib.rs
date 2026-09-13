@@ -129,39 +129,56 @@ fn approval_rules_list(
 
 /// Grant standing approval for `tool`. `scope` is `"session"` or `"project"`
 /// (the latter requires `project_root`); anything else is a stable error.
+///
+/// Runs `async` + `spawn_blocking`: `RuleBook::grant` performs a locked
+/// file read-modify-write with up to several blocking retry sleeps, which
+/// can stall the webview if run on Tauri's main command thread.
 #[tauri::command]
-fn approval_rules_grant(
+async fn approval_rules_grant(
     session_id: String,
     project_root: Option<String>,
     tool: String,
     scope: String,
     rule_book: State<'_, Arc<RuleBook>>,
 ) -> Result<(), String> {
-    let scope = parse_rule_scope(&scope)?;
-    rule_book.grant(
-        &session_id,
-        project_root.as_deref().map(Path::new),
-        &tool,
-        scope,
-    )
+    let rule_book = rule_book.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope = parse_rule_scope(&scope)?;
+        rule_book.grant(
+            &session_id,
+            project_root.as_deref().map(Path::new),
+            &tool,
+            scope,
+        )
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
 }
 
 /// Revoke a previously granted rule. No-op (not an error) if it wasn't granted.
+///
+/// Runs `async` + `spawn_blocking` for the same reason as
+/// `approval_rules_grant` — see its doc comment.
 #[tauri::command]
-fn approval_rules_revoke(
+async fn approval_rules_revoke(
     session_id: String,
     project_root: Option<String>,
     tool: String,
     scope: String,
     rule_book: State<'_, Arc<RuleBook>>,
 ) -> Result<(), String> {
-    let scope = parse_rule_scope(&scope)?;
-    rule_book.revoke(
-        &session_id,
-        project_root.as_deref().map(Path::new),
-        &tool,
-        scope,
-    )
+    let rule_book = rule_book.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope = parse_rule_scope(&scope)?;
+        rule_book.revoke(
+            &session_id,
+            project_root.as_deref().map(Path::new),
+            &tool,
+            scope,
+        )
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
 }
 
 fn parse_rule_scope(scope: &str) -> Result<approval::RuleScope, String> {
@@ -249,28 +266,50 @@ fn open_url_external(url: String) -> Result<(), String> {
 }
 
 /// Bounded `git status` for the Changes panel — see `workspace::status`.
+///
+/// Runs `async` + `spawn_blocking`: `workspace::status` shells out to one
+/// or more `git` subprocesses via `Command::output()`, which can take
+/// long enough on a large repository to freeze the webview if run on
+/// Tauri's main command thread.
 #[tauri::command]
-fn workspace_status(path: String) -> Result<workspace::StatusResult, String> {
-    workspace::status(Path::new(&path))
+async fn workspace_status(path: String) -> Result<workspace::StatusResult, String> {
+    tauri::async_runtime::spawn_blocking(move || workspace::status(Path::new(&path)))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
 }
 
 /// Bounded diff of one file against HEAD — see `workspace::diff`.
+///
+/// Runs `async` + `spawn_blocking` for the same reason as
+/// `workspace_status` — see its doc comment.
 #[tauri::command]
-fn workspace_diff(path: String, rel_path: String) -> Result<workspace::DiffResult, String> {
-    workspace::diff(Path::new(&path), &rel_path)
+async fn workspace_diff(path: String, rel_path: String) -> Result<workspace::DiffResult, String> {
+    tauri::async_runtime::spawn_blocking(move || workspace::diff(Path::new(&path), &rel_path))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
 }
 
 /// Stage a file's changes — see `workspace::accept`.
+///
+/// Runs `async` + `spawn_blocking` for the same reason as
+/// `workspace_status` — see its doc comment.
 #[tauri::command]
-fn workspace_accept(path: String, rel_path: String) -> Result<(), String> {
-    workspace::accept(Path::new(&path), &rel_path)
+async fn workspace_accept(path: String, rel_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || workspace::accept(Path::new(&path), &rel_path))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
 }
 
 /// Discard a file's working-tree changes (deletes it if untracked) — see
 /// `workspace::reject`.
+///
+/// Runs `async` + `spawn_blocking` for the same reason as
+/// `workspace_status` — see its doc comment.
 #[tauri::command]
-fn workspace_reject(path: String, rel_path: String) -> Result<(), String> {
-    workspace::reject(Path::new(&path), &rel_path)
+async fn workspace_reject(path: String, rel_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || workspace::reject(Path::new(&path), &rel_path))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
 }
 
 /// Run the Tauri application. Panics if the runtime fails to initialise.

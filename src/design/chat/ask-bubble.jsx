@@ -39,7 +39,7 @@ function isDoneOption(opt) {
   return opt.includes(DONE_LABEL_PREFIX);
 }
 
-function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, onGrant }) {
+function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, onGrant, hasProjectPath }) {
   const [custom, setCustom] = React.useState("");
   const [draft, setDraft] = React.useState(msg.method === "editor" ? (msg.prefill ?? "") : "");
   const done = msg.answered || msg.cancelled;
@@ -72,7 +72,7 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, on
   };
 
   const handleKey = (e) => {
-    if (e.key === "Enter" && custom.trim()) {
+    if (e.key === "Enter" && !e.nativeEvent?.isComposing && e.keyCode !== 229 && custom.trim()) {
       e.preventDefault();
       submit(custom.trim());
     }
@@ -137,7 +137,7 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, on
             disabled={done}
             onChange={e => setDraft(e.target.value)}
             onKeyDown={e => {
-              if (e.key === "Enter" && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); submit(draft); }
+              if (e.key === "Enter" && !e.nativeEvent?.isComposing && e.keyCode !== 229) { e.preventDefault(); submit(draft); }
             }}
           />
           {!done && (
@@ -187,10 +187,12 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, on
               <_AskIcon name="clock" size={10} />
               Allow for this session
             </button>
-            <button className="ask-opt ask-remember" onClick={() => grant("project")}>
-              <_AskIcon name="folder" size={10} />
-              Always allow in this project
-            </button>
+            {hasProjectPath && (
+              <button className="ask-opt ask-remember" onClick={() => grant("project")}>
+                <_AskIcon name="folder" size={10} />
+                Always allow in this project
+              </button>
+            )}
           </div>
         )}
 

@@ -209,9 +209,7 @@ fn parse_session_file(path: &Path) -> Option<SavedSession> {
         // They agree in the common case; falling back to the body's id
         // only covers a file that doesn't match the expected
         // `<timestamp>_<uuid>.jsonl` shape (e.g. an imported session).
-        id: canonical_id_from_stem(path)
-            .map(str::to_string)
-            .unwrap_or(session_id),
+        id: canonical_id_from_stem(path).map_or(session_id, str::to_string),
         title,
         timestamp,
         updated_at,

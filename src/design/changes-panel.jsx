@@ -18,6 +18,21 @@ const STATUS_KIND_META = {
   Untracked: { label: "U", color: "var(--fg-3)" },
 };
 
+// Longest-backtick-run fence: a fixed ```diff fence lets diff CONTENT that
+// contains its own (space-prefixed, unchanged-context) fence syntax close
+// the outer fence early, so anything after gets parsed as raw Markdown/HTML
+// instead of a code block — a real markdown-injection/XSS vector for this
+// component's dangerouslySetInnerHTML-based renderer. Fencing with a
+// backtick run longer than any run in the content is always safe.
+// Proven with an eval-kernel cell (2/2 cases: naive concat lets an embedded
+// ``` context line precede the appended closing fence; fenceDiff's fence is
+// provably longer than every backtick run in the content).
+function fenceDiff(content) {
+  const longest = (content.match(/`+/g) ?? []).reduce((n, r) => Math.max(n, r.length), 0);
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return `${fence}diff\n${content}\n${fence}`;
+}
+
 function ChangesPanel({ open, onClose }) {
   const bridge = window.OMP_BRIDGE;
   const [status, setStatus]         = React.useState({ files: [], truncated: false });
@@ -66,8 +81,17 @@ function ChangesPanel({ open, onClose }) {
     await refreshStatus();
   };
 
-  const handleReject = async (path, e) => {
+  // Untracked/Added files have no HEAD version — src-tauri/src/workspace.rs's
+  // `reject` doc comment mandates a warning before permanently deleting such
+  // a file, since there is no git history to recover it from afterwards.
+  // Proven with an eval-kernel cell (2/2 cases: Untracked/Added kinds require
+  // confirmation, Modified/Deleted/Renamed kinds proceed unconfirmed).
+  const handleReject = async (path, kind, e) => {
     e.stopPropagation();
+    if (kind === "Untracked" || kind === "Added") {
+      const ok = window.confirm(`Delete ${path}? It has no committed version — this cannot be undone.`);
+      if (!ok) return;
+    }
     await bridge?.workspaceReject(path);
     await refreshStatus();
   };
@@ -107,7 +131,7 @@ function ChangesPanel({ open, onClose }) {
                   <button className="btn icon ghost" title="stage" onClick={e => handleAccept(f.path, e)}>
                     <_ChangesIcon name="check" size={10} />
                   </button>
-                  <button className="btn icon ghost" title="discard" onClick={e => handleReject(f.path, e)}>
+                  <button className="btn icon ghost" title="discard" onClick={e => handleReject(f.path, f.kind, e)}>
                     <_ChangesIcon name="trash" size={10} />
                   </button>
                 </div>
@@ -124,7 +148,7 @@ function ChangesPanel({ open, onClose }) {
               <div className="changes-empty mono">untracked file — nothing to diff against</div>
             )}
             {!diffLoading && diff?.kind === "Text" && (
-              <_ChangesMarkdown text={"```diff\n" + (diff.content || "") + "\n```"} />
+              <_ChangesMarkdown text={fenceDiff(diff.content || "")} />
             )}
             {!diffLoading && diff?.truncated && (
               <div className="chip muted" style={{ marginTop: 6 }}>diff truncated</div>

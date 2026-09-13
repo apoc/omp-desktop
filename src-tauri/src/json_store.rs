@@ -423,6 +423,12 @@ pub fn with_lock<T>(
     stale_after: Duration,
     f: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
+    // Callers may pass a path under a config directory that doesn't exist
+    // yet (e.g. a fresh install's app_config_dir()) — the lock kit must not
+    // require a pre-existing directory any more than write_atomic does.
+    if let Some(dir) = lock_path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        fs::create_dir_all(dir)?;
+    }
     let mut attempts = 0u32;
     loop {
         match OpenOptions::new()
@@ -750,6 +756,34 @@ mod tests {
         assert!(
             !lock_path.exists(),
             "lock file must be released even when f() returns an error"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn with_lock_creates_missing_parent_directory() {
+        // Regression: RuleBook (and any future json_store consumer) is
+        // constructed with a config-dir path that may not exist yet on a
+        // fresh install — the lock kit must not require the caller to have
+        // created it first (the directory it lives in is otherwise only
+        // created by the *locked* write itself, which never runs if the
+        // lock file's own open fails first).
+        let dir = unique_test_dir("lock_missing_parent");
+        let missing_subdir = dir.join("not-created-yet");
+        let lock_path = missing_subdir.join("state.lock");
+
+        assert!(!missing_subdir.exists(), "precondition: parent absent");
+
+        let result = with_lock(&lock_path, Duration::from_secs(60), || Ok(99));
+
+        assert_eq!(
+            result.expect("with_lock should create its own parent directory"),
+            99
+        );
+        assert!(
+            !lock_path.exists(),
+            "lock file must be released after f() returns"
         );
 
         fs::remove_dir_all(&dir).ok();
