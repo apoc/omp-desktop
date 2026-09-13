@@ -24,7 +24,7 @@
       { name: "steer",    hint: "interrupt and redirect mid-tool",    icon: "↺", group: "Mode"    },
       { name: "compact",  hint: "compact context window",             icon: "▤", group: "Session" },
       { name: "new",      hint: "start a fresh session (history kept on disk)", icon: "↺", group: "Session" },
-      { name: "history",  hint: "browse and resume saved sessions",   icon: "clock", group: "Session" },
+      { name: "history",  hint: "browse and resume saved sessions",   icon: "◷", group: "Session" },
       { name: "branch",   hint: "fork the session from current head", icon: "⑂", group: "Session" },
       { name: "model",    hint: "switch model",                       icon: "◉", group: "Agent"   },
       { name: "thinking", hint: "cycle thinking level",               icon: "✶", group: "Agent"   },
@@ -376,6 +376,47 @@
       console.error(`[live] rpc_chunk reassembly failed: ${e.message}`);
       return null;
     }
+  }
+
+  /** Spawn omp for `cwd` (optionally resuming a saved session), register the
+   *  tab, wire the git-branch watcher, and activate it. Shared by
+   *  `openSession` (new project tab) and `resumeSession` (resume from disk)
+   *  so the git-watch/listener wiring only lives in one place.
+   *
+   *  This function is side-effectful (Tauri IPC invoke, event listeners) and
+   *  not unit-tested directly. The one pure decision it makes — deriving
+   *  `tabName` from `cwd`/`name` — mirrors `resumeSession`'s name/cwd
+   *  fallback and is covered by an eval-kernel proof cell (10/10 cases,
+   *  including the pre-existing trailing-slash quirk inherited from
+   *  master's `openSession`) run during PR #4 review remediation. */
+  async function _startProjectSession(cwd, { resume = null, name = null, color = "var(--lilac)" } = {}) {
+    const id = `session-${Date.now()}`;
+    const tabName = name || (cwd ? cwd.replace(/\\/g, "/").split("/").pop() || cwd : "new session");
+    // Register in tab list before starting omp so the tab shows immediately.
+    // Register with null branch — chip hidden until git resolves.
+    sessionRegistry.set(id, { id, name: tabName, path: cwd ?? "", color, branch: null });
+    await window.__TAURI__.core.invoke("start_session", {
+      sessionId: id, cwd: cwd ?? "", resume,
+    });
+    // Git: read initial branch and arm the HEAD watcher (fire-and-forget errors)
+    if (cwd) {
+      const branch = await window.__TAURI__.core
+        .invoke("start_git_watch", { sessionId: id, path: cwd })
+        .catch(() => null);
+      const entry = sessionRegistry.get(id);
+      if (entry) sessionRegistry.set(id, { ...entry, branch: branch ?? null });
+      // Live updates: re-emitted by Rust whenever .git/HEAD changes
+      const { listen } = window.__TAURI__.event;
+      const unlisten = await listen(`git://branch/${id}`, ev => {
+        const e = sessionRegistry.get(id);
+        if (e) sessionRegistry.set(id, { ...e, branch: ev.payload });
+        notify();
+      });
+      gitListeners.set(id, unlisten);
+    }
+    // Activate
+    await _switchToSession(id);
+    return id;
   }
 
   // ── RPC line handler ──────────────────────────────────────────────────────
@@ -1033,34 +1074,7 @@
 
     /** Open a new tab for the given project folder. Returns the new session id. */
     async openSession(cwd) {
-      const id   = `session-${Date.now()}`;
-      const name = cwd ? cwd.replace(/\\/g, "/").split("/").pop() || cwd : "new session";
-      // Register in tab list before starting omp so the tab shows immediately
-      // Register with null branch — chip hidden until git resolves
-      sessionRegistry.set(id, { id, name, path: cwd ?? "", color: "var(--lilac)", branch: null });
-      // Spawn omp for this project
-      await window.__TAURI__.core.invoke("start_session", {
-        sessionId: id, cwd: cwd ?? "",
-      });
-      // Git: read initial branch and arm the HEAD watcher (fire-and-forget errors)
-      if (cwd) {
-        const branch = await window.__TAURI__.core
-          .invoke("start_git_watch", { sessionId: id, path: cwd })
-          .catch(() => null);
-        const entry = sessionRegistry.get(id);
-        if (entry) sessionRegistry.set(id, { ...entry, branch: branch ?? null });
-        // Live updates: re-emitted by Rust whenever .git/HEAD changes
-        const { listen } = window.__TAURI__.event;
-        const unlisten = await listen(`git://branch/${id}`, ev => {
-          const e = sessionRegistry.get(id);
-          if (e) sessionRegistry.set(id, { ...e, branch: ev.payload });
-          notify();
-        });
-        gitListeners.set(id, unlisten);
-      }
-      // Activate
-      await _switchToSession(id);
-      return id;
+      return _startProjectSession(cwd);
     },
 
     /** Switch the active tab. Resets state and re-fetches from the session's omp. */
@@ -1082,34 +1096,13 @@
       }
     },
 
-    /** Resume a saved session into a new tab. */
+    /** Resume a saved session into a new tab. Returns the new session id,
+     *  or null if `session` doesn't reference a valid saved-session path. */
     async resumeSession(session) {
       if (!session || !session.path) return null;
-      const id = `session-${Date.now()}`;
       const cwd = session.cwd || "";
       const name = session.title || (cwd ? cwd.replace(/\\/g, "/").split("/").pop() || cwd : "resumed");
-      sessionRegistry.set(id, { id, name, path: cwd, color: "var(--cyan)", branch: null });
-      await window.__TAURI__.core.invoke("start_session", {
-        sessionId: id,
-        cwd: cwd,
-        resume: session.path,
-      });
-      if (cwd) {
-        const branch = await window.__TAURI__.core
-          .invoke("start_git_watch", { sessionId: id, path: cwd })
-          .catch(() => null);
-        const entry = sessionRegistry.get(id);
-        if (entry) sessionRegistry.set(id, { ...entry, branch: branch ?? null });
-        const { listen } = window.__TAURI__.event;
-        const unlisten = await listen(`git://branch/${id}`, ev => {
-          const e = sessionRegistry.get(id);
-          if (e) sessionRegistry.set(id, { ...e, branch: ev.payload });
-          notify();
-        });
-        gitListeners.set(id, unlisten);
-      }
-      await _switchToSession(id);
-      return id;
+      return _startProjectSession(cwd, { resume: session.path, name, color: "var(--cyan)" });
     },
 
     /** Close a tab and kill its omp process. */

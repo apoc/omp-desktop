@@ -26,6 +26,9 @@ fn send_command(
 /// Start an omp process for a new tab session.
 /// `cwd`: absolute path to the project folder (empty string = omp's default).
 /// `resume`: optional file path or session ID to resume an existing session.
+/// The value is validated against the sessions directory before being
+/// forwarded to omp's argv (see `saved_sessions::validate_resume`) — the
+/// frontend cannot pass an arbitrary path or a flag-shaped string through.
 #[tauri::command]
 fn start_session(
     session_id: String,
@@ -34,17 +37,32 @@ fn start_session(
     bridge: State<'_, AgentBridge>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let cwd_opt = if cwd.is_empty() { None } else { Some(cwd.as_str()) };
+    if let Some(r) = resume.as_deref() {
+        saved_sessions::validate_resume(&app, r)?;
+    }
+    let cwd_opt = if cwd.is_empty() {
+        None
+    } else {
+        Some(cwd.as_str())
+    };
     bridge.start_session(session_id, cwd_opt, resume.as_deref(), app)
 }
 
 /// List saved sessions from disk (~/.omp/agent/sessions).
+///
+/// Runs `async` + `spawn_blocking`: `scan_saved_sessions` opens and parses
+/// every persisted `.jsonl` file, which for large histories can take long
+/// enough to freeze the webview if run on Tauri's main command thread.
 #[tauri::command]
-fn list_saved_sessions(
+async fn list_saved_sessions(
     cwd: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<Vec<saved_sessions::SavedSession>, String> {
-    saved_sessions::scan_saved_sessions(&app, cwd.as_deref())
+    tauri::async_runtime::spawn_blocking(move || {
+        saved_sessions::scan_saved_sessions(&app, cwd.as_deref())
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
 }
 
 /// Kill the omp process for a tab session.
@@ -178,7 +196,9 @@ pub fn run() {
             // session_status on attach and surfaces the cached reason
             // if any — no event timing race, no delayed emit thread.
             let bridge = app.state::<AgentBridge>();
-            if let Err(e) = bridge.start_session("default".into(), None, None, app.handle().clone()) {
+            let default_session =
+                bridge.start_session("default".into(), None, None, app.handle().clone());
+            if let Err(e) = default_session {
                 eprintln!("[omp-desktop] failed to start default session: {e}");
             }
             Ok(())

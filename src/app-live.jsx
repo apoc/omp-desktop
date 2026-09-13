@@ -20,7 +20,7 @@ const {
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, NULL_PEER,
   INTENT_FRAMING, APPROVAL_PROMPT,
-  useBridgeSnapshot, useThemeEffect, useCommandShortcut, timeNow,
+  useBridgeSnapshot, useThemeEffect, useCommandShortcut, useHistoryShortcut, timeNow,
 } = window;
 
 function App() {
@@ -77,18 +77,7 @@ function App() {
   });
   useThemeEffect(t);
   useCommandShortcut(setBridgeOpen, setBridgeView);
-
-  // Global Ctrl+H / Cmd+H shortcut for conversation history
-  React.useEffect(() => {
-    const onKey = (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "h") {
-        e.preventDefault();
-        setHistoryOpen(prev => !prev);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  useHistoryShortcut(setHistoryOpen);
 
   // Fetch OAuth providers whenever the login view opens (ensures fresh auth status)
   React.useEffect(() => {

@@ -131,10 +131,32 @@ fn probe_rpc_ui() -> bool {
     false
 }
 
+/// Build the argv suffix (after the binary name) for spawning omp.
+///
+/// `--resume` is passed as a single `--resume=<value>` token rather than
+/// two separate argv entries (`--resume`, `<value>`). omp's `--resume`
+/// flag takes an *optional* value (bare `--resume` opens a picker), so a
+/// flag-shaped value passed as a second token (e.g. `--auto-approve`) is
+/// re-tokenised by omp's own argument parser as an unrelated flag instead
+/// of the resume target. The single-token form can never be re-split.
+/// Extracted as a pure function so this is unit-testable without spawning
+/// a process.
+fn omp_args(mode: &str, resume: Option<&str>) -> Vec<String> {
+    let mut args = vec!["--mode".to_string(), mode.to_string()];
+    if let Some(r) = resume {
+        if !r.is_empty() {
+            args.push(format!("--resume={r}"));
+        }
+    }
+    args
+}
+
 // ── session spawn ─────────────────────────────────────────────────────────────
 
 /// Spawn omp for a live session using the best available RPC mode.
-/// If `resume` is specified, `--resume <path_or_id>` is passed to resume an existing session.
+/// If `resume` is specified, `--resume=<path_or_id>` is passed to resume an
+/// existing session (a single token, not two separate argv entries — see
+/// `omp_args` for why).
 pub(super) fn spawn_omp(cwd: Option<&str>, resume: Option<&str>) -> Result<Child, String> {
     // On Windows, `Command::new` resolves bare "omp" against PATH and
     // PATHEXT (.exe etc.) via CreateProcess. We try the explicit ".exe"
@@ -144,15 +166,11 @@ pub(super) fn spawn_omp(cwd: Option<&str>, resume: Option<&str>) -> Result<Child
     // killed, since Windows does not propagate process termination to
     // descendants without a Job Object.
     let mode = rpc_mode();
+    let args = omp_args(mode, resume);
     let mut last_err = String::from("no candidates tried");
     for name in CANDIDATES {
         let mut cmd = Command::new(name);
-        cmd.args(["--mode", mode]);
-        if let Some(r) = resume {
-            if !r.is_empty() {
-                cmd.args(["--resume", r]);
-            }
-        }
+        cmd.args(&args);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -184,7 +202,7 @@ pub(super) fn spawn_omp(cwd: Option<&str>, resume: Option<&str>) -> Result<Child
 
 #[cfg(test)]
 mod tests {
-    use super::help_text_supports_rpc_ui;
+    use super::{help_text_supports_rpc_ui, omp_args};
 
     #[test]
     fn detects_rpc_ui_in_mode_line() {
@@ -271,5 +289,35 @@ mod tests {
         let out = super::augmented_path(None, None);
         assert!(out.split(':').any(|d| d == "/opt/homebrew/bin"), "{out}");
         assert!(out.contains('/'), "{out}");
+    }
+
+    #[test]
+    fn omp_args_without_resume() {
+        assert_eq!(omp_args("rpc", None), vec!["--mode", "rpc"]);
+    }
+
+    #[test]
+    fn omp_args_with_empty_resume_is_omitted() {
+        assert_eq!(omp_args("rpc", Some("")), vec!["--mode", "rpc"]);
+    }
+
+    #[test]
+    fn omp_args_with_resume_uses_single_token() {
+        // Single `--resume=<value>` token, not two separate argv entries —
+        // see `omp_args` doc comment for why this matters.
+        assert_eq!(
+            omp_args("rpc-ui", Some("/tmp/sess.jsonl")),
+            vec!["--mode", "rpc-ui", "--resume=/tmp/sess.jsonl"]
+        );
+    }
+
+    #[test]
+    fn omp_args_with_flag_shaped_resume_stays_single_token() {
+        // Even a flag-shaped resume value can't be re-tokenised as a
+        // separate argument because it's embedded in one `--resume=` token.
+        assert_eq!(
+            omp_args("rpc", Some("--auto-approve")),
+            vec!["--mode", "rpc", "--resume=--auto-approve"]
+        );
     }
 }
