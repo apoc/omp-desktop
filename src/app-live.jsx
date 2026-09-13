@@ -16,11 +16,11 @@
 
 const {
   Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar,
-  StatusBar, AmbientRail, PlanKanban, useTweaks,
+  StatusBar, AmbientRail, PlanKanban, HistoryModal, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, NULL_PEER,
   INTENT_FRAMING, APPROVAL_PROMPT,
-  useBridgeSnapshot, useThemeEffect, useCommandShortcut, timeNow,
+  useBridgeSnapshot, useThemeEffect, useCommandShortcut, useHistoryShortcut, timeNow,
 } = window;
 
 function App() {
@@ -29,10 +29,11 @@ function App() {
   const bridge        = window.OMP_BRIDGE;
 
   // ── UI state ──────────────────────────────────────────────────────────────
-  const [bridgeOpen, setBridgeOpen] = React.useState(false);
-  const [bridgeView, setBridgeView] = React.useState("commands");
-  const [planOpen,   setPlanOpen]   = React.useState(false);
-  const [planMode,   setPlanMode]   = React.useState(false);
+  const [bridgeOpen,  setBridgeOpen]  = React.useState(false);
+  const [bridgeView,  setBridgeView]  = React.useState("commands");
+  const [historyOpen, setHistoryOpen] = React.useState(false);
+  const [planOpen,    setPlanOpen]    = React.useState(false);
+  const [planMode,    setPlanMode]    = React.useState(false);
   const planStartedRef = React.useRef(false); // true after first send in plan mode
   const [planAnnotations, setPlanAnnotations] = React.useState({});
   const handleAnnotate = React.useCallback((idx, value) => setPlanAnnotations(prev => {
@@ -76,6 +77,7 @@ function App() {
   });
   useThemeEffect(t);
   useCommandShortcut(setBridgeOpen, setBridgeView);
+  useHistoryShortcut(setHistoryOpen);
 
   // Fetch OAuth providers whenever the login view opens (ensures fresh auth status)
   React.useEffect(() => {
@@ -161,6 +163,12 @@ function App() {
     else if (c.name === "model")    { openBridge("models"); }
     else if (c.name === "login")    { openBridge("login"); }
     else if (c.name === "new")      { bridge?.newSession(); }
+    else if (c.name === "history")  { setHistoryOpen(true); }
+  };
+
+  const handleResumeSession = async (session) => {
+    if (!bridge || !session) return;
+    await bridge.resumeSession(session);
   };
 
   const handleApprovePlan = () => {
@@ -213,6 +221,7 @@ function App() {
             peer={safePeer}
             onNew={handleNewProject}
             onClose={handleCloseTab}
+            onHistory={() => setHistoryOpen(true)}
           />
 
           <div className={`stage ${showRail ? "with-rail" : ""}`}>
@@ -295,6 +304,15 @@ function App() {
           planMeta={planMeta}
           onClose={() => setPlanOpen(false)}
           onAbort={handleAbort}
+        />
+      )}
+
+      {historyOpen && (
+        <HistoryModal
+          open={historyOpen}
+          onClose={() => setHistoryOpen(false)}
+          onResume={handleResumeSession}
+          activeCwd={activeProject?.path}
         />
       )}
 

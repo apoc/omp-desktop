@@ -57,7 +57,7 @@ function WindowChrome({ project, peer, onCmd }) {
 }
 
 // ── Project tabs ─────────────────────────────────────────────────────
-function TabBar({ projects, activeId, onSelect, onClose, peer, onNew }) {
+function TabBar({ projects, activeId, onSelect, onClose, peer, onNew, onHistory }) {
   return (
     <div className="tabs">
       {projects.map((p) => {
@@ -78,6 +78,9 @@ function TabBar({ projects, activeId, onSelect, onClose, peer, onNew }) {
       })}
       <button className="tab-add" title="open project" onClick={onNew}>
         <Icon name="plus" size={11} />
+      </button>
+      <button className="tab-add" title="conversation history (Ctrl+H)" onClick={onHistory}>
+        <Icon name="clock" size={11} />
       </button>
       <div style={{ flex: 1 }} />
       <div className="tabs-right mono">

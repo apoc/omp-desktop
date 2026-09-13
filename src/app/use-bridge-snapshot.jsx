@@ -6,7 +6,8 @@
                          CSS custom properties.
    - useCommandShortcut: ⌘K / ⌃K toggles the command bridge; Escape closes
                          it. Centralised here so app-live.jsx only owns
-                         render + handlers. */
+                         render + handlers.
+   - useHistoryShortcut: ⌘H / ⌃H toggles the conversation-history modal. */
 
 const { NULL_MODEL: _UB_NULL_MODEL } = window;
 
@@ -62,4 +63,17 @@ function useCommandShortcut(setBridgeOpen, setBridgeView) {
   }, [setBridgeOpen, setBridgeView]);
 }
 
-Object.assign(window, { useBridgeSnapshot, useThemeEffect, useCommandShortcut });
+function useHistoryShortcut(setHistoryOpen) {
+  React.useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "h") {
+        e.preventDefault();
+        setHistoryOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setHistoryOpen]);
+}
+
+Object.assign(window, { useBridgeSnapshot, useThemeEffect, useCommandShortcut, useHistoryShortcut });

@@ -66,9 +66,10 @@ impl AgentBridge {
         &self,
         session_id: String,
         cwd: Option<&str>,
+        resume: Option<&str>,
         app: AppHandle,
     ) -> Result<(), String> {
-        let mut child = match spawn_omp(cwd) {
+        let mut child = match spawn_omp(cwd, resume) {
             Ok(c) => c,
             Err(e) => {
                 self.cache_error(&session_id, e.clone());
