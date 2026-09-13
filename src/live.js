@@ -66,6 +66,7 @@
     rpcState:       null,
     sessionCost:    null,
     currentTps:     0,
+    exitReason:     null,   // non-empty agent://exit reason for the last run — drives runStateOf's "failed"
   };
 
   let streamingBubble = null;
@@ -74,6 +75,8 @@
   let tpsSamples      = Array(30).fill(0);
   let turnStartTime   = null;
   let activityLog     = [];           // [{ts, toolName}], pruned to 60s
+  let lastSeq         = 0;   // highest journal seq processed for the active session — see _dispatchEnvelope
+  let _replayBuffer   = null; // null = live dispatch; [] = buffering during a replay (see _switchToSession)
   let _msgSeq = 0;  // monotonic counter — stable React keys for message bubbles
 
   // ── Minimap / message-history trim ───────────────────────────────────────
@@ -143,15 +146,27 @@
     }
   }
 
-  function notify() {
-    _trimMessages();
-    // Stamp stable IDs on any message that doesn't have one yet (new pushes,
-    // restored sessions, or messages from get_messages). O(N) but N ≤ 169 and
-    // is a no-op for already-stamped entries — essentially free.
-    for (const m of state.messages) {
-      if (!m._id) m._id = ++_msgSeq;
-    }
-    const snap = {
+  // ── Four-state run projection ────────────────────────────────────────────
+  // Total function from a session's live/snapshot fields to one of four
+  // user-facing states — the tab bar previously showed only a color dot, so
+  // a backgrounded tab streaming, blocked on an unanswered ask, or crashed
+  // was indistinguishable from an idle one. Order matters: a fatal exit
+  // outranks streaming (a process that died mid-turn is "failed", not
+  // "running"), and streaming outranks a stale unanswered ask (an ask from
+  // a completed/aborted turn shouldn't mask that the agent is working again).
+  // Pure — proven with an eval-kernel cell (see comment above the call site
+  // in notify()) rather than a permanent test file, per this file's existing
+  // convention for extracted decision logic (_startProjectSession's tabName).
+  function runStateOf({ isStreaming, exitReason, messages }) {
+    if (exitReason) return "failed";
+    if (isStreaming) return "running";
+    const waitingUser = messages.some(m => m.kind === "ask" && !m.answered && !m.cancelled);
+    if (waitingUser) return "waiting-user";
+    return "idle";
+  }
+
+  function _buildSnapshot() {
+    return {
       messages:        state.messages,
       isStreaming:     state.isStreaming,
       model:           state.model,
@@ -162,10 +177,30 @@
       models:          state.models,
       activity:        state.activity,
       sparkline:       state.sparkline,
-      // Tab list — derived from session registry, not per-session state
-      sessions:        [...sessionRegistry.values()],
+      // Tab list — derived from session registry, not per-session state.
+      // runState: active tab reads live state; background tabs read their
+      // cached snapshot (never activated yet = "idle" defaults).
+      sessions:        [...sessionRegistry.values()].map(s => ({
+        ...s,
+        runState: runStateOf(
+          s.id === activeSessionId
+            ? { isStreaming: state.isStreaming, exitReason: state.exitReason, messages: state.messages }
+            : sessionSnapshots.get(s.id) ?? { isStreaming: false, exitReason: null, messages: [] }
+        ),
+      })),
       activeSessionId,
     };
+  }
+
+  function notify() {
+    _trimMessages();
+    // Stamp stable IDs on any message that doesn't have one yet (new pushes,
+    // restored sessions, or messages from get_messages). O(N) but N ≤ 169 and
+    // is a no-op for already-stamped entries — essentially free.
+    for (const m of state.messages) {
+      if (!m._id) m._id = ++_msgSeq;
+    }
+    const snap = _buildSnapshot();
     subscribers.forEach(cb => cb(snap));
 
     // Keep OMP_DATA in sync for design components that read it directly
@@ -194,6 +229,7 @@
       rpcState:      null,
       sessionCost:   null,
       currentTps:    0,
+      exitReason:    null,
     });
     streamingBubble = null;
     pendingAskBubble = null;
@@ -201,6 +237,7 @@
     tpsSamples      = Array(30).fill(0);
     turnStartTime   = null;
     activityLog     = [];
+    lastSeq         = 0;
   }
 
   // ── Session snapshot helpers ──────────────────────────────────────────────
@@ -221,12 +258,14 @@
       rpcState:      state.rpcState,
       sessionCost:   state.sessionCost,
       currentTps:    state.currentTps,
+      exitReason:    state.exitReason,
       // volatile vars
       streamingBubble,
       activeToolCards: new Map(activeToolCards),
       tpsSamples:    [...tpsSamples],
       turnStartTime,
       activityLog:   [...activityLog],
+      lastSeq,
     });
   }
 
@@ -247,12 +286,14 @@
       rpcState:      snap.rpcState,
       sessionCost:   snap.sessionCost,
       currentTps:    snap.currentTps,
+      exitReason:    snap.exitReason ?? null,
     });
     streamingBubble = snap.streamingBubble;
     activeToolCards = snap.activeToolCards;
     tpsSamples      = snap.tpsSamples;
     turnStartTime   = snap.turnStartTime;
     activityLog     = snap.activityLog;
+    lastSeq         = snap.lastSeq ?? 0;
     return true;
   }
 
@@ -275,12 +316,18 @@
       _resetSessionVars();
     }
 
+    // Arm event buffering before attaching the live listener so a line that
+    // arrives between listener-attach and the replay fetch below is queued
+    // (never lost, never double-processed) — drained once replay is applied.
+    _replayBuffer = [];
+
     const { listen } = window.__TAURI__.event;
     const ulLine = await listen(`agent://line/${id}`, ev => handleLine(ev.payload));
     const ulExit = await listen(`agent://exit/${id}`, ev => {
       const reason = (ev?.payload && String(ev.payload).trim()) || "";
       console.warn(`[live] session '${id}' omp process exited${reason ? ": " + reason : ""}`);
       state.isStreaming = false;
+      state.exitReason = reason || null;
       if (reason) {
         state.messages.push({
           kind: "assistant",
@@ -292,6 +339,29 @@
       notify();
     });
     activeListeners = [ulLine, ulExit];
+
+    // Catch up on events the journal captured while this tab had no live
+    // listener attached (backgrounded tab switch) — recovers tool cards /
+    // ask bubbles / streaming state that a text-only get_messages refetch
+    // below cannot reconstruct. The journal is a bounded in-memory ring
+    // (see AgentBridge::replay_events) — a `dropped` reply means some
+    // events between `lastSeq` and the ring's window were evicted and are
+    // gone for good; get_messages still recovers the persisted text below.
+    try {
+      const replay = await window.__TAURI__.core.invoke("replay_events", { sessionId: id, afterSeq: lastSeq });
+      if (replay.dropped) {
+        console.warn(`[live] session '${id}' replay desynced — recovered ${replay.events.length} event(s); earlier ones fell outside the journal window`);
+      }
+      for (const ev of replay.events) _dispatchEnvelope(ev);
+    } catch (e) {
+      console.warn(`[live] replay_events failed for '${id}':`, e);
+    }
+
+    // Drain live events buffered while the replay fetch was in flight,
+    // de-duplicated against lastSeq inside _dispatchEnvelope.
+    const buffered = _replayBuffer;
+    _replayBuffer = null;
+    for (const envelope of buffered) _dispatchEnvelope(envelope);
 
     // Surface any cached startup error for this session. Tauri starts
     // the default session in setup() before the frontend can attach
@@ -420,9 +490,40 @@
   }
 
   // ── RPC line handler ──────────────────────────────────────────────────────
-  function handleLine(rawLine) {
+  // `agent://line/{id}` payloads and `replay_events` results share one shape:
+  // `{seq, text}` — `seq` is the event's position in the backend's bounded
+  // per-session journal, `text` is the raw (already credential-redacted)
+  // RPC line. Routed through the same _dispatchEnvelope so live and
+  // replayed events can't diverge in behaviour.
+  function handleLine(envelope) {
+    if (!envelope || typeof envelope.text !== "string") return;
+    if (_replayBuffer) {
+      // A tab switch is mid-replay — queue instead of dispatching so a live
+      // line can never race ahead of (or duplicate) the replay fetch below.
+      _replayBuffer.push(envelope);
+      return;
+    }
+    _dispatchEnvelope(envelope);
+  }
+
+  // De-duplicates against `lastSeq` (an event already delivered via replay
+  // or a prior live line is skipped) then parses and dispatches `text`.
+  // `seq` is only advanced forward — an out-of-order or unnumbered
+  // (`typeof seq !== "number"`) envelope is still dispatched, just doesn't
+  // move the cursor. The gate/buffer/drain interplay with handleLine
+  // (arm → buffer during replay → replay applies → drain skips overlap as
+  // duplicates) is side-effectful end-to-end but its pure decision logic
+  // was proven with an eval-kernel cell (11/11 cases: in-order dispatch,
+  // exact-seq duplicate skip, buffer-during-replay, drain-dedupes-overlap,
+  // unnumbered envelope passthrough, gap tolerance) during this feature's
+  // implementation — see the "P1 event journal" PR.
+  function _dispatchEnvelope(envelope) {
+    if (typeof envelope.seq === "number") {
+      if (envelope.seq <= lastSeq) return;
+      lastSeq = envelope.seq;
+    }
     let obj;
-    try { obj = JSON.parse(rawLine); } catch { return; }
+    try { obj = JSON.parse(envelope.text); } catch { return; }
     if (!obj || typeof obj !== "object") return;
 
     if (obj.type === "rpc_chunk") {
@@ -605,14 +706,27 @@
         }
         return;
       }
-      // Code / text prompt (e.g. OAuth manual-code flows).
+      // Single-line text prompt (e.g. OAuth manual-code flows). Pushed
+      // directly rather than buffered like `select` below — unlike the ask
+      // tool's select, a generic input() call from extension code has no
+      // guaranteed following tool_execution_start to flush against, so
+      // buffering it could leave the card permanently invisible. Wire
+      // shape: request carries {title, placeholder}, response is
+      // {value: <text>} or {cancelled: true}.
       if (ev.method === "input") {
-        const value = window.prompt(ev.title ?? ev.placeholder ?? "Enter value:");
-        if (value !== null) {
-          _send({ type: "extension_ui_response", id: ev.id, value });
-        } else {
-          _send({ type: "extension_ui_response", id: ev.id, cancelled: true });
-        }
+        state.messages = [...state.messages, {
+          kind: "ask",
+          method: "input",
+          id: ev.id,
+          time: timeNow(),
+          title: ev.title ?? "",
+          placeholder: ev.placeholder ?? "Enter value…",
+          options: [],
+          answered: false,
+          cancelled: false,
+          answer: null,
+        }];
+        notify();
         return;
       }
       // Agent asks the user to pick from a list.
@@ -624,6 +738,7 @@
         const OTHER_OPT = "Other (type your own)";
         pendingAskBubble = {
           kind: "ask",
+          method: "select",
           id: ev.id,
           time: timeNow(),
           title: ev.title,
@@ -632,6 +747,47 @@
           cancelled: false,
           answer: null,
         };
+        return;
+      }
+      // Yes/No confirmation dialog. Pushed directly — see the `input`
+      // comment above for why (no guaranteed tool_execution_start
+      // pairing). Wire shape confirmed against the installed omp binary:
+      // request carries {title, message}, response is {confirmed: bool}
+      // (not {value} — see OMP_BRIDGE.answerConfirm).
+      if (ev.method === "confirm") {
+        state.messages = [...state.messages, {
+          kind: "ask",
+          method: "confirm",
+          id: ev.id,
+          time: timeNow(),
+          title: ev.title,
+          message: ev.message ?? "",
+          options: [],
+          answered: false,
+          cancelled: false,
+          answer: null,
+        }];
+        notify();
+        return;
+      }
+      // Multi-line text editor dialog. Pushed directly — see the `input`
+      // comment above for why. Wire shape confirmed against the installed
+      // omp binary: request carries {title, prefill}, response is
+      // {value: <text>} (same shape as select/input) or {cancelled: true}.
+      if (ev.method === "editor") {
+        state.messages = [...state.messages, {
+          kind: "ask",
+          method: "editor",
+          id: ev.id,
+          time: timeNow(),
+          title: ev.title,
+          prefill: ev.prefill ?? "",
+          options: [],
+          answered: false,
+          cancelled: false,
+          answer: null,
+        }];
+        notify();
         return;
       }
       // Agent cancelled a pending UI request (e.g. turn aborted while waiting for input).
@@ -649,11 +805,9 @@
         notify();
         return;
       }
-      // Dialogs we cannot show — cancel them so the server doesn't hang.
-      const NEEDS_RESPONSE = ["confirm", "editor"];
-      if (NEEDS_RESPONSE.includes(ev.method)) {
-        _send({ type: "extension_ui_response", id: ev.id, cancelled: true });
-      }
+      // Any other/future method we have no UI for — cancel so the server
+      // never hangs waiting on a response we can't produce.
+      _send({ type: "extension_ui_response", id: ev.id, cancelled: true });
       return;
     }
 
@@ -856,6 +1010,21 @@
       return;
     }
 
+    // Rust-side auto-approval (see approval::RuleBook / reader::try_auto_approve)
+    // answered an "Allow tool: X" prompt directly on omp's stdin and never
+    // forwarded the original ask — this synthetic note is the only trace of
+    // it the human sees.
+    if (type === "desktop_auto_approval") {
+      state.messages.push({
+        kind: "assistant",
+        time,
+        text: `Auto-approved **${ev.tool}** via your approval rule.`,
+        completed: true,
+      });
+      notify();
+      return;
+    }
+
     if (type === "agent_start" || type === "agent_end") {
       _send({ type: "get_state" });
     }
@@ -955,6 +1124,14 @@
       .catch(e => console.error("[live] send error:", e));
   }
 
+  // Project path (cwd) of the active tab, or null for the pathless
+  // "default" session — used to scope project-level approval rules and
+  // workspace status/diff to the right repo.
+  function _activeProjectPath() {
+    const entry = sessionRegistry.get(activeSessionId);
+    return entry?.path || null;
+  }
+
   // ── Window chrome (drag + controls) ──────────────────────────────────────
   function _setupWindowChrome() {
     if (!window.__TAURI__) return;
@@ -1039,18 +1216,77 @@
     /**
      * Respond to a pending ask bubble (extension_ui_request method=select).
      * Marks the message as answered in state so it survives subsequent notify() calls,
-     * then sends the extension_ui_response to omp.
+     * then sends the extension_ui_response to omp — but only if a matching,
+     * still-open ask message actually existed. Re-answer-proof: a second
+     * call for an id that's already answered/cancelled (double-click race,
+     * a stale button clicked after the runtime's own `cancel` event already
+     * landed, or a message rehydrated post-answer from get_messages) is a
+     * silent no-op instead of forwarding a second `extension_ui_response`
+     * for a request omp has already resolved. Proven with an eval-kernel
+     * cell (7/7 cases: normal send, double-click no-resend, answering a
+     * cancelled ask, unknown id, rehydrated-already-answered message).
      * @param {string} id     The extension_ui_request id.
      * @param {string} value  The chosen option text or custom typed answer.
      */
     answerAsk(id, value) {
-      state.messages = state.messages.map(m =>
-        m.kind === "ask" && m.id === id && !m.answered && !m.cancelled
-          ? { ...m, answered: true, answer: value }
-          : m
-      );
+      let didAnswer = false;
+      state.messages = state.messages.map(m => {
+        if (m.kind === "ask" && m.id === id && !m.answered && !m.cancelled) {
+          didAnswer = true;
+          return { ...m, answered: true, answer: value };
+        }
+        return m;
+      });
+      if (!didAnswer) return;
       notify();
       _send({ type: "extension_ui_response", id, value });
+    },
+
+    /**
+     * Respond to a pending confirm dialog (extension_ui_request
+     * method=confirm). Wire shape differs from `answerAsk`: the runtime
+     * expects `{confirmed: bool}`, not `{value}` — confirmed against the
+     * installed omp binary's own request/response construction. Same
+     * re-answer-proof guard as `answerAsk`. Request/response wire shapes
+     * for all four methods (select/confirm/editor/input) proven with an
+     * eval-kernel cell (9/9 cases).
+     * @param {string}  id
+     * @param {boolean} confirmed
+     */
+    answerConfirm(id, confirmed) {
+      let didAnswer = false;
+      state.messages = state.messages.map(m => {
+        if (m.kind === "ask" && m.id === id && !m.answered && !m.cancelled) {
+          didAnswer = true;
+          return { ...m, answered: true, answer: confirmed ? "Confirm" : "Deny" };
+        }
+        return m;
+      });
+      if (!didAnswer) return;
+      notify();
+      _send({ type: "extension_ui_response", id, confirmed });
+    },
+
+    /**
+     * User-initiated decline of a pending ask (e.g. the Cancel button on an
+     * `input`/`editor` dialog) — distinct from the runtime's own
+     * `extension_ui_request.cancel` event, but resolved the same way on
+     * both the local message (marked `cancelled`) and the wire
+     * (`{cancelled: true}`). Same re-answer-proof guard as `answerAsk`.
+     * @param {string} id
+     */
+    cancelAsk(id) {
+      let didCancel = false;
+      state.messages = state.messages.map(m => {
+        if (m.kind === "ask" && m.id === id && !m.answered && !m.cancelled) {
+          didCancel = true;
+          return { ...m, cancelled: true };
+        }
+        return m;
+      });
+      if (!didCancel) return;
+      notify();
+      _send({ type: "extension_ui_response", id, cancelled: true });
     },
 
     /**
@@ -1068,6 +1304,103 @@
         thought: null, lead: null, streaming: false, completed: true,
       }];
       notify();
+    },
+
+    // ── Tool-approval rules ──────────────────────────────────────────────────
+    // Backed by src-tauri/src/approval.rs::RuleBook. A rule only ever
+    // auto-answers "Approve" for an exact "Allow tool: X" prompt shape —
+    // see the module doc comment there. Session scope is in-memory (dies
+    // with the tab's omp process); project scope persists to disk keyed by
+    // a hash of the active tab's project path.
+
+    /** Grant standing approval for `tool` in the active session/project.
+     *  `scope` is `"session"` or `"project"`. */
+    async grantApprovalRule(tool, scope) {
+      if (!window.__TAURI__ || !activeSessionId) return;
+      try {
+        await window.__TAURI__.core.invoke("approval_rules_grant", {
+          sessionId: activeSessionId, projectRoot: _activeProjectPath(), tool, scope,
+        });
+      } catch (err) {
+        console.error("[live] grantApprovalRule error:", err);
+      }
+    },
+
+    /** Revoke a previously granted rule. No-op if it wasn't granted. */
+    async revokeApprovalRule(tool, scope) {
+      if (!window.__TAURI__ || !activeSessionId) return;
+      try {
+        await window.__TAURI__.core.invoke("approval_rules_revoke", {
+          sessionId: activeSessionId, projectRoot: _activeProjectPath(), tool, scope,
+        });
+      } catch (err) {
+        console.error("[live] revokeApprovalRule error:", err);
+      }
+    },
+
+    /** List rules currently in effect for the active session/project. */
+    async listApprovalRules() {
+      if (!window.__TAURI__ || !activeSessionId) return [];
+      try {
+        const rules = await window.__TAURI__.core.invoke("approval_rules_list", {
+          sessionId: activeSessionId, projectRoot: _activeProjectPath(),
+        });
+        return rules || [];
+      } catch (err) {
+        console.error("[live] listApprovalRules error:", err);
+        return [];
+      }
+    },
+
+    // ── Workspace changes (git status/diff for the active tab's project) ────
+    // Backed by src-tauri/src/workspace.rs. Bounded/capped server-side —
+    // see that module's doc comments for the exact caps.
+
+    /** Bounded `git status` for the active tab's project. */
+    async workspaceStatus() {
+      const path = _activeProjectPath();
+      if (!window.__TAURI__ || !path) return { files: [], truncated: false };
+      try {
+        return await window.__TAURI__.core.invoke("workspace_status", { path });
+      } catch (err) {
+        console.error("[live] workspaceStatus error:", err);
+        return { files: [], truncated: false };
+      }
+    },
+
+    /** Bounded diff of one file (relative to the project root) against HEAD. */
+    async workspaceDiff(relPath) {
+      const path = _activeProjectPath();
+      if (!window.__TAURI__ || !path) return null;
+      try {
+        return await window.__TAURI__.core.invoke("workspace_diff", { path, relPath });
+      } catch (err) {
+        console.error("[live] workspaceDiff error:", err);
+        return null;
+      }
+    },
+
+    /** Stage a file's changes (`git add`). */
+    async workspaceAccept(relPath) {
+      const path = _activeProjectPath();
+      if (!window.__TAURI__ || !path) return;
+      try {
+        await window.__TAURI__.core.invoke("workspace_accept", { path, relPath });
+      } catch (err) {
+        console.error("[live] workspaceAccept error:", err);
+      }
+    },
+
+    /** Discard a file's working-tree changes (deletes it if untracked —
+     *  see workspace.rs::reject's doc comment for the destructive case). */
+    async workspaceReject(relPath) {
+      const path = _activeProjectPath();
+      if (!window.__TAURI__ || !path) return;
+      try {
+        await window.__TAURI__.core.invoke("workspace_reject", { path, relPath });
+      } catch (err) {
+        console.error("[live] workspaceReject error:", err);
+      }
     },
 
     // ── Session management ───────────────────────────────────────────────────
@@ -1141,20 +1474,7 @@
     /** Subscribe to state snapshots. Returns an unsubscribe function. */
     onUpdate(cb) {
       subscribers.add(cb);
-      cb({
-        messages:        state.messages,
-        isStreaming:     state.isStreaming,
-        model:           state.model,
-        thinkingLevel:   state.thinkingLevel,
-        ctx:             state.ctx,
-        kanban:          state.kanban,
-        planMeta:        state.planMeta,
-        models:          state.models,
-        activity:        state.activity,
-        sparkline:       state.sparkline,
-        sessions:        [...sessionRegistry.values()],
-        activeSessionId,
-      });
+      cb(_buildSnapshot());
       return () => subscribers.delete(cb);
     },
 

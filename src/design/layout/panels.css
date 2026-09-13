@@ -1,0 +1,101 @@
+/* Changes panel + approval-rules panel — bordered card overlays sharing
+   .bridge-scrim's backdrop, split into their own file since overlays.css
+   already covers four unrelated concerns (split pane / command bridge /
+   kanban / plan annotations) well past the ~150-line-per-layer guideline. */
+
+/* ── Changes panel (git status/diff) ──────────────────────────────────── */
+.changes-panel {
+  width: min(920px, calc(100vw - 40px));
+  height: min(640px, calc(100vh - 120px));
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-bright);
+  border-radius: 14px;
+  box-shadow: var(--shadow-window);
+  overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.changes-head {
+  display: flex; align-items: center; gap: 8px;
+  height: 40px; padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 8%, transparent), transparent);
+}
+.changes-body {
+  flex: 1; min-height: 0;
+  display: flex;
+}
+.changes-file-list {
+  width: 280px; flex: none;
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+  padding: 6px;
+}
+.changes-file-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: var(--d-text-sm);
+}
+.changes-file-row:hover { background: var(--bg-hover); }
+.changes-file-row.active { background: var(--bg-surface); }
+.changes-kind {
+  width: 14px; flex: none;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-align: center;
+}
+.changes-path {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--fg-2);
+}
+.changes-diff {
+  flex: 1; min-width: 0;
+  overflow: auto;
+  padding: 12px 16px;
+}
+.changes-diff-text {
+  font-family: var(--font-mono);
+  font-size: var(--d-text-sm);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.changes-empty {
+  color: var(--fg-4);
+  padding: 16px;
+  font-size: var(--d-text-sm);
+}
+
+/* ── Approval rules panel ─────────────────────────────────────────────── */
+.rules-panel {
+  width: min(560px, calc(100vw - 40px));
+  max-height: min(520px, calc(100vh - 160px));
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-bright);
+  border-radius: 14px;
+  box-shadow: var(--shadow-window);
+  overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.rules-head {
+  display: flex; align-items: center; gap: 8px;
+  height: 40px; padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 8%, transparent), transparent);
+}
+.rules-body {
+  flex: 1; min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+}
+.rules-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+.rules-row:hover { background: var(--bg-hover); }
+.rules-tool {
+  font-size: var(--d-text-sm);
+  color: var(--fg-2);
+}

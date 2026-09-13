@@ -68,6 +68,16 @@ function TabBar({ projects, activeId, onSelect, onClose, peer, onNew, onHistory 
             onClick={() => onSelect(p.id)}>
             <span className="tab-bar-mark" style={{ background: active ? p.color : "transparent" }} />
             <Icon name="folder" size={11} color={active ? p.color : "var(--fg-4)"} />
+            {p.runState && p.runState !== "idle" && (
+              <span
+                className={`tab-run-dot ${p.runState}`}
+                title={
+                  p.runState === "waiting-user" ? "waiting for you"
+                    : p.runState === "failed"    ? "agent process exited"
+                    : "running"
+                }
+              />
+            )}
             <span className="tab-name">{p.name}</span>
             {p.id === peer?.projectId && (
               <span className="chip accent" style={{ padding: "1px 6px" }}>split</span>
@@ -91,7 +101,7 @@ function TabBar({ projects, activeId, onSelect, onClose, peer, onNew, onHistory 
 }
 
 // ── Status bar (footer): connection, model, tokens, todos, extension ─
-function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel, onTweaks, autosave, onAutosave }) {
+function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel, onTweaks, onChanges, onRules, autosave, onAutosave }) {
   const thinkLabel = { off: "off", minimal: "min", low: "low", medium: "med", high: "high", xhigh: "max" }[thinking] ?? "—";
   return (
     <div className="status">
@@ -126,6 +136,14 @@ function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel,
         <span className="mono" style={{ color: autosave ? "var(--fg-3)" : "var(--fg-5)" }}>
           autosave {autosave ? "on" : "off"}
         </span>
+      </button>
+      <span className="status-sep">·</span>
+      <button className="status-cell btn ghost" onClick={onChanges} title="changes (git status/diff)" style={{ height: 20, padding: "0 6px" }}>
+        <Icon name="diff2" size={11} color="var(--fg-3)" />
+      </button>
+      <span className="status-sep">·</span>
+      <button className="status-cell btn ghost" onClick={onRules} title="approval rules" style={{ height: 20, padding: "0 6px" }}>
+        <Icon name="check" size={11} color="var(--fg-3)" />
       </button>
       <span className="status-sep">·</span>
       <button className="status-cell btn ghost" onClick={onTweaks} title="tweaks" style={{ height: 20, padding: "0 6px" }}>

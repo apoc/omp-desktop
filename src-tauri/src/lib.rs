@@ -5,12 +5,18 @@
 #![allow(clippy::needless_pass_by_value)]
 
 mod agent;
+mod approval;
 mod git;
 mod git_watcher;
+mod json_store;
 mod saved_sessions;
+mod workspace;
 
 use agent::AgentBridge;
+use approval::RuleBook;
 use git_watcher::GitWatcherState;
+use std::path::Path;
+use std::sync::Arc;
 use tauri::{Manager, State};
 
 /// Write a JSON command to a specific session's omp stdin.
@@ -35,6 +41,7 @@ fn start_session(
     cwd: String,
     resume: Option<String>,
     bridge: State<'_, AgentBridge>,
+    rule_book: State<'_, Arc<RuleBook>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     if let Some(r) = resume.as_deref() {
@@ -45,7 +52,13 @@ fn start_session(
     } else {
         Some(cwd.as_str())
     };
-    bridge.start_session(session_id, cwd_opt, resume.as_deref(), app)
+    bridge.start_session(
+        session_id,
+        cwd_opt,
+        resume.as_deref(),
+        app,
+        rule_book.inner().clone(),
+    )
 }
 
 /// List saved sessions from disk (~/.omp/agent/sessions).
@@ -65,10 +78,15 @@ async fn list_saved_sessions(
     .map_err(|e| format!("join error: {e}"))?
 }
 
-/// Kill the omp process for a tab session.
+/// Kill the omp process for a tab session. Also drops its session-scoped
+/// approval-rule grants (see `approval::RuleBook::clear_session`).
 #[tauri::command]
-fn stop_session(session_id: String, bridge: State<'_, AgentBridge>) {
-    bridge.stop_session(&session_id);
+fn stop_session(
+    session_id: String,
+    bridge: State<'_, AgentBridge>,
+    rule_book: State<'_, Arc<RuleBook>>,
+) {
+    bridge.stop_session(&session_id, &rule_book);
 }
 
 /// Query a session's last error. Returns `None` if the session is
@@ -82,6 +100,76 @@ fn stop_session(session_id: String, bridge: State<'_, AgentBridge>) {
 #[tauri::command]
 fn session_status(session_id: String, bridge: State<'_, AgentBridge>) -> Option<String> {
     bridge.last_error(&session_id)
+}
+
+/// Events a session's frontend hasn't seen yet, per its bounded event
+/// journal. Called on tab reactivation (after re-arming the live listener)
+/// to recover state that arrived while no listener was attached — the
+/// journal is in-memory only, capped at 256 lines per session; a caller
+/// whose `after_seq` predates the ring window gets `dropped: true` and
+/// falls back to its existing full-state refetch for that gap.
+#[tauri::command]
+fn replay_events(
+    session_id: String,
+    after_seq: u64,
+    bridge: State<'_, AgentBridge>,
+) -> Result<agent::ReplayResponse, String> {
+    bridge.replay_events(&session_id, after_seq)
+}
+
+/// List tool-approval rules currently in effect for a session/project pair.
+#[tauri::command]
+fn approval_rules_list(
+    session_id: String,
+    project_root: Option<String>,
+    rule_book: State<'_, Arc<RuleBook>>,
+) -> Vec<approval::Rule> {
+    rule_book.list(&session_id, project_root.as_deref().map(Path::new))
+}
+
+/// Grant standing approval for `tool`. `scope` is `"session"` or `"project"`
+/// (the latter requires `project_root`); anything else is a stable error.
+#[tauri::command]
+fn approval_rules_grant(
+    session_id: String,
+    project_root: Option<String>,
+    tool: String,
+    scope: String,
+    rule_book: State<'_, Arc<RuleBook>>,
+) -> Result<(), String> {
+    let scope = parse_rule_scope(&scope)?;
+    rule_book.grant(
+        &session_id,
+        project_root.as_deref().map(Path::new),
+        &tool,
+        scope,
+    )
+}
+
+/// Revoke a previously granted rule. No-op (not an error) if it wasn't granted.
+#[tauri::command]
+fn approval_rules_revoke(
+    session_id: String,
+    project_root: Option<String>,
+    tool: String,
+    scope: String,
+    rule_book: State<'_, Arc<RuleBook>>,
+) -> Result<(), String> {
+    let scope = parse_rule_scope(&scope)?;
+    rule_book.revoke(
+        &session_id,
+        project_root.as_deref().map(Path::new),
+        &tool,
+        scope,
+    )
+}
+
+fn parse_rule_scope(scope: &str) -> Result<approval::RuleScope, String> {
+    match scope {
+        "session" => Ok(approval::RuleScope::Session),
+        "project" => Ok(approval::RuleScope::Project),
+        other => Err(format!("unknown approval rule scope '{other}'")),
+    }
 }
 
 /// Native folder picker — returns the chosen path or null.
@@ -160,6 +248,31 @@ fn open_url_external(url: String) -> Result<(), String> {
     open::that(&url).map_err(|e| e.to_string())
 }
 
+/// Bounded `git status` for the Changes panel — see `workspace::status`.
+#[tauri::command]
+fn workspace_status(path: String) -> Result<workspace::StatusResult, String> {
+    workspace::status(Path::new(&path))
+}
+
+/// Bounded diff of one file against HEAD — see `workspace::diff`.
+#[tauri::command]
+fn workspace_diff(path: String, rel_path: String) -> Result<workspace::DiffResult, String> {
+    workspace::diff(Path::new(&path), &rel_path)
+}
+
+/// Stage a file's changes — see `workspace::accept`.
+#[tauri::command]
+fn workspace_accept(path: String, rel_path: String) -> Result<(), String> {
+    workspace::accept(Path::new(&path), &rel_path)
+}
+
+/// Discard a file's working-tree changes (deletes it if untracked) — see
+/// `workspace::reject`.
+#[tauri::command]
+fn workspace_reject(path: String, rel_path: String) -> Result<(), String> {
+    workspace::reject(Path::new(&path), &rel_path)
+}
+
 /// Run the Tauri application. Panics if the runtime fails to initialise.
 ///
 /// # Panics
@@ -177,17 +290,37 @@ pub fn run() {
             start_session,
             stop_session,
             session_status,
+            replay_events,
             open_project,
             start_git_watch,
             stop_git_watch,
             open_url_external,
             list_saved_sessions,
+            approval_rules_list,
+            approval_rules_grant,
+            approval_rules_revoke,
+            workspace_status,
+            workspace_diff,
+            workspace_accept,
+            workspace_reject,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
             if let Some(win) = app.get_webview_window("main") {
                 win.open_devtools();
             }
+            // Approval-rule store: project-scoped grants persist under
+            // <app_config_dir>/approval-rules/<project-hash>.json. Falls
+            // back to a temp-dir subfolder if the config dir can't be
+            // resolved (e.g. a locked-down test environment) rather than
+            // failing startup — grants just won't survive a restart there.
+            let rules_root = app
+                .path()
+                .app_config_dir()
+                .unwrap_or_else(|_| std::env::temp_dir())
+                .join("approval-rules");
+            app.manage(Arc::new(RuleBook::new(rules_root)));
+
             // Start the default session (no cwd = omp's working directory).
             // The frontend activates this session on load via OMP_BRIDGE.activateSession("default").
             //
@@ -196,8 +329,14 @@ pub fn run() {
             // session_status on attach and surfaces the cached reason
             // if any — no event timing race, no delayed emit thread.
             let bridge = app.state::<AgentBridge>();
-            let default_session =
-                bridge.start_session("default".into(), None, None, app.handle().clone());
+            let rule_book = app.state::<Arc<RuleBook>>();
+            let default_session = bridge.start_session(
+                "default".into(),
+                None,
+                None,
+                app.handle().clone(),
+                rule_book.inner().clone(),
+            );
             if let Err(e) = default_session {
                 eprintln!("[omp-desktop] failed to start default session: {e}");
             }

@@ -2,6 +2,16 @@
 //! for the conversation-history panel, and validates `resume` values coming
 //! back over the Tauri IPC boundary before they reach `agent::spawn::spawn_omp`.
 //!
+//! # Session identity
+//! omp persists each session as a `<filesystem-safe-ISO8601>_<uuid>.jsonl`
+//! file (see [`canonical_id_from_stem`]). That file path — and the uuid
+//! extracted from it — is the **only** durable join key for a session.
+//! `get_state().sessionId`, returned over the omp RPC boundary, is per-load
+//! and ephemeral: it MUST NOT be persisted as a foreign key or compared
+//! across two separate `get_state` calls to decide whether they refer to
+//! "the same session". Wiring session-switch/resume logic against it will
+//! silently misbehave across reloads.
+//!
 //! Submodules:
 //! - [`tests`] — unit tests for the pure parse/scan/validate helpers below.
 
@@ -11,6 +21,12 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 /// Information about a persisted session on disk.
+///
+/// The durable identity of a session is `path` (and the uuid embedded in
+/// its filename, see [`canonical_id_from_stem`]) — not `id`, which is
+/// merely a copy of the `session` event's `id` field from the JSONL body
+/// and, for sessions resumed over RPC, must never be conflated with a
+/// live `get_state().sessionId` from a different `get_state` call.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SavedSession {
     pub id: String,
@@ -188,7 +204,14 @@ fn parse_session_file(path: &Path) -> Option<SavedSession> {
     };
 
     Some(SavedSession {
-        id: session_id,
+        // Prefer the filename-derived uuid — the durable identity (see the
+        // module doc comment) — over the JSONL body's `session.id` field.
+        // They agree in the common case; falling back to the body's id
+        // only covers a file that doesn't match the expected
+        // `<timestamp>_<uuid>.jsonl` shape (e.g. an imported session).
+        id: canonical_id_from_stem(path)
+            .map(str::to_string)
+            .unwrap_or(session_id),
         title,
         timestamp,
         updated_at,
@@ -204,6 +227,29 @@ fn parse_session_file(path: &Path) -> Option<SavedSession> {
 /// no trailing slash, case-insensitive.
 fn normalize_cwd(cwd: &str) -> String {
     cwd.replace('\\', "/").trim_end_matches('/').to_lowercase()
+}
+
+/// Extract the durable uuid component from a saved-session filename stem.
+///
+/// omp names session files `<filesystem-safe-ISO8601>_<uuid>.jsonl`, e.g.
+/// `2026-09-12T18-16-44-966Z_01a096d6-0aa6-75d7-804c-088913a441e6.jsonl`.
+/// The uuid is the substring after the **last** underscore in the file
+/// stem (the timestamp prefix does not itself contain an underscore, but
+/// splitting on the last one keeps this robust if it ever did). Returns
+/// `None` — never panics or returns a best-effort guess — when the stem
+/// has no underscore or the trailing component doesn't look like a uuid
+/// (32-36 characters of hex digits and hyphens only).
+///
+/// This is the only durable, cross-load identity for a session; see the
+/// module doc comment. Never substitute a `get_state().sessionId` value
+/// here or vice versa.
+pub fn canonical_id_from_stem(path: &Path) -> Option<&str> {
+    let stem = path.file_stem()?.to_str()?;
+    let idx = stem.rfind('_')?;
+    let uuid = &stem[idx + 1..];
+    let looks_like_uuid =
+        (32..=36).contains(&uuid.len()) && uuid.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+    looks_like_uuid.then_some(uuid)
 }
 
 /// Walk `root` for `.jsonl` session files, optionally filtered by `cwd_filter`.
@@ -326,6 +372,51 @@ pub fn validate_resume(app: &AppHandle, resume: &str) -> Result<(), String> {
     let root =
         sessions_root_dir(app).ok_or_else(|| "could not resolve home directory".to_string())?;
     validate_resume_against_root(&root, resume)
+}
+
+/// Encode a paging cursor for streaming a `.jsonl` session file in pages.
+///
+/// The cursor embeds the file size observed at issue time so
+/// [`decode_cursor`] can detect a file that was appended to (or truncated)
+/// between page requests — trusting a raw byte `offset` against a session
+/// file that has since grown would silently return wrong or duplicate
+/// history to a "load more" caller.
+///
+/// No caller exists yet — `list_saved_sessions` returns whole-session
+/// metadata, not paged message content; this is the size-bound cursor
+/// primitive a future "load more history" command would build on. Kept
+/// (fully tested below) rather than deleted since the identity discipline
+/// it encodes — never trust a raw offset against a file that may have
+/// grown — is exactly the bug class this module's own doc comment warns
+/// against reintroducing.
+#[allow(dead_code)]
+pub fn encode_cursor(file_size: u64, offset: u64) -> String {
+    format!("{file_size}:{offset}")
+}
+
+/// Decode a paging cursor produced by [`encode_cursor`]. See its doc
+/// comment for why this doesn't have a caller yet either.
+///
+/// Rejects the cursor with `Err("stale cursor")` if `current_file_size`
+/// no longer matches the size recorded in the cursor — the file changed
+/// since the cursor was issued, so the caller must not trust `offset`.
+/// Also rejects a malformed cursor string (missing separator, non-numeric
+/// parts) rather than panicking or returning a garbage offset.
+#[allow(dead_code)]
+pub fn decode_cursor(cursor: &str, current_file_size: u64) -> Result<u64, String> {
+    let (size_str, offset_str) = cursor
+        .split_once(':')
+        .ok_or_else(|| format!("malformed cursor: {cursor:?}"))?;
+    let size: u64 = size_str
+        .parse()
+        .map_err(|_| format!("malformed cursor: {cursor:?}"))?;
+    let offset: u64 = offset_str
+        .parse()
+        .map_err(|_| format!("malformed cursor: {cursor:?}"))?;
+    if size != current_file_size {
+        return Err("stale cursor".to_string());
+    }
+    Ok(offset)
 }
 
 #[cfg(test)]

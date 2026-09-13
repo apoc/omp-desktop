@@ -71,6 +71,16 @@
   transition: background 200ms var(--ease-out);
 }
 .tab-name { font-family: var(--font-mono); font-size: var(--d-text-sm); }
+.tab-run-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex: none;
+}
+.tab-run-dot.running { background: var(--accent); box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 30%, transparent); animation: tab-run-pulse 1.6s ease-in-out infinite; }
+.tab-run-dot.waiting-user { background: var(--amber); }
+.tab-run-dot.failed { background: var(--rose); }
+@keyframes tab-run-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
 .tab-close {
   width: 16px; height: 16px; padding: 0;
   display: inline-flex; align-items: center; justify-content: center;

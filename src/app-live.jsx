@@ -16,7 +16,7 @@
 
 const {
   Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar,
-  StatusBar, AmbientRail, PlanKanban, HistoryModal, useTweaks,
+  StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, NULL_PEER,
   INTENT_FRAMING, APPROVAL_PROMPT,
@@ -32,6 +32,8 @@ function App() {
   const [bridgeOpen,  setBridgeOpen]  = React.useState(false);
   const [bridgeView,  setBridgeView]  = React.useState("commands");
   const [historyOpen, setHistoryOpen] = React.useState(false);
+  const [changesOpen, setChangesOpen] = React.useState(false);
+  const [rulesOpen,   setRulesOpen]   = React.useState(false);
   const [planOpen,    setPlanOpen]    = React.useState(false);
   const [planMode,    setPlanMode]    = React.useState(false);
   const planStartedRef = React.useRef(false); // true after first send in plan mode
@@ -137,6 +139,9 @@ function App() {
   const handleAbort      = () => { bridge?.abort(); setStreaming(false); };
   const handlePickModel  = m  => { setModelState(m); bridge?.setModel(m); };
   const handleAskAnswer  = React.useCallback((id, value) => { bridge?.answerAsk(id, value); }, [bridge]); // bridge = window.OMP_BRIDGE, assigned once before React renders — stable ref
+  const handleConfirmAsk = React.useCallback((id, confirmed) => { bridge?.answerConfirm(id, confirmed); }, [bridge]);
+  const handleCancelAsk  = React.useCallback((id) => { bridge?.cancelAsk(id); }, [bridge]);
+  const handleGrantApproval = React.useCallback((tool, scope) => { bridge?.grantApprovalRule(tool, scope); }, [bridge]);
   const handlePickLogin = async (provider) => {
     if (!bridge) return;
     try {
@@ -231,6 +236,9 @@ function App() {
                 annotations={planAnnotations}
                 onAnnotate={handleAnnotate}
                 onAskAnswer={handleAskAnswer}
+                onConfirmAsk={handleConfirmAsk}
+                onCancelAsk={handleCancelAsk}
+                onGrantApproval={handleGrantApproval}
                 hoveredMsgIdx={hoveredMsgIdx}
               />
               <Composer
@@ -261,6 +269,8 @@ function App() {
                 todoTotal={todoCounts.total}
                 onTodo={() => setPlanOpen(true)}
                 onModel={() => openBridge("models")}
+                onChanges={() => setChangesOpen(true)}
+                onRules={() => setRulesOpen(true)}
                 onTweaks={() => window.postMessage({ type: '__activate_edit_mode' }, '*')}
                 autosave={t.autosave ?? true}
                 onAutosave={v => setTweak("autosave", v)}
@@ -314,6 +324,14 @@ function App() {
           onResume={handleResumeSession}
           activeCwd={activeProject?.path}
         />
+      )}
+
+      {changesOpen && (
+        <ChangesPanel open={changesOpen} onClose={() => setChangesOpen(false)} />
+      )}
+
+      {rulesOpen && (
+        <ApprovalRulesPanel open={rulesOpen} onClose={() => setRulesOpen(false)} />
       )}
 
       <TweaksPanel title="Tweaks" noDeckControls>

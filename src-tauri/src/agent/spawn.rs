@@ -1,7 +1,7 @@
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 /// Windows: prevent a console window from flashing when we spawn omp.exe
 /// from a GUI-subsystem parent. omp speaks JSON-RPC over stdio, so it's
@@ -76,20 +76,31 @@ fn apply_omp_path(cmd: &mut Command) {
 #[cfg(windows)]
 fn apply_omp_path(_cmd: &mut Command) {}
 
-// ── rpc-ui probe ─────────────────────────────────────────────────────────────
+// ── omp --help probe ────────────────────────────────────────────────────────
 
-/// Probe result cache — evaluated once per process lifetime.
-static RPC_UI_SUPPORTED: OnceLock<bool> = OnceLock::new();
+/// `omp --help` output, fetched once per process lifetime and shared by
+/// every predicate probe below — old omp binaries missing a feature simply
+/// won't mention it, so each predicate is just a substring check.
+static HELP_TEXT: LazyLock<String> = LazyLock::new(fetch_help_text);
+static RPC_UI_SUPPORTED: LazyLock<bool> = LazyLock::new(|| help_text_supports_rpc_ui(&HELP_TEXT));
+static APPROVAL_MODE_SUPPORTED: LazyLock<bool> =
+    LazyLock::new(|| help_text_supports_approval_mode(&HELP_TEXT));
 
-/// Return the RPC mode string to use when spawning omp.
-/// Calls `omp --help` on first use and checks whether `rpc-ui` appears in the
-/// output. Result is cached in a `OnceLock` for the process lifetime.
+/// Return the RPC mode string to use when spawning omp: `rpc-ui` when the
+/// installed binary advertises it, `rpc` otherwise.
 pub(super) fn rpc_mode() -> &'static str {
-    if *RPC_UI_SUPPORTED.get_or_init(probe_rpc_ui) {
+    if *RPC_UI_SUPPORTED {
         "rpc-ui"
     } else {
         "rpc"
     }
+}
+
+/// `true` when the installed omp binary's `--help` advertises
+/// `--approval-mode`. Gates whether `spawn_omp` passes `--approval-mode=write`
+/// — an old binary without the flag would otherwise fail to start.
+pub(super) fn approval_mode_supported() -> bool {
+    *APPROVAL_MODE_SUPPORTED
 }
 
 /// Return true if the given help text advertises `rpc-ui` mode support.
@@ -98,13 +109,19 @@ fn help_text_supports_rpc_ui(text: &str) -> bool {
     text.contains("rpc-ui")
 }
 
-/// Run `omp --help`, collect stdout+stderr, and check for `rpc-ui`.
+/// Return true if the given help text advertises the `--approval-mode` flag.
+/// Extracted as a pure function so it can be unit-tested without spawning omp.
+fn help_text_supports_approval_mode(text: &str) -> bool {
+    text.contains("--approval-mode")
+}
+
+/// Run `omp --help` and collect stdout+stderr.
 ///
 /// `--help` exits immediately without model initialisation or stdin reads,
 /// so there are no pipe-buffering races and no dependency on API keys being
-/// present in the environment. Old omp binaries that don't know about
-/// `rpc-ui` simply won't mention it in their help output.
-fn probe_rpc_ui() -> bool {
+/// present in the environment. Old omp binaries that don't know about a
+/// given feature simply won't mention it in their help output.
+fn fetch_help_text() -> String {
     for name in CANDIDATES {
         let mut cmd = Command::new(name);
         cmd.arg("--help")
@@ -122,13 +139,16 @@ fn probe_rpc_ui() -> bool {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
-        let supported = help_text_supports_rpc_ui(&text);
-        eprintln!("[omp-desktop] rpc-ui probe: supported={supported}");
-        return supported;
+        eprintln!(
+            "[omp-desktop] help probe: rpc-ui={} approval-mode={}",
+            help_text_supports_rpc_ui(&text),
+            help_text_supports_approval_mode(&text)
+        );
+        return text;
     }
     // omp not found on PATH — spawn_omp will surface the real error.
-    eprintln!("[omp-desktop] rpc-ui probe: omp not found, defaulting to rpc");
-    false
+    eprintln!("[omp-desktop] help probe: omp not found, all feature probes default to unsupported");
+    String::new()
 }
 
 /// Build the argv suffix (after the binary name) for spawning omp.
@@ -139,13 +159,47 @@ fn probe_rpc_ui() -> bool {
 /// flag-shaped value passed as a second token (e.g. `--auto-approve`) is
 /// re-tokenised by omp's own argument parser as an unrelated flag instead
 /// of the resume target. The single-token form can never be re-split.
+///
+/// `cwd` is passed explicitly as `--cwd=<value>` *in addition to* the
+/// child process's OS-level working directory (set separately via
+/// `Command::current_dir` in `spawn_omp`) — redundant in the common case,
+/// but makes omp's own project-root resolution independent of whatever a
+/// given OS/launcher does with an inherited working directory. deliberately
+/// NOT doing the equivalent for `--session-dir`: omp already resolves its
+/// session storage location from `PI_CODING_AGENT_DIR`
+/// (`saved_sessions::sessions_root_dir` reads the same variable to locate
+/// the history panel's source of truth) — hardcoding `--session-dir` here
+/// would be a second, divergent way to say the same thing and risks
+/// silently pointing session storage somewhere the read side doesn't
+/// expect.
+///
+/// `approval_mode` is passed as `--approval-mode=<value>` when the
+/// installed omp binary supports the flag (see `approval_mode_supported`);
+/// omp's own default approval tier auto-approves exec-tier tools, which a
+/// desktop product should never inherit silently.
+///
 /// Extracted as a pure function so this is unit-testable without spawning
 /// a process.
-fn omp_args(mode: &str, resume: Option<&str>) -> Vec<String> {
+fn omp_args(
+    mode: &str,
+    resume: Option<&str>,
+    cwd: Option<&str>,
+    approval_mode: Option<&str>,
+) -> Vec<String> {
     let mut args = vec!["--mode".to_string(), mode.to_string()];
     if let Some(r) = resume {
         if !r.is_empty() {
             args.push(format!("--resume={r}"));
+        }
+    }
+    if let Some(c) = cwd {
+        if !c.is_empty() {
+            args.push(format!("--cwd={c}"));
+        }
+    }
+    if let Some(a) = approval_mode {
+        if !a.is_empty() {
+            args.push(format!("--approval-mode={a}"));
         }
     }
     args
@@ -156,8 +210,14 @@ fn omp_args(mode: &str, resume: Option<&str>) -> Vec<String> {
 /// Spawn omp for a live session using the best available RPC mode.
 /// If `resume` is specified, `--resume=<path_or_id>` is passed to resume an
 /// existing session (a single token, not two separate argv entries — see
-/// `omp_args` for why).
-pub(super) fn spawn_omp(cwd: Option<&str>, resume: Option<&str>) -> Result<Child, String> {
+/// `omp_args` for why). Returns the child alongside a
+/// [`super::supervisor::ProcessSupervisor`] already attached to it, so the
+/// whole process tree (subagents, tool-call children) can be torn down as
+/// a unit — plain `Child::kill` only signals the direct `omp` process.
+pub(super) fn spawn_omp(
+    cwd: Option<&str>,
+    resume: Option<&str>,
+) -> Result<(Child, super::supervisor::ProcessSupervisor), String> {
     // On Windows, `Command::new` resolves bare "omp" against PATH and
     // PATHEXT (.exe etc.) via CreateProcess. We try the explicit ".exe"
     // name first because some systems have weird PATHEXT handling, then
@@ -166,7 +226,8 @@ pub(super) fn spawn_omp(cwd: Option<&str>, resume: Option<&str>) -> Result<Child
     // killed, since Windows does not propagate process termination to
     // descendants without a Job Object.
     let mode = rpc_mode();
-    let args = omp_args(mode, resume);
+    let approval_mode = approval_mode_supported().then_some("write");
+    let args = omp_args(mode, resume, cwd, approval_mode);
     let mut last_err = String::from("no candidates tried");
     for name in CANDIDATES {
         let mut cmd = Command::new(name);
@@ -184,8 +245,14 @@ pub(super) fn spawn_omp(cwd: Option<&str>, resume: Option<&str>) -> Result<Child
                 cmd.current_dir(dir);
             }
         }
+        // Unix: must run before spawn() (installs the child as its own
+        // process-group leader). No-op on Windows.
+        super::supervisor::ProcessSupervisor::prepare(&mut cmd);
         match cmd.spawn() {
-            Ok(child) => return Ok(child),
+            Ok(child) => {
+                let supervisor = super::supervisor::ProcessSupervisor::attach(&child);
+                return Ok((child, supervisor));
+            }
             Err(e) => {
                 let msg = format!("{name}: {e}");
                 eprintln!("[omp-desktop] spawn attempt failed: {msg}");
@@ -293,12 +360,12 @@ mod tests {
 
     #[test]
     fn omp_args_without_resume() {
-        assert_eq!(omp_args("rpc", None), vec!["--mode", "rpc"]);
+        assert_eq!(omp_args("rpc", None, None, None), vec!["--mode", "rpc"]);
     }
 
     #[test]
     fn omp_args_with_empty_resume_is_omitted() {
-        assert_eq!(omp_args("rpc", Some("")), vec!["--mode", "rpc"]);
+        assert_eq!(omp_args("rpc", Some(""), None, None), vec!["--mode", "rpc"]);
     }
 
     #[test]
@@ -306,7 +373,7 @@ mod tests {
         // Single `--resume=<value>` token, not two separate argv entries —
         // see `omp_args` doc comment for why this matters.
         assert_eq!(
-            omp_args("rpc-ui", Some("/tmp/sess.jsonl")),
+            omp_args("rpc-ui", Some("/tmp/sess.jsonl"), None, None),
             vec!["--mode", "rpc-ui", "--resume=/tmp/sess.jsonl"]
         );
     }
@@ -316,8 +383,43 @@ mod tests {
         // Even a flag-shaped resume value can't be re-tokenised as a
         // separate argument because it's embedded in one `--resume=` token.
         assert_eq!(
-            omp_args("rpc", Some("--auto-approve")),
+            omp_args("rpc", Some("--auto-approve"), None, None),
             vec!["--mode", "rpc", "--resume=--auto-approve"]
+        );
+    }
+
+    #[test]
+    fn omp_args_with_cwd_appends_explicit_flag() {
+        assert_eq!(
+            omp_args("rpc", None, Some("/home/dev/project"), None),
+            vec!["--mode", "rpc", "--cwd=/home/dev/project"]
+        );
+    }
+
+    #[test]
+    fn omp_args_with_empty_cwd_is_omitted() {
+        assert_eq!(omp_args("rpc", None, Some(""), None), vec!["--mode", "rpc"]);
+    }
+
+    #[test]
+    fn omp_args_with_approval_mode_appends_flag() {
+        assert_eq!(
+            omp_args("rpc", None, None, Some("write")),
+            vec!["--mode", "rpc", "--approval-mode=write"]
+        );
+    }
+
+    #[test]
+    fn omp_args_combines_resume_cwd_and_approval_mode_in_order() {
+        assert_eq!(
+            omp_args("rpc-ui", Some("abc123"), Some("/proj"), Some("write")),
+            vec![
+                "--mode",
+                "rpc-ui",
+                "--resume=abc123",
+                "--cwd=/proj",
+                "--approval-mode=write",
+            ]
         );
     }
 }

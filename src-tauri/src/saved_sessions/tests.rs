@@ -247,3 +247,56 @@ fn validate_resume_rejects_path_outside_root() {
     let _ = fs::remove_dir_all(&root);
     let _ = fs::remove_dir_all(&outside_dir);
 }
+
+#[test]
+fn canonical_id_from_stem_extracts_uuid_from_real_shaped_filename() {
+    let path = Path::new(
+        "/home/user/.omp/agent/sessions/-devel-project/\
+         2026-09-12T18-16-44-966Z_01a096d6-0aa6-75d7-804c-088913a441e6.jsonl",
+    );
+    assert_eq!(
+        canonical_id_from_stem(path),
+        Some("01a096d6-0aa6-75d7-804c-088913a441e6")
+    );
+}
+
+#[test]
+fn canonical_id_from_stem_returns_none_without_underscore() {
+    let path = Path::new("sess-123.jsonl");
+    assert_eq!(canonical_id_from_stem(path), None);
+}
+
+#[test]
+fn canonical_id_from_stem_returns_none_for_invalid_uuid_characters() {
+    // Trailing component contains a space, which is not a valid uuid character.
+    let path = Path::new("2026-09-12T18-16-44-966Z_not a valid uuid.jsonl");
+    assert_eq!(canonical_id_from_stem(path), None);
+
+    // Trailing component contains a disallowed separator character.
+    let path_with_slash_like_char =
+        Path::new("2026-09-12T18-16-44-966Z_01a096d6@0aa6-75d7-804c-088913a441e6.jsonl");
+    assert_eq!(canonical_id_from_stem(path_with_slash_like_char), None);
+}
+
+#[test]
+fn cursor_round_trips_when_file_size_unchanged() {
+    let cursor = encode_cursor(1024, 512);
+    assert_eq!(cursor, "1024:512");
+    assert_eq!(decode_cursor(&cursor, 1024), Ok(512));
+}
+
+#[test]
+fn decode_cursor_rejects_stale_cursor_after_file_grew() {
+    let cursor = encode_cursor(1024, 512);
+    // File was appended to after the cursor was issued.
+    let err = decode_cursor(&cursor, 2048).expect_err("stale cursor must be rejected");
+    assert_eq!(err, "stale cursor");
+}
+
+#[test]
+fn decode_cursor_rejects_malformed_input() {
+    assert!(decode_cursor("no-colon-here", 1024).is_err());
+    assert!(decode_cursor("abc:512", 1024).is_err());
+    assert!(decode_cursor("1024:xyz", 1024).is_err());
+    assert!(decode_cursor("", 1024).is_err());
+}

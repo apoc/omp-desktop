@@ -1,13 +1,83 @@
 /**
  * test-rpc.mjs — Direct omp RPC protocol probe.
- * Spawns omp --mode rpc, sends "say hello in one sentence", logs every
- * event with type + key fields for 15 seconds, then exits.
  *
- * Run: node test-rpc.mjs  OR  bun test-rpc.mjs
+ * Default mode: spawns omp --mode rpc, sends "say hello in one sentence",
+ * logs every event with type + key fields for 15 seconds, then exits.
+ *
+ * `--evidence` mode: spawns omp --mode rpc, sends get_state, redacts the
+ * response (mirroring src-tauri/src/agent/reader.rs's REDACTED_KEYS list —
+ * kept in sync manually; this script's redaction is documentation
+ * evidence, not itself a security boundary, the Rust sanitizer is the
+ * actual enforcement), and writes it to
+ * docs/agents/evidence/get-state-shape.json as a checked-in ground-truth
+ * artifact for what the real RPC shape looks like, so future changes to
+ * `sanitize_frame`/`approval_tool_name` can be checked against real output
+ * instead of assumption.
+ *
+ * Run: node test-rpc.mjs [--evidence]  OR  bun test-rpc.mjs [--evidence]
  */
 
 import { spawn } from "child_process";
 import { createInterface } from "readline";
+import { writeFileSync, mkdirSync } from "fs";
+import { dirname } from "path";
+
+const EVIDENCE_MODE = process.argv.includes("--evidence");
+const EVIDENCE_PATH = "docs/agents/evidence/get-state-shape.json";
+
+// Mirrors src-tauri/src/agent/reader.rs::REDACTED_KEYS.
+const REDACTED_KEYS = new Set([
+  "headers", "authorization", "apikey", "accesstoken", "refreshtoken",
+  "idtoken", "password", "secret", "credential", "credentials",
+]);
+const REDACTED_PLACEHOLDER = "[REDACTED]";
+
+function normalizeKey(key) {
+  return key.replace(/[_-]/g, "").toLowerCase();
+}
+
+// Recursively replace the value of any object key matching REDACTED_KEYS —
+// same shape as Rust's sanitize_frame, redacted subtrees are not descended
+// into.
+function redact(value) {
+  if (Array.isArray(value)) return value.map(redact);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = REDACTED_KEYS.has(normalizeKey(k)) ? REDACTED_PLACEHOLDER : redact(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+const MAX_STRING_LEN = 80;
+const MAX_ARRAY_ITEMS = 2;
+
+// Collapse a redacted value into a small structural "shape" — long strings
+// (system prompts, tool descriptions) become `<string:N>` and arrays are
+// truncated to a couple of sample items plus a total count. This is what
+// actually gets committed: real get_state has multi-hundred-KB system
+// prompt/tool-definition text mixed in, which would make the evidence file
+// bulky *and* leak prompt-engineering content for no benefit — the whole
+// point of this file is documenting the JSON *shape*, not its content.
+function summarizeShape(value) {
+  if (typeof value === "string") {
+    return value.length > MAX_STRING_LEN ? `<string:${value.length}>` : value;
+  }
+  if (Array.isArray(value)) {
+    const sample = value.slice(0, MAX_ARRAY_ITEMS).map(summarizeShape);
+    return value.length > MAX_ARRAY_ITEMS
+      ? [...sample, `<+${value.length - MAX_ARRAY_ITEMS} more>`]
+      : sample;
+  }
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = summarizeShape(v);
+    return out;
+  }
+  return value;
+}
 
 const proc = spawn("omp", ["--mode", "rpc"], {
   stdio: ["pipe", "pipe", "pipe"],
@@ -32,12 +102,25 @@ rl.on("line", raw => {
   // Summarise instead of dumping full JSON — easier to read
   if (t === "ready") {
     ready = true;
-    console.log("[ready] agent is up — sending test prompt");
-    send({ type: "prompt", message: "Say hello in one sentence. Be brief." });
+    if (EVIDENCE_MODE) {
+      console.log("[ready] agent is up — sending get_state for evidence capture");
+      send({ type: "get_state", id: "evidence-1" });
+    } else {
+      console.log("[ready] agent is up — sending test prompt");
+      send({ type: "prompt", message: "Say hello in one sentence. Be brief." });
+    }
     return;
   }
 
   if (t === "response") {
+    if (EVIDENCE_MODE && obj.id === "evidence-1") {
+      const shaped = summarizeShape(redact(obj));
+      mkdirSync(dirname(EVIDENCE_PATH), { recursive: true });
+      writeFileSync(EVIDENCE_PATH, JSON.stringify(shaped, null, 2) + "\n");
+      console.log(`[evidence] wrote redacted get_state response to ${EVIDENCE_PATH}`);
+      proc.kill();
+      process.exit(0);
+    }
     console.log(`[response] cmd=${obj.command} ok=${obj.success}`);
     return;
   }

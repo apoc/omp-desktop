@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Event journal + replay — each session keeps a bounded 256-event ring (`agent/journal.rs`); switching back to a tab after missing live events now calls `replay_events` and merges the gap instead of leaving the UI stale, with a `dropped` flag surfaced when the ring has already evicted the needed range.
+- Credential redaction — `sanitize_frame`/`sanitize_line` in `agent/reader.rs` recursively strip known-sensitive keys (`authorization`, `apikey`, headers, tokens, …) from every RPC frame before it reaches `agent://line` or gets logged.
+- Desktop approval rules — session- and project-scoped "always allow" rules for tool-approval prompts (`src-tauri/src/approval.rs`). Approval-prompt ask cards gained "Allow for this session" / "Always allow in this project" buttons; matching prompts are auto-answered on stdin without round-tripping through the UI. Rules are listed/revocable from a new rules panel (bridge methods `grantApprovalRule`/`revokeApprovalRule`/`listApprovalRules`). Spawn now passes `--approval-mode write` (probed against `omp --help` first, so older `omp` builds fall back to prior behavior).
+- Process-tree supervision — `agent/supervisor.rs` puts each spawned `omp` in a Windows Job Object / Unix process group so `stop_session` and app exit kill the whole tree, not just the direct child, eliminating orphaned grandchildren.
+- Command allowlist — `AgentBridge::send` validates the RPC command `type` against a fixed allowlist before writing to stdin, rejecting anything unrecognized instead of forwarding it blind.
+- Atomic write + snapshot/rollback kit — `src-tauri/src/json_store.rs` adds `write_atomic` (temp file + rename, with orphan sweep), a bounded `SnapshotRing`, and an advisory cross-process file lock with stale-owner takeover; used by the approval rules store so a crash mid-write can't corrupt `approval-rules.json`.
+- Workspace changes panel — new Changes tab (`workspace_status`/`workspace_diff`/`workspace_accept`/`workspace_reject` commands, `src-tauri/src/workspace.rs`) shows `git status`/`git diff` for the active session's working tree with per-file accept/reject, capped at 200 files / 256 KiB / 2000 lines per diff to keep the UI responsive on large changesets.
+- Session-identity discipline — saved-session parsing now prefers the filename-derived UUID over whatever `session.id` the JSONL body happens to contain (`canonical_id_from_stem`), so a copied/renamed session file can't collide with or shadow another session's history.
+- Four-state run projection — the tab bar now shows a running/waiting-on-you/idle/failed dot per session (`runStateOf()` in `live.js`), so you can tell which background tab needs attention without switching to it.
+- Method-aware ask cards — `confirm` and `editor` extension-UI prompts (previously silently auto-cancelled) now render as proper chat cards (yes/no buttons; multi-line textarea with Submit/Cancel), and `input` prompts moved from a blocking `window.prompt()` to the same chat-card treatment as `select`. Wire shapes were ground-truthed against the installed `omp` binary — `confirm` responds with `{confirmed: bool}`, not `{value}`.
+- IME composition guard — Enter-to-send in the composer now ignores Enter keystrokes that are part of an IME composition (`e.isComposing` / `keyCode === 229`), so committing CJK/IME input no longer sends a half-typed message.
+- Explicit `--cwd`/`--session-dir` spawn arguments — `spawn_omp` now passes the project path and session directory explicitly instead of relying on the child's inherited working directory.
+- `docs/agents/evidence/` — `test-rpc.mjs --evidence` probes a real `omp` process, redacts and shape-summarizes its `get_state` response, and writes a golden reference file for what the RPC surface currently looks like.
+
+### Fixed
+
+- Ask cards could be answered twice, or answered after the runtime had already cancelled/superseded them — `answerAsk` (and the new `answerConfirm`/`cancelAsk`) now only send a response when a matching still-open message is actually found, instead of unconditionally posting to stdin.
+
 ## [0.1.3] - 2026-09-13
 
 ### Added

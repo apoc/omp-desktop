@@ -1,0 +1,56 @@
+[
+  {
+    "name": "plain_lf_line",
+    "raw": "{\"type\":\"ready\"}\n",
+    "expect_text": "{\"type\":\"ready\"}",
+    "expect_json": true
+  },
+  {
+    "name": "crlf_line",
+    "raw": "{\"type\":\"ready\"}\r\n",
+    "expect_text": "{\"type\":\"ready\"}",
+    "expect_json": true
+  },
+  {
+    "name": "trailing_cr_only_no_lf",
+    "raw": "{\"type\":\"ready\"}\r",
+    "expect_text": "{\"type\":\"ready\"}",
+    "expect_json": true
+  },
+  {
+    "name": "multiple_trailing_newlines",
+    "raw": "{\"type\":\"ready\"}\n\n",
+    "expect_text": "{\"type\":\"ready\"}",
+    "expect_json": true
+  },
+  {
+    "name": "non_json_line",
+    "raw": "not json at all\n",
+    "expect_text": "not json at all",
+    "expect_json": false
+  },
+  {
+    "name": "empty_object",
+    "raw": "{}\n",
+    "expect_text": "{}",
+    "expect_json": true
+  },
+  {
+    "name": "nested_credential_redacted",
+    "raw": "{\"type\":\"response\",\"data\":{\"headers\":{\"Authorization\":\"Bearer sk-secret\"}}}\n",
+    "expect_contains": "[REDACTED]",
+    "expect_not_contains": "sk-secret",
+    "expect_json": true
+  },
+  {
+    "name": "truncated_json_header",
+    "raw": "{\"type\":\"rea\n",
+    "expect_text": "{\"type\":\"rea",
+    "expect_json": false
+  },
+  {
+    "name": "single_lf_only",
+    "raw": "\n",
+    "expect_empty_after_strip": true
+  }
+]
