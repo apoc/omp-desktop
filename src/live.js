@@ -265,6 +265,7 @@
     // Tear down old listeners
     for (const ul of activeListeners) { try { await ul(); } catch (_) {} }
     activeListeners = [];
+    _chunkAcc = null; // drop any partial chunk run from the previous session
 
     activeSessionId = id;
 
@@ -317,12 +318,80 @@
     notify();
   }
 
+  // ── v2 lossless transport: rpc_chunk reassembly ──────────────────────────
+  // After negotiate_protocol v2, omp emits oversized stdout objects (e.g. the
+  // ~2 MiB get_available_models response) as an uninterrupted sequence of
+  // rpc_chunk frames. Each carries a base64 segment of the original UTF-8 JSON.
+  const MAX_REASSEMBLED_FRAME = 64 * 1024 * 1024; // matches ready.maxReassembledFrameBytes
+
+  // Pure: validate a complete set of rpc_chunk frames for one chunkId and
+  // return the parsed JSON object. Throws on any inconsistency.
+  function reassembleRpcChunks(frames) {
+    if (!Array.isArray(frames) || frames.length === 0) throw new Error("rpc_chunk: empty frame set");
+    const { chunkId, count, byteLength } = frames[0];
+    if (!Number.isInteger(count) || count < 1) throw new Error("rpc_chunk: bad count");
+    if (frames.length !== count) throw new Error(`rpc_chunk: expected ${count} frames, got ${frames.length}`);
+    if (!Number.isInteger(byteLength) || byteLength < 0 || byteLength > MAX_REASSEMBLED_FRAME)
+      throw new Error("rpc_chunk: byteLength out of range");
+    const parts = new Array(count);
+    for (const f of frames) {
+      if (f.chunkId !== chunkId)   throw new Error("rpc_chunk: chunkId mismatch");
+      if (f.count !== count)       throw new Error("rpc_chunk: count mismatch");
+      if (f.byteLength !== byteLength) throw new Error("rpc_chunk: byteLength mismatch");
+      if (!Number.isInteger(f.index) || f.index < 0 || f.index >= count) throw new Error("rpc_chunk: index out of range");
+      if (parts[f.index] !== undefined) throw new Error("rpc_chunk: duplicate index");
+      const bin = atob(f.data);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      parts[f.index] = bytes;
+    }
+    let total = 0;
+    for (const p of parts) total += p.length;
+    if (total !== byteLength) throw new Error(`rpc_chunk: byte length mismatch (${total} != ${byteLength})`);
+    const merged = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) { merged.set(p, off); off += p.length; }
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(merged);
+    return JSON.parse(text);
+  }
+  window.reassembleRpcChunks = reassembleRpcChunks;
+
+  // Stateful accumulator for the in-flight chunk sequence. Chunks arrive as an
+  // uninterrupted run; a chunkId change mid-run means the prior run was dropped.
+  let _chunkAcc = null; // { chunkId, count, frames: [] }
+
+  function _ingestChunk(frame) {
+    if (!_chunkAcc || _chunkAcc.chunkId !== frame.chunkId) {
+      if (_chunkAcc) console.warn(`[live] rpc_chunk '${_chunkAcc.chunkId}' interrupted by '${frame.chunkId}'`);
+      _chunkAcc = { chunkId: frame.chunkId, count: frame.count, frames: [] };
+    }
+    _chunkAcc.frames.push(frame);
+    if (_chunkAcc.frames.length < _chunkAcc.count) return null;
+    const frames = _chunkAcc.frames;
+    _chunkAcc = null;
+    try {
+      return reassembleRpcChunks(frames);
+    } catch (e) {
+      console.error(`[live] rpc_chunk reassembly failed: ${e.message}`);
+      return null;
+    }
+  }
+
   // ── RPC line handler ──────────────────────────────────────────────────────
   function handleLine(rawLine) {
     let obj;
     try { obj = JSON.parse(rawLine); } catch { return; }
     if (!obj || typeof obj !== "object") return;
 
+    if (obj.type === "rpc_chunk") {
+      obj = _ingestChunk(obj);
+      if (!obj) return; // sequence incomplete or reassembly failed
+    }
+
+    _dispatchFrame(obj);
+  }
+
+  function _dispatchFrame(obj) {
     const { type } = obj;
 
     if (type === "ready") {
@@ -821,9 +890,19 @@
   }
 
   function _initFetch() {
-    _send({ type: "get_state" });
-    _send({ type: "get_messages" });
-    _send({ type: "get_available_models" });
+    // Negotiate protocol v2 first so oversized responses (get_available_models
+    // is ~2 MiB, well past the v1 1 MiB frame cap) arrive as reassembled
+    // rpc_chunk sequences instead of failing with a transport-limit error.
+    // Await the negotiate response so v2 is active before the large fetches are
+    // dispatched (stdin is processed in order, but this avoids any IPC-ordering
+    // race). A v1 server or a repeat negotiate simply rejects — harmless.
+    _sendWithResponse({ type: "negotiate_protocol", protocolVersion: 2 })
+      .catch(() => {})
+      .finally(() => {
+        _send({ type: "get_state" });
+        _send({ type: "get_messages" });
+        _send({ type: "get_available_models" });
+      });
   }
 
   // ── Send a command to the active session's omp ────────────────────────────
