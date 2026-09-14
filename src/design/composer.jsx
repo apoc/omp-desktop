@@ -3,6 +3,7 @@
    ═════════════════════════════════════════════════════════════════════ */
 
 const { Icon } = window;
+const { parseMentionQuery, applyMention } = window.OMP_MENTIONS;
 
 // ── The composer (input + plan/steer modes + send) ────────────────────
 function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy }) {
@@ -16,12 +17,55 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
 
   const cmds = window.OMP_DATA?.commands || [];
 
-  // Derive slash state inline — no useEffect, no stale flicker
+  // ── @-mention file-path autocomplete ─────────────────────────────────
+  // Caret tracked separately from `text`: the mention token depends on
+  // *where* the cursor sits, not just the text content — arrow-key/mouse
+  // moves into an existing @token must re-derive it without an edit.
+  const [caret, setCaret]                       = React.useState(0);
+  const [mentionItems, setMentionItems]         = React.useState([]);
+  const [mentionActiveIdx, setMentionActiveIdx] = React.useState(0);
+  const [mentionDismissedKey, setMentionDismissedKey] = React.useState(null);
+  const mentionListRef = React.useRef(null);
+  const mentionReqRef  = React.useRef(0);
+
+  const mentionRange = React.useMemo(() => parseMentionQuery(text, caret), [text, caret]);
+  const mentionKey    = mentionRange ? `${mentionRange.start}:${mentionRange.query}` : null;
+  const showMention   = mentionRange !== null && mentionItems.length > 0 && mentionDismissedKey !== mentionKey;
+
+  // Debounced fetch — keyed on the query text, not the caret, so moving
+  // the caret within an unchanged token never re-fires it. A monotonic
+  // request id drops a response that lands after a newer query fired.
+  React.useEffect(() => {
+    // No active token — also forget any Escape-dismissal recorded for a
+    // token that no longer exists, and invalidate any request already in
+    // flight for it, so neither can resurrect stale items for an unrelated
+    // later "@src" at the same offset (e.g. next message, or after fully
+    // clearing the draft). A dismissal survives a same-offset backspace-
+    // then-retype of the identical query, by design — Escape means "not
+    // this exact text", and re-arriving at exactly that text should still
+    // honor it until the query actually differs.
+    if (!mentionRange) {
+      mentionReqRef.current++;
+      setMentionItems([]);
+      setMentionDismissedKey(null);
+      return;
+    }
+    const myReq = ++mentionReqRef.current;
+    const timer = setTimeout(async () => {
+      const items = await window.OMP_BRIDGE.listFiles(mentionRange.query, 30);
+      if (mentionReqRef.current === myReq) { setMentionItems(items); setMentionActiveIdx(0); }
+    }, 60);
+    return () => clearTimeout(timer);
+  }, [mentionRange?.query, mentionRange !== null]);
+
+  // Derive slash state inline — no useEffect, no stale flicker.
+  // Suppressed while the mention menu is showing: both can't render in
+  // the same absolutely-positioned spot (e.g. "/plan add @src/foo.js").
   const slashQ = text.startsWith("/") ? text.slice(1).split(" ")[0].toLowerCase() : null;
   const filtered = slashQ !== null
     ? cmds.filter(c => !slashQ || c.name.startsWith(slashQ) || c.name.includes(slashQ))
     : [];
-  const showSlash = filtered.length > 0;
+  const showSlash = filtered.length > 0 && !showMention;
 
   // Keep activeIdx in bounds; auto-select when single result
   const clampedIdx = showSlash ? Math.min(activeIdx, filtered.length - 1) : 0;
@@ -32,6 +76,13 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     const el = listRef.current.children[clampedIdx];
     el?.scrollIntoView({ block: "nearest" });
   }, [clampedIdx, showSlash]);
+
+  // Scroll active mention row into view
+  React.useEffect(() => {
+    if (!showMention || !mentionListRef.current) return;
+    const el = mentionListRef.current.children[mentionActiveIdx];
+    el?.scrollIntoView({ block: "nearest" });
+  }, [mentionActiveIdx, showMention]);
 
   React.useEffect(() => {
     const ta = taRef.current;
@@ -48,9 +99,44 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
   const execCmd = (cmd) => {
     setText("");
     setActiveIdx(0);
+    setMentionDismissedKey(null);
     pasteBlocksRef.current.clear();
     pasteCounterRef.current = 0;
     onPick?.(cmd);
+  };
+
+  // The '@' itself is part of `insertText`, not just a display trigger:
+  // the sent message keeps "@path/to/file" as a recognizable in-text file
+  // reference (same convention as Claude Code's own @file mentions).
+  // A directory pick's trailing '/' (no space) keeps the token "open" so
+  // parseMentionQuery still matches it next render, re-querying one level
+  // deeper — dropping the '@' here would silently break that, since the
+  // token detector has nothing left to anchor on.
+  //
+  // A name containing whitespace or an embedded '@' can never stay
+  // "open": parseMentionQuery stops its backward scan at the first space,
+  // and separately rejects a query containing '@' (and an '@' preceded by
+  // an ordinary character fails the token's own precursor check) — so
+  // either character in the middle of the inserted path would make the
+  // token permanently unrecoverable (drill-down silently dead for that
+  // one directory, e.g. a Next.js parallel-route dir like `app/@modal`).
+  // Closing normally instead still reaches nested entries — the backend
+  // fuzzy-matches a full relative path in one query, so a fresh
+  // "@dir with space/sub" from scratch works; drill-down is a
+  // convenience, not a requirement.
+  const pickMention = (item) => {
+    if (!item || !mentionRange) return;
+    const canStayOpen = item.isDir && !/[\s@]/.test(item.path);
+    const insertText = canStayOpen ? `@${item.path}/` : `@${item.path} `;
+    const { text: nextText, caret: nextCaret } = applyMention(text, mentionRange, insertText);
+    setText(nextText);
+    setCaret(nextCaret);
+    requestAnimationFrame(() => {
+      const ta = taRef.current;
+      if (!ta) return;
+      ta.selectionStart = ta.selectionEnd = nextCaret;
+      ta.focus();
+    });
   };
 
   // Expand [paste #N +K lines] tokens back to their real content before sending.
@@ -65,6 +151,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     if (!canSend) return;
     onSend(expandPastes(text.trim()));
     setText("");
+    setMentionDismissedKey(null);
     pasteBlocksRef.current.clear();
     pasteCounterRef.current = 0;
     requestAnimationFrame(() => taRef.current?.focus());
@@ -90,10 +177,17 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
       if (!taRef.current) return;
       const pos = start + token.length;
       taRef.current.selectionStart = taRef.current.selectionEnd = pos;
+      setCaret(pos);
     });
   };
 
   const onKey = (e) => {
+    if (showMention) {
+      if (e.key === "ArrowDown") { e.preventDefault(); setMentionActiveIdx(i => (i + 1) % mentionItems.length); return; }
+      if (e.key === "ArrowUp")   { e.preventDefault(); setMentionActiveIdx(i => (i - 1 + mentionItems.length) % mentionItems.length); return; }
+      if (e.key === "Escape")    { e.preventDefault(); setMentionDismissedKey(mentionKey); return; }
+      if (e.key === "Tab" || (isSubmitEnter(e) && !e.shiftKey)) { e.preventDefault(); pickMention(mentionItems[mentionActiveIdx]); return; }
+    }
     if (showSlash) {
       if (e.key === "ArrowDown")  { e.preventDefault(); setActiveIdx(i => Math.min(i + 1, filtered.length - 1)); return; }
       if (e.key === "ArrowUp")    { e.preventDefault(); setActiveIdx(i => Math.max(i - 1, 0)); return; }
@@ -133,6 +227,16 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
         </div>
       )}
 
+      {showMention && (
+        <MentionMenu
+          items={mentionItems}
+          activeIndex={mentionActiveIdx}
+          onPick={pickMention}
+          onHover={setMentionActiveIdx}
+          listRef={mentionListRef}
+        />
+      )}
+
       <div className="composer-row">
         <button className="btn icon ghost" title="attach image">
           <Icon name="image" size={13} />
@@ -152,10 +256,15 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
                   : (microcopy?.paletteTip ?? "what should we ship?  ·  / for commands  ·  ⌘K for the bridge")
             }
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart); }}
+            onSelect={(e) => setCaret(e.target.selectionStart)}
             onKeyDown={onKey}
             onPaste={onPaste}
             className="selectable"
+            role={showMention ? "combobox" : undefined}
+            aria-expanded={showMention ? true : undefined}
+            aria-controls={showMention ? "mention-menu" : undefined}
+            aria-activedescendant={showMention ? `mention-row-${mentionActiveIdx}` : undefined}
           />
         </div>
         <button className="btn outlined" title="open command bridge (⌘K)" onClick={onOpenCmd}>

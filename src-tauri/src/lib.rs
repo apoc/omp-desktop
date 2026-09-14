@@ -6,6 +6,7 @@
 
 mod agent;
 mod approval;
+mod files;
 mod git;
 mod git_watcher;
 mod json_store;
@@ -200,6 +201,23 @@ fn parse_rule_scope(scope: &str) -> Result<approval::RuleScope, String> {
     }
 }
 
+/// List project-relative file/directory paths matching `query`, for the
+/// composer's `@`-mention autocomplete.
+///
+/// Runs `async` + `spawn_blocking`: `files::list` walks the filesystem
+/// (bounded, but still blocking I/O), which can stall the webview if run
+/// on Tauri's main command thread.
+#[tauri::command]
+async fn list_project_files(
+    cwd: String,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<files::FileHit>, String> {
+    tauri::async_runtime::spawn_blocking(move || files::list(&cwd, &query, limit))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+}
+
 /// Native folder picker — returns the chosen path or null.
 ///
 /// On macOS, `AppKit` requires all `NSOpenPanel` calls to originate from
@@ -353,6 +371,7 @@ pub fn run() {
             workspace_diff,
             workspace_accept,
             workspace_reject,
+            list_project_files,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

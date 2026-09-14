@@ -82,3 +82,31 @@
 .slash-row:last-child { border-bottom: 0; }
 .slash-glyph { width: 18px; color: var(--fg-3); font-family: var(--font-mono); }
 
+/* @-mention file-path autocomplete pop */
+.mention-pop {
+  position: absolute;
+  bottom: calc(100% - 4px);
+  left: 16px; right: 16px;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-bright);
+  border-radius: 10px;
+  box-shadow: var(--shadow-pop);
+  z-index: 20;
+  animation: slideIn 180ms var(--ease-out);
+}
+.mention-row {
+  width: 100%;
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px;
+  font-size: var(--d-text-sm);
+  background: transparent;
+  border: 0;
+  text-align: left;
+  border-bottom: 1px solid var(--line-soft);
+}
+.mention-row:hover { background: var(--bg-hover); }
+.mention-row.active { background: var(--bg-hover); }
+.mention-row:last-child { border-bottom: 0; }
+
