@@ -421,6 +421,23 @@
 .ask-opt.dimmed { opacity: 0.3; }
 .ask-opt:disabled { cursor: default; }
 
+.ask-approval-rules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.ask-opt.ask-remember {
+  font-size: var(--d-text-xs);
+  color: var(--fg-3);
+  border-style: dashed;
+}
+.ask-opt.ask-remember:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 8%, var(--bg-elevated));
+}
+
 .ask-other {
   display: flex;
   gap: 8px;
@@ -465,4 +482,37 @@
   font-size: var(--d-text-sm);
   color: var(--accent);
   padding: 5px 0;
+}
+
+/* Confirm dialog body text */
+.ask-confirm-message {
+  font-size: var(--d-text-sm);
+  color: var(--fg-2);
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+/* Editor dialog textarea */
+.ask-editor-textarea {
+  width: 100%;
+  appearance: none;
+  border: 1px solid var(--line-bright);
+  background: var(--bg-input);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--d-text-sm);
+  padding: 8px 10px;
+  border-radius: var(--r-2);
+  outline: none;
+  resize: vertical;
+  margin-top: 6px;
+  transition: border-color 120ms;
+}
+.ask-editor-textarea:focus { border-color: color-mix(in oklab, var(--amber) 50%, var(--line)); }
+.ask-editor-textarea:disabled { opacity: 0.6; cursor: default; }
+
+.ask-editor-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
 }

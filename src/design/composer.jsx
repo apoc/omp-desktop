@@ -100,7 +100,8 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
       if (e.key === "Escape")     { e.preventDefault(); setText(""); return; }
       if (e.key === "Tab")        { e.preventDefault(); setActiveIdx(i => (i + 1) % filtered.length); return; }
     }
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); return; }
+    // isSubmitEnter (app/constants.js) owns the IME-composition guard.
+    if (isSubmitEnter(e) && !e.shiftKey) { e.preventDefault(); send(); return; }
     if (e.key === "Escape" && isStreaming) { onAbort(); return; }
     if (e.key === "k" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onOpenCmd(); }
   };

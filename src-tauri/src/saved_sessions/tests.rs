@@ -44,6 +44,25 @@ fn parses_session_file_with_fallback_title() {
 }
 
 #[test]
+fn parse_session_file_prefers_filename_uuid_over_stale_body_id() {
+    let dir = make_test_dir("filename_uuid");
+    let file_path = dir.join("2026-09-12T18-16-44-966Z_01a096d6-0aa6-75d7-804c-088913a441e6.jsonl");
+    write_jsonl(
+        &file_path,
+        &[
+            r#"{"type":"title","v":1,"title":""}"#,
+            r#"{"type":"session","version":3,"id":"stale-body-id","timestamp":"2026-09-12T18:16:44.966Z","cwd":"/test/project"}"#,
+            r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}"#,
+        ],
+    );
+
+    let session = parse_session_file(&file_path).expect("parsed session");
+    assert_eq!(session.id, "01a096d6-0aa6-75d7-804c-088913a441e6");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn parses_session_file_with_explicit_title() {
     let dir = make_test_dir("explicit");
     let file_path = dir.join("test_explicit.jsonl");
@@ -246,4 +265,34 @@ fn validate_resume_rejects_path_outside_root() {
 
     let _ = fs::remove_dir_all(&root);
     let _ = fs::remove_dir_all(&outside_dir);
+}
+
+#[test]
+fn canonical_id_from_stem_extracts_uuid_from_real_shaped_filename() {
+    let path = Path::new(
+        "/home/user/.omp/agent/sessions/-devel-project/\
+         2026-09-12T18-16-44-966Z_01a096d6-0aa6-75d7-804c-088913a441e6.jsonl",
+    );
+    assert_eq!(
+        canonical_id_from_stem(path),
+        Some("01a096d6-0aa6-75d7-804c-088913a441e6")
+    );
+}
+
+#[test]
+fn canonical_id_from_stem_returns_none_without_underscore() {
+    let path = Path::new("sess-123.jsonl");
+    assert_eq!(canonical_id_from_stem(path), None);
+}
+
+#[test]
+fn canonical_id_from_stem_returns_none_for_invalid_uuid_characters() {
+    // Trailing component contains a space, which is not a valid uuid character.
+    let path = Path::new("2026-09-12T18-16-44-966Z_not a valid uuid.jsonl");
+    assert_eq!(canonical_id_from_stem(path), None);
+
+    // Trailing component contains a disallowed separator character.
+    let path_with_slash_like_char =
+        Path::new("2026-09-12T18-16-44-966Z_01a096d6@0aa6-75d7-804c-088913a441e6.jsonl");
+    assert_eq!(canonical_id_from_stem(path_with_slash_like_char), None);
 }

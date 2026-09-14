@@ -1,0 +1,181 @@
+{
+  "id": "evidence-1",
+  "type": "response",
+  "command": "get_state",
+  "success": true,
+  "data": {
+    "model": {
+      "id": "qwen3.8-flash-next",
+      "name": "qwen3.8-flash-next",
+      "api": "openai-completions",
+      "provider": "vllm",
+      "baseUrl": "http://127.0.0.1:8000/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 524288,
+      "maxTokens": null,
+      "identity": {
+        "class": "qwen",
+        "revision": "3.8.0"
+      },
+      "requiresGlyphTokenization": false,
+      "tokenizer": "qwen3",
+      "thinking": {
+        "mode": "effort",
+        "efforts": [
+          "low",
+          "medium",
+          "<+1 more>"
+        ],
+        "requiresEffort": true
+      },
+      "supportsComputerUse": false,
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "supportsMultipleSystemMessages": false,
+        "supportsReasoningEffort": true,
+        "supportsReasoningParams": true,
+        "supportsSamplingParams": true,
+        "supportsPenaltyAndStopParams": true,
+        "reasoningEffortMap": {},
+        "supportsUsageInStreaming": true,
+        "alwaysSendMaxTokens": false,
+        "disableReasoningOnForcedToolChoice": false,
+        "disableReasoningOnToolChoice": false,
+        "supportsToolChoice": true,
+        "supportsForcedToolChoice": true,
+        "supportsNamedToolChoice": true,
+        "maxTokensField": "max_completion_tokens",
+        "requiresToolResultName": false,
+        "requiresAssistantAfterToolResult": false,
+        "requiresThinkingAsText": false,
+        "requiresMistralToolIds": false,
+        "thinkingFormat": "qwen-chat-template",
+        "reasoningDisableMode": "qwen-template-false",
+        "omitReasoningEffort": false,
+        "includeEncryptedReasoning": true,
+        "filterReasoningHistory": false,
+        "reasoningContentField": "reasoning_content",
+        "requiresReasoningContentForToolCalls": false,
+        "requiresReasoningContentForAllAssistantTurns": false,
+        "allowsSyntheticReasoningContentForToolCalls": true,
+        "replayReasoningContent": true,
+        "qwenPreserveThinking": true,
+        "qwenTemplateReasoningEffort": true,
+        "requiresAssistantContentForToolCalls": false,
+        "supportsPromptCacheBreakpoints": false,
+        "isOpenRouterHost": false,
+        "wireModelIdMode": "raw",
+        "isVercelGatewayHost": false,
+        "supportsStrictMode": false,
+        "toolStrictMode": "mixed",
+        "toolSchemaFlavor": "grammar",
+        "streamFirstEventTimeoutMs": 0,
+        "streamIdleTimeoutMs": 300000,
+        "stripDeepseekSpecialTokens": false,
+        "streamMarkupHealingPattern": "thinking",
+        "reasoningDeltasMayBeCumulative": false,
+        "emptyLengthFinishIsContextError": false,
+        "usesOpenAIToolCallIdLimit": false,
+        "dropThinkingWhenReasoningEffort": false,
+        "nativeKimiK3Reasoning": false,
+        "zaiReasoningEffortDialect": false,
+        "clampOutputToModelMax": false,
+        "stripImageInput": false,
+        "rejectRootObjectUnion": false,
+        "retryWithoutStrictOnGrammarError": false,
+        "supportsPromptCacheKey": false
+      }
+    },
+    "thinkingLevel": "medium",
+    "isStreaming": false,
+    "isCompacting": false,
+    "steeringMode": "one-at-a-time",
+    "followUpMode": "one-at-a-time",
+    "interruptMode": "immediate",
+    "sessionFile": "<string:117>",
+    "sessionId": "01a09c0c-f56b-7118-b1e7-e285fe757e6b",
+    "autoCompactionEnabled": true,
+    "queuedMessageCount": 0,
+    "todoPhases": [],
+    "fastModeEnabled": false,
+    "tokensPerSecond": null,
+    "fastModeActive": false,
+    "messageCount": 0,
+    "systemPrompt": [
+      "<string:18074>",
+      "<string:14334>"
+    ],
+    "dumpTools": [
+      {
+        "name": "read",
+        "description": "<string:3148>",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "<string:92>"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "bash",
+        "description": "<string:1623>",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "env": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "timeout": {
+              "type": "number",
+              "description": "<string:89>"
+            },
+            "cwd": {
+              "type": "string"
+            },
+            "pty": {
+              "type": "boolean"
+            },
+            "async": {
+              "type": "boolean",
+              "description": "run in background"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "<+11 more>"
+    ],
+    "contextUsage": {
+      "tokens": 19727,
+      "contextWindow": 524288,
+      "percent": 3.7626266479492188
+    }
+  }
+}

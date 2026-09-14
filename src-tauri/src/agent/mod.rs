@@ -5,15 +5,21 @@
 //! exit (clean or otherwise) is announced as `agent://exit/{session_id}`.
 //!
 //! Submodules:
-//! - [`inner`]  — `BridgeInner` per-session record (generation token,
-//!   per-stdin mutex, child handle).
-//! - [`spawn`]  — `spawn_omp` candidate-list resolution + Windows
+//! - [`inner`]      — `BridgeInner` per-session record (generation token,
+//!   per-stdin mutex, child handle, event journal, process supervisor).
+//! - [`spawn`]      — `spawn_omp` candidate-list resolution + Windows
 //!   `CREATE_NO_WINDOW` flag.
-//! - [`reader`] — stdout/stderr reader threads + bounded `read_until_capped`.
+//! - [`reader`]     — stdout/stderr reader threads, bounded
+//!   `read_until_capped`, and credential redaction.
+//! - [`journal`]    — bounded per-session event ring + replay.
+//! - [`supervisor`] — process-tree kill (Job Object / process group) so a
+//!   stopped session can't leak subagent/tool-call descendants.
 
 mod inner;
+pub mod journal;
 mod reader;
 mod spawn;
+mod supervisor;
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -23,8 +29,49 @@ use std::thread;
 use tauri::AppHandle;
 
 use inner::BridgeInner;
+use journal::{EventJournal, Replay};
 use reader::{spawn_stderr_reader, spawn_stdout_reader};
 use spawn::spawn_omp;
+
+/// Ring capacity for each session's event journal. 256 lines is generous
+/// headroom for the gap between a tab losing its live listener and
+/// regaining it (background tab switch) without holding unbounded memory
+/// for a long-idle session.
+const EVENT_JOURNAL_CAPACITY: usize = 256;
+
+/// Total byte budget for one session's event journal. Bounds the ring by
+/// size as well as entry count: a single RPC line may be up to
+/// `reader::MAX_LINE_BYTES` (16 MiB), so 256 entries alone would permit
+/// gigabytes of resident memory per open tab. 8 MiB comfortably holds a
+/// normal background-tab gap while capping the pathological case.
+const EVENT_JOURNAL_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// `type` values the frontend may legitimately send over `send_command`.
+/// Anything else is rejected before it reaches omp's stdin — hardens the
+/// boundary against a renderer bug (or a script running under the CSP's
+/// `'unsafe-eval'` allowance) forwarding an unintended or malformed
+/// command. Kept in sync with every `_send`/`_sendWithResponse` call site
+/// in `src/live.js`.
+const ALLOWED_COMMAND_TYPES: &[&str] = &[
+    "extension_ui_response",
+    "get_session_stats",
+    "get_state",
+    "get_messages",
+    "get_available_models",
+    "negotiate_protocol",
+    "prompt",
+    "abort",
+    "follow_up",
+    "steer",
+    "set_model",
+    "cycle_model",
+    "cycle_thinking_level",
+    "compact",
+    "new_session",
+    "export_html",
+    "get_login_providers",
+    "login",
+];
 
 /// Manages one omp process per tab session.
 ///
@@ -62,14 +109,20 @@ impl AgentBridge {
     /// background thread so this never blocks. On spawn failure the
     /// error string is cached so subsequent `send` / `session_status`
     /// calls can surface the real reason.
+    ///
+    /// `rule_book` is consulted (and its session-scope entry populated on
+    /// `stop_session`/replacement) so a granted tool-approval rule can
+    /// auto-answer matching prompts for this session — see
+    /// `reader::try_auto_approve`.
     pub fn start_session(
         &self,
         session_id: String,
         cwd: Option<&str>,
         resume: Option<&str>,
         app: AppHandle,
+        rule_book: Arc<crate::approval::RuleBook>,
     ) -> Result<(), String> {
-        let mut child = match spawn_omp(cwd, resume) {
+        let (mut child, supervisor) = match spawn_omp(cwd, resume) {
             Ok(c) => c,
             Err(e) => {
                 self.cache_error(&session_id, e.clone());
@@ -80,6 +133,12 @@ impl AgentBridge {
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
         let stdin_arc = Arc::new(Mutex::new(stdin));
+        let stdin_for_reader = stdin_arc.clone();
+        let journal = Arc::new(Mutex::new(EventJournal::new(
+            EVENT_JOURNAL_CAPACITY,
+            EVENT_JOURNAL_MAX_BYTES,
+        )));
+        let project_root = cwd.filter(|c| !c.is_empty()).map(std::path::PathBuf::from);
         let gen = self.next_gen.fetch_add(1, Ordering::SeqCst);
 
         // Atomic install: drop any previous BridgeInner under the lock,
@@ -95,31 +154,38 @@ impl AgentBridge {
                     gen,
                     stdin: Some(stdin_arc),
                     child: Some(child),
+                    supervisor: Some(supervisor),
+                    journal: journal.clone(),
                 },
             )
         };
-        if let Some(mut prev) = prev {
-            prev.stdin = None;
-            if let Some(mut c) = prev.child.take() {
-                // Reap off-thread so the Tauri command thread is never
-                // blocked by a stuck process.
-                thread::spawn(move || {
-                    let _ = c.kill();
-                    let _ = c.wait();
-                });
-            }
+        if let Some(prev) = prev {
+            reap_and_clear_grants(&session_id, prev, &rule_book);
         }
 
         // Successful spawn — clear any cached error from a previous
         // failed attempt for this id.
         self.clear_error(&session_id);
 
-        spawn_stdout_reader(self.sessions.clone(), session_id.clone(), gen, app, stdout);
+        spawn_stdout_reader(reader::StdoutReaderConfig {
+            sessions: self.sessions.clone(),
+            sid: session_id.clone(),
+            gen,
+            journal,
+            stdin: stdin_for_reader,
+            rule_book,
+            project_root,
+            app,
+            stdout,
+        });
         spawn_stderr_reader(session_id, stderr);
         Ok(())
     }
 
-    pub fn stop_session(&self, session_id: &str) {
+    /// Kills the session's process tree and drops its session-scoped
+    /// approval grants (`rule_book.clear_session`) — those must not
+    /// silently apply to whatever process later reuses this session id.
+    pub fn stop_session(&self, session_id: &str, rule_book: &crate::approval::RuleBook) {
         let removed = {
             // Best-effort cleanup: silently bail on a poisoned lock
             // rather than panicking. The map is only readable in error
@@ -129,25 +195,35 @@ impl AgentBridge {
             };
             s.remove(session_id)
         };
-        if let Some(mut inner) = removed {
-            inner.stdin = None;
-            if let Some(mut c) = inner.child.take() {
-                thread::spawn(move || {
-                    let _ = c.kill();
-                    let _ = c.wait();
-                });
-            }
+        if let Some(inner) = removed {
+            reap_and_clear_grants(session_id, inner, rule_book);
+        } else {
+            // No live session to reap, but stale grants for this id must
+            // still go — `reap_and_clear_grants` would have done it.
+            rule_book.clear_session(session_id);
         }
         self.clear_error(session_id);
     }
 
-    /// Write a JSON line to the session's stdin. The map lock is held only
-    /// long enough to clone the per-session stdin Arc; the actual write
-    /// happens without the map lock so a blocked pipe never deadlocks
-    /// concurrent management calls. If the session isn't running, the
-    /// cached startup error (if any) takes precedence over a generic
-    /// "session not found" so the frontend gets the real reason.
+    /// Write a JSON line to the session's stdin. The `type` field is
+    /// checked against [`ALLOWED_COMMAND_TYPES`] before anything reaches
+    /// the child process — a renderer bug or injected script can only ever
+    /// forward commands the frontend legitimately sends today. The map
+    /// lock is held only long enough to clone the per-session stdin Arc;
+    /// the actual write happens without the map lock so a blocked pipe
+    /// never deadlocks concurrent management calls. If the session isn't
+    /// running, the cached startup error (if any) takes precedence over a
+    /// generic "session not found" so the frontend gets the real reason.
     pub fn send(&self, session_id: &str, line: &str) -> Result<(), String> {
+        // Strip any trailing CR/LF the caller appended. The omp RPC parser
+        // is line-framed — a stray blank line corrupts the stream and a
+        // newline embedded inside `line` would split one logical message
+        // across two frames. We only handle the trailing case here; the
+        // frontend is responsible for not embedding raw newlines in JSON
+        // (which is invalid JSON anyway).
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        validate_command_type(trimmed)?;
+
         let stdin_arc = {
             let s = self
                 .sessions
@@ -163,14 +239,6 @@ impl AgentBridge {
             }
         };
         let stdin_arc = stdin_arc.ok_or_else(|| "agent not running".to_string())?;
-
-        // Strip any trailing CR/LF the caller appended. The omp RPC parser
-        // is line-framed — a stray blank line corrupts the stream and a
-        // newline embedded inside `line` would split one logical message
-        // across two frames. We only handle the trailing case here; the
-        // frontend is responsible for not embedding raw newlines in JSON
-        // (which is invalid JSON anyway).
-        let trimmed = line.trim_end_matches(['\r', '\n']);
 
         let mut stdin = stdin_arc
             .lock()
@@ -189,6 +257,30 @@ impl AgentBridge {
             return None;
         };
         errs.get(session_id).cloned()
+    }
+
+    /// Events a session's frontend hasn't seen yet, per its bounded
+    /// journal. Used on tab reactivation to recover state (tool cards, ask
+    /// bubbles, streaming progress) that arrived while no listener was
+    /// attached — `get_messages` alone only recovers persisted text.
+    pub fn replay_events(&self, session_id: &str, after_seq: u64) -> Result<Replay, String> {
+        let journal_arc = {
+            let s = self
+                .sessions
+                .lock()
+                .map_err(|_| "lock poisoned".to_string())?;
+            let inner = s
+                .get(session_id)
+                .ok_or_else(|| format!("session '{session_id}' not found"))?;
+            let journal = inner.journal.clone();
+            drop(s);
+            journal
+        };
+        let replay = journal_arc
+            .lock()
+            .map_err(|_| "journal lock poisoned".to_string())?
+            .since(after_seq);
+        Ok(replay)
     }
 
     fn cache_error(&self, session_id: &str, err: String) {
@@ -219,7 +311,147 @@ impl Drop for AgentBridge {
                     let _ = c.kill();
                     let _ = c.wait();
                 }
+                // `inner.supervisor` is left untouched here (unlike
+                // start_session/stop_session, which move it off-thread) —
+                // this whole path only runs on app shutdown, where blocking
+                // briefly is acceptable; `inner` (and its supervisor) drops
+                // automatically at the end of this loop body, which kills
+                // the rest of the process tree via `ProcessSupervisor::Drop`.
             }
         }
+    }
+}
+
+/// Reap `prev`'s process tree off-thread (so the Tauri command thread is
+/// never blocked by a stuck process) and drop its session-scoped
+/// approval grants. A session id being replaced means a brand-new
+/// process is taking over; whatever the previous occupant's user was
+/// granted (e.g. "always allow bash for this session") must not
+/// silently carry over and auto-approve prompts the new process never
+/// actually got consent for. Used for both halves of a session's life:
+/// [`AgentBridge::stop_session`] tearing one down, and `start_session`
+/// displacing a previous occupant of the same id. Extracted as its own
+/// function so this is unit-testable without spawning a real child
+/// process or a Tauri `AppHandle`.
+fn reap_and_clear_grants(
+    session_id: &str,
+    mut prev: BridgeInner,
+    rule_book: &crate::approval::RuleBook,
+) {
+    rule_book.clear_session(session_id);
+    prev.stdin = None;
+    let prev_supervisor = prev.supervisor.take();
+    if let Some(mut c) = prev.child.take() {
+        // The supervisor moves in too: its Drop kills the whole tree
+        // (subagents, tool-call children) before the direct
+        // child.kill()/wait() below reaps the now-dead process's zombie
+        // entry.
+        thread::spawn(move || {
+            drop(prev_supervisor);
+            let _ = c.kill();
+            let _ = c.wait();
+        });
+    }
+}
+
+/// Parse `trimmed` as JSON, require a string `type` field, and check it
+/// against [`ALLOWED_COMMAND_TYPES`]. Extracted as a pure function so the
+/// validation logic is unit-testable without a running child process.
+fn validate_command_type(trimmed: &str) -> Result<(), String> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(trimmed).map_err(|_| "command is not valid JSON".to_string())?;
+    let cmd_type = parsed
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "command missing string 'type' field".to_string())?;
+    if ALLOWED_COMMAND_TYPES.contains(&cmd_type) {
+        Ok(())
+    } else {
+        Err(format!("command type '{cmd_type}' is not allowed"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_command_type_accepts_every_allowed_type() {
+        for ty in ALLOWED_COMMAND_TYPES {
+            let line = format!(r#"{{"type":"{ty}"}}"#);
+            assert!(
+                validate_command_type(&line).is_ok(),
+                "{ty} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_command_type_rejects_unknown_type() {
+        let err =
+            validate_command_type(r#"{"type":"switch_session","path":"/etc/passwd"}"#).unwrap_err();
+        assert!(err.contains("not allowed"));
+    }
+
+    #[test]
+    fn validate_command_type_rejects_malformed_json() {
+        let err = validate_command_type("not json").unwrap_err();
+        assert!(err.contains("not valid JSON"));
+    }
+
+    #[test]
+    fn validate_command_type_rejects_missing_type_field() {
+        let err = validate_command_type(r#"{"message":"hi"}"#).unwrap_err();
+        assert!(err.contains("missing string 'type'"));
+    }
+
+    #[test]
+    fn validate_command_type_rejects_non_string_type() {
+        let err = validate_command_type(r#"{"type":42}"#).unwrap_err();
+        assert!(err.contains("missing string 'type'"));
+    }
+
+    #[test]
+    fn replay_events_unknown_session_errors() {
+        let bridge = AgentBridge::new();
+        let err = bridge.replay_events("nope", 0).unwrap_err();
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn replacing_a_session_clears_its_rule_book_session_grants() {
+        let dir = std::env::temp_dir().join(format!(
+            "omp-desktop-agent-mod-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let rule_book = crate::approval::RuleBook::new(dir);
+        rule_book
+            .grant("sess-x", None, "bash", crate::approval::RuleScope::Session)
+            .unwrap();
+        assert!(rule_book.is_granted("sess-x", None, "bash"));
+
+        // Same shape `start_session` inserts on a fresh spawn — a session
+        // with id "sess-x" being replaced without an intervening
+        // `stop_session`.
+        let prev = BridgeInner {
+            gen: 1,
+            stdin: None,
+            child: None,
+            supervisor: None,
+            journal: Arc::new(Mutex::new(EventJournal::new(
+                EVENT_JOURNAL_CAPACITY,
+                EVENT_JOURNAL_MAX_BYTES,
+            ))),
+        };
+        reap_and_clear_grants("sess-x", prev, &rule_book);
+
+        assert!(
+            !rule_book.is_granted("sess-x", None, "bash"),
+            "replacing a session must drop its previous occupant's session-scoped grants"
+        );
     }
 }
