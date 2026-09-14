@@ -100,7 +100,7 @@ installed at `%LOCALAPPDATA%\omp\omp.exe` and added to PATH by the installer.
 
 ```bash
 # Clone
-git clone https://github.com/yourname/omp-desktop
+git clone https://github.com/apoc/omp-desktop
 cd omp-desktop
 
 # Install Tauri CLI (dev dependency only)
@@ -150,6 +150,7 @@ omp-desktop/
 │       │   ├── assistant-bubble.jsx # AssistantBubble + InlinePlan
 │       │   ├── eval-cell.jsx        # Syntax-highlighted kernel cell
 │       │   ├── tool-card.jsx        # ToolCard + ScrubbableDiff
+│       │   ├── ask-bubble.jsx       # Interactive extension_ui_request prompts
 │       │   └── chat-view.jsx        # Auto-scroll wiring + bubble routing
 │       ├── tweaks/
 │       │   ├── style.js             # __TWEAKS_STYLE template
@@ -167,6 +168,7 @@ omp-desktop/
 │       ├── chrome.jsx               # WindowChrome, TabBar, StatusBar, AmbientRail, SessionMinimap
 │       ├── composer.jsx             # Composer + CommandBridge (⌘K palette)
 │       ├── panels.jsx               # PlanKanban (kanban view)
+│       ├── history-modal.jsx        # Conversation history modal & session resume
 │       ├── layout.css               # Single @import → layout/_index.css
 │       └── styles.css               # Visual tokens (colours, spacing, type)
 │
@@ -174,6 +176,11 @@ omp-desktop/
 │   ├── src/
 │   │   ├── main.rs             # Binary entry point
 │   │   ├── lib.rs              # Tauri setup, command registration
+│   │   ├── git.rs              # Git helpers (current branch lookup)
+│   │   ├── git_watcher.rs      # Filesystem HEAD watcher → git-branch-changed events
+│   │   ├── saved_sessions/     # On-disk session history listing
+│   │   │   ├── mod.rs
+│   │   │   └── tests.rs
 │   │   └── agent/              # AgentBridge module
 │   │       ├── mod.rs              # Public surface: AgentBridge struct + impl
 │   │       ├── inner.rs            # BridgeInner per-session record
@@ -218,6 +225,9 @@ The frontend communicates with `omp` exclusively through the Tauri IPC bridge.
 | `compact` | User runs `/compact` |
 | `export_html` | User runs `/export` |
 | `get_session_stats` | After each `turn_end` |
+| `new_session` | User runs `/new` |
+| `follow_up` | User sends a message while idle |
+| `steer` | User sends a message mid-turn |
 | `extension_ui_response` | Auto-cancel for interactive UI requests |
 
 ### Events received (stdout → frontend)
@@ -231,6 +241,7 @@ The frontend communicates with `omp` exclusively through the Tauri IPC bridge.
 | `message_end` | Finalises bubble (`streaming: false`) |
 | `tool_execution_start` | Creates running tool card |
 | `tool_execution_end` | Finalises tool card with result/diff/output |
+| `tool_execution_update` | Live-updates a running tool card's streamed output |
 | `extension_ui_request` | Interactive types auto-cancelled; others ignored |
 | `agent_start` / `agent_end` | Re-fetches session state |
 
@@ -266,11 +277,15 @@ below `max-height: 60vh` and invisible without scrolling. Models now render firs
 
 | Command | Signature | Description |
 |---------|-----------|-------------|
-| `start_session`   | `(sessionId: String, cwd: String) → Result<()>` | Spawn omp for a new tab session (`cwd: ""` = omp default) |
+| `start_session`   | `(sessionId: String, cwd: String, resume: Option<String>) → Result<()>` | Spawn omp for a new tab session (`cwd: ""` = omp default; `resume` replays a saved session id) |
 | `stop_session`    | `(sessionId: String) → ()`                       | Kill that tab's omp process and reap it off-thread |
 | `send_command`    | `(sessionId: String, json: String) → Result<()>`| Write a JSON line to that session's omp stdin |
 | `session_status`  | `(sessionId: String) → Option<String>`           | Returns cached startup error if the last `start_session` failed |
 | `open_project`    | `() → Result<Option<String>>`                   | Native folder picker dialog |
+| `list_saved_sessions` | `(cwd: Option<String>) → Result<Vec<SavedSession>>` | Lists persisted sessions from `~/.omp/agent/sessions` for the history panel |
+| `start_git_watch` | `(sessionId: String, path: String) → Option<String>` | Arms a HEAD filesystem watcher for a tab; returns the current branch |
+| `stop_git_watch`  | `(sessionId: String) → ()`                       | Stops that tab's HEAD watcher |
+| `open_url_external` | `(url: String) → Result<(), String>`           | Opens a URL in the system browser (OAuth flows) |
 
 ---
 
