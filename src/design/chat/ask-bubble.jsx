@@ -72,7 +72,7 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, on
   };
 
   const handleKey = (e) => {
-    if (e.key === "Enter" && !e.nativeEvent?.isComposing && e.keyCode !== 229 && custom.trim()) {
+    if (isSubmitEnter(e) && custom.trim()) {
       e.preventDefault();
       submit(custom.trim());
     }
@@ -137,7 +137,7 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, on
             disabled={done}
             onChange={e => setDraft(e.target.value)}
             onKeyDown={e => {
-              if (e.key === "Enter" && !e.nativeEvent?.isComposing && e.keyCode !== 229 && draft.trim()) { e.preventDefault(); submit(draft); }
+              if (isSubmitEnter(e) && draft.trim()) { e.preventDefault(); submit(draft); }
             }}
           />
           {!done && (

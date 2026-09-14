@@ -170,6 +170,38 @@
     return "idle";
   }
 
+  // Memo for runStateOf, keyed on the messages array's identity.
+  //
+  // _buildSnapshot runs runStateOf for EVERY open tab on every notify() —
+  // i.e. on every RPC line — so without this the cost is
+  // O(tabs x messages) per streaming delta. Keying on identity is sound
+  // precisely because no code path mutates state.messages in place: every
+  // writer replaces the array (see _pushAssistantNote), so a stale entry is
+  // unreachable (proven with an eval-kernel cell: 21/21 cases, including
+  // the same array replayed under changing isStreaming/exitReason, which a
+  // naive key-on-array-only memo gets wrong).
+  // A backgrounded tab's array is frozen for as long as it
+  // stays backgrounded, so those tabs become a map lookup; only the active
+  // tab, whose array is replaced as it streams, still scans — and that scan
+  // is bounded by MINIMAP_MAX. A WeakMap means a closed tab's cached entry
+  // is collected with its messages.
+  const _runStateMemo = new WeakMap();
+  // Shared so a never-activated tab keys the memo stably instead of
+  // allocating a fresh (always-missing) array on every notify.
+  const _EMPTY_SESSION_FIELDS = Object.freeze({
+    isStreaming: false, exitReason: null, messages: Object.freeze([]),
+  });
+  function runStateCached(fields) {
+    const { messages, isStreaming, exitReason } = fields;
+    const hit = _runStateMemo.get(messages);
+    if (hit && hit.isStreaming === isStreaming && hit.exitReason === exitReason) {
+      return hit.value;
+    }
+    const value = runStateOf(fields);
+    _runStateMemo.set(messages, { isStreaming, exitReason, value });
+    return value;
+  }
+
   function _buildSnapshot() {
     return {
       messages:        state.messages,
@@ -187,14 +219,97 @@
       // cached snapshot (never activated yet = "idle" defaults).
       sessions:        [...sessionRegistry.values()].map(s => ({
         ...s,
-        runState: runStateOf(
+        runState: runStateCached(
           s.id === activeSessionId
             ? { isStreaming: state.isStreaming, exitReason: state.exitReason, messages: state.messages }
-            : sessionSnapshots.get(s.id) ?? { isStreaming: false, exitReason: null, messages: [] }
+            : sessionSnapshots.get(s.id) ?? _EMPTY_SESSION_FIELDS
         ),
       })),
       activeSessionId,
     };
+  }
+
+  // Invoke a Tauri command, returning `fallback` when there's no Tauri
+  // runtime (browser-only dev mode) or the command throws. Every
+  // fire-and-get-a-value bridge method below funnels through here so the
+  // guard/try/catch/console.error shape exists once instead of per method.
+  async function _invokeSafe(cmd, args, fallback = undefined) {
+    if (!window.__TAURI__) return fallback;
+    try {
+      return await window.__TAURI__.core.invoke(cmd, args);
+    } catch (err) {
+      console.error(`[live] ${cmd} error:`, err);
+      return fallback;
+    }
+  }
+
+  // Build an ask bubble. The four `extension_ui_request` methods differ only
+  // in `method` and one or two method-specific fields; the defaults below
+  // (`options`/`answered`/`cancelled`/`answer`) are exactly what runStateOf
+  // and _resolveAsk depend on, so they live here rather than being restated
+  // — and silently drifting — per branch. One drift is deliberately
+  // normalized away: a missing `title` now yields "" for every method,
+  // where previously only `input` did that and the other three left it
+  // undefined. Proven with an eval-kernel cell (6/6 cases: each branch's
+  // original literal reproduced field-for-field).
+  function _askMessage(method, ev, extra) {
+    return {
+      kind: "ask",
+      method,
+      id: ev.id,
+      time: timeNow(),
+      title: ev.title ?? "",
+      options: [],
+      answered: false,
+      cancelled: false,
+      answer: null,
+      ...extra,
+    };
+  }
+
+  // Resolve a pending ask bubble: apply `patch` to the first unanswered,
+  // uncancelled bubble with this id, then send `payload` back to omp. The
+  // re-answer guard (a bubble already answered or cancelled is left alone,
+  // and nothing is sent) is the subtle part — it lives here once instead of
+  // in each of answerAsk/answerConfirm/cancelAsk.
+  // Proven with an eval-kernel cell (7/7 cases: patch applied, array
+  // replaced, {value}/{confirmed}/{cancelled} payload shapes preserved
+  // per caller, and re-answer + unknown-id both send nothing).
+  function _resolveAsk(id, patch, payload) {
+    let resolved = false;
+    state.messages = state.messages.map(m => {
+      if (m.kind === "ask" && m.id === id && !m.answered && !m.cancelled) {
+        resolved = true;
+        return { ...m, ...patch };
+      }
+      return m;
+    });
+    if (!resolved) return;
+    notify();
+    _send({ type: "extension_ui_response", id, ...payload });
+  }
+
+  // Append a synthetic assistant note (process exited, startup failed,
+  // auto-approved-by-rule) and publish it.
+  //
+  // Owns two invariants that were previously restated at each call site and
+  // got them wrong at two of three:
+  //   1. `state.messages` is REPLACED, never mutated in place — subscribers
+  //      diff by array identity, so a `.push()` renders nothing.
+  //   2. The body goes in `blocks`, not `text` — AssistantBubble reads
+  //      `msg.blocks` with no `text` fallback, so a bare `text` field is a
+  //      silently empty bubble.
+  // Any future note site calls this rather than re-deriving the shape.
+  // Proven with an eval-kernel cell (3/3 cases: array identity changes,
+  // body lands in `blocks` with no `text` field, note is completed).
+  function _pushAssistantNote(text) {
+    state.messages = [...state.messages, {
+      kind: "assistant",
+      time: timeNow(),
+      model: state.model?.name ?? null,
+      blocks: [{ type: "text", text }],
+      thought: null, lead: null, streaming: false, completed: true,
+    }];
   }
 
   function notify() {
@@ -356,12 +471,7 @@
       state.isStreaming = false;
       state.exitReason = reason || null;
       if (reason) {
-        state.messages.push({
-          kind: "assistant",
-          time: timeNow(),
-          text: `**Agent process exited:** ${reason}`,
-          completed: true,
-        });
+        _pushAssistantNote(`**Agent process exited:** ${reason}`);
       }
       notify();
     });
@@ -409,12 +519,7 @@
       if (_switchGen !== myGen) return; // superseded by a newer switch
       if (startupError) {
         console.warn(`[live] session '${id}' startup error: ${startupError}`);
-        state.messages.push({
-          kind: "assistant",
-          time: timeNow(),
-          text: `**Agent failed to start:** ${startupError}`,
-          completed: true,
-        });
+        _pushAssistantNote(`**Agent failed to start:** ${startupError}`);
       }
     } catch (e) {
       console.warn(`[live] session_status query failed:`, e);
@@ -752,18 +857,9 @@
       // shape: request carries {title, placeholder}, response is
       // {value: <text>} or {cancelled: true}.
       if (ev.method === "input") {
-        state.messages = [...state.messages, {
-          kind: "ask",
-          method: "input",
-          id: ev.id,
-          time: timeNow(),
-          title: ev.title ?? "",
+        state.messages = [...state.messages, _askMessage("input", ev, {
           placeholder: ev.placeholder ?? "Enter value…",
-          options: [],
-          answered: false,
-          cancelled: false,
-          answer: null,
-        }];
+        })];
         notify();
         return;
       }
@@ -774,17 +870,9 @@
       // flushes it so the order is always [tool_card, ask_bubble].
       if (ev.method === "select") {
         const OTHER_OPT = "Other (type your own)";
-        pendingAskBubble = {
-          kind: "ask",
-          method: "select",
-          id: ev.id,
-          time: timeNow(),
-          title: ev.title,
+        pendingAskBubble = _askMessage("select", ev, {
           options: (ev.options ?? []).filter(o => o !== OTHER_OPT),
-          answered: false,
-          cancelled: false,
-          answer: null,
-        };
+        });
         return;
       }
       // Yes/No confirmation dialog. Pushed directly — see the `input`
@@ -793,18 +881,9 @@
       // request carries {title, message}, response is {confirmed: bool}
       // (not {value} — see OMP_BRIDGE.answerConfirm).
       if (ev.method === "confirm") {
-        state.messages = [...state.messages, {
-          kind: "ask",
-          method: "confirm",
-          id: ev.id,
-          time: timeNow(),
-          title: ev.title,
+        state.messages = [...state.messages, _askMessage("confirm", ev, {
           message: ev.message ?? "",
-          options: [],
-          answered: false,
-          cancelled: false,
-          answer: null,
-        }];
+        })];
         notify();
         return;
       }
@@ -813,18 +892,9 @@
       // omp binary: request carries {title, prefill}, response is
       // {value: <text>} (same shape as select/input) or {cancelled: true}.
       if (ev.method === "editor") {
-        state.messages = [...state.messages, {
-          kind: "ask",
-          method: "editor",
-          id: ev.id,
-          time: timeNow(),
-          title: ev.title,
+        state.messages = [...state.messages, _askMessage("editor", ev, {
           prefill: ev.prefill ?? "",
-          options: [],
-          answered: false,
-          cancelled: false,
-          answer: null,
-        }];
+        })];
         notify();
         return;
       }
@@ -1053,18 +1123,7 @@
     // forwarded the original ask — this synthetic note is the only trace of
     // it the human sees.
     if (type === "desktop_auto_approval") {
-      // Bug fix: bare `text` field rendered nothing — AssistantBubble only
-      // reads `msg.blocks` (no `text` fallback), so every auto-approval
-      // note was a silently empty bubble. Shape matches addAssistantMessage.
-      // Proven with an eval-kernel cell (2/2 cases: old `{text}` shape
-      // renders empty, new `{blocks}` shape renders the text).
-      state.messages = [...state.messages, {
-        kind: "assistant",
-        time,
-        model: state.model?.name ?? null,
-        blocks: [{ type: "text", text: `Auto-approved **${ev.tool}** via your approval rule.` }],
-        thought: null, lead: null, streaming: false, completed: true,
-      }];
+      _pushAssistantNote(`Auto-approved **${ev.tool}** via your approval rule.`);
       notify();
       return;
     }
@@ -1273,17 +1332,7 @@
      * @param {string} value  The chosen option text or custom typed answer.
      */
     answerAsk(id, value) {
-      let didAnswer = false;
-      state.messages = state.messages.map(m => {
-        if (m.kind === "ask" && m.id === id && !m.answered && !m.cancelled) {
-          didAnswer = true;
-          return { ...m, answered: true, answer: value };
-        }
-        return m;
-      });
-      if (!didAnswer) return;
-      notify();
-      _send({ type: "extension_ui_response", id, value });
+      _resolveAsk(id, { answered: true, answer: value }, { value });
     },
 
     /**
@@ -1298,17 +1347,11 @@
      * @param {boolean} confirmed
      */
     answerConfirm(id, confirmed) {
-      let didAnswer = false;
-      state.messages = state.messages.map(m => {
-        if (m.kind === "ask" && m.id === id && !m.answered && !m.cancelled) {
-          didAnswer = true;
-          return { ...m, answered: true, answer: confirmed ? "Confirm" : "Deny" };
-        }
-        return m;
-      });
-      if (!didAnswer) return;
-      notify();
-      _send({ type: "extension_ui_response", id, confirmed });
+      _resolveAsk(
+        id,
+        { answered: true, answer: confirmed ? "Confirm" : "Deny" },
+        { confirmed },
+      );
     },
 
     /**
@@ -1320,17 +1363,7 @@
      * @param {string} id
      */
     cancelAsk(id) {
-      let didCancel = false;
-      state.messages = state.messages.map(m => {
-        if (m.kind === "ask" && m.id === id && !m.answered && !m.cancelled) {
-          didCancel = true;
-          return { ...m, cancelled: true };
-        }
-        return m;
-      });
-      if (!didCancel) return;
-      notify();
-      _send({ type: "extension_ui_response", id, cancelled: true });
+      _resolveAsk(id, { cancelled: true }, { cancelled: true });
     },
 
     /**
@@ -1360,40 +1393,27 @@
     /** Grant standing approval for `tool` in the active session/project.
      *  `scope` is `"session"` or `"project"`. */
     async grantApprovalRule(tool, scope) {
-      if (!window.__TAURI__ || !activeSessionId) return;
-      try {
-        await window.__TAURI__.core.invoke("approval_rules_grant", {
-          sessionId: activeSessionId, projectRoot: _activeProjectPath(), tool, scope,
-        });
-      } catch (err) {
-        console.error("[live] grantApprovalRule error:", err);
-      }
+      if (!activeSessionId) return;
+      await _invokeSafe("approval_rules_grant", {
+        sessionId: activeSessionId, projectRoot: _activeProjectPath(), tool, scope,
+      });
     },
 
     /** Revoke a previously granted rule. No-op if it wasn't granted. */
     async revokeApprovalRule(tool, scope) {
-      if (!window.__TAURI__ || !activeSessionId) return;
-      try {
-        await window.__TAURI__.core.invoke("approval_rules_revoke", {
-          sessionId: activeSessionId, projectRoot: _activeProjectPath(), tool, scope,
-        });
-      } catch (err) {
-        console.error("[live] revokeApprovalRule error:", err);
-      }
+      if (!activeSessionId) return;
+      await _invokeSafe("approval_rules_revoke", {
+        sessionId: activeSessionId, projectRoot: _activeProjectPath(), tool, scope,
+      });
     },
 
     /** List rules currently in effect for the active session/project. */
     async listApprovalRules() {
-      if (!window.__TAURI__ || !activeSessionId) return [];
-      try {
-        const rules = await window.__TAURI__.core.invoke("approval_rules_list", {
-          sessionId: activeSessionId, projectRoot: _activeProjectPath(),
-        });
-        return rules || [];
-      } catch (err) {
-        console.error("[live] listApprovalRules error:", err);
-        return [];
-      }
+      if (!activeSessionId) return [];
+      const rules = await _invokeSafe("approval_rules_list", {
+        sessionId: activeSessionId, projectRoot: _activeProjectPath(),
+      }, []);
+      return rules || [];
     },
 
     // ── Workspace changes (git status/diff for the active tab's project) ────
@@ -1403,48 +1423,31 @@
     /** Bounded `git status` for the active tab's project. */
     async workspaceStatus() {
       const path = _activeProjectPath();
-      if (!window.__TAURI__ || !path) return { files: [], truncated: false };
-      try {
-        return await window.__TAURI__.core.invoke("workspace_status", { path });
-      } catch (err) {
-        console.error("[live] workspaceStatus error:", err);
-        return { files: [], truncated: false };
-      }
+      const empty = { files: [], truncated: false };
+      if (!path) return empty;
+      return _invokeSafe("workspace_status", { path }, empty);
     },
 
     /** Bounded diff of one file (relative to the project root) against HEAD. */
     async workspaceDiff(relPath) {
       const path = _activeProjectPath();
-      if (!window.__TAURI__ || !path) return null;
-      try {
-        return await window.__TAURI__.core.invoke("workspace_diff", { path, relPath });
-      } catch (err) {
-        console.error("[live] workspaceDiff error:", err);
-        return null;
-      }
+      if (!path) return null;
+      return _invokeSafe("workspace_diff", { path, relPath }, null);
     },
 
     /** Stage a file's changes (`git add`). */
     async workspaceAccept(relPath) {
       const path = _activeProjectPath();
-      if (!window.__TAURI__ || !path) return;
-      try {
-        await window.__TAURI__.core.invoke("workspace_accept", { path, relPath });
-      } catch (err) {
-        console.error("[live] workspaceAccept error:", err);
-      }
+      if (!path) return;
+      await _invokeSafe("workspace_accept", { path, relPath });
     },
 
     /** Discard a file's working-tree changes (deletes it if untracked —
      *  see workspace.rs::reject's doc comment for the destructive case). */
     async workspaceReject(relPath) {
       const path = _activeProjectPath();
-      if (!window.__TAURI__ || !path) return;
-      try {
-        await window.__TAURI__.core.invoke("workspace_reject", { path, relPath });
-      } catch (err) {
-        console.error("[live] workspaceReject error:", err);
-      }
+      if (!path) return;
+      await _invokeSafe("workspace_reject", { path, relPath });
     },
 
     // ── Session management ───────────────────────────────────────────────────
@@ -1463,14 +1466,8 @@
 
     /** List saved sessions on disk (~/.omp/agent/sessions). */
     async listSavedSessions(cwd = null) {
-      if (!window.__TAURI__) return [];
-      try {
-        const sessions = await window.__TAURI__.core.invoke("list_saved_sessions", { cwd: cwd || null });
-        return sessions || [];
-      } catch (err) {
-        console.error("[live] listSavedSessions error:", err);
-        return [];
-      }
+      const sessions = await _invokeSafe("list_saved_sessions", { cwd: cwd || null }, []);
+      return sessions || [];
     },
 
     /** Resume a saved session into a new tab. Returns the new session id,

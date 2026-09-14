@@ -328,11 +328,11 @@ function App() {
       )}
 
       {changesOpen && (
-        <ChangesPanel open={changesOpen} onClose={() => setChangesOpen(false)} />
+        <ChangesPanel onClose={() => setChangesOpen(false)} />
       )}
 
       {rulesOpen && (
-        <ApprovalRulesPanel open={rulesOpen} onClose={() => setRulesOpen(false)} />
+        <ApprovalRulesPanel onClose={() => setRulesOpen(false)} />
       )}
 
       <TweaksPanel title="Tweaks" noDeckControls>

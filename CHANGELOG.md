@@ -25,8 +25,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Ask cards could be answered twice, or answered after the runtime had already cancelled/superseded them — `answerAsk` (and the new `answerConfirm`/`cancelAsk`) now only send a response when a matching still-open message is actually found, instead of unconditionally posting to stdin.
+- "Agent process exited" and "Agent failed to start" notices rendered as blank bubbles, hiding the reason a session died or never started (e.g. `omp` not on `PATH`). Both built the message with a `text` field, which `AssistantBubble` does not read (it renders `blocks` only), and appended it with `state.messages.push(...)`, which mutates the array in place so subscribers diffing by identity never re-rendered. Both notices — and the auto-approval notice — now go through one `_pushAssistantNote()` helper that owns the `blocks` shape and always replaces the array.
 
-## [0.1.3] - 2026-09-13
+### Changed
+
+- `git diff` for the Changes panel is now read through a bounded, early-stopping pipe instead of being buffered in full before the 256 KiB display cap applied — diffing a very large generated file no longer materializes the entire diff (plus a same-size copy) in memory just to discard it.
+- Per-line RPC overhead reduced on the stdout reader thread (the app's hottest path): credential-key matching no longer allocates a normalized `String` per JSON object key, a frame with nothing to redact is no longer re-serialized (the original bytes are forwarded as-is), and journaling a line shares it by refcount rather than copying it.
+- The per-session event journal is now bounded by total bytes (8 MiB) as well as entry count, so a session streaming large tool results can no longer pin `256 x 16 MiB` per open tab.
+- Tab run-state (running/waiting/idle/failed) is memoized per message-array identity, so a streaming delta no longer rescans every open tab's full message list on every RPC line.
 
 ### Added
 

@@ -12,11 +12,13 @@
 //!   staleness recovery, for guarding the read-modify-write cycle around a
 //!   shared file.
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
@@ -26,6 +28,22 @@ use sha2::{Digest, Sha256};
 /// Monotonic counter appended to temp file names so two writes from the same
 /// process land on different temp files even within the same millisecond.
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Destinations this process has already swept for orphan temp files.
+static SWEPT: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
+
+/// `true` the first time this process writes to `path` — the only time a
+/// pre-existing-orphan sweep can find anything. A poisoned lock answers
+/// `true` (sweep anyway): the sweep is best-effort and idempotent, so
+/// repeating it is always safe, whereas skipping it could leak files.
+fn first_write_to(path: &Path) -> bool {
+    let Ok(mut swept) = SWEPT.lock() else {
+        return true;
+    };
+    swept
+        .get_or_insert_with(HashSet::new)
+        .insert(path.to_path_buf())
+}
 
 /// Build the temp file path [`write_atomic`] uses for `path`: same directory,
 /// named `<file_name>.<pid>-<counter>.tmp`. Pulled out as a pure function so
@@ -48,9 +66,15 @@ fn temp_path_for(path: &Path) -> PathBuf {
 /// that replace step as atomic the way POSIX `rename(2)` is, so a crash
 /// exactly during the replace is not covered by the same guarantee there.
 ///
-/// Runs [`sweep_orphan_temp_files`] for `path`'s directory and file name
-/// first, best-effort, so temp files abandoned by a process that crashed
-/// mid-write on a previous run don't pile up forever.
+/// The **first** write to a given destination in this process also runs
+/// [`sweep_orphan_temp_files`] for `path`'s directory and file name,
+/// best-effort, so temp files abandoned by a process that crashed
+/// mid-write on a previous run don't pile up forever. Subsequent writes
+/// to the same destination skip it: the orphans it targets are those left
+/// by *earlier* runs, a set fixed before this process started, and this
+/// process removes its own temp file on every failure path below. Sweeping
+/// on every write would mean a full `read_dir` per write for a set that
+/// cannot have grown.
 ///
 /// # Errors
 /// Returns an error if the temp file can't be created/written/synced, or if
@@ -64,7 +88,9 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     if let Some(base) = path.file_name().and_then(|n| n.to_str()) {
-        let _ = sweep_orphan_temp_files(dir, base);
+        if first_write_to(path) {
+            let _ = sweep_orphan_temp_files(dir, base);
+        }
     }
 
     let temp_path = temp_path_for(path);
@@ -124,7 +150,7 @@ pub fn sweep_orphan_temp_files(dir: &Path, base_name: &str) -> io::Result<usize>
 /// snapshot ids are meant to be tamper-evident, so [`SnapshotRing::restore`]
 /// and [`SnapshotRing::restore_latest`] can detect on-disk corruption by
 /// simply re-hashing and comparing to the filename.
-fn hex_sha256(bytes: &[u8]) -> String {
+pub fn hex_sha256(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
@@ -135,13 +161,6 @@ fn hex_sha256(bytes: &[u8]) -> String {
 
 // ── snapshot ring ────────────────────────────────────────────────────────────
 
-/// Metadata sidecar written alongside each snapshot as `<id>.meta.json`.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct SnapshotMeta {
-    reason: String,
-    created_at: u64,
-}
-
 /// One snapshot's on-disk identity: content-hash id and last-modified time.
 /// Used to order candidates newest-first (`restore_latest`) and to pick
 /// prune victims oldest-first (`prune`).
@@ -151,10 +170,14 @@ struct SnapshotEntry {
 }
 
 /// A small content-addressed history of a file's past contents, kept as
-/// `<dir>/<hex_sha256>.json` plus a `<hex_sha256>.meta.json` sidecar
-/// recording why and when the snapshot was taken. After each new snapshot,
-/// entries beyond `retain` (oldest first, by file modified time) are pruned
-/// so the ring never grows without bound.
+/// `<dir>/<hex_sha256>.json`. After each new snapshot, entries beyond
+/// `retain` (oldest first, by file modified time) are pruned so the ring
+/// never grows without bound.
+///
+/// Ordering comes from each snapshot file's own mtime, so no metadata
+/// sidecar is written: a `<id>.meta.json` companion used to be, but
+/// nothing ever read it back. [`Self::prune`] still deletes any such file
+/// left over from an older version of this module.
 pub struct SnapshotRing {
     dir: PathBuf,
     retain: usize,
@@ -176,36 +199,28 @@ impl SnapshotRing {
         self.dir.join(format!("{id}.json"))
     }
 
-    fn meta_path(&self, id: &str) -> PathBuf {
+    /// Legacy metadata sidecar path. Nothing writes one any more; [`prune`]
+    /// still removes any left behind by an older version of this module.
+    ///
+    /// [`prune`]: SnapshotRing::prune
+    fn legacy_meta_path(&self, id: &str) -> PathBuf {
         self.dir.join(format!("{id}.meta.json"))
     }
 
-    /// Write `bytes` as a new snapshot tagged with `reason`, returning its
-    /// content-hash id. If a snapshot with identical content already
-    /// exists, this overwrites its file (an atomic no-op content-wise) and
-    /// refreshes its meta sidecar and mtime, so an unchanged file re-saved
-    /// repeatedly doesn't create duplicate ring entries. Prunes snapshots
-    /// beyond `retain` afterward, oldest (by mtime) first.
+    /// Write `bytes` as a new snapshot, returning its content-hash id. If a
+    /// snapshot with identical content already exists, this overwrites its
+    /// file (an atomic no-op content-wise) and refreshes its mtime, so an
+    /// unchanged file re-saved repeatedly doesn't create duplicate ring
+    /// entries. Prunes snapshots beyond `retain` afterward, oldest (by
+    /// mtime) first.
     ///
     /// # Errors
-    /// Returns an error if `dir` can't be created, or if writing the
-    /// snapshot or its meta sidecar fails.
-    pub fn snapshot(&self, bytes: &[u8], reason: &str) -> io::Result<String> {
+    /// Returns an error if `dir` can't be created or if writing the
+    /// snapshot fails.
+    pub fn snapshot(&self, bytes: &[u8]) -> io::Result<String> {
         fs::create_dir_all(&self.dir)?;
         let id = hex_sha256(bytes);
         write_atomic(&self.snapshot_path(&id), bytes)?;
-
-        let created_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        let meta = SnapshotMeta {
-            reason: reason.to_string(),
-            created_at,
-        };
-        let meta_bytes = serde_json::to_vec_pretty(&meta)
-            .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
-        write_atomic(&self.meta_path(&id), &meta_bytes)?;
-
         self.prune()?;
         Ok(id)
     }
@@ -244,13 +259,14 @@ impl SnapshotRing {
         Ok(entries)
     }
 
-    /// Remove snapshots (and their meta sidecars) beyond `retain`, oldest
-    /// first. Best-effort: a removal failure for one stale entry doesn't
-    /// abort pruning the rest.
+    /// Remove snapshots beyond `retain`, oldest first — along with any
+    /// legacy `<id>.meta.json` sidecar an older version of this module
+    /// wrote next to them. Best-effort: a removal failure for one stale
+    /// entry doesn't abort pruning the rest.
     fn prune(&self) -> io::Result<()> {
         for stale in self.list_entries()?.iter().skip(self.retain) {
             let _ = fs::remove_file(self.snapshot_path(&stale.id));
-            let _ = fs::remove_file(self.meta_path(&stale.id));
+            let _ = fs::remove_file(self.legacy_meta_path(&stale.id));
         }
         Ok(())
     }
@@ -565,11 +581,11 @@ mod tests {
         let dir = unique_test_dir("ring_retain");
         let ring = SnapshotRing::new(dir.clone(), 2);
 
-        ring.snapshot(b"one", "v1").expect("snapshot 1");
+        ring.snapshot(b"one").expect("snapshot 1");
         std::thread::sleep(Duration::from_millis(10));
-        ring.snapshot(b"two", "v2").expect("snapshot 2");
+        ring.snapshot(b"two").expect("snapshot 2");
         std::thread::sleep(Duration::from_millis(10));
-        let id3 = ring.snapshot(b"three", "v3").expect("snapshot 3");
+        let id3 = ring.snapshot(b"three").expect("snapshot 3");
 
         let remaining = ring.list_entries().expect("list entries");
         assert_eq!(
@@ -589,9 +605,9 @@ mod tests {
     fn restore_latest_returns_most_recent_valid_snapshot() {
         let dir = unique_test_dir("ring_latest");
         let ring = SnapshotRing::new(dir.clone(), 5);
-        ring.snapshot(b"old", "v1").expect("snapshot old");
+        ring.snapshot(b"old").expect("snapshot old");
         std::thread::sleep(Duration::from_millis(10));
-        ring.snapshot(b"new", "v2").expect("snapshot new");
+        ring.snapshot(b"new").expect("snapshot new");
 
         let restored = ring.restore_latest().expect("restore_latest");
         assert_eq!(restored, Some(b"new".to_vec()));
@@ -603,9 +619,9 @@ mod tests {
     fn restore_latest_quarantines_corrupt_snapshot_and_falls_back() {
         let dir = unique_test_dir("ring_corrupt");
         let ring = SnapshotRing::new(dir.clone(), 5);
-        ring.snapshot(b"good", "v1").expect("snapshot good");
+        ring.snapshot(b"good").expect("snapshot good");
         std::thread::sleep(Duration::from_millis(10));
-        let bad_id = ring.snapshot(b"bad", "v2").expect("snapshot bad");
+        let bad_id = ring.snapshot(b"bad").expect("snapshot bad");
 
         // Simulate on-disk corruption: tamper with the newer snapshot's
         // bytes directly, so its content no longer hashes to its filename.
@@ -633,7 +649,7 @@ mod tests {
     fn restore_by_id_reports_corruption_without_quarantining() {
         let dir = unique_test_dir("ring_restore_id");
         let ring = SnapshotRing::new(dir.clone(), 5);
-        let id = ring.snapshot(b"payload", "v1").expect("snapshot");
+        let id = ring.snapshot(b"payload").expect("snapshot");
         fs::write(ring.snapshot_path(&id), b"tampered").expect("corrupt snapshot");
 
         let err = ring.restore(&id).expect_err("corrupted content must error");

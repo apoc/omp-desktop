@@ -58,11 +58,27 @@ struct LineEvent<'a> {
     text: &'a str,
 }
 
-fn normalize_key(key: &str) -> String {
-    key.chars()
-        .filter(|c| *c != '_' && *c != '-')
-        .flat_map(char::to_lowercase)
-        .collect()
+/// Whether `key`'s normalized form (ASCII-lowercased, with `_` and `-`
+/// removed) ends with `suffix`.
+///
+/// `suffix` must already be lowercase and separator-free — every
+/// [`REDACTED_KEYS`] entry is. Compares right-to-left over `key`'s bytes so
+/// no normalized `String` is ever materialized: this runs for every object
+/// key of every JSON frame on the stdout reader thread, the hottest path in
+/// the app, where a per-key heap allocation is pure waste.
+///
+/// Non-ASCII bytes can never match a lowercase-ASCII `suffix`, so comparing
+/// ASCII-lowercased bytes is equivalent to the previous `char`-wise
+/// `to_lowercase` fold for every input that could possibly match.
+fn normalized_key_ends_with(key: &str, suffix: &str) -> bool {
+    let mut key_bytes = key.bytes().rev().filter(|b| *b != b'_' && *b != b'-');
+    for want in suffix.bytes().rev() {
+        match key_bytes.next() {
+            Some(got) if got.to_ascii_lowercase() == want => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// Recursively replace the value of any object key matching [`REDACTED_KEYS`]
@@ -74,29 +90,35 @@ fn normalize_key(key: &str) -> String {
 /// such as `input_tokens`/`output_tokens` if a `token` entry were ever
 /// added. Redacted subtrees are not descended into — once a key is
 /// sensitive, nothing under it is worth preserving.
-fn sanitize_frame(value: &mut serde_json::Value) {
+///
+/// Returns `true` when at least one value was actually redacted, so the
+/// caller can skip re-serializing an untouched frame — the overwhelmingly
+/// common case.
+fn sanitize_frame(value: &mut serde_json::Value) -> bool {
+    let mut redacted = false;
     match value {
         serde_json::Value::Object(map) => {
             for (key, val) in map.iter_mut() {
-                let normalized = normalize_key(key);
                 if REDACTED_KEYS
                     .iter()
                     .copied()
-                    .any(|k| normalized.ends_with(k))
+                    .any(|k| normalized_key_ends_with(key, k))
                 {
                     *val = serde_json::Value::String(REDACTED_PLACEHOLDER.to_string());
+                    redacted = true;
                 } else {
-                    sanitize_frame(val);
+                    redacted |= sanitize_frame(val);
                 }
             }
         }
         serde_json::Value::Array(items) => {
             for item in items {
-                sanitize_frame(item);
+                redacted |= sanitize_frame(item);
             }
         }
         _ => {}
     }
+    redacted
 }
 
 /// Sanitize one raw RPC line. Parses `raw` as JSON and redacts sensitive
@@ -112,9 +134,16 @@ fn sanitize_line(raw: &[u8]) -> (String, Option<serde_json::Value>) {
     serde_json::from_slice::<serde_json::Value>(raw).map_or_else(
         |_| (String::from_utf8_lossy(raw).into_owned(), None),
         |mut value| {
-            sanitize_frame(&mut value);
-            let text = serde_json::to_string(&value)
-                .unwrap_or_else(|_| String::from_utf8_lossy(raw).into_owned());
+            // Re-serializing costs a second full pass (escaping, number
+            // formatting, map ordering) over the whole frame. Only pay it
+            // when something was actually redacted; otherwise `raw` already
+            // *is* the correct text.
+            let text = if sanitize_frame(&mut value) {
+                serde_json::to_string(&value)
+                    .unwrap_or_else(|_| String::from_utf8_lossy(raw).into_owned())
+            } else {
+                String::from_utf8_lossy(raw).into_owned()
+            };
             (text, Some(value))
         },
     )
@@ -240,8 +269,11 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
                             )
                         })
                         .unwrap_or(sanitized);
-                    let seq = journal.lock().map_or(0, |mut j| j.push(text.clone()));
-                    let _ = app.emit(&line_event, LineEvent { seq, text: &text });
+                    // One allocation for the line, shared with the journal
+                    // by refcount rather than copied into it.
+                    let shared: std::sync::Arc<str> = std::sync::Arc::from(text);
+                    let seq = journal.lock().map_or(0, |mut j| j.push(shared.clone()));
+                    let _ = app.emit(&line_event, LineEvent { seq, text: &shared });
                 }
                 Err(e) => {
                     exit_reason = format!("stdout read error: {e}");
@@ -373,7 +405,7 @@ mod tests {
 
     #[test]
     fn sanitize_redacts_compound_provider_credential_key_names() {
-        // Suffix-matching `normalize_key`'s output against REDACTED_KEYS
+        // Suffix-matching the normalized key against REDACTED_KEYS
         // catches these compound spellings where the old exact-equality
         // check let all of them through unredacted.
         for key in [
@@ -389,6 +421,75 @@ mod tests {
                 "key {key} leaked a secret"
             );
         }
+    }
+
+    /// The allocation-free matcher must agree with the obvious
+    /// materialize-then-compare form it replaced, including on the
+    /// separator, case, and non-ASCII edge cases.
+    #[test]
+    fn normalized_key_ends_with_matches_reference_normalization() {
+        fn reference(key: &str, suffix: &str) -> bool {
+            let normalized: String = key
+                .chars()
+                .filter(|c| *c != '_' && *c != '-')
+                .flat_map(char::to_lowercase)
+                .collect();
+            normalized.ends_with(suffix)
+        }
+
+        let keys = [
+            "api_key",
+            "api-key",
+            "apiKey",
+            "API_KEY",
+            "x-api-key",
+            "OPENAI_API_KEY",
+            "client_secret",
+            "input_tokens",
+            "output_tokens",
+            "monkey",
+            "key",
+            "",
+            "_-_-",
+            "clé_api_key",
+            "ключ",
+            "aPiKeY",
+        ];
+        for key in keys {
+            for suffix in REDACTED_KEYS {
+                assert_eq!(
+                    normalized_key_ends_with(key, suffix),
+                    reference(key, suffix),
+                    "mismatch for key {key:?} / suffix {suffix:?}"
+                );
+            }
+        }
+    }
+
+    /// `sanitize_frame`'s return value gates the re-serialize fast path, so
+    /// a frame with nothing to redact must report `false` — and one with a
+    /// secret nested deep inside must still report `true`.
+    #[test]
+    fn sanitize_frame_reports_whether_it_redacted_anything() {
+        let mut clean = json!({ "type": "turn_start", "usage": { "input_tokens": 3 } });
+        assert!(!sanitize_frame(&mut clean));
+
+        let mut nested = json!({ "a": [ { "b": { "api_key": "sekrit" } } ] });
+        assert!(sanitize_frame(&mut nested));
+        assert_eq!(nested["a"][0]["b"]["api_key"], REDACTED_PLACEHOLDER);
+    }
+
+    /// A frame with nothing to redact must come back byte-identical to the
+    /// input, not re-serialized — that is what makes skipping the second
+    /// serializer pass safe.
+    #[test]
+    fn sanitize_line_preserves_untouched_frame_verbatim() {
+        // Key order and spacing here are deliberately *not* what serde_json
+        // would re-emit, proving the fast path returns the original bytes.
+        let raw = br#"{"z":1,  "a":  [1,2,3],"nested":{"k":"v"}}"#;
+        let (out, parsed) = sanitize_line(raw);
+        assert_eq!(out.as_bytes(), raw);
+        assert!(parsed.is_some());
     }
 
     #[test]

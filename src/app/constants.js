@@ -31,6 +31,22 @@
 
   const APPROVAL_PROMPT = "Plan approved. Please proceed to execute it. Use your todo_write tool to track tasks as you go.";
 
+  // `true` when a keydown is an Enter that should submit — i.e. not the
+  // Enter that confirms an in-progress IME composition (typing Chinese/
+  // Japanese/Korean via a candidate picker), which must never also submit
+  // the half-typed text.
+  //
+  // Two browser quirks, both easy to get wrong and previously hand-copied
+  // into every Enter handler (composer + two in ask-bubble, already drifting
+  // on the optional chaining):
+  //   - React's SyntheticEvent does not copy `isComposing` onto itself, only
+  //     onto `nativeEvent` — proven with an eval-kernel cell (2/2 cases:
+  //     mid-composition Enter blocked, plain Enter still sends).
+  //   - `keyCode === 229` is the historical fallback for browsers that don't
+  //     set `isComposing` (notably some IME/Enter interactions on Windows).
+  const isSubmitEnter = (e) =>
+    e.key === "Enter" && !e.nativeEvent?.isComposing && e.keyCode !== 229;
+
   Object.assign(window, {
     TWEAK_DEFAULTS,
     NULL_MODEL,
@@ -38,5 +54,6 @@
     NULL_PEER,
     INTENT_FRAMING,
     APPROVAL_PROMPT,
+    isSubmitEnter,
   });
 })();

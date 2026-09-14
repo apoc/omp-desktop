@@ -113,7 +113,7 @@ fn replay_events(
     session_id: String,
     after_seq: u64,
     bridge: State<'_, AgentBridge>,
-) -> Result<agent::ReplayResponse, String> {
+) -> Result<agent::journal::Replay, String> {
     bridge.replay_events(&session_id, after_seq)
 }
 

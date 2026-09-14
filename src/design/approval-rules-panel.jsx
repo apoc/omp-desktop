@@ -11,7 +11,9 @@
 
 const { Icon: _RulesIcon } = window;
 
-function ApprovalRulesPanel({ open, onClose }) {
+// Mounted only while open (app-live.jsx gates on `rulesOpen`) — see the
+// matching note in changes-panel.jsx.
+function ApprovalRulesPanel({ onClose }) {
   const bridge = window.OMP_BRIDGE;
   const [rules, setRules]     = React.useState([]);
   const [loading, setLoading] = React.useState(false);
@@ -26,16 +28,12 @@ function ApprovalRulesPanel({ open, onClose }) {
     }
   }, [bridge]);
 
-  React.useEffect(() => {
-    if (open) refresh();
-  }, [open, refresh]);
+  React.useEffect(() => { refresh(); }, [refresh]);
 
   const handleRevoke = async (rule) => {
     await bridge?.revokeApprovalRule(rule.tool, rule.scope);
     await refresh();
   };
-
-  if (!open) return null;
 
   return (
     <div className="bridge-scrim" onClick={onClose} style={{ paddingTop: "10vh" }}>
@@ -51,9 +49,9 @@ function ApprovalRulesPanel({ open, onClose }) {
           </button>
         </div>
         <div className="rules-body">
-          {loading && rules.length === 0 && <div className="changes-empty mono">loading…</div>}
+          {loading && rules.length === 0 && <div className="panel-empty mono">loading…</div>}
           {!loading && rules.length === 0 && (
-            <div className="changes-empty mono">
+            <div className="panel-empty mono">
               no standing rules yet — grant one from an "Allow tool" prompt
             </div>
           )}

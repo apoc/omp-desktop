@@ -16,7 +16,7 @@
 //!   stopped session can't leak subagent/tool-call descendants.
 
 mod inner;
-mod journal;
+pub mod journal;
 mod reader;
 mod spawn;
 mod supervisor;
@@ -29,7 +29,7 @@ use std::thread;
 use tauri::AppHandle;
 
 use inner::BridgeInner;
-use journal::EventJournal;
+use journal::{EventJournal, Replay};
 use reader::{spawn_stderr_reader, spawn_stdout_reader};
 use spawn::spawn_omp;
 
@@ -38,6 +38,13 @@ use spawn::spawn_omp;
 /// regaining it (background tab switch) without holding unbounded memory
 /// for a long-idle session.
 const EVENT_JOURNAL_CAPACITY: usize = 256;
+
+/// Total byte budget for one session's event journal. Bounds the ring by
+/// size as well as entry count: a single RPC line may be up to
+/// `reader::MAX_LINE_BYTES` (16 MiB), so 256 entries alone would permit
+/// gigabytes of resident memory per open tab. 8 MiB comfortably holds a
+/// normal background-tab gap while capping the pathological case.
+const EVENT_JOURNAL_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 /// `type` values the frontend may legitimately send over `send_command`.
 /// Anything else is rejected before it reaches omp's stdin — hardens the
@@ -65,24 +72,6 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "get_login_providers",
     "login",
 ];
-
-/// One replayed event — mirrors `reader::LineEvent`'s `{seq, text}` shape so
-/// the frontend can dispatch live and replayed events through one path.
-#[derive(serde::Serialize, Debug)]
-pub struct ReplayEvent {
-    pub seq: u64,
-    pub text: String,
-}
-
-/// Response for the `replay_events` Tauri command. See
-/// [`journal::Replay`] for field semantics.
-#[derive(serde::Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct ReplayResponse {
-    pub events: Vec<ReplayEvent>,
-    pub head_seq: u64,
-    pub dropped: bool,
-}
 
 /// Manages one omp process per tab session.
 ///
@@ -145,7 +134,10 @@ impl AgentBridge {
         let stderr = child.stderr.take().expect("stderr piped");
         let stdin_arc = Arc::new(Mutex::new(stdin));
         let stdin_for_reader = stdin_arc.clone();
-        let journal = Arc::new(Mutex::new(EventJournal::new(EVENT_JOURNAL_CAPACITY)));
+        let journal = Arc::new(Mutex::new(EventJournal::new(
+            EVENT_JOURNAL_CAPACITY,
+            EVENT_JOURNAL_MAX_BYTES,
+        )));
         let project_root = cwd.filter(|c| !c.is_empty()).map(std::path::PathBuf::from);
         let gen = self.next_gen.fetch_add(1, Ordering::SeqCst);
 
@@ -203,18 +195,13 @@ impl AgentBridge {
             };
             s.remove(session_id)
         };
-        if let Some(mut inner) = removed {
-            inner.stdin = None;
-            let supervisor = inner.supervisor.take();
-            if let Some(mut c) = inner.child.take() {
-                thread::spawn(move || {
-                    drop(supervisor);
-                    let _ = c.kill();
-                    let _ = c.wait();
-                });
-            }
+        if let Some(inner) = removed {
+            reap_and_clear_grants(session_id, inner, rule_book);
+        } else {
+            // No live session to reap, but stale grants for this id must
+            // still go — `reap_and_clear_grants` would have done it.
+            rule_book.clear_session(session_id);
         }
-        rule_book.clear_session(session_id);
         self.clear_error(session_id);
     }
 
@@ -276,11 +263,7 @@ impl AgentBridge {
     /// journal. Used on tab reactivation to recover state (tool cards, ask
     /// bubbles, streaming progress) that arrived while no listener was
     /// attached — `get_messages` alone only recovers persisted text.
-    pub fn replay_events(
-        &self,
-        session_id: &str,
-        after_seq: u64,
-    ) -> Result<ReplayResponse, String> {
+    pub fn replay_events(&self, session_id: &str, after_seq: u64) -> Result<Replay, String> {
         let journal_arc = {
             let s = self
                 .sessions
@@ -297,18 +280,7 @@ impl AgentBridge {
             .lock()
             .map_err(|_| "journal lock poisoned".to_string())?
             .since(after_seq);
-        Ok(ReplayResponse {
-            events: replay
-                .events
-                .into_iter()
-                .map(|e| ReplayEvent {
-                    seq: e.seq,
-                    text: e.text,
-                })
-                .collect(),
-            head_seq: replay.head_seq,
-            dropped: replay.dropped,
-        })
+        Ok(replay)
     }
 
     fn cache_error(&self, session_id: &str, err: String) {
@@ -356,10 +328,11 @@ impl Drop for AgentBridge {
 /// process is taking over; whatever the previous occupant's user was
 /// granted (e.g. "always allow bash for this session") must not
 /// silently carry over and auto-approve prompts the new process never
-/// actually got consent for — mirrors the same `clear_session` call
-/// `AgentBridge::stop_session` makes. Extracted as its own function so
-/// this is unit-testable without spawning a real child process or a
-/// Tauri `AppHandle`.
+/// actually got consent for. Used for both halves of a session's life:
+/// [`AgentBridge::stop_session`] tearing one down, and `start_session`
+/// displacing a previous occupant of the same id. Extracted as its own
+/// function so this is unit-testable without spawning a real child
+/// process or a Tauri `AppHandle`.
 fn reap_and_clear_grants(
     session_id: &str,
     mut prev: BridgeInner,
@@ -469,7 +442,10 @@ mod tests {
             stdin: None,
             child: None,
             supervisor: None,
-            journal: Arc::new(Mutex::new(EventJournal::new(EVENT_JOURNAL_CAPACITY))),
+            journal: Arc::new(Mutex::new(EventJournal::new(
+                EVENT_JOURNAL_CAPACITY,
+                EVENT_JOURNAL_MAX_BYTES,
+            ))),
         };
         reap_and_clear_grants("sess-x", prev, &rule_book);
 

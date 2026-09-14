@@ -33,7 +33,10 @@ function fenceDiff(content) {
   return `${fence}diff\n${content}\n${fence}`;
 }
 
-function ChangesPanel({ open, onClose }) {
+// Mounted only while open (app-live.jsx gates on `changesOpen`), so
+// there is no `open` prop and no early return for it: mount is open,
+// unmount is closed, and the state below resets naturally with it.
+function ChangesPanel({ onClose }) {
   const bridge = window.OMP_BRIDGE;
   const [status, setStatus]         = React.useState({ files: [], truncated: false });
   const [loading, setLoading]       = React.useState(false);
@@ -58,12 +61,10 @@ function ChangesPanel({ open, onClose }) {
     }
   }, [bridge]);
 
-  React.useEffect(() => {
-    if (open) refreshStatus();
-  }, [open, refreshStatus]);
+  React.useEffect(() => { refreshStatus(); }, [refreshStatus]);
 
   React.useEffect(() => {
-    if (!open || !selected || !bridge) {
+    if (!selected || !bridge) {
       setDiff(null);
       return undefined;
     }
@@ -73,7 +74,7 @@ function ChangesPanel({ open, onClose }) {
       .then(result => { if (!cancelled) setDiff(result); })
       .finally(() => { if (!cancelled) setDiffLoading(false); });
     return () => { cancelled = true; };
-  }, [open, selected, bridge]);
+  }, [selected, bridge]);
 
   const handleAccept = async (path, e) => {
     e.stopPropagation();
@@ -89,6 +90,15 @@ function ChangesPanel({ open, onClose }) {
   // recover it from afterwards.
   // Proven with an eval-kernel cell (2/2 cases: Untracked/Added/Renamed
   // kinds require confirmation, Modified/Deleted kinds proceed unconfirmed).
+  // fenceDiff scans the whole diff (up to the 256 KiB server-side cap) for
+  // backtick runs. Keyed on the content so it runs once per loaded diff
+  // rather than on every render (selection change, diffLoading toggle,
+  // parent re-render).
+  const fencedDiff = React.useMemo(
+    () => fenceDiff(diff?.content || ""),
+    [diff?.content],
+  );
+
   const handleReject = async (path, kind, e) => {
     e.stopPropagation();
     if (kind === "Untracked" || kind === "Added" || kind === "Renamed") {
@@ -98,8 +108,6 @@ function ChangesPanel({ open, onClose }) {
     await bridge?.workspaceReject(path);
     await refreshStatus();
   };
-
-  if (!open) return null;
 
   return (
     <div className="bridge-scrim" onClick={onClose} style={{ paddingTop: "6vh" }}>
@@ -119,8 +127,8 @@ function ChangesPanel({ open, onClose }) {
         </div>
         <div className="changes-body">
           <div className="changes-file-list">
-            {loading && status.files.length === 0 && <div className="changes-empty mono">loading…</div>}
-            {!loading && status.files.length === 0 && <div className="changes-empty mono">no changes</div>}
+            {loading && status.files.length === 0 && <div className="panel-empty mono">loading…</div>}
+            {!loading && status.files.length === 0 && <div className="panel-empty mono">no changes</div>}
             {status.files.map(f => {
               const meta = STATUS_KIND_META[f.kind] ?? STATUS_KIND_META.Modified;
               return (
@@ -142,16 +150,16 @@ function ChangesPanel({ open, onClose }) {
             })}
           </div>
           <div className="changes-diff">
-            {diffLoading && <div className="changes-empty mono">loading diff…</div>}
-            {!diffLoading && !diff && <div className="changes-empty mono">select a file</div>}
+            {diffLoading && <div className="panel-empty mono">loading diff…</div>}
+            {!diffLoading && !diff && <div className="panel-empty mono">select a file</div>}
             {!diffLoading && diff?.kind === "Binary" && (
-              <div className="changes-empty mono">binary file — no text diff to show</div>
+              <div className="panel-empty mono">binary file — no text diff to show</div>
             )}
             {!diffLoading && diff?.kind === "Untracked" && (
-              <div className="changes-empty mono">untracked file — nothing to diff against</div>
+              <div className="panel-empty mono">untracked file — nothing to diff against</div>
             )}
             {!diffLoading && diff?.kind === "Text" && (
-              <_ChangesMarkdown text={fenceDiff(diff.content || "")} />
+              <_ChangesMarkdown text={fencedDiff} />
             )}
             {!diffLoading && diff?.truncated && (
               <div className="chip muted" style={{ marginTop: 6 }}>diff truncated</div>

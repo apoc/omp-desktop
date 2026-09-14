@@ -25,8 +25,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sha2::{Digest, Sha256};
-
 use crate::json_store;
 
 /// The exact two options omp's tool-approval prompt offers, in order.
@@ -121,14 +119,21 @@ fn project_key(project_root: &Path) -> String {
     let canon = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
-    let mut hasher = Sha256::new();
-    hasher.update(canon.to_string_lossy().as_bytes());
-    let digest = hasher.finalize();
-    digest.iter().take(16).fold(String::new(), |mut acc, b| {
-        use std::fmt::Write as _;
-        let _ = write!(acc, "{b:02x}");
-        acc
-    })
+    let mut hex = json_store::hex_sha256(canon.to_string_lossy().as_bytes());
+    hex.truncate(32);
+    hex
+}
+
+/// Every on-disk path derived from one project root, plus the key they all
+/// share. Built once per public `RuleBook` method and threaded down, so the
+/// `canonicalize()` syscall and SHA-256 behind [`project_key`] run once per
+/// call instead of once per derived path — previously four to six times for
+/// a single `grant`.
+struct ProjectPaths {
+    key: String,
+    rules: PathBuf,
+    snapshots: PathBuf,
+    lock: PathBuf,
 }
 
 fn now_iso8601() -> String {
@@ -198,48 +203,43 @@ impl RuleBook {
         }
     }
 
-    fn project_file_path(&self, project_root: &Path) -> PathBuf {
-        self.config_root
-            .join(format!("{}.json", project_key(project_root)))
+    /// Derive every per-project path from one [`project_key`] computation.
+    ///
+    /// - `rules` — the primary rules file.
+    /// - `snapshots` — past versions of it (see [`json_store::SnapshotRing`]);
+    ///   consulted by `load_project_rules` only when the primary file exists
+    ///   but fails to parse (corrupt), never when it's merely missing, and
+    ///   written by `persist_project_rules` before every overwrite.
+    /// - `lock` — advisory lock guarding the read-modify-write cycle in
+    ///   `grant`/`revoke`: without it, two tabs granting different tools for
+    ///   the same project concurrently could race and one grant could clobber
+    ///   the other on disk (the in-memory cache update is per-process anyway;
+    ///   the lock protects the file).
+    fn project_paths(&self, project_root: &Path) -> ProjectPaths {
+        let key = project_key(project_root);
+        ProjectPaths {
+            rules: self.config_root.join(format!("{key}.json")),
+            snapshots: self.config_root.join(format!("{key}.snapshots")),
+            lock: self.config_root.join(format!("{key}.lock")),
+            key,
+        }
     }
 
-    /// Where past versions of a project's rules file are kept — see
-    /// [`json_store::SnapshotRing`]. Consulted by `load_project_rules` only
-    /// when the primary file exists but fails to parse (corrupt), never
-    /// when it's merely missing, and written to by `persist_project_rules`
-    /// before every overwrite.
-    fn snapshot_ring(&self, project_root: &Path) -> json_store::SnapshotRing {
-        json_store::SnapshotRing::new(
-            self.config_root
-                .join(format!("{}.snapshots", project_key(project_root))),
-            8,
-        )
-    }
-
-    /// Advisory lock path guarding the read-modify-write cycle in
-    /// `grant`/`revoke` for one project — without it, two tabs granting
-    /// different tools for the same project concurrently could race and
-    /// one grant could clobber the other on disk (the in-memory cache
-    /// update is per-process anyway; the lock protects the file).
-    fn lock_path(&self, project_root: &Path) -> PathBuf {
-        self.config_root
-            .join(format!("{}.lock", project_key(project_root)))
+    fn snapshot_ring(paths: &ProjectPaths) -> json_store::SnapshotRing {
+        json_store::SnapshotRing::new(paths.snapshots.clone(), 8)
     }
 
     /// Run `f` (a project rules read-modify-write) while holding the
-    /// advisory lock at [`Self::lock_path`]. Converts `f`'s `String` error
+    /// advisory lock at `paths.lock`. Converts `f`'s `String` error
     /// through `io::Error` and back so it can use [`json_store::with_lock`]
     /// without that module knowing about this one's error type.
     fn with_project_lock<T>(
-        &self,
-        project_root: &Path,
+        paths: &ProjectPaths,
         f: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, String> {
-        json_store::with_lock(
-            &self.lock_path(project_root),
-            std::time::Duration::from_secs(5),
-            || f().map_err(std::io::Error::other),
-        )
+        json_store::with_lock(&paths.lock, std::time::Duration::from_secs(5), || {
+            f().map_err(std::io::Error::other)
+        })
         .map_err(|e| e.to_string())
     }
 
@@ -256,24 +256,36 @@ impl RuleBook {
     /// that falls back to [`Self::snapshot_ring`]; if the ring has nothing
     /// valid either, the project is treated as having no rules at all
     /// (fail closed).
-    fn load_project_rules(&self, project_root: &Path) -> Vec<Rule> {
-        let Ok(mut cache) = self.project_rules.lock() else {
-            return Vec::new();
-        };
-        let key = project_key(project_root);
-        if let Some(rules) = cache.get(&key) {
-            return rules.clone();
+    fn load_project_rules(&self, paths: &ProjectPaths) -> Vec<Rule> {
+        self.with_project_rules(paths, <[Rule]>::to_vec)
+    }
+
+    /// `true` if the project's loaded rules grant `tool`. Answers from a
+    /// borrow of the cached `Vec` rather than cloning every [`Rule`] just to
+    /// scan it and drop it — this runs on the stdout reader thread for every
+    /// approval prompt.
+    fn project_grants_tool(&self, paths: &ProjectPaths, tool: &str) -> bool {
+        self.with_project_rules(paths, |rules| rules.iter().any(|r| r.tool == tool))
+    }
+
+    /// Run `f` over the project's rules, loading them from disk on a cache
+    /// miss. The cache lock is **not** held across that load: reading,
+    /// parsing and (for a corrupt file) re-hashing the snapshot ring would
+    /// otherwise block every other project's lookups, and the reader thread
+    /// with them.
+    fn with_project_rules<T>(&self, paths: &ProjectPaths, f: impl FnOnce(&[Rule]) -> T) -> T {
+        if let Ok(cache) = self.project_rules.lock() {
+            if let Some(rules) = cache.get(&paths.key) {
+                return f(rules);
+            }
         }
-        let path = self.project_file_path(project_root);
-        let raw = std::fs::read(&path).ok().and_then(|bytes| {
+
+        let raw = std::fs::read(&paths.rules).ok().and_then(|bytes| {
             if serde_json::from_slice::<ProjectRulesFile>(&bytes).is_ok() {
                 Some(bytes)
             } else {
                 // File exists but is corrupt: only now does the ring apply.
-                self.snapshot_ring(project_root)
-                    .restore_latest()
-                    .ok()
-                    .flatten()
+                Self::snapshot_ring(paths).restore_latest().ok().flatten()
             }
         });
         let rules: Vec<Rule> = raw
@@ -289,8 +301,14 @@ impl RuleBook {
                     .collect()
             })
             .unwrap_or_default();
-        cache.insert(key, rules.clone());
-        rules
+
+        let out = f(&rules);
+        if let Ok(mut cache) = self.project_rules.lock() {
+            // Another thread may have loaded the same project meanwhile;
+            // both computed it from the same file, so last-writer-wins.
+            cache.insert(paths.key.clone(), rules);
+        }
+        out
     }
 
     /// Snapshot the new contents before writing them, then write them
@@ -307,7 +325,7 @@ impl RuleBook {
     /// later corruption of the primary file could resurrect an
     /// already-revoked grant — snapshotting the incoming content keeps the
     /// ring's latest entry always in sync with the latest legitimate write.
-    fn persist_project_rules(&self, project_root: &Path, rules: &[Rule]) -> Result<(), String> {
+    fn persist_project_rules(paths: &ProjectPaths, rules: &[Rule]) -> Result<(), String> {
         let file = ProjectRulesFile {
             version: RULES_FILE_VERSION,
             rules: rules
@@ -319,14 +337,35 @@ impl RuleBook {
                 .collect(),
         };
         let bytes = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
-        let path = self.project_file_path(project_root);
-        if let Some(dir) = path.parent() {
+        if let Some(dir) = paths.rules.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
         // Best-effort — a failed snapshot must never block the actual
         // write, it only narrows future recovery options.
-        let _ = self.snapshot_ring(project_root).snapshot(&bytes, "write");
-        json_store::write_atomic(&path, &bytes).map_err(|e| e.to_string())
+        let _ = Self::snapshot_ring(paths).snapshot(&bytes);
+        json_store::write_atomic(&paths.rules, &bytes).map_err(|e| e.to_string())
+    }
+
+    /// Read-modify-write a project's rules under the advisory lock: load,
+    /// apply `mutate`, persist, and refresh the in-memory cache. `grant` and
+    /// `revoke` differ only in `mutate`, so the lock/persist/cache-refresh
+    /// sequence — the part that is easy to get subtly wrong — lives here
+    /// once rather than being duplicated per operation.
+    fn mutate_project_rules(
+        &self,
+        project_root: &Path,
+        mutate: impl FnOnce(&mut Vec<Rule>),
+    ) -> Result<(), String> {
+        let paths = self.project_paths(project_root);
+        Self::with_project_lock(&paths, || {
+            let mut rules = self.load_project_rules(&paths);
+            mutate(&mut rules);
+            Self::persist_project_rules(&paths, &rules)?;
+            if let Ok(mut cache) = self.project_rules.lock() {
+                cache.insert(paths.key.clone(), rules);
+            }
+            Ok(())
+        })
     }
 
     /// Grant standing approval for `tool`. `project_root` is required for
@@ -356,8 +395,7 @@ impl RuleBook {
             RuleScope::Project => {
                 let root = project_root
                     .ok_or_else(|| "project-scoped grant requires a project root".to_string())?;
-                self.with_project_lock(root, || {
-                    let mut rules = self.load_project_rules(root);
+                self.mutate_project_rules(root, |rules| {
                     if !rules.iter().any(|r| r.tool == tool) {
                         rules.push(Rule {
                             tool: tool.to_string(),
@@ -365,11 +403,6 @@ impl RuleBook {
                             granted_at: now_iso8601(),
                         });
                     }
-                    self.persist_project_rules(root, &rules)?;
-                    if let Ok(mut cache) = self.project_rules.lock() {
-                        cache.insert(project_key(root), rules);
-                    }
-                    Ok(())
                 })
             }
         }
@@ -395,15 +428,7 @@ impl RuleBook {
             RuleScope::Project => {
                 let root = project_root
                     .ok_or_else(|| "project-scoped revoke requires a project root".to_string())?;
-                self.with_project_lock(root, || {
-                    let mut rules = self.load_project_rules(root);
-                    rules.retain(|r| r.tool != tool);
-                    self.persist_project_rules(root, &rules)?;
-                    if let Ok(mut cache) = self.project_rules.lock() {
-                        cache.insert(project_key(root), rules);
-                    }
-                    Ok(())
-                })
+                self.mutate_project_rules(root, |rules| rules.retain(|r| r.tool != tool))
             }
         }
     }
@@ -424,7 +449,7 @@ impl RuleBook {
             }
         }
         if let Some(root) = project_root {
-            out.extend(self.load_project_rules(root));
+            out.extend(self.load_project_rules(&self.project_paths(root)));
         }
         out
     }
@@ -451,7 +476,7 @@ impl RuleBook {
             }
         }
         if let Some(root) = project_root {
-            if self.load_project_rules(root).iter().any(|r| r.tool == tool) {
+            if self.project_grants_tool(&self.project_paths(root), tool) {
                 return true;
             }
         }
@@ -610,7 +635,7 @@ mod tests {
         let dir = scratch_dir();
         let project = scratch_dir();
         let book = RuleBook::new(dir);
-        std::fs::write(book.project_file_path(&project), b"not json").unwrap();
+        std::fs::write(book.project_paths(&project).rules, b"not json").unwrap();
         assert!(!book.is_granted("sess-a", Some(&project), "bash"));
     }
 
@@ -629,7 +654,7 @@ mod tests {
         // [bash] alone — either way the ring has a non-empty entry now.
         book.grant("sess-a", Some(&project), "read", RuleScope::Project)
             .unwrap();
-        std::fs::remove_file(book.project_file_path(&project)).unwrap();
+        std::fs::remove_file(book.project_paths(&project).rules).unwrap();
         // Fresh instance so the in-memory cache can't mask the on-disk state.
         let book2 = RuleBook::new(dir);
         assert!(!book2.is_granted("sess-a", Some(&project), "bash"));
@@ -652,7 +677,7 @@ mod tests {
             .unwrap();
         book.revoke("sess-a", Some(&project), "bash", RuleScope::Project)
             .unwrap();
-        std::fs::write(book.project_file_path(&project), b"not json").unwrap();
+        std::fs::write(book.project_paths(&project).rules, b"not json").unwrap();
         let book2 = RuleBook::new(dir);
         assert!(!book2.is_granted("sess-a", Some(&project), "bash"));
     }

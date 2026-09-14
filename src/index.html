@@ -55,6 +55,11 @@
     })();
   </script>
 
+  <!-- App constants. Dependency-free IIFE, loaded before the design
+       components because composer.jsx and chat/ask-bubble.jsx call its
+       isSubmitEnter helper (and app-live.jsx destructures the rest). -->
+  <script src="app/constants.js"></script>
+
   <!-- Design components (unchanged — from src/design/ copy) -->
   <script src="design/tweaks/style.js"></script>
   <script src="design/tweaks/use-tweaks.js"></script>
@@ -83,8 +88,7 @@
   <script src="live.js"></script>
 
   <!-- App root — wired to OMP_BRIDGE, no demo effects -->
-  <!-- App constants + cross-cutting hooks (must load before app-live.jsx) -->
-  <script src="app/constants.js"></script>
+  <!-- Cross-cutting hooks (must load before app-live.jsx) -->
   <script type="text/babel" src="app/use-bridge-snapshot.jsx"></script>
 
   <script type="text/babel" src="app-live.jsx"></script>
