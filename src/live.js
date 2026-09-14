@@ -1512,6 +1512,16 @@
       return window.__TAURI__.core.invoke("open_project");
     },
 
+    /** List project-relative file/dir paths matching `query`, for the
+     *  composer's `@`-mention autocomplete. Scoped to the active tab's
+     *  project path; returns [] for the pathless "default" session (no
+     *  project root to search) or when the RPC throws. */
+    async listFiles(query, limit = 30) {
+      const cwd = _activeProjectPath();
+      if (!cwd) return [];
+      return _invokeSafe("list_project_files", { cwd, query, limit }, []);
+    },
+
     /** Subscribe to state snapshots. Returns an unsubscribe function. */
     onUpdate(cb) {
       subscribers.add(cb);
