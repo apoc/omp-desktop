@@ -71,7 +71,10 @@
 
   let streamingBubble = null;
   let activeToolCards = new Map();    // toolCallId → message index
-  let pendingAskBubble = null;   // buffered until tool_execution_start so order is [tool_card, ask_bubble]
+  const ASK_FLUSH_MS = 150;         // upper bound on how long an ask may stay buffered
+  // Ask bubbles awaiting a flush into state.messages — see _queueAskBubble.
+  let pendingAskBubbles    = [];    // FIFO of buffered ask messages
+  let pendingAskFlushTimer = null;  // armed while the queue is non-empty
   let tpsSamples      = Array(30).fill(0);
   let turnStartTime   = null;
   let activityLog     = [];           // [{ts, toolName}], pruned to 60s
@@ -267,6 +270,58 @@
     };
   }
 
+  // Buffer an ask bubble instead of pushing it straight into
+  // `state.messages`: omp emits `extension_ui_request.select` just BEFORE
+  // the `tool_execution_start` of the tool it gates, so pushing on arrival
+  // puts the prompt above its own tool card. tool_execution_start flushes
+  // the queue, giving the [tool_card, ask_bubble] order.
+  //
+  // Two properties this has to keep, both learned from a wedged session:
+  //   1. It is a QUEUE, not a single slot. A turn with parallel tool calls
+  //      emits one select per gated tool before any of them start; a single
+  //      slot kept only the last, and every dropped prompt is an ask omp is
+  //      still blocked on — its tool card sits at "running" forever and the
+  //      tab looks frozen with no way to unblock it.
+  //   2. The flush is guaranteed, not conditional. Selects that arrive after
+  //      the turn's last tool_execution_start have nothing left to flush
+  //      against, so ASK_FLUSH_MS bounds how long a prompt may stay
+  //      invisible. Cosmetic ordering is best-effort; liveness is not.
+  //
+  // Proven end-to-end with an eval-kernel cell that loads this file into a
+  // stubbed-Tauri VM context and feeds real event lines (5/5 cases: two
+  // gated parallel tools both render — the single-slot version dropped the
+  // first and wedged its tool card at "running"; selects arriving after the
+  // last tool_execution_start still surface via ASK_FLUSH_MS; single-tool
+  // [tool_card, ask] order unchanged; cancel-before-flush removes only its
+  // own queue entry and the survivor still answers on the wire; a tab
+  // switch mid-buffer keeps the ask in the originating session).
+  function _queueAskBubble(msg) {
+    pendingAskBubbles.push(msg);
+    if (pendingAskFlushTimer === null) {
+      pendingAskFlushTimer = setTimeout(() => {
+        pendingAskFlushTimer = null;
+        if (_flushAskBubbles()) notify();
+      }, ASK_FLUSH_MS);
+    }
+  }
+
+  // Append every buffered ask bubble, oldest first. Returns whether anything
+  // moved so callers know if they owe a notify().
+  function _flushAskBubbles() {
+    if (pendingAskBubbles.length === 0) return false;
+    state.messages = [...state.messages, ...pendingAskBubbles];
+    pendingAskBubbles = [];
+    _disarmAskFlush();
+    return true;
+  }
+
+  function _disarmAskFlush() {
+    if (pendingAskFlushTimer !== null) {
+      clearTimeout(pendingAskFlushTimer);
+      pendingAskFlushTimer = null;
+    }
+  }
+
   // Resolve a pending ask bubble: apply `patch` to the first unanswered,
   // uncancelled bubble with this id, then send `payload` back to omp. The
   // re-answer guard (a bubble already answered or cancelled is left alone,
@@ -352,7 +407,8 @@
       exitReason:    null,
     });
     streamingBubble = null;
-    pendingAskBubble = null;
+    pendingAskBubbles = [];
+    _disarmAskFlush();
     activeToolCards = new Map();
     tpsSamples      = Array(30).fill(0);
     turnStartTime   = null;
@@ -363,6 +419,10 @@
   // ── Session snapshot helpers ──────────────────────────────────────────────
   function _saveCurrentSession() {
     if (!activeSessionId) return;
+    // Buffered asks belong to the session being left — flush them into its
+    // messages so the snapshot carries them. Leaving them in the queue would
+    // either lose them or leak them into the next session's transcript.
+    _flushAskBubbles();
     sessionSnapshots.set(activeSessionId, {
       // state fields
       messages:      state.messages,
@@ -850,11 +910,10 @@
         return;
       }
       // Single-line text prompt (e.g. OAuth manual-code flows). Pushed
-      // directly rather than buffered like `select` below — unlike the ask
-      // tool's select, a generic input() call from extension code has no
-      // guaranteed following tool_execution_start to flush against, so
-      // buffering it could leave the card permanently invisible. Wire
-      // shape: request carries {title, placeholder}, response is
+      // directly rather than buffered like `select` below — a generic
+      // input() from extension code gates no tool call, so there is no
+      // tool card to order it against and nothing to gain from the delay.
+      // Wire shape: request carries {title, placeholder}, response is
       // {value: <text>} or {cancelled: true}.
       if (ev.method === "input") {
         state.messages = [...state.messages, _askMessage("input", ev, {
@@ -863,16 +922,14 @@
         notify();
         return;
       }
-      // Agent asks the user to pick from a list.
-      // Buffered in pendingAskBubble instead of pushed immediately — omp emits
-      // extension_ui_request.select BEFORE tool_execution_start, so pushing now
-      // would place the ask bubble above the tool card. tool_execution_start
-      // flushes it so the order is always [tool_card, ask_bubble].
+      // Agent asks the user to pick from a list — also the shape of every
+      // tool-approval prompt ("Allow tool: X", options ["Approve","Deny"]).
+      // Buffered rather than pushed immediately; see _queueAskBubble.
       if (ev.method === "select") {
         const OTHER_OPT = "Other (type your own)";
-        pendingAskBubble = _askMessage("select", ev, {
+        _queueAskBubble(_askMessage("select", ev, {
           options: (ev.options ?? []).filter(o => o !== OTHER_OPT),
-        });
+        }));
         return;
       }
       // Yes/No confirmation dialog. Pushed directly — see the `input`
@@ -900,9 +957,12 @@
       }
       // Agent cancelled a pending UI request (e.g. turn aborted while waiting for input).
       if (ev.method === "cancel") {
-        // If the ask was cancelled before tool_execution_start flushed it, just drop it.
-        if (pendingAskBubble && pendingAskBubble.id === ev.targetId) {
-          pendingAskBubble = null;
+        // Cancelled before it was ever flushed — drop it from the queue and
+        // leave the rest of the queue (and its timer) intact.
+        const queued = pendingAskBubbles.findIndex(m => m.id === ev.targetId);
+        if (queued !== -1) {
+          pendingAskBubbles.splice(queued, 1);
+          if (pendingAskBubbles.length === 0) _disarmAskFlush();
           return;
         }
         state.messages = state.messages.map(m =>
@@ -1064,12 +1124,10 @@
       const idx  = state.messages.length;
       activeToolCards.set(ev.toolCallId, idx);
       state.messages = [...state.messages, card];
-      // Flush any pending ask bubble AFTER the tool card so chat order is
+      // Flush buffered asks AFTER the tool card so chat order is
       // [tool_card, ask_bubble] — omp emits select before tool_execution_start.
-      if (pendingAskBubble) {
-        state.messages = [...state.messages, pendingAskBubble];
-        pendingAskBubble = null;
-      }
+      // notify() below covers the flush.
+      _flushAskBubbles();
 
       activityLog.push({ ts: now, toolName: ev.toolName ?? "" });
       const cutoff = now - 60_000;
