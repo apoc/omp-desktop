@@ -15,6 +15,7 @@
 //! Submodules:
 //! - [`tests`] — unit tests for the pure parse/scan/validate helpers below.
 
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -40,17 +41,47 @@ pub struct SavedSession {
     pub preview: Option<String>,
 }
 
-/// Locate the directory where omp persists sessions (`~/.omp/agent/sessions`).
-fn sessions_root_dir(app: &AppHandle) -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("PI_CODING_AGENT_DIR") {
-        if !dir.is_empty() {
-            return Some(PathBuf::from(dir).join("sessions"));
+/// Resolve the sessions directory from already-gathered inputs.
+///
+/// The `profile.is_none()` gate is the single line separating per-profile
+/// history isolation from cross-profile leakage: honour `PI_CODING_AGENT_DIR`
+/// for a *named* profile and its history panel would read the shared tree (or
+/// another profile's) while its child process writes under
+/// `~/.omp/profiles/<id>/agent`. Extracted from [`sessions_root_dir`] purely
+/// so that precedence is assertable without a Tauri `AppHandle` - the same
+/// split `scan_dir` uses.
+fn sessions_root_for(home: &Path, profile: Option<&str>, env_dir: Option<&OsStr>) -> PathBuf {
+    // Same defence-in-depth filter as `agent::spawn::omp_args`: the write and
+    // read sides of this invariant must not disagree on the degenerate input.
+    // `Some("")` would otherwise skip the env override *and* resolve to
+    // `<home>/.omp/profiles/agent` (`Path::join("")` just adds a separator),
+    // while the child spawned from the same value writes `<home>/.omp/agent`.
+    // Unreachable through `ProfileStore::resolve`, which maps blank to `None`.
+    let profile = profile.filter(|id| !id.is_empty());
+    if profile.is_none() {
+        if let Some(dir) = env_dir.filter(|d| !d.is_empty()) {
+            return PathBuf::from(dir).join("sessions");
         }
     }
+    crate::profiles::agent_dir(home, profile).join("sessions")
+}
+
+/// Locate the directory where omp persists sessions for a resolved `profile`
+/// (`None` = built-in): `~/.omp/agent/sessions`, or
+/// `~/.omp/profiles/<id>/agent/sessions` for a named one (see
+/// [`crate::profiles::agent_dir`]).
+///
+/// `PI_CODING_AGENT_DIR` is honoured only for the built-in profile. That
+/// mirrors the installed omp binary's own precedence - verified by running
+/// `PI_CODING_AGENT_DIR=… omp --profile <id>`, which still resolved its
+/// models/sessions under `~/.omp/profiles/<id>/` - so the history panel
+/// reads the same tree the child process writes.
+fn sessions_root_dir(app: &AppHandle, profile: Option<&str>) -> Option<PathBuf> {
+    let env_dir = std::env::var_os("PI_CODING_AGENT_DIR");
     app.path()
         .home_dir()
         .ok()
-        .map(|home| home.join(".omp").join("agent").join("sessions"))
+        .map(|home| sessions_root_for(&home, profile, env_dir.as_deref()))
 }
 
 /// Extract text content from a message content block array.
@@ -313,14 +344,19 @@ fn scan_dir(root: &Path, cwd_filter: Option<&str>) -> Result<Vec<SavedSession>, 
     Ok(sessions)
 }
 
-/// Scan `~/.omp/agent/sessions/` for saved `.jsonl` session files.
+/// Scan `profile`'s sessions directory for saved `.jsonl` session files.
 /// If `cwd_filter` is provided, only sessions whose `cwd` matches are returned.
+///
+/// # Errors
+/// Returns an error when the home directory can't be resolved or the
+/// sessions directory can't be read.
 pub fn scan_saved_sessions(
     app: &AppHandle,
     cwd_filter: Option<&str>,
+    profile: Option<&str>,
 ) -> Result<Vec<SavedSession>, String> {
-    let root =
-        sessions_root_dir(app).ok_or_else(|| "could not resolve home directory".to_string())?;
+    let root = sessions_root_dir(app, profile)
+        .ok_or_else(|| "could not resolve home directory".to_string())?;
     scan_dir(&root, cwd_filter)
 }
 
@@ -361,14 +397,26 @@ fn validate_resume_against_root(root: &Path, resume: &str) -> Result<(), String>
     Ok(())
 }
 
-/// Validate a `resume` value against this app's sessions directory. An
+/// Validate a `resume` value against `profile`'s sessions directory. An
 /// empty value is always accepted (means "no resume").
-pub fn validate_resume(app: &AppHandle, resume: &str) -> Result<(), String> {
+///
+/// Confinement works differently for the two accepted forms. A *path* is
+/// canonicalised and must live under this profile's root, so a path from
+/// another profile's tree is rejected. A bare *session id* short-circuits
+/// before `root` is consulted (see [`validate_resume_against_root`]) and is
+/// therefore accepted verbatim; it stays confined because omp resolves an id
+/// prefix inside whichever profile tree it was itself launched with, so
+/// `--profile=B --resume=<A's id>` cannot reach A's data.
+///
+/// # Errors
+/// Returns an error when the home directory can't be resolved or `resume`
+/// is not a session id / `.jsonl` file under that root.
+pub fn validate_resume(app: &AppHandle, resume: &str, profile: Option<&str>) -> Result<(), String> {
     if resume.is_empty() {
         return Ok(());
     }
-    let root =
-        sessions_root_dir(app).ok_or_else(|| "could not resolve home directory".to_string())?;
+    let root = sessions_root_dir(app, profile)
+        .ok_or_else(|| "could not resolve home directory".to_string())?;
     validate_resume_against_root(&root, resume)
 }
 

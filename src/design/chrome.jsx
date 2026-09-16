@@ -6,14 +6,18 @@
    - Ambient rail: TokenGauge, ActivityRadar, Minimap, Peer session
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META } = window;
+const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID } = window;
 
 // ── Platform detection ────────────────────────────────────────────────
 const IS_WIN = typeof navigator !== "undefined" &&
   (navigator.userAgent.includes("Windows") || navigator.platform.startsWith("Win"));
 
 // ── Window chrome ─────────────────────────────────────────────────────
-function WindowChrome({ project, peer, onCmd }) {
+function WindowChrome({
+  project, peer, onCmd,
+  profiles, activeProfileId, startupProfileId,
+  onSelectProfile, onCreateProfile, onRenameProfile, onDeleteProfile, onSetStartupProfile,
+}) {
   return (
     <div className="chrome" data-tauri-drag-region>
       {/* macOS traffic lights — left side, hidden on Windows */}
@@ -37,6 +41,18 @@ function WindowChrome({ project, peer, onCmd }) {
         )}
       </div>
 
+      {/* Per-tab omp profile — the selector acts on the active tab only. */}
+      <ProfileMenu
+        profiles={profiles}
+        activeId={activeProfileId}
+        startupId={startupProfileId}
+        onSelect={onSelectProfile}
+        onCreate={onCreateProfile}
+        onRename={onRenameProfile}
+        onDelete={onDeleteProfile}
+        onSetStartup={onSetStartupProfile}
+      />
+
       <div className="chrome-right">
         <button className="btn ghost outlined" onClick={onCmd}>
           <Icon name="command" size={11} /> bridge{" "}
@@ -57,11 +73,18 @@ function WindowChrome({ project, peer, onCmd }) {
 }
 
 // ── Project tabs ─────────────────────────────────────────────────────
-function TabBar({ projects, activeId, onSelect, onClose, peer, onNew, onHistory }) {
+function TabBar({ projects, activeId, onSelect, onClose, peer, onNew, onHistory, profiles = [] }) {
+  // Tabs can run under different profiles, so a tab whose profile is not the
+  // built-in one is labelled with it — otherwise two tabs on the same folder
+  // in different profiles look identical. Falls back to the raw id until the
+  // profile list has loaded.
+  const profileLabel = id =>
+    id === DEFAULT_PROFILE_ID ? null : (profiles.find(p => p.id === id)?.name ?? id);
   return (
     <div className="tabs">
       {projects.map((p) => {
         const active = p.id === activeId;
+        const profile = profileLabel(p.profile);
         return (
           <div key={p.id}
             className={`tab ${active ? "active" : ""}`}
@@ -79,6 +102,9 @@ function TabBar({ projects, activeId, onSelect, onClose, peer, onNew, onHistory 
               />
             )}
             <span className="tab-name">{p.name}</span>
+            {profile && (
+              <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
+            )}
             {p.id === peer?.projectId && (
               <span className="chip accent" style={{ padding: "1px 6px" }}>split</span>
             )}

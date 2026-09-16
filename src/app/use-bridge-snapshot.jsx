@@ -9,7 +9,7 @@
                          render + handlers.
    - useHistoryShortcut: ⌘H / ⌃H toggles the conversation-history modal. */
 
-const { NULL_MODEL: _UB_NULL_MODEL } = window;
+const { NULL_MODEL: _UB_NULL_MODEL, DEFAULT_PROFILE_ID: _UB_DEFAULT_PROFILE_ID } = window;
 
 function useBridgeSnapshot(bridge, setters) {
   React.useEffect(() => {
@@ -26,6 +26,8 @@ function useBridgeSnapshot(bridge, setters) {
       setters.setModelState(snap.model || _UB_NULL_MODEL);
       if (snap.thinkingLevel) setters.setThinkingLevel(snap.thinkingLevel);
       setters.setSessions(snap.sessions ?? []);
+      setters.setProfiles(snap.profiles ?? []);
+      setters.setStartupProfileId(snap.startupProfileId ?? _UB_DEFAULT_PROFILE_ID);
       if (snap.activeSessionId) setters.setActiveSessionId(snap.activeSessionId);
     });
     return unsub;

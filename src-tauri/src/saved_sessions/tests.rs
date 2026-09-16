@@ -296,3 +296,51 @@ fn canonical_id_from_stem_returns_none_for_invalid_uuid_characters() {
         Path::new("2026-09-12T18-16-44-966Z_01a096d6@0aa6-75d7-804c-088913a441e6.jsonl");
     assert_eq!(canonical_id_from_stem(path_with_slash_like_char), None);
 }
+
+#[test]
+fn pi_coding_agent_dir_applies_to_the_builtin_profile_only() {
+    let home = Path::new("/home/u");
+    let env = OsStr::new("/custom/agent");
+
+    // Built-in profile: the env var is omp's documented session-storage
+    // override and the child honours it, so the history panel must too.
+    assert_eq!(
+        sessions_root_for(home, None, Some(env)),
+        Path::new("/custom/agent/sessions")
+    );
+    // Named profile: `--profile` beats the env var in omp itself, so reading
+    // `PI_CODING_AGENT_DIR` here would point the panel at a tree the child
+    // never writes - and potentially at another profile's history.
+    assert_eq!(
+        sessions_root_for(home, Some("work"), Some(env)),
+        Path::new("/home/u/.omp/profiles/work/agent/sessions")
+    );
+    // No override: both fall back to the per-profile layout.
+    assert_eq!(
+        sessions_root_for(home, None, None),
+        Path::new("/home/u/.omp/agent/sessions")
+    );
+    // An exported-but-empty value is not an override.
+    assert_eq!(
+        sessions_root_for(home, None, Some(OsStr::new(""))),
+        Path::new("/home/u/.omp/agent/sessions")
+    );
+}
+
+#[test]
+fn an_empty_profile_id_reads_the_builtin_tree_like_omp_args_writes_it() {
+    // `omp_args` filters `Some("")` to no flag, so the child writes the
+    // built-in tree; the read side must agree rather than resolving to
+    // `~/.omp/profiles/agent`. Unreachable via `resolve`, asserted so the
+    // two sides can't drift.
+    let home = Path::new("/home/u");
+    assert_eq!(
+        sessions_root_for(home, Some(""), None),
+        Path::new("/home/u/.omp/agent/sessions")
+    );
+    // And an empty id must not suppress the env override either.
+    assert_eq!(
+        sessions_root_for(home, Some(""), Some(OsStr::new("/custom/agent"))),
+        Path::new("/custom/agent/sessions")
+    );
+}

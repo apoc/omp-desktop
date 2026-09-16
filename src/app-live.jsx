@@ -18,7 +18,7 @@ const {
   Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar,
   StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
-  TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, NULL_PEER,
+  TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, NULL_PEER, DEFAULT_PROFILE_ID,
   INTENT_FRAMING, APPROVAL_PROMPT,
   useBridgeSnapshot, useThemeEffect, useCommandShortcut, useHistoryShortcut, timeNow,
 } = window;
@@ -70,12 +70,20 @@ function App() {
   const [sessions,        setSessions]        = React.useState([]);
   const [activeSessionId, setActiveSessionId] = React.useState("");
 
+  // ── Profiles — every selectable omp profile ({id, name}) ─────────────────
+  // The profile itself is per tab (see sessions[].profile); this is just the
+  // catalogue the selector renders.
+  const [profiles,        setProfiles]        = React.useState([]);
+  // Which profile is ticked as the default for new tabs / the next launch.
+  // App-wide and persisted, unlike a tab's own profile.
+  const [startupProfileId, setStartupProfileId] = React.useState(DEFAULT_PROFILE_ID);
+
   // ── Cross-cutting effects (bridge subscription, theme, ⌘K) ────────────────
   useBridgeSnapshot(bridge, {
     setMessages, setStreaming, setCtx, setKanban, setPlanMeta,
     setModels, setActivity, setSparkline,
     setModelState, setThinkingLevel,
-    setSessions, setActiveSessionId,
+    setSessions, setActiveSessionId, setProfiles, setStartupProfileId,
   });
   useThemeEffect(t);
   useCommandShortcut(setBridgeOpen, setBridgeView);
@@ -173,7 +181,13 @@ function App() {
 
   const handleResumeSession = async (session) => {
     if (!bridge || !session) return;
-    await bridge.resumeSession(session);
+    try {
+      await bridge.resumeSession(session);
+    } catch (err) {
+      // Same dangling-profile rejection as openSession (see handleNewProject
+      // below) — the bridge already rolled back its ghost tab registration.
+      console.error("[app] failed to resume session:", err);
+    }
   };
 
   const handleApprovePlan = () => {
@@ -197,12 +211,50 @@ function App() {
     if (!bridge) return;
     const path = await bridge.pickFolder();
     if (!path) return;
-    await bridge.openSession(path);
-    // Tab list and activeSessionId are updated via onUpdate from the bridge
+    try {
+      await bridge.openSession(path);
+      // Tab list and activeSessionId are updated via onUpdate from the bridge
+    } catch (err) {
+      // openSession rejects when the inherited/ticked profile no longer
+      // exists (deleted by another window, or a hand-edited profiles.json)
+      // and the backend refuses to spawn under it — the bridge already
+      // rolled back the ghost tab registration, so there's nothing left to
+      // undo here; just keep the rejection from going unhandled.
+      console.error("[app] failed to open project:", err);
+    }
   };
 
   // Close tab → kills that session's omp process; bridge updates tab list
   const handleCloseTab = id => { bridge?.closeSession(id); };
+
+  // Profile switch applies to the active tab only: its omp process is
+  // respawned under the new profile (a live process can't be moved to a
+  // different auth/session tree), so the tab comes back as a fresh session.
+  //
+  // Dispatched on `activeProject.id` - the tab the menu is *rendering* - not
+  // on `activeSessionId`. The two diverge because `use-bridge-snapshot`
+  // only assigns `activeSessionId` when the snapshot's value is truthy, so a
+  // `null` from the bridge leaves the closed id in React state; and right
+  // after a tab click `activeSessionId` still names the previous tab, which
+  // would respawn a different tab than the one shown (and on that
+  // `wasActive === false` path a failure would surface no note at all).
+  const handleSelectProfile = React.useCallback(id => {
+    // EMPTY_PROJECT.id is "" when no tab is open — switchSessionProfile
+    // would look it up in the session registry, find nothing, and resolve
+    // {ok: false, error: "unknown tab"}, a reason that doesn't match what's
+    // actually true (there's no tab, not a bad id). Short-circuit instead.
+    if (!activeProject.id) return Promise.resolve({ ok: false, error: "no tab open" });
+    return bridge?.switchSessionProfile(activeProject.id, id);
+  }, [bridge, activeProject.id]);
+  const handleCreateProfile = React.useCallback(name => bridge?.createProfile(name), [bridge]);
+  const handleRenameProfile = React.useCallback((id, name) => bridge?.renameProfile(id, name), [bridge]);
+  // Returns {ok, error}: the bridge refuses to delete a profile any open tab
+  // still runs under, and the menu renders that reason inline.
+  const handleDeleteProfile = React.useCallback(id => bridge?.deleteProfile(id), [bridge]);
+
+  // Returns {ok, error}; the backend re-validates the id under its lock, so
+  // the menu renders a refusal inline rather than assuming success.
+  const handleSetStartupProfile = React.useCallback(id => bridge?.setStartupProfile(id), [bridge]);
 
   const showRail  = t.layout !== "focus";
   const showSplit = t.layout === "split" && data.peer !== null;
@@ -214,12 +266,27 @@ function App() {
       <div className="app-backdrop" />
       <div className="app">
         <div className={`window scanlines ${showSplit ? "is-split" : ""}`}>
+          {/* activeProfileId falls back to the ticked startup profile when no
+              tab is open: `activeProject` is then EMPTY_PROJECT, whose
+              `profile` is the built-in id, but the bridge spawns the next tab
+              into the ticked one (nothing to inherit from) — so showing the
+              built-in would tick a profile that is not where the next tab
+              actually goes. */}
           <WindowChrome
             project={activeProject}
             peer={safePeer}
             onCmd={() => setBridgeOpen(true)}
+            profiles={profiles}
+            activeProfileId={activeProject.id ? activeProject.profile : startupProfileId}
+            startupProfileId={startupProfileId}
+            onSelectProfile={handleSelectProfile}
+            onCreateProfile={handleCreateProfile}
+            onRenameProfile={handleRenameProfile}
+            onDeleteProfile={handleDeleteProfile}
+            onSetStartupProfile={handleSetStartupProfile}
           />
           <TabBar
+            profiles={profiles}
             projects={sessions}
             activeId={activeSessionId}
             onSelect={handleSelectTab}

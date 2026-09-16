@@ -27,7 +27,7 @@ Three layers:
    - `spawn.rs` — `spawn_omp` candidate resolution + Win `CREATE_NO_WINDOW`.
    - `reader.rs` — stdout/stderr threads + bounded `read_until_capped` (16 MiB).
 
-   `AgentBridge` = `HashMap<session_id, BridgeInner>`. Per-session stdin lock so writes don't serialise through the map. Reader emits `agent://line/{id}` per stdout line, `agent://exit/{id}` (empty payload = clean, non-empty = reason). Tauri commands in `lib.rs`: `start_session`, `stop_session`, `send_command`, `session_status`, `open_project`. `Drop` + `stop_session` kill children — no orphans on hot-reload.
+   `AgentBridge` = `HashMap<session_id, BridgeInner>`. Per-session stdin lock so writes don't serialise through the map. Reader emits `agent://line/{id}` per stdout line, `agent://exit/{id}` (empty payload = clean, non-empty = reason) — except a startup death before any frame ever arrived, where the reader substitutes a bounded stderr tail (`reader::StderrTail`) for the empty payload so a silent crash isn't read as a clean exit; also cached in `last_errors` so a background tab's death is visible from `session_status` without waiting for a switch. Tauri commands in `lib.rs`: `start_session`, `stop_session`, `send_command`, `session_status`, `open_project`. `Drop` + `stop_session` kill children — no orphans on hot-reload.
 
 2. **Bridge (`src/live.js`)** — listens to `agent://line/{id}` for active session only. Holds per-session live state and a `sessionRegistry` (tabs). Tab switch: snapshot → tear down listeners → restore (or reset+`_initFetch`) → re-listen. Exposes `window.OMP_BRIDGE` (commands + `onUpdate`) and legacy `window.OMP_DATA`.
 
@@ -37,18 +37,25 @@ Three layers:
 
 One tab = one omp process. `default` session started in `lib.rs::setup`; new tabs via `OMP_BRIDGE.openSession(cwd)` → `start_session`. Tab switch preserves in-flight bubbles via `sessionSnapshots`; after re-listen, `get_messages` is called and `_handleResponse` merges persisted turns with cached `streamingBubble` (omp doesn't persist incomplete turns).
 
+Each tab also owns its **profile**: `omp --profile <id>` isolates auth/sessions/settings/caches under `~/.omp/profiles/<id>/`. The profile list lives in `<app config>/profiles.json` (`src-tauri/src/profiles.rs`); the reserved id `default` means *no* `--profile` flag, i.e. omp's own `~/.omp/agent`. Ids are slugified at creation and immutable — rename changes the label only. A profile is fixed at spawn, so `OMP_BRIDGE.switchSessionProfile(id, profileId)` stops and respawns that one tab's process (its transcript is dropped with it); `saved_sessions` resolves its root per profile, so history/resume stay inside the tab's own tree. `delete_profile` only unlists — it never deletes `~/.omp/profiles/<id>/`, and `OMP_BRIDGE.deleteProfile` refuses ids still in use by an open tab (only the frontend knows the tab set).
+
+`create_profile` also seeds `~/.omp/profiles/<id>/agent/models.yml` with a single keyless provider (`providers: {anthropic: {auth: none}}`, see `profiles::seed_bootstrap`) — RPC mode is non-interactive and omp exits at startup once no model resolves, so without the seed a fresh profile's tab would die before ever reaching `/login`. It never overwrites an existing `models.yml` (a re-created id, or a user who already wrote one, keeps theirs), and `clear_profile_bootstrap` removes it after a successful login, but only while the file is still byte-identical to what it seeded.
+
+The same menu ticks one profile as the **startup default**, stored as `ProfilesFile::startup` — a *pointer*, not a reordering, since `normalize` pins the built-in entry first and ids are the join key for on-disk data. `None`/absent means the built-in profile. It governs `lib.rs::setup`'s launch session and any tab opened with no active tab to inherit from; `openSession` otherwise inherits the active tab's profile, and running tabs are never moved. The pointer is re-validated against the list on every load and inside every `mutate`, so deleting or hand-editing away the ticked profile degrades to the built-in one instead of dangling. `list_profiles` returns `{profiles, startupId}` in one payload so the menu can't render a checkmark against a stale default.
+
 ## Frontend load order (`src/index.html`)
 
 Script order **is** the dependency graph:
 
 1. Vendored libs: React, ReactDOM, Babel, `marked.min.js`, `highlight.min.js` + marked-wiring inline.
-2. Tweaks: `tweaks/style.js`, `tweaks/use-tweaks.js` (plain, IIFE) → `tweaks/panel.jsx`, `tweaks/controls.jsx` (Babel; controls depends on panel).
-3. UI primitives: `ui/icons.jsx` (defines `Icon`, `TOOL_META`) → `ui/sparks.jsx` → `ui/markdown.jsx` → `ui/plan-annotations.jsx`.
-4. Chat: `chat/user-bubble.jsx` → `chat/eval-cell.jsx` → `chat/assistant-bubble.jsx` → `chat/tool-card.jsx` → `chat/chat-view.jsx`.
-5. `design/composer.jsx`, `design/chrome.jsx`, `design/panels.jsx`.
-6. Live data: `model-names.js` → `adapter.js` → `live.js`.
-7. App helpers: `app/constants.js` (plain, IIFE) → `app/use-bridge-snapshot.jsx`.
-8. `app-live.jsx` last.
+2. App constants: `app/constants.js` → `mentions.js` (plain, IIFE). **Before** the `design/` layer *and* before `app/use-bridge-snapshot.jsx` — `profile-menu.jsx`, `chrome.jsx`, `live.js` and `use-bridge-snapshot.jsx` destructure `DEFAULT_PROFILE_ID`/`isSubmitEnter` off `window` at *top level*, so moving this after any of them silently yields `undefined` (no resolver, no error). `composer.jsx` and `chat/ask-bubble.jsx` only call `isSubmitEnter` inside handlers — late-bound global lookups, insensitive to script order.
+3. Tweaks: `tweaks/style.js`, `tweaks/use-tweaks.js` (plain, IIFE) → `tweaks/panel.jsx`, `tweaks/controls.jsx` (Babel; controls depends on panel).
+4. UI primitives: `ui/icons.jsx` (defines `Icon`, `TOOL_META`) → `ui/sparks.jsx` → `ui/markdown.jsx` → `ui/plan-annotations.jsx`.
+5. Chat: `chat/user-bubble.jsx` → `chat/eval-cell.jsx` → `chat/assistant-bubble.jsx` → `chat/tool-card.jsx` → `chat/ask-bubble.jsx` → `chat/chat-view.jsx`.
+6. `design/mention-menu.jsx` → `design/composer.jsx` → `design/profile-menu.jsx` (before `chrome.jsx`, which destructures `window.ProfileMenu`) → `design/chrome.jsx` → `design/panels.jsx` → the remaining panels/modals.
+7. Live data: `model-names.js` → `adapter.js` → `live.js`.
+8. `app/use-bridge-snapshot.jsx` (after `live.js`, whose snapshot it mirrors).
+9. `app-live.jsx` last.
 
 When adding a file, insert at the correct point — there is no resolver to catch ordering bugs.
 
@@ -105,13 +112,28 @@ Trigger: 6th major component in one file, or 4th unrelated concern in one Rust m
 - Prefer surgical `edit` over full-file `write` when the file already exists. Full rewrites only when (a) creating a new file, (b) >~70% of lines genuinely change, or (c) restructuring would require so many anchors that `edit` becomes brittle. Never rewrite a file just to change a few lines — it loses formatting, drops invariants you didn't notice, and bloats diffs.
 
 **Rust:**
-- `cargo fmt` (stable) before commit; nightly clippy `pedantic`+`nursery` clean, `-D warnings`.
-- No `unwrap`/`expect` in production paths unless failure is provably unrecoverable.
-- Prefer borrowing (`&str`, `&[T]`) over owned. `&str` for params unless ownership required. No needless `String`↔`&str` conversions.
-- No `.clone()` to bypass borrowck unless duplication is intentional.
-- No unnecessary `Arc`/`Mutex`/async primitives. Keep lifetimes simple and idiomatic — no complex lifetime abstractions without clear benefit.
-- Iterators/slices over intermediate `Vec` collections. `Cow` only when it meaningfully reduces allocations.
-- Minimize temporary allocations in hot paths (reader loop, per-line dispatch, IPC payload construction).
+- **Toolchain/edition:** edition **2021**, stable toolchain (clippy only is nightly). No `rust-version` key — check `src-tauri/Cargo.toml` before using a newer-edition or recently-stabilised feature; don't assume 2024 idioms (`gen` blocks, RPIT lifetime capture changes) are available.
+- **Verify before finishing a task:** `cargo fmt` → `cargo test --locked` → `cargo +nightly clippy --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery -D warnings`. Pedantic+nursery is stricter than the generic `clippy -D warnings`; `redundant_clone` and `too_many_arguments` fire here and are hard errors.
+- **Errors:** `thiserror`/`anyhow` are deliberately *not* dependencies. Tauri serialises command errors to JS, so the IPC boundary is `Result<T, String>` — 18 of the 23 `#[tauri::command]` fns; the rest return `ProfileList`, `Option<String>`, or nothing. Internal helpers match it (`json_store::with_lock_str` exists purely to tunnel `String` errors through `io::Error`). Add `thiserror` only alongside a genuine library-shaped module with variants a caller matches on — not to restyle existing `String` errors.
+- No `unwrap`/`expect` outside `#[cfg(test)]` unless the invariant is unrecoverable **and** commented (see `run()`'s documented `# Panics`).
+- Prefer borrowing (`&str`, `&[T]`, `&Path`) in params; owned only when ownership is required. No needless `String`↔`&str` conversions.
+- **Cloning is a last resort, and every surviving `.clone()` must be load-bearing.** Before writing one, in this order:
+  1. **Borrow instead.** Take `&T`, return `&T`, or narrow the scope so the original is still live.
+  2. **Move instead.** A value used once after its last read doesn't need a copy — this is the most common needless clone. `FnOnce` closures, `match` arms and the tail of a function can all take ownership (`file.startup = next;`, not `next.clone()`).
+  3. **Restructure.** Compute the consuming use last so the earlier one can borrow, or hand out an index/id instead of a duplicate.
+  4. **Then clone, with a reason at the callsite** — the comment says *why the duplication is intentional*, not that it is a clone.
+- Clone-specific rules:
+  - `Arc::clone(&x)` / `Rc::clone(&x)` for refcount bumps — **never** bare `x.clone()`. The explicit form says "cheap handle, shared owner"; `.clone()` on an `Arc` field is indistinguishable from a deep copy at the callsite. No lint enforces this (`clone_on_ref_ptr` is `restriction`, not in pedantic/nursery), so it is convention- and review-enforced.
+  - Never `.clone()` into an existing binding (`*dst = src.clone()`); that's `clone_from`, and clippy's `assigning_clones` is a hard error here.
+  - Never clone to silence the borrow checker. A borrowck error is a lifetime/structure problem; a clone hides it and costs an allocation on every call.
+  - Never clone a `Copy` type, a `&str` you could pass through, or a collection you only iterate.
+  - **Tests are not exempt, and "the callee needs an owned value" is not a justification — it is the cue to restructure.** A clone repeated across callsites belongs in one helper, or the type needs a consuming accessor. Precedent in `profiles.rs`: 15 × `let path = store.path.clone(); drop(store);` became `store.into_path()` (consumes the store, zero allocation), and 5 × `ProfileStore::load(store.path.clone())` became `store.reopen()` — one documented clone inside the helper instead of one per test. Net 21 → 6 clones in that file, all six now carrying a reason — one of the six, `ProfileStore::load(path.clone())` in a quarantine test, looks like the exact `reopen()`-eligible shape above but isn't: that test reads `path` again afterward to locate the quarantined file, so `reopen()`'s self-borrowing signature doesn't fit and the documented clone stays.
+- The lint gate (see **Verify** above) already errors on `redundant_clone` (nursery) and `assigning_clones` (default-warn), and `clone_on_copy` covers cloning a `Copy` type — so a clone that survives it is either justified or in a blind spot. Reviewers should treat an uncommented one as a finding.
+- Prefer iterators over index loops; never collect into a `Vec` just to iterate it once. `Vec::with_capacity` when the size is known. `Cow` only when it measurably reduces allocations.
+- Avoid `Box<dyn Trait>` where generics work. No unnecessary `Arc`/`Mutex`/async primitives. Keep lifetimes simple — no lifetime abstractions without a clear benefit.
+- **Async:** Tauri owns the tokio runtime; this crate spawns no tasks of its own. Never hold a `std::sync::Mutex` guard across an `.await` — the existing locks (`AgentBridge.sessions`, `ProfileStore.cache`, `RuleBook`) are all acquired and dropped inside synchronous blocks; keep it that way. Long/blocking work goes through `spawn_blocking` (see `list_saved_sessions`, `workspace_status`).
+- No `unsafe` without a `// SAFETY:` comment. It lives in exactly two modules: `agent/supervisor.rs` (Win32 job objects; `libc::kill` on unix) and the `pid_is_alive` probe in `json_store.rs`. Note the invariant is *not* currently met file-wide — 8 of `supervisor.rs`'s 10 `unsafe` blocks are annotated; the `mem::zeroed()` at `supervisor.rs:121` and a test `libc::kill` are not. Annotate them if you touch them; don't cite the file as a clean example. Prefer the safe std API when one exists — the unix process-group setup uses `Command::process_group(0)`, not FFI.
+- Minimise temporary allocations in hot paths (reader loop, per-line dispatch, IPC payload construction).
 - Idiomatic Rust over clever abstractions. Preserve existing module/naming conventions.
 - Module-level `#![allow(clippy::needless_pass_by_value)]` in `lib.rs` is intentional — Tauri `#[command]` requires owned types.
 

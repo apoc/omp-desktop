@@ -240,20 +240,6 @@ impl RuleBook {
         json_store::SnapshotRing::new(paths.snapshots.clone(), 8)
     }
 
-    /// Run `f` (a project rules read-modify-write) while holding the
-    /// advisory lock at `paths.lock`. Converts `f`'s `String` error
-    /// through `io::Error` and back so it can use [`json_store::with_lock`]
-    /// without that module knowing about this one's error type.
-    fn with_project_lock<T>(
-        paths: &ProjectPaths,
-        f: impl FnOnce() -> Result<T, String>,
-    ) -> Result<T, String> {
-        json_store::with_lock(&paths.lock, std::time::Duration::from_secs(5), || {
-            f().map_err(std::io::Error::other)
-        })
-        .map_err(|e| e.to_string())
-    }
-
     /// Load (or return the cached copy of) a project's persisted rules. A
     /// missing primary file means a genuinely empty (fresh) project — the
     /// snapshot ring is never consulted for it, since a missing file is
@@ -368,7 +354,7 @@ impl RuleBook {
         mutate: impl FnOnce(&mut Vec<Rule>),
     ) -> Result<(), String> {
         let paths = self.project_paths(project_root);
-        Self::with_project_lock(&paths, || {
+        json_store::with_lock_str(&paths.lock, || {
             let mut rules = self.load_project_rules(&paths);
             mutate(&mut rules);
             Self::persist_project_rules(&paths, &rules)?;

@@ -23,7 +23,11 @@
   }/*EDITMODE-END*/;
 
   const NULL_MODEL    = { id: "", name: "–", provider: "", note: "", latency: 0, current: false };
-  const EMPTY_PROJECT = { id: "", name: "OMP Desktop", path: "", color: "var(--accent)", branch: "" };
+  // Reserved id of the built-in omp profile (spawned without --profile, i.e.
+  // omp's own ~/.omp/agent). Mirrors profiles::DEFAULT_PROFILE_ID in Rust.
+  const DEFAULT_PROFILE_ID = "default";
+
+  const EMPTY_PROJECT = { id: "", name: "OMP Desktop", path: "", color: "var(--accent)", branch: "", profile: DEFAULT_PROFILE_ID };
   const NULL_PEER     = { project: "—", title: "no peer session", activity: "edit · idle", tps: 0, todo: { done: 0, total: 1 } };
 
   const INTENT_FRAMING = (intent) =>
@@ -51,6 +55,7 @@
     TWEAK_DEFAULTS,
     NULL_MODEL,
     EMPTY_PROJECT,
+    DEFAULT_PROFILE_ID,
     NULL_PEER,
     INTENT_FRAMING,
     APPROVAL_PROMPT,

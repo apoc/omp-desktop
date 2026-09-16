@@ -23,7 +23,7 @@ mod supervisor;
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::AppHandle;
@@ -85,8 +85,12 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
 ///   as an error reason to surface.
 pub struct AgentBridge {
     sessions: Arc<Mutex<HashMap<String, BridgeInner>>>,
-    /// Cached spawn / startup errors keyed by `session_id`. Populated on
-    /// `start_session` failure, cleared on success. `send` checks this
+    /// Cached spawn / startup errors keyed by `session_id`. Two writers:
+    /// `cache_error` on a `start_session` spawn failure (command thread),
+    /// and the stdout reader thread on a startup death it explained via
+    /// `StderrTail` (see `reader.rs`'s `spawn_stdout_reader`). Two
+    /// clearing sites: `start_session` on its next successful spawn for
+    /// this id, and `stop_session` unconditionally. `send` checks this
     /// when no live session is found so the frontend gets the *real*
     /// reason (e.g. "omp not on PATH") instead of a generic "session not
     /// found". Also exposed via the `session_status` Tauri command for
@@ -114,17 +118,25 @@ impl AgentBridge {
     /// `stop_session`/replacement) so a granted tool-approval rule can
     /// auto-answer matching prompts for this session — see
     /// `reader::try_auto_approve`.
+    ///
+    /// `profile` selects the omp profile this session's process runs under
+    /// (`None`/`"default"` = omp's own `~/.omp/agent` tree, no flag). It is
+    /// per-session by design: each tab owns one omp process, so two tabs can
+    /// run under different profiles at the same time.
     pub fn start_session(
         &self,
         session_id: String,
         cwd: Option<&str>,
         resume: Option<&str>,
+        profile: Option<&str>,
         app: AppHandle,
         rule_book: Arc<crate::approval::RuleBook>,
     ) -> Result<(), String> {
-        let (mut child, supervisor) = match spawn_omp(cwd, resume) {
+        let (mut child, supervisor) = match spawn_omp(cwd, resume, profile) {
             Ok(c) => c,
             Err(e) => {
+                // Cached *and* returned: the caller gets the reason now, the
+                // cache serves the frontend's later `session_status` query.
                 self.cache_error(&session_id, e.clone());
                 return Err(e);
             }
@@ -133,31 +145,56 @@ impl AgentBridge {
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
         let stdin_arc = Arc::new(Mutex::new(stdin));
-        let stdin_for_reader = stdin_arc.clone();
+        let stdin_for_reader = Arc::clone(&stdin_arc);
         let journal = Arc::new(Mutex::new(EventJournal::new(
             EVENT_JOURNAL_CAPACITY,
             EVENT_JOURNAL_MAX_BYTES,
         )));
         let project_root = cwd.filter(|c| !c.is_empty()).map(std::path::PathBuf::from);
         let gen = self.next_gen.fetch_add(1, Ordering::SeqCst);
+        // Liveness flag for this incarnation. Cloned into the map entry
+        // (so `reap_and_clear_grants`/supersession can clear it) and into
+        // the reader config (so the reader's per-line hot path can check
+        // it without taking the `sessions` mutex).
+        let alive = Arc::new(AtomicBool::new(true));
 
         // Atomic install: drop any previous BridgeInner under the lock,
-        // install the new one in the same critical section.
+        // install the new one in the same critical section, and clear the
+        // previous incarnation's `alive` flag before releasing the lock —
+        // the stdout reader for that incarnation may be parked on this
+        // same mutex and must observe `alive == false` the instant it can
+        // see its map entry gone (see reader.rs's post-EOF `None` arm).
         let prev = {
             let mut s = self
                 .sessions
                 .lock()
                 .map_err(|_| "lock poisoned".to_string())?;
-            s.insert(
+            let prev = s.insert(
+                // Owned by the map; `session_id` is still needed by the readers
+                // and `reap_and_clear_grants` below.
                 session_id.clone(),
                 BridgeInner {
                     gen,
                     stdin: Some(stdin_arc),
                     child: Some(child),
                     supervisor: Some(supervisor),
-                    journal: journal.clone(),
+                    journal: Arc::clone(&journal),
+                    // Kept alive (pun intended) on the map entry; the reader
+                    // thread below gets its own clone via `alive` moved into
+                    // `StdoutReaderConfig`.
+                    alive: Arc::clone(&alive),
                 },
-            )
+            );
+            if let Some(inner) = &prev {
+                inner.alive.store(false, Ordering::Release);
+            }
+            // Explicit, and not one line earlier: the store above *must*
+            // happen while the lock is held, so a reader parked on this mutex
+            // cannot wake to find its map entry gone while `alive` is still
+            // true. Spelling the drop out marks this as the earliest correct
+            // release point rather than an oversight.
+            drop(s);
+            prev
         };
         if let Some(prev) = prev {
             reap_and_clear_grants(&session_id, prev, &rule_book);
@@ -167,8 +204,13 @@ impl AgentBridge {
         // failed attempt for this id.
         self.clear_error(&session_id);
 
+        // Shared by both readers: stderr collects the reason, stdout decides
+        // (at EOF) whether the child ever got far enough for that reason to
+        // be the better explanation than a clean exit.
+        let stderr_tail = Arc::new(Mutex::new(reader::StderrTail::new()));
         spawn_stdout_reader(reader::StdoutReaderConfig {
-            sessions: self.sessions.clone(),
+            sessions: Arc::clone(&self.sessions),
+            // Last clone: `spawn_stderr_reader` takes the original by value.
             sid: session_id.clone(),
             gen,
             journal,
@@ -177,8 +219,11 @@ impl AgentBridge {
             project_root,
             app,
             stdout,
+            alive,
+            stderr_tail: Arc::clone(&stderr_tail),
+            last_errors: Arc::clone(&self.last_errors),
         });
-        spawn_stderr_reader(session_id, stderr);
+        spawn_stderr_reader(session_id, stderr, stderr_tail);
         Ok(())
     }
 
@@ -193,7 +238,15 @@ impl AgentBridge {
             let Ok(mut s) = self.sessions.lock() else {
                 return;
             };
-            s.remove(session_id)
+            let removed = s.remove(session_id);
+            // Clear liveness before releasing the lock: a reader thread
+            // parked on this same mutex must see `alive == false` the
+            // instant it observes the entry gone, not after — see
+            // reader.rs's post-EOF `None` arm.
+            if let Some(inner) = &removed {
+                inner.alive.store(false, Ordering::Release);
+            }
+            removed
         };
         if let Some(inner) = removed {
             reap_and_clear_grants(session_id, inner, rule_book);
@@ -230,7 +283,7 @@ impl AgentBridge {
                 .lock()
                 .map_err(|_| "lock poisoned".to_string())?;
             if let Some(inner) = s.get(session_id) {
-                inner.stdin.clone()
+                inner.stdin.as_ref().map(Arc::clone)
             } else {
                 if let Some(err) = self.last_error(session_id) {
                     return Err(err);
@@ -272,7 +325,7 @@ impl AgentBridge {
             let inner = s
                 .get(session_id)
                 .ok_or_else(|| format!("session '{session_id}' not found"))?;
-            let journal = inner.journal.clone();
+            let journal = Arc::clone(&inner.journal);
             drop(s);
             journal
         };
@@ -306,6 +359,13 @@ impl Drop for AgentBridge {
     fn drop(&mut self) {
         if let Ok(mut sessions) = self.sessions.lock() {
             for (_, mut inner) in sessions.drain() {
+                // Mirrors `reap_and_clear_grants`: clear liveness before
+                // anything else, so a reader thread that outlives this
+                // drain loop (it holds its own `Arc<AtomicBool>`) and later
+                // wakes on EOF finds no map entry *and* an already-false
+                // `alive`, instead of emitting into an `AppHandle` whose
+                // webview is being torn down.
+                inner.alive.store(false, Ordering::Release);
                 inner.stdin = None;
                 if let Some(mut c) = inner.child.take() {
                     let _ = c.kill();
@@ -333,11 +393,21 @@ impl Drop for AgentBridge {
 /// displacing a previous occupant of the same id. Extracted as its own
 /// function so this is unit-testable without spawning a real child
 /// process or a Tauri `AppHandle`.
+///
+/// Also clears `prev.alive`, though both callers now already clear it
+/// themselves while still holding the `sessions` lock that gave up
+/// `prev` (see `start_session`'s insert and `stop_session`'s remove) —
+/// a reader thread parked on that same mutex must see `alive == false`
+/// the instant it can observe its map entry gone, which requires the
+/// clear to happen in that critical section, not here. The store here is
+/// now a redundant, idempotent safety net (and what the unit test below
+/// pins), not the only clearing site.
 fn reap_and_clear_grants(
     session_id: &str,
     mut prev: BridgeInner,
     rule_book: &crate::approval::RuleBook,
 ) {
+    prev.alive.store(false, Ordering::Release);
     rule_book.clear_session(session_id);
     prev.stdin = None;
     let prev_supervisor = prev.supervisor.take();
@@ -446,12 +516,48 @@ mod tests {
                 EVENT_JOURNAL_CAPACITY,
                 EVENT_JOURNAL_MAX_BYTES,
             ))),
+            alive: Arc::new(AtomicBool::new(true)),
         };
         reap_and_clear_grants("sess-x", prev, &rule_book);
 
         assert!(
             !rule_book.is_granted("sess-x", None, "bash"),
             "replacing a session must drop its previous occupant's session-scoped grants"
+        );
+    }
+
+    #[test]
+    fn reap_and_clear_grants_clears_the_alive_flag() {
+        let dir = std::env::temp_dir().join(format!(
+            "omp-desktop-agent-mod-test-alive-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let rule_book = crate::approval::RuleBook::new(dir);
+        let alive = Arc::new(AtomicBool::new(true));
+        let prev = BridgeInner {
+            gen: 1,
+            stdin: None,
+            child: None,
+            supervisor: None,
+            journal: Arc::new(Mutex::new(EventJournal::new(
+                EVENT_JOURNAL_CAPACITY,
+                EVENT_JOURNAL_MAX_BYTES,
+            ))),
+            // Kept so the flag is observable after `prev` moves into
+            // `reap_and_clear_grants` below.
+            alive: Arc::clone(&alive),
+        };
+
+        reap_and_clear_grants("sess-x", prev, &rule_book);
+
+        assert!(
+            !alive.load(Ordering::Acquire),
+            "superseding/reaping a session must clear its liveness flag so its \
+             (possibly still-running) reader thread stops emitting for this id"
         );
     }
 }

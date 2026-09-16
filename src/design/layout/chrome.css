@@ -42,7 +42,138 @@
 .win-min   { color: #FEBC2E !important; }
 .win-max   { color: #28C840 !important; }
 .chrome-title { display: flex; align-items: center; gap: 6px; font-size: var(--d-text-sm); flex: 1; justify-content: center; }
-.chrome-right { display: flex; gap: 6px; }
+/* align-items is load-bearing. `.win-ctrl` is full-bar height (38px), so this
+   flex line's cross size is 38px even though `.chrome` centres the box
+   itself; the 24px `.btn` has a definite height, so under the default
+   `stretch` it is placed at cross-start instead. Measured in a real webview:
+   button centre 11.5px vs 18.5px for the window controls and profile chip —
+   a 7px offset, on every platform that renders the controls. */
+.chrome-right { display: flex; align-items: center; gap: 6px; }
+
+/* ── Per-tab profile selector ─────────────────────────────────────────── */
+.profile-menu { position: relative; display: flex; align-items: center; }
+.profile-trigger { display: flex; align-items: center; gap: 6px; max-width: 220px; }
+.profile-trigger-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Right-anchored, not centred: the trigger sits between a `flex: 1` title
+   and `.chrome-right`, near the window's right edge. Centring the pop under
+   it would push up to 170px (half of max-width) past that edge, and
+   `.window { overflow: hidden }` clips the overflow silently - no scroll,
+   no repositioning. Growing leftward from the trigger's own right edge
+   never runs out of room on that side. */
+.profile-pop {
+  position: absolute; top: calc(100% + 6px); right: 0; left: auto;
+  z-index: 40;
+  min-width: 260px; max-width: 340px;
+  padding: 4px;
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-bright);
+  border-radius: var(--r-2);
+  box-shadow: var(--shadow-pop);
+}
+.profile-pop-head {
+  padding: 5px 8px 4px;
+  font-size: var(--d-text-xs); color: var(--fg-4);
+  text-transform: lowercase; letter-spacing: 0.04em;
+}
+/* Bounds the row list, not `.profile-pop` itself, so the create/rename form
+   and hint stay pinned below and visible. The backend allows up to
+   MAX_PROFILES = 64 (src-tauri/src/profiles.rs); at one ~30px row apiece
+   that's well past `.window`'s clipping overflow:hidden, and past that
+   point the form and hint - the only way to reach a profile you can't see -
+   would be unreachable rather than merely off-screen. */
+.profile-list {
+  display: flex; flex-direction: column; gap: 1px;
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+/* 6px gutter, not 2px: a near-miss on the 24px tick must land on dead space,
+   never on .profile-item - whose single click respawns the tab and drops its
+   transcript. (Deleting a profile, which only unlists it, takes two clicks;
+   the risk gradient has to point the same way.) */
+.profile-row { display: flex; align-items: center; gap: 6px; }
+.profile-row .profile-item { flex: 1; min-width: 0; }
+.profile-item {
+  appearance: none; border: 0; background: transparent;
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: var(--r-1);
+  font-size: var(--d-text-sm); color: var(--fg-2);
+  text-align: left; cursor: pointer;
+}
+.profile-item:hover { background: var(--bg-hover); color: var(--fg); }
+/* The row button is not a `.btn`, so it misses the global focus ring in
+   styles.css - without this, tabbing lights the two small icon buttons and
+   leaves the primary target between them invisible. */
+.profile-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.profile-item.active { color: var(--fg); }
+/* Fixed-width gutter so names stay aligned whether or not the row is the
+   running one (the mark is rendered only when it is). */
+.profile-item-mark {
+  width: 9px; height: 9px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.profile-item-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-item-id {
+  font-size: var(--d-text-xs); color: var(--fg-4);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px;
+}
+/* Default-profile tick. A bordered box so it reads as a settable checkbox,
+   distinct from the `live` ring inside .profile-item that merely reports
+   which profile this tab's process runs under. Always visible (unlike
+   .profile-del, which appears on hover): an empty box is what tells the user
+   the control exists. 22px is a real hit target (the 16px original sat 2px
+   from a one-click respawn); .profile-row's 6px gutter does the rest. */
+.btn.profile-star {
+  appearance: none;
+  width: 22px; height: 22px; min-width: 22px;
+  padding: 0; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line-bright);
+  border-radius: 3px;
+  background: transparent;
+  opacity: 0.55;
+  transition: opacity 120ms, border-color 120ms, background 120ms;
+}
+.profile-row:hover .profile-star,
+.btn.profile-star.on { opacity: 1; }
+.btn.profile-star:hover { border-color: var(--accent); background: var(--bg-hover); }
+.btn.profile-star.on {
+  border-color: color-mix(in oklab, var(--accent) 55%, var(--line));
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+}
+/* Delete sits on `.btn.icon.ghost`; only the hover reveal, the wider armed
+   "delete?" label and the rose tint are specific to it. */
+.btn.profile-del {
+  width: auto; min-width: 24px; padding: 0 6px; flex: none;
+  color: var(--fg-4);
+  opacity: 0; transition: opacity 120ms, background 120ms, color 120ms;
+}
+.profile-row:hover .profile-del { opacity: 1; }
+/* Same class of problem as .profile-item:focus-visible above: opacity: 0
+   also hides the global .btn:focus-visible ring, so a keyboard user tabbing
+   through would land on a fully invisible delete control. */
+.btn.profile-del:focus-visible { opacity: 1; }
+.btn.profile-del:hover { color: var(--rose); }
+.btn.profile-del.armed { opacity: 1; color: var(--rose); background: color-mix(in oklab, var(--rose) 14%, transparent); }
+.profile-del-label { font-size: var(--d-text-xs); }
+/* Matches .btn.profile-del's unarmed rendered width (min-width: 24px, icon
+   content) so the built-in row - which renders this instead of the button -
+   doesn't lose that column and stretch its flex:1 .profile-item wider than
+   every other row. */
+.profile-del-spacer { width: 24px; flex: none; }
+.profile-sep { height: 1px; margin: 4px 2px; background: var(--line); }
+.profile-form { display: flex; align-items: center; gap: 4px; padding: 2px 4px 4px; }
+.profile-input {
+  flex: 1; min-width: 0;
+  padding: 5px 7px;
+  background: var(--bg-surface);
+  border: 1px solid var(--line-bright); border-radius: var(--r-1);
+  color: var(--fg); font-family: var(--font-mono); font-size: var(--d-text-sm);
+}
+.profile-input:focus { outline: none; border-color: var(--accent); }
+.profile-hint { padding: 4px 8px 5px; font-size: var(--d-text-xs); color: var(--fg-4); }
+.profile-hint.err { color: var(--rose); }
 
 /* ── Tabs ────────────────────────────────────────────────────────────── */
 .tabs {
@@ -71,6 +202,15 @@
   transition: background 200ms var(--ease-out);
 }
 .tab-name { font-family: var(--font-mono); font-size: var(--d-text-sm); }
+.tab-profile {
+  /* `.chip` is inline-flex, on which `text-overflow` is inert - the label
+     would hard-clip mid-glyph at max-width instead of ellipsizing. Single
+     text child here, so `.chip`'s align-items/gap are unused anyway. */
+  display: inline-block;
+  padding: 1px 6px;
+  max-width: 84px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .tab-run-dot {
   width: 6px; height: 6px; border-radius: 50%; flex: none;
 }

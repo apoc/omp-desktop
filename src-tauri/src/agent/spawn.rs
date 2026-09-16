@@ -85,6 +85,7 @@ static HELP_TEXT: LazyLock<String> = LazyLock::new(fetch_help_text);
 static RPC_UI_SUPPORTED: LazyLock<bool> = LazyLock::new(|| help_text_supports_rpc_ui(&HELP_TEXT));
 static APPROVAL_MODE_SUPPORTED: LazyLock<bool> =
     LazyLock::new(|| help_text_supports_approval_mode(&HELP_TEXT));
+static PROFILE_SUPPORTED: LazyLock<bool> = LazyLock::new(|| help_text_supports_profile(&HELP_TEXT));
 
 /// Return the RPC mode string to use when spawning omp: `rpc-ui` when the
 /// installed binary advertises it, `rpc` otherwise.
@@ -115,6 +116,52 @@ fn help_text_supports_approval_mode(text: &str) -> bool {
     text.contains("--approval-mode")
 }
 
+/// Return true if the given help text advertises the `--profile` flag.
+/// Matches on a flag-name boundary: `--profile` immediately followed by
+/// anything other than an ASCII alphanumeric or `-` character (`=`, a
+/// space, a tab, `<`, a newline, or end-of-string all count), rather than
+/// three enumerated literal suffixes (`--profile=`, `--profile `,
+/// `--profile<`). The enumerated form has a false-negative hole a boundary
+/// match closes: a help layout that separates the flag from its
+/// placeholder with a tab, or puts the flag alone at end-of-line (clap's
+/// next-line-help style), matches none of the three literals.
+///
+/// A false negative is the expensive failure here, not the false positive
+/// the enumerated form was guarding against: it drives `PROFILE_SUPPORTED`
+/// false and [`profile_refusal`] hard-refuses every named-profile tab on
+/// an omp build that supports profiles perfectly — total feature outage
+/// with no user workaround, since `HELP_TEXT` is a process-lifetime
+/// `LazyLock` computed once. A false positive is comparatively cheap: omp
+/// itself rejects the unrecognised argv, the same blank-tab outcome the
+/// refusal exists to improve on, not silent data misplacement. The
+/// boundary check still rejects `--profiler=` and `--profile-dir` (`r`/`-`
+/// immediately follow `--profile`); `--no-profile` never contains the
+/// literal `--profile` substring in the first place. Extracted as a pure
+/// function so it can be unit-tested without spawning omp.
+fn help_text_supports_profile(text: &str) -> bool {
+    text.match_indices("--profile").any(|(i, m)| {
+        !matches!(
+            text[i + m.len()..].chars().next(),
+            Some(c) if c.is_ascii_alphanumeric() || c == '-'
+        )
+    })
+}
+
+/// The spawn-refusal message for an omp build that cannot honour
+/// `--profile`, or `None` when the spawn may proceed. Pure over its
+/// inputs so the three-way decision — no profile requested / probe never
+/// ran / genuinely old omp — is testable without depending on the
+/// process-global `HELP_TEXT`/`PROFILE_SUPPORTED` `LazyLock`s, whose
+/// values are whatever `omp` happens to be on the test machine's PATH.
+/// See the call site in [`spawn_omp`] for the full rationale (why the
+/// flag is never silently dropped, and why an empty probe must not
+/// refuse).
+fn profile_refusal(profile: Option<&str>, help_text: &str, supported: bool) -> Option<String> {
+    (profile.is_some_and(|p| !p.is_empty()) && !help_text.is_empty() && !supported).then(|| {
+        "this omp build does not support --profile; profiles require a newer omp".to_string()
+    })
+}
+
 /// Run `omp --help` and collect stdout+stderr.
 ///
 /// `--help` exits immediately without model initialisation or stdin reads,
@@ -129,6 +176,14 @@ fn fetch_help_text() -> String {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         apply_omp_path(&mut cmd);
+        // The probe must see the same environment the real spawn does. An
+        // inherited `OMP_PROFILE` or `PI_PROFILE` that omp rejects (its ids
+        // are lowercase, so a plain `export OMP_PROFILE=Work` qualifies)
+        // makes `--help` print only a validation error - flipping *every*
+        // feature probe false and, with the refusal below, breaking
+        // named-profile tabs that would in fact have spawned fine, since
+        // `spawn_omp` strips both aliases (see `sanitize_child_env`).
+        sanitize_child_env(&mut cmd);
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -140,9 +195,10 @@ fn fetch_help_text() -> String {
             String::from_utf8_lossy(&output.stderr),
         );
         eprintln!(
-            "[omp-desktop] help probe: rpc-ui={} approval-mode={}",
+            "[omp-desktop] help probe: rpc-ui={} approval-mode={} profile={}",
             help_text_supports_rpc_ui(&text),
-            help_text_supports_approval_mode(&text)
+            help_text_supports_approval_mode(&text),
+            help_text_supports_profile(&text)
         );
         return text;
     }
@@ -179,15 +235,31 @@ fn fetch_help_text() -> String {
 /// omp's own default approval tier auto-approves exec-tier tools, which a
 /// desktop product should never inherit silently.
 ///
+/// `profile` is already resolved (see `profiles::ProfileStore::resolve`):
+/// `Some(id)` becomes `--profile=<id>`, `None` is the built-in profile and
+/// spawns without the flag so it keeps using omp's shared `~/.omp/agent`.
+///
+/// Unlike `approval_mode`, `--profile` is *not* gated on the help probe, and
+/// deliberately so: the probe exists to keep an older omp startable when the
+/// desktop merely prefers a flag, whereas here the flag is the entire point.
+/// Dropping it on an omp too old to know `--profile` would silently run the
+/// tab against the shared `~/.omp/agent` tree - writing a named profile's
+/// conversation into the default profile's history - which is strictly worse
+/// than the tab failing loudly.
+///
 /// Extracted as a pure function so this is unit-testable without spawning
 /// a process.
 fn omp_args(
     mode: &str,
+    profile: Option<&str>,
     resume: Option<&str>,
     cwd: Option<&str>,
     approval_mode: Option<&str>,
 ) -> Vec<String> {
     let mut args = vec!["--mode".to_string(), mode.to_string()];
+    if let Some(p) = profile.filter(|p| !p.is_empty()) {
+        args.push(format!("--profile={p}"));
+    }
     if let Some(r) = resume {
         if !r.is_empty() {
             args.push(format!("--resume={r}"));
@@ -228,6 +300,40 @@ fn resolve_cwd(dir: &str) -> String {
         .unwrap_or_else(|| dir.to_string())
 }
 
+/// Strip omp env vars that would override this spawn's explicit argv.
+///
+/// omp resolves an env-supplied profile through two variables, in this
+/// precedence order: `resolveProfileEnv(OMP_PROFILE, PI_PROFILE)` uses
+/// `OMP_PROFILE` whenever it's set (even to an invalid value) and falls
+/// back to `PI_PROFILE` — a legacy compatibility alias — only when
+/// `OMP_PROFILE` is entirely unset. `omp --help` documents `OMP_PROFILE`
+/// as an alias for `--profile`; `PI_PROFILE` is undocumented there but
+/// just as capable of overriding this spawn's chosen profile, so both
+/// must be removed. Stripping only `OMP_PROFILE` would actively unmask
+/// an inherited `PI_PROFILE` that was previously shadowed by it — a user
+/// with both exported would get a *different* (and wrong) profile after
+/// sanitisation than before it.
+///
+/// Inheriting either would silently override the desktop's per-tab
+/// choice: a built-in-profile tab spawns with no flag, so with
+/// `OMP_PROFILE=work` (or `PI_PROFILE=work`) exported the child would
+/// write into `~/.omp/profiles/work/agent` while `sessions_root_dir(app,
+/// None)` reads `~/.omp/agent/sessions` - history and resume would point
+/// at a tree the child never touches. argv is the single source of
+/// truth, so both aliases are always removed.
+///
+/// `PI_CODING_AGENT_DIR` is deliberately *not* removed: omp honours it
+/// only for the built-in profile, and `saved_sessions::sessions_root_for`
+/// mirrors that same precedence, so the two agree. `PI_CONFIG_DIR` and
+/// `PI_CODING_AGENT_SESSION_DIR` also relocate the child's data root, but
+/// stripping them here would be wrong — they're pre-existing read-side
+/// mismatches owned by `saved_sessions::mod` (and, for the bootstrap
+/// seed path, `profiles.rs`), not this sanitiser's job.
+fn sanitize_child_env(cmd: &mut Command) {
+    cmd.env_remove("OMP_PROFILE");
+    cmd.env_remove("PI_PROFILE");
+}
+
 /// Spawn omp for a live session using the best available RPC mode.
 /// If `resume` is specified, `--resume=<path_or_id>` is passed to resume an
 /// existing session (a single token, not two separate argv entries — see
@@ -238,6 +344,7 @@ fn resolve_cwd(dir: &str) -> String {
 pub(super) fn spawn_omp(
     cwd: Option<&str>,
     resume: Option<&str>,
+    profile: Option<&str>,
 ) -> Result<(Child, super::supervisor::ProcessSupervisor), String> {
     // On Windows, `Command::new` resolves bare "omp" against PATH and
     // PATHEXT (.exe etc.) via CreateProcess. We try the explicit ".exe"
@@ -248,10 +355,36 @@ pub(super) fn spawn_omp(
     // descendants without a Job Object.
     let mode = rpc_mode();
     let approval_mode = approval_mode_supported().then_some("write");
+    // `--profile` is never *dropped* when unsupported (that would write a
+    // named profile's conversation into the shared `~/.omp/agent` tree), but
+    // failing at spawn is not enough on its own: an old omp exits before
+    // writing a stdout line, so `reader.rs` takes the EOF path and emits
+    // `agent://exit/{id}` with an empty payload - which the event contract
+    // defines as a *clean* exit, leaving the tab idle and blank with the real
+    // reason only on stderr. Refusing here instead caches the message in
+    // `last_errors`, where `session_status` and `switchSessionProfile`'s
+    // failure note both surface it.
+    //
+    // Gated on a non-empty probe so "probe never ran" stays distinguishable
+    // from "omp is too old": `fetch_help_text` returns `""` when no candidate
+    // binary could be executed at all, and `HELP_TEXT` is a process-lifetime
+    // `LazyLock`, so without this a missing omp would misreport a PATH problem
+    // as an upgrade requirement - and one transient fork failure at launch
+    // would brick every named profile for the whole run. Any omp that exists
+    // prints help, so a genuinely old binary still hits the refusal.
+    if let Some(e) = profile_refusal(profile, &HELP_TEXT, *PROFILE_SUPPORTED) {
+        return Err(e);
+    }
     // Resolve once so `current_dir` and `--cwd=` (see `resolve_cwd`) can
     // never disagree or compound a relative value into a nested path.
     let resolved_cwd = cwd.filter(|dir| !dir.is_empty()).map(resolve_cwd);
-    let args = omp_args(mode, resume, resolved_cwd.as_deref(), approval_mode);
+    let args = omp_args(
+        mode,
+        profile,
+        resume,
+        resolved_cwd.as_deref(),
+        approval_mode,
+    );
     let mut last_err = String::from("no candidates tried");
     for name in CANDIDATES {
         let mut cmd = Command::new(name);
@@ -260,6 +393,7 @@ pub(super) fn spawn_omp(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         apply_omp_path(&mut cmd);
+        sanitize_child_env(&mut cmd);
         // Suppress the transient console window that Windows would
         // otherwise attach to a console-subsystem child of a GUI parent.
         #[cfg(windows)]
@@ -291,7 +425,10 @@ pub(super) fn spawn_omp(
 
 #[cfg(test)]
 mod tests {
-    use super::{help_text_supports_rpc_ui, omp_args, resolve_cwd};
+    use super::{
+        help_text_supports_profile, help_text_supports_rpc_ui, omp_args, profile_refusal,
+        resolve_cwd, sanitize_child_env, Command,
+    };
 
     #[test]
     fn detects_rpc_ui_in_mode_line() {
@@ -382,12 +519,18 @@ mod tests {
 
     #[test]
     fn omp_args_without_resume() {
-        assert_eq!(omp_args("rpc", None, None, None), vec!["--mode", "rpc"]);
+        assert_eq!(
+            omp_args("rpc", None, None, None, None),
+            vec!["--mode", "rpc"]
+        );
     }
 
     #[test]
     fn omp_args_with_empty_resume_is_omitted() {
-        assert_eq!(omp_args("rpc", Some(""), None, None), vec!["--mode", "rpc"]);
+        assert_eq!(
+            omp_args("rpc", None, Some(""), None, None),
+            vec!["--mode", "rpc"]
+        );
     }
 
     #[test]
@@ -395,7 +538,7 @@ mod tests {
         // Single `--resume=<value>` token, not two separate argv entries —
         // see `omp_args` doc comment for why this matters.
         assert_eq!(
-            omp_args("rpc-ui", Some("/tmp/sess.jsonl"), None, None),
+            omp_args("rpc-ui", None, Some("/tmp/sess.jsonl"), None, None),
             vec!["--mode", "rpc-ui", "--resume=/tmp/sess.jsonl"]
         );
     }
@@ -405,7 +548,7 @@ mod tests {
         // Even a flag-shaped resume value can't be re-tokenised as a
         // separate argument because it's embedded in one `--resume=` token.
         assert_eq!(
-            omp_args("rpc", Some("--auto-approve"), None, None),
+            omp_args("rpc", None, Some("--auto-approve"), None, None),
             vec!["--mode", "rpc", "--resume=--auto-approve"]
         );
     }
@@ -413,35 +556,58 @@ mod tests {
     #[test]
     fn omp_args_with_cwd_appends_explicit_flag() {
         assert_eq!(
-            omp_args("rpc", None, Some("/home/dev/project"), None),
+            omp_args("rpc", None, None, Some("/home/dev/project"), None),
             vec!["--mode", "rpc", "--cwd=/home/dev/project"]
         );
     }
 
     #[test]
     fn omp_args_with_empty_cwd_is_omitted() {
-        assert_eq!(omp_args("rpc", None, Some(""), None), vec!["--mode", "rpc"]);
+        assert_eq!(
+            omp_args("rpc", None, None, Some(""), None),
+            vec!["--mode", "rpc"]
+        );
     }
 
     #[test]
     fn omp_args_with_approval_mode_appends_flag() {
         assert_eq!(
-            omp_args("rpc", None, None, Some("write")),
+            omp_args("rpc", None, None, None, Some("write")),
             vec!["--mode", "rpc", "--approval-mode=write"]
         );
     }
 
     #[test]
-    fn omp_args_combines_resume_cwd_and_approval_mode_in_order() {
+    fn omp_args_combines_all_flags_in_order() {
+        // The full four-flag sequence - the ordering a future insertion is
+        // most likely to disturb.
         assert_eq!(
-            omp_args("rpc-ui", Some("abc123"), Some("/proj"), Some("write")),
+            omp_args(
+                "rpc-ui",
+                Some("work"),
+                Some("abc123"),
+                Some("/proj"),
+                Some("write")
+            ),
             vec![
                 "--mode",
                 "rpc-ui",
+                "--profile=work",
                 "--resume=abc123",
                 "--cwd=/proj",
                 "--approval-mode=write",
             ]
+        );
+    }
+
+    #[test]
+    fn omp_args_skips_an_empty_profile() {
+        // `ProfileStore::resolve` maps blank/"default" to `None`, so this is
+        // defence-in-depth: a bare `--profile=` would send omp to
+        // `~/.omp/profiles//agent` or make it error out.
+        assert_eq!(
+            omp_args("rpc", Some(""), None, None, None),
+            vec!["--mode", "rpc"]
         );
     }
 
@@ -496,5 +662,133 @@ mod tests {
             resolved_path,
             "an already-absolute cwd must be idempotent under a second application"
         );
+    }
+
+    #[test]
+    fn sanitize_child_env_removes_both_profile_env_aliases() {
+        let mut cmd = Command::new("omp");
+        cmd.env("OMP_PROFILE", "work");
+        cmd.env("PI_PROFILE", "legacy");
+        sanitize_child_env(&mut cmd);
+        // `get_envs` yields `(key, None)` for a removal, which is what makes
+        // the child fall back to argv instead of an inherited alias. Both
+        // vars must go: omp's own resolveProfileEnv falls back to
+        // PI_PROFILE whenever OMP_PROFILE is unset, so clearing only the
+        // first would unmask the second instead of neutralising it.
+        for key in ["OMP_PROFILE", "PI_PROFILE"] {
+            let removed = cmd
+                .get_envs()
+                .any(|(k, v)| k == std::ffi::OsStr::new(key) && v.is_none());
+            assert!(removed, "{key} must be removed from the child env");
+        }
+    }
+
+    #[test]
+    fn sanitize_child_env_keeps_pi_coding_agent_dir() {
+        let mut cmd = Command::new("omp");
+        sanitize_child_env(&mut cmd);
+        // omp honours it only for the built-in profile, and
+        // `saved_sessions::sessions_root_for` mirrors that precedence - so
+        // unlike OMP_PROFILE the two sides already agree.
+        let cleared = cmd
+            .get_envs()
+            .any(|(k, _)| k == std::ffi::OsStr::new("PI_CODING_AGENT_DIR"));
+        assert!(!cleared, "PI_CODING_AGENT_DIR must be left inherited");
+    }
+
+    #[test]
+    fn detects_profile_flag_in_help_text() {
+        assert!(help_text_supports_profile(
+            "  --profile=<value>  Named profile for isolated agent state"
+        ));
+        assert!(!help_text_supports_profile("  --resume=<value>  Resume"));
+        assert!(!help_text_supports_profile(""));
+    }
+
+    #[test]
+    fn rejects_profiler_flag_as_a_false_positive() {
+        // `--profiler` is a prefix-superstring of `--profile`; a bare
+        // `contains("--profile")` would wrongly treat this as support.
+        assert!(!help_text_supports_profile(
+            "  --profiler=<value>  Enable performance profiling"
+        ));
+    }
+
+    #[test]
+    fn rejects_no_profile_flag_as_a_false_positive() {
+        assert!(!help_text_supports_profile(
+            "  --no-profile  Disable profile loading"
+        ));
+    }
+
+    #[test]
+    fn rejects_profile_dir_flag_as_a_false_positive() {
+        assert!(!help_text_supports_profile(
+            "  --profile-dir=<value>  Override the profile storage directory"
+        ));
+    }
+
+    #[test]
+    fn detects_profile_flag_at_a_layout_boundary() {
+        // clap-style help sometimes separates the flag from its
+        // description with a tab rather than `=`/a space, or (next-line
+        // help style) puts the flag alone on its own line before a
+        // trailing newline — none of the old three enumerated literal
+        // suffixes matched either layout.
+        assert!(help_text_supports_profile("  --profile\tNamed profile"));
+        assert!(help_text_supports_profile(
+            "  --profile\n      Named profile for isolated agent state"
+        ));
+    }
+
+    #[test]
+    fn detects_profile_flag_at_true_end_of_string() {
+        assert!(help_text_supports_profile("  --profile"));
+    }
+
+    #[test]
+    fn profile_refusal_allows_spawn_without_a_requested_profile() {
+        // No `--profile` requested (built-in profile) must never refuse,
+        // even against help text from an omp that predates the flag.
+        assert_eq!(
+            profile_refusal(None, "  --resume=<value>  Resume a session", false),
+            None
+        );
+    }
+
+    #[test]
+    fn profile_refusal_allows_spawn_when_the_probe_never_ran() {
+        // Empty help text means `fetch_help_text` couldn't execute any
+        // candidate binary at all (e.g. a transient PATH/fork failure),
+        // not that the installed omp is too old to know `--profile`.
+        assert_eq!(profile_refusal(Some("work"), "", false), None);
+    }
+
+    #[test]
+    fn profile_refusal_blocks_spawn_on_a_genuinely_old_omp() {
+        let help = "  --resume=<value>  Resume a previous session";
+        assert_eq!(
+            profile_refusal(Some("work"), help, false),
+            Some(
+                "this omp build does not support --profile; profiles require a newer omp"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn profile_refusal_allows_spawn_when_help_advertises_the_flag() {
+        let help = "  --profile=<value>  Named profile for isolated agent state";
+        assert_eq!(profile_refusal(Some("work"), help, true), None);
+    }
+
+    #[test]
+    fn profile_refusal_allows_spawn_for_an_empty_profile_id() {
+        // `omp_args` already treats `Some("")` as "no flag" (defence-in-
+        // depth for a value `ProfileStore::resolve` should never produce)
+        // — `profile_refusal` must agree, not block a spawn that will emit
+        // no `--profile` argv at all.
+        let help = "  --resume=<value>  Resume a previous session";
+        assert_eq!(profile_refusal(Some(""), help, false), None);
     }
 }

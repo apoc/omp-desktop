@@ -88,10 +88,35 @@
 
   // ── Session registry ───────────────────────────────────────────────────────
   // Tracks all open tabs. The tab list in the UI is derived from this.
-  // { id, name, path, color, branch }
+  // { id, name, path, color, branch, profile }
+  //
+  // `profile` is the omp profile id the tab's process was spawned under
+  // ("default" = omp's own ~/.omp/agent tree, spawned with no --profile
+  // flag). It is per-tab: one omp process per tab means two tabs can run
+  // under different profiles simultaneously, so changing a tab's profile
+  // respawns only that tab (see switchSessionProfile).
   const sessionRegistry = new Map();
   const sessionSnapshots = new Map(); // id -> saved state + volatile vars
   const gitListeners = new Map();  // session_id → Tauri unlisten fn for git://branch/{id}
+  const _profileSwitching = new Set(); // session ids with a profile respawn in flight
+  // Session ids whose cached `session_status` startup error has already been
+  // filed into the transcript. The backend keeps that entry until the id's
+  // next successful spawn, but `_switchToSession` asks on *every* activation,
+  // so without this the same death is re-reported each time the user
+  // switches back. Cleared on respawn (see `_spawnSession`), which is also
+  // when the backend clears its own entry.
+  const _notedStartupErrors = new Set();
+
+  // ── Profiles ───────────────────────────────────────────────────────────────
+  // Mirror of the Rust-side profile list (src-tauri/src/profiles.rs), refreshed
+  // on startup and after every create/rename so the selector can render names
+  // for the ids stored on each tab.
+  const { DEFAULT_PROFILE_ID } = window; // app/constants.js
+  let profiles = [{ id: DEFAULT_PROFILE_ID, name: DEFAULT_PROFILE_ID }];
+  // The ticked default: which profile a launch (and a tab opened with no tab
+  // to inherit from) starts in. App-wide and persisted, unlike a tab's own
+  // profile - `_resetSessionVars` must never touch it.
+  let startupProfileId = DEFAULT_PROFILE_ID;
 
   let activeSessionId  = null;
   let activeListeners  = [];          // unlisten functions for current session
@@ -229,6 +254,8 @@
         ),
       })),
       activeSessionId,
+      profiles,
+      startupProfileId,
     };
   }
 
@@ -243,6 +270,18 @@
     } catch (err) {
       console.error(`[live] ${cmd} error:`, err);
       return fallback;
+    }
+  }
+
+  // Like `_invokeSafe`, but surfaces the backend's rejection reason instead
+  // of swallowing it: resolves to `{ok: true, value}` or `{ok: false, error}`
+  // (an error string meant for display).
+  async function _invokeResult(cmd, args) {
+    if (!window.__TAURI__) return { ok: false, error: "not connected" };
+    try {
+      return { ok: true, value: await window.__TAURI__.core.invoke(cmd, args) };
+    } catch (err) {
+      return { ok: false, error: String(err?.message ?? err) };
     }
   }
 
@@ -365,6 +404,49 @@
       blocks: [{ type: "text", text }],
       thought: null, lead: null, streaming: false, completed: true,
     }];
+  }
+
+  /** Pure: the assistant-note text for a non-empty `agent://exit` reason.
+   *
+   *  The generic form is just the reason, but one case needs instructions
+   *  instead of a diagnosis. `omp --mode rpc-ui` refuses to start when the
+   *  profile it was pointed at has no usable model and exits non-zero before
+   *  emitting a frame, leaving a tab with no agent to answer `/login` or
+   *  `get_login_providers` — so the in-app login flow cannot bootstrap that
+   *  profile, and omp's interactive TUI (which runs its onboarding picker
+   *  instead of exiting) is the way through.
+   *
+   *  A *freshly created* profile no longer reaches this: `create_profile`
+   *  seeds a keyless-provider `models.yml` precisely so it boots and can be
+   *  logged into from the app (see `clear_profile_bootstrap` below). What
+   *  survives is a profile whose seed was already cleared by a login that
+   *  has since been revoked or expired, one whose credentials were removed
+   *  out of band, or a hand-managed profile tree.
+   *  Proven with an eval-kernel cell (6/6 cases: plain reason passes
+   *  through, no-models reason on a named profile names the --profile flag,
+   *  on the built-in profile omits it, an absent profile omits it, the match
+   *  is case-insensitive, and omp's own wording is retained for support).
+   *  @param {string}  reason    trimmed `agent://exit` payload
+   *  @param {string=} profileId the tab's profile, if any */
+  function _exitNote(reason, profileId) {
+    if (!/no models available/i.test(reason)) {
+      return `**Agent process exited:** ${reason}`;
+    }
+    const flag = profileId && profileId !== DEFAULT_PROFILE_ID ? ` --profile ${profileId}` : "";
+    return [
+      "**This profile has no model credentials yet.**",
+      "",
+      "omp's RPC mode refuses to start without a usable model, so this tab has no agent —"
+        + " which is also why `/login` and the provider list do nothing here.",
+      "",
+      "Log in once from a terminal, then reopen the tab:",
+      "",
+      "```",
+      `omp${flag}`,
+      "```",
+      "",
+      `omp reported: ${reason}`,
+    ].join("\n");
   }
 
   function notify() {
@@ -531,7 +613,7 @@
       state.isStreaming = false;
       state.exitReason = reason || null;
       if (reason) {
-        _pushAssistantNote(`**Agent process exited:** ${reason}`);
+        _pushAssistantNote(_exitNote(reason, sessionRegistry.get(id)?.profile));
       }
       notify();
     });
@@ -571,15 +653,29 @@
 
     // Surface any cached startup error for this session. Tauri starts
     // the default session in setup() before the frontend can attach
-    // listeners, so a spawn failure (e.g. omp not on PATH) would
-    // otherwise be invisible. session_status returns the cached error
-    // synchronously — no event timing race.
+    // listeners, so a spawn failure (e.g. omp not on PATH) — or a child
+    // that died during startup, whose reason `reader.rs` records in
+    // `last_errors` for exactly this reason — would otherwise be
+    // invisible. session_status returns the cached error synchronously —
+    // no event timing race.
     try {
       const startupError = await window.__TAURI__.core.invoke("session_status", { sessionId: id });
       if (_switchGen !== myGen) return; // superseded by a newer switch
-      if (startupError) {
+      // Same renderer as the `agent://exit` path: this is the *same* backend
+      // string (the reader writes `last_errors` and emits the event with one
+      // value), and the launch tab plus every background tab reach the
+      // failure only through here — the event fires with no listener
+      // attached. Rendering it raw would drop the profile-aware login
+      // instructions in precisely the cases the note was written for.
+      //
+      // Surfaced at most once per incarnation: the cached entry outlives the
+      // dead child until the next spawn, and `_switchToSession` runs on
+      // *every* activation, so without this the same failure is re-filed
+      // into the transcript each time the user switches away and back.
+      if (startupError && !_notedStartupErrors.has(id)) {
+        _notedStartupErrors.add(id);
         console.warn(`[live] session '${id}' startup error: ${startupError}`);
-        _pushAssistantNote(`**Agent failed to start:** ${startupError}`);
+        _pushAssistantNote(_exitNote(startupError, sessionRegistry.get(id)?.profile));
       }
     } catch (e) {
       console.warn(`[live] session_status query failed:`, e);
@@ -651,26 +747,23 @@
     }
   }
 
-  /** Spawn omp for `cwd` (optionally resuming a saved session), register the
-   *  tab, wire the git-branch watcher, and activate it. Shared by
-   *  `openSession` (new project tab) and `resumeSession` (resume from disk)
-   *  so the git-watch/listener wiring only lives in one place.
+  /** Spawn omp for session `id` under `profile` and wire its git-branch
+   *  watcher. Split out of `_startProjectSession` because a profile switch
+   *  respawns an *existing* tab's process under the same session id — the
+   *  tab, its name and its project path all survive; only the child process
+   *  (and therefore its auth/history tree) is replaced.
    *
-   *  This function is side-effectful (Tauri IPC invoke, event listeners) and
-   *  not unit-tested directly. The one pure decision it makes — deriving
-   *  `tabName` from `cwd`/`name` — mirrors `resumeSession`'s name/cwd
-   *  fallback and is covered by an eval-kernel proof cell (10/10 cases,
-   *  including the pre-existing trailing-slash quirk inherited from
-   *  master's `openSession`) run during PR #4 review remediation. */
-  async function _startProjectSession(cwd, { resume = null, name = null, color = "var(--lilac)" } = {}) {
-    const id = `session-${Date.now()}`;
-    const tabName = name || (cwd ? cwd.replace(/\\/g, "/").split("/").pop() || cwd : "new session");
-    // Register in tab list before starting omp so the tab shows immediately.
-    // Register with null branch — chip hidden until git resolves.
-    sessionRegistry.set(id, { id, name: tabName, path: cwd ?? "", color, branch: null });
+   *  Side-effectful (Tauri IPC invoke, event listeners), so not unit-tested
+   *  directly. */
+  async function _spawnSession(id, cwd, { resume = null, profile }) {
     await window.__TAURI__.core.invoke("start_session", {
-      sessionId: id, cwd: cwd ?? "", resume,
+      args: { sessionId: id, cwd: cwd ?? "", resume, profile },
     });
+    // A fresh incarnation owns this id now, and `start_session` cleared the
+    // backend's cached error for it — so a *new* startup failure must be
+    // reportable again. Cleared after the spawn resolved, so a spawn that
+    // threw leaves the previous reason still deduped.
+    _notedStartupErrors.delete(id);
     // Git: read initial branch and arm the HEAD watcher (fire-and-forget errors)
     if (cwd) {
       const branch = await window.__TAURI__.core
@@ -685,7 +778,111 @@
         if (e) sessionRegistry.set(id, { ...e, branch: ev.payload });
         notify();
       });
+      // A racing respawn of this same id (profile switch) may have resolved
+      // its own `listen` after `_killSessionProcess` ran `_dropGitListener`,
+      // re-inserting a handle. Overwriting it blind would orphan that
+      // listener beyond the reach of every teardown path.
+      _dropGitListener(id);
       gitListeners.set(id, unlisten);
+    }
+  }
+
+  /** Drop a session's git-branch listener, if it has one. Every teardown
+   *  path (tab close, profile respawn) must do this or the stale listener
+   *  keeps writing branch updates for a dead process into the registry. */
+  function _dropGitListener(id) {
+    const unlisten = gitListeners.get(id);
+    if (unlisten) { unlisten(); gitListeners.delete(id); }
+  }
+
+  /** Kill a session's omp process and everything bound to it (git watcher,
+   *  cached snapshot). Shared by tab close and profile respawn so a new
+   *  per-session resource only has to be released in one place. The
+   *  registry entry is left to the caller.
+   *
+   *  Returns a promise for the `stop_session` round-trip. Tab close can
+   *  ignore it (that id is never reused), but a profile respawn MUST await
+   *  it: `stop_session`'s backend body does an unconditional
+   *  `sessions.remove(id)`, so if it were still queued when
+   *  `start_session` installed the fresh incarnation under the same id, it
+   *  would reap the *new* process instead of the dead one. */
+  function _killSessionProcess(id) {
+    let stopped = Promise.resolve();
+    if (window.__TAURI__) {
+      stopped = window.__TAURI__.core.invoke("stop_session", { sessionId: id }).catch(() => {});
+      window.__TAURI__.core.invoke("stop_git_watch", { sessionId: id }).catch(() => {});
+    }
+    _dropGitListener(id);
+    sessionSnapshots.delete(id);
+    return stopped;
+  }
+
+  /** Detach the active session's listeners and clear all per-session state,
+   *  leaving no active session. Must run before re-activating a respawned
+   *  session: `_switchToSession` snapshots whatever is active first, which
+   *  would otherwise cache the dead process's transcript under its id. */
+  async function _detachActiveSession() {
+    // Clear the shared state synchronously, then unlisten from a local copy.
+    // These awaits are IPC round-trips; a tab click landing inside them would
+    // otherwise find `activeSessionId` still naming the tab being torn down,
+    // so `_saveCurrentSession` would re-cache the dead process's transcript
+    // and `lastSeq` under its id - and the interleaved switch's own
+    // `activeSessionId`/`activeListeners` writes would be clobbered when this
+    // call resumes.
+    const listeners = activeListeners;
+    activeListeners = [];
+    activeSessionId = null;
+    _resetSessionVars();
+    for (const ul of listeners) { try { await ul(); } catch (_) {} }
+  }
+
+  /** Tab label for a project folder: its last path segment, else
+   *  `fallback`. Pure — proven with an eval-kernel cell (10/10 cases,
+   *  including the pre-existing trailing-slash quirk inherited from
+   *  master's `openSession`) run during PR #4 review remediation. */
+  function _tabNameFor(cwd, fallback) {
+    return cwd ? cwd.replace(/\\/g, "/").split("/").pop() || cwd : fallback;
+  }
+
+  /** Spawn omp for `cwd` (optionally resuming a saved session), register the
+   *  tab, wire the git-branch watcher, and activate it. Shared by
+   *  `openSession` (new project tab) and `resumeSession` (resume from disk)
+   *  so the git-watch/listener wiring only lives in one place.
+   *
+   *  This function is side-effectful (Tauri IPC invoke, event listeners) and
+   *  not unit-tested directly; its one pure decision (the `tabName`
+   *  derivation) now lives in, and is proven by, `_tabNameFor`. */
+  async function _startProjectSession(cwd, {
+    resume = null, name = null, color = "var(--lilac)", profile,
+  }) {
+    const id = `session-${Date.now()}`;
+    const tabName = name || _tabNameFor(cwd, "new session");
+    // Register in tab list before starting omp so the tab shows immediately.
+    // Register with null branch — chip hidden until git resolves.
+    sessionRegistry.set(id, { id, name: tabName, path: cwd ?? "", color, branch: null, profile });
+    try {
+      await _spawnSession(id, cwd, { resume, profile });
+    } catch (e) {
+      // A dangling/unlisted profile (inherited from another tab, deleted by
+      // a second window, or a hand-edited profiles.json) makes the
+      // backend's store.resolve() reject before anything spawns. Without
+      // this, the registration above stays in the tab bar forever with no
+      // process and no way to activate it — undo it so the failure looks
+      // like "the open never happened" instead of a ghost tab, and rethrow
+      // so openSession/resumeSession keep their "resolves to id, rejects
+      // on failure" contract for the caller to handle.
+      //
+      // The kill releases more than the tab, because `_spawnSession` has two
+      // failure points: `start_session` itself (nothing spawned, so the kill
+      // is a no-op) and the `listen("git://branch/{id}")` that follows it,
+      // by which point a live child is installed in the backend's session
+      // map and `start_git_watch` is armed. Deleting only the registration
+      // there would strand that child — with no tab, nothing ever calls
+      // `stop_session` for this id again and it survives until app exit.
+      _killSessionProcess(id);
+      sessionRegistry.delete(id);
+      notify();
+      throw e;
     }
     // Activate
     await _switchToSession(id);
@@ -1293,6 +1490,81 @@
     return entry?.path || null;
   }
 
+  /** Pure decision: which profile id a tab's session should use, given its
+   *  registry entry (or `undefined` if there is no active tab), the ticked
+   *  startup default, and the current profile catalogue. Falls back to
+   *  `startupId` whenever the entry's stored id isn't (or is no longer)
+   *  listed: a second window's `delete_profile` (whose in-use guard passes
+   *  there — it has no tab on the id) or a hand-edited profiles.json can
+   *  unlist an id this window's tab still points at, and there is no
+   *  tab-side revalidation once a profile is assigned at spawn. This is the
+   *  single choke point that must never trust a stale id.
+   *  Proven with an eval-kernel cell (4/4 cases: tab has a listed profile
+   *  -> kept, tab has an unlisted profile -> falls back to startup, no tab
+   *  at all -> startup, startup pointer is the built-in id). */
+  function _resolveProfile(entry, startupId, profileList) {
+    const id = entry?.profile;
+    if (id && profileList.some(p => p.id === id)) return id;
+    return startupId;
+  }
+
+  /** The active tab's omp profile id. Profile-scoped reads *and* new-tab
+   *  spawns both use this, so they can never disagree: a new tab inherits the
+   *  active tab's profile ("work" stays "work" when you open a second
+   *  folder), and with no tab open there is nothing to inherit, so the user's
+   *  ticked default applies to both. Two helpers with different fallbacks
+   *  meant that after closing the last tab the history panel listed the
+   *  built-in tree while the next `openSession` spawned into the ticked
+   *  profile - and `resumeSession` must match whatever was listed. */
+  function _activeProfileId() {
+    return _resolveProfile(sessionRegistry.get(activeSessionId), startupProfileId, profiles);
+  }
+
+  /** Re-read the persisted profile list + default into `profiles` /
+   *  `startupProfileId` and push a snapshot. Falls back to leaving the
+   *  current values untouched when the command is unavailable (browser-only
+   *  dev mode). */
+  async function _refreshProfiles() {
+    const res = await _invokeSafe("list_profiles", {}, null);
+    const list = res?.profiles;
+    if (Array.isArray(list) && list.length > 0) {
+      profiles = list;
+      // `startupId` is validated server-side against the same list, so it is
+      // always one of these ids - no client-side reconciliation needed.
+      if (res.startupId) startupProfileId = res.startupId;
+      notify();
+    }
+    return profiles;
+  }
+
+  /** Which open tabs (by name) are running under profile `id`, given a
+   *  snapshot of the session registry's entries. Pure — deleteProfile calls
+   *  this once before the delete round-trip and once after (against a
+   *  possibly-changed registry) without duplicating the filter/join, and
+   *  the two call sites can't drift on the singular/plural wording.
+   *  Proven with an eval-kernel cell (5/5 cases: no tabs at all, one tab on
+   *  the id, several tabs on the id, tabs only on other profiles, singular
+   *  wording for a single tab). */
+  function _profilesInUse(id, entries) {
+    const names = entries.filter(s => s.profile === id).map(s => s.name);
+    if (names.length === 0) return null;
+    return `in use by ${names.length === 1 ? "tab" : "tabs"}: ${names.join(", ")}`;
+  }
+
+  /** Pure decision: should the launch tab be stamped with the resolved
+   *  startup profile? Only when it is still on the built-in placeholder
+   *  AND the resolved startup differs from it — the user may switch this
+   *  tab's profile during the `_refreshProfiles()` round-trip below, and
+   *  that choice is newer than the persisted default, so a tab that already
+   *  moved off the placeholder (or no longer exists) must be left alone.
+   *  Proven with an eval-kernel cell (4/4 cases: both built-in -> no stamp,
+   *  startup differs from the built-in placeholder -> stamp, tab already
+   *  switched away -> no stamp, tab missing (`undefined` entryProfile) ->
+   *  no stamp). */
+  function _shouldStampLaunchProfile(entryProfile, startupId) {
+    return entryProfile === DEFAULT_PROFILE_ID && startupId !== DEFAULT_PROFILE_ID;
+  }
+
   // ── Window chrome (drag + controls) ──────────────────────────────────────
   function _setupWindowChrome() {
     if (!window.__TAURI__) return;
@@ -1304,7 +1576,12 @@
     // startDragging() must be called synchronously within the mousedown handler.
     document.addEventListener("mousedown", e => {
       if (!e.target.closest(".chrome")) return;
-      if (e.target.closest("button, .chrome-lights, .win-controls")) return;
+      // Interactive chrome content (the profile popover's text inputs, and
+      // the popover itself for padding/hints/row clicks) must never start a
+      // window drag — a mousedown there is a caret placement or a
+      // drag-select, and starting an OS window move instead swallows it.
+      // Any future interactive .chrome content needs the same exclusion.
+      if (e.target.closest("button, input, textarea, .profile-pop, .chrome-lights, .win-controls")) return;
       win.startDragging().catch(() => {});
     });
 
@@ -1368,10 +1645,37 @@
      * Trigger OAuth login for a provider.
      * Resolves when login completes (omp opens the auth URL via open_url event).
      * Rejects on failure.
+     *
+     * On success the tab's profile finally has real credentials, so the
+     * bootstrap `models.yml` `create_profile` seeded — the one that marks a
+     * provider keyless purely so omp's RPC mode would start at all — has
+     * done its job and is dropped. Best-effort: a failed login leaves the
+     * profile able to boot and try again, the backend no-ops unless the file
+     * is still byte-identical to the seed, and for the built-in profile
+     * (never seeded) entirely.
+     *
+     * The profile is read from the registry entry and captured *before* the
+     * await, for two reasons. `_activeProfileId()` is the wrong question: it
+     * falls back to the ticked startup default for an id no longer in the
+     * catalogue, which is right for "where should a new tab go" and wrong for
+     * "whose seed may be dropped" — a second window's `delete_profile` passes
+     * its own in-use guard and staleness here would then delete an
+     * untouched, still-unauthenticated profile's seed, leaving it unable to
+     * boot. And OAuth can take up to 300 s, so reading either value
+     * afterwards would describe whatever tab the user has since selected
+     * rather than the process that was just authenticated.
+     *
+     * Side-effectful (IPC plus a filesystem mutation in the backend), so not
+     * unit-tested directly; there is no fake `__TAURI__` harness in this repo.
      * @param {string} providerId
      */
-    login(providerId) {
-      return _sendWithResponse({ type: "login", providerId }, 300000);
+    async login(providerId) {
+      const seededProfile = sessionRegistry.get(activeSessionId)?.profile;
+      const res = await _sendWithResponse({ type: "login", providerId }, 300000);
+      if (seededProfile) {
+        await _invokeSafe("clear_profile_bootstrap", { id: seededProfile }, null);
+      }
+      return res;
     },
 
     /**
@@ -1510,53 +1814,274 @@
 
     // ── Session management ───────────────────────────────────────────────────
 
-    /** Open a new tab for the given project folder. Returns the new session id. */
+    /** Open a new tab for the given project folder, under the *active tab's*
+     *  profile: opening a second folder while working in "work" almost
+     *  always means another work tab, and the selector makes switching it
+     *  explicit. With no tab open there is nothing to inherit, so the ticked
+     *  default profile applies. Returns the new session id, or rejects if
+     *  the resolved profile no longer exists on the backend (unlisted by
+     *  another window, or a hand-edited profiles.json) — no tab is left
+     *  registered when that happens. */
     async openSession(cwd) {
-      return _startProjectSession(cwd);
+      return _startProjectSession(cwd, { profile: _activeProfileId() });
     },
 
     /** Switch the active tab. Resets state and re-fetches from the session's omp. */
     async activateSession(id) {
       if (id === activeSessionId) return;
       if (!sessionRegistry.has(id)) return;
+      // A profile respawn for this tab is still in flight (see
+      // switchSessionProfile): the session doesn't exist on the backend yet
+      // (start_session hasn't resolved), so listen/replay_events/get_state
+      // would all target an id nothing is listening on. Drop the click —
+      // switchSessionProfile's own reclaim logic re-activates this tab once
+      // the respawn resolves (or, if the user is on a different tab by
+      // then, it simply stays backgrounded like any other tab). Chosen over
+      // relaxing the `wasActive && activeSessionId === null` reclaim test,
+      // which would let this call and the in-flight respawn's own reclaim
+      // both call _switchToSession(id) for the same tab.
+      if (_profileSwitching.has(id)) {
+        console.warn(`[live] ignoring activateSession('${id}') — profile respawn in flight`);
+        return;
+      }
       await _switchToSession(id);
     },
 
-    /** List saved sessions on disk (~/.omp/agent/sessions). */
+    /** List saved sessions on disk for the active tab's profile
+     *  (`~/.omp/agent/sessions`, or `~/.omp/profiles/<id>/agent/sessions`).
+     *  Scoping to the tab's own profile is required, not cosmetic: a resume
+     *  path is validated server-side against that profile's sessions root,
+     *  so listing another profile's history here would offer entries this
+     *  tab cannot resume. */
     async listSavedSessions(cwd = null) {
-      const sessions = await _invokeSafe("list_saved_sessions", { cwd: cwd || null }, []);
+      const sessions = await _invokeSafe("list_saved_sessions", {
+        cwd: cwd || null, profile: _activeProfileId(),
+      }, []);
       return sessions || [];
     },
 
-    /** Resume a saved session into a new tab. Returns the new session id,
-     *  or null if `session` doesn't reference a valid saved-session path. */
+    /** Resume a saved session into a new tab, under the active tab's profile
+     *  (the profile whose sessions directory the entry was listed from).
+     *  Returns the new session id, null if `session` doesn't reference a
+     *  valid saved-session path, or rejects if the resolved profile no
+     *  longer exists on the backend (see `openSession`). */
     async resumeSession(session) {
       if (!session || !session.path) return null;
       const cwd = session.cwd || "";
-      const name = session.title || (cwd ? cwd.replace(/\\/g, "/").split("/").pop() || cwd : "resumed");
-      return _startProjectSession(cwd, { resume: session.path, name, color: "var(--cyan)" });
+      const name = session.title || _tabNameFor(cwd, "resumed");
+      return _startProjectSession(cwd, {
+        resume: session.path, name, color: "var(--cyan)", profile: _activeProfileId(),
+      });
+    },
+
+    // ── Profiles ─────────────────────────────────────────────────────────────
+    // One omp process per tab means the profile is a per-tab property: see
+    // src-tauri/src/profiles.rs for the id/name split (ids are immutable and
+    // name omp's data directory; names are free-form labels).
+
+    /** Create a profile labelled `name` (id derivation and validation are
+     *  server-side). Resolves to `{ok, value: {id, name}}` or `{ok: false, error}`. */
+    async createProfile(name) {
+      const res = await _invokeResult("create_profile", { name });
+      if (res.ok) await _refreshProfiles();
+      return res;
+    },
+
+    /** Rename a profile — label only; the id (omp's data directory) is
+     *  immutable. Resolves to `{ok, value}` or `{ok: false, error}`. */
+    async renameProfile(id, name) {
+      const res = await _invokeResult("rename_profile", { id, name });
+      if (res.ok) await _refreshProfiles();
+      return res;
+    },
+
+    /** Unlist a profile (the backend leaves `~/.omp/profiles/<id>/` on disk
+     *  and refuses the built-in one). Refused here while any open tab still
+     *  runs under it: silently respawning that tab would drop its transcript
+     *  unasked. Resolves to `{ok}` or `{ok: false, error}`. */
+    async deleteProfile(id) {
+      const reason = _profilesInUse(id, [...sessionRegistry.values()]);
+      if (reason) return { ok: false, error: reason };
+      const res = await _invokeResult("delete_profile", { id });
+      if (!res.ok) return res;
+      await _refreshProfiles();
+      // Check-then-act: `openSession` can register a new tab under `id`
+      // during the round-trip above (a tab opened with no tab to inherit
+      // from takes `startupProfileId`, and the backend's own fallback of
+      // the pointer to the built-in id is only mirrored into
+      // `startupProfileId` by the `_refreshProfiles()` call just above —
+      // before that resolved, `id` still looked like a valid destination).
+      // The unlist already committed server-side either way, so this can
+      // only warn, not undo it.
+      const raced = _profilesInUse(id, [...sessionRegistry.values()]);
+      if (raced) console.warn(`[live] deleteProfile('${id}') raced with a new tab: ${raced}`);
+      return res;
+    },
+
+    /** Tick a profile as the default: which profile the next launch — and any
+     *  new tab opened with no tab to inherit from — starts in. Running tabs
+     *  keep their own, since a profile is fixed at spawn. Resolves to `{ok}`
+     *  or `{ok: false, error}`. */
+    async setStartupProfile(id) {
+      const res = await _invokeResult("set_startup_profile", { id });
+      // Re-read rather than assuming: the backend re-validates the id under
+      // its lock and may have fallen it back to the built-in profile.
+      if (res.ok) await _refreshProfiles();
+      return res;
+    },
+
+    /** Switch one tab to another profile. A profile is fixed at spawn, so the
+     *  tab keeps its id/name/path but its omp process is replaced and its
+     *  transcript dropped — it comes back as a fresh session. Resolves to
+     *  `{ok}` or `{ok: false, error}` on every path so the menu can render a
+     *  refusal (unlisted target profile, a respawn already in flight, a
+     *  failed respawn) instead of dropping it silently.
+     *
+     *  Not unit-tested directly: every step is a Tauri IPC call or an event
+     *  listener mutation and there is no fake `__TAURI__` harness in this
+     *  repo. The pure decisions it leans on are extracted and proven
+     *  separately (`_resolveProfile`, `_shouldStampLaunchProfile`); what
+     *  remains is ordering, and the comments inside state why each await
+     *  sits where it does. */
+    async switchSessionProfile(id, profileId) {
+      if (!window.__TAURI__) return { ok: false, error: "not connected" };
+      const entry = sessionRegistry.get(id);
+      if (!entry) return { ok: false, error: "unknown tab" };
+      if (entry.profile === profileId) return { ok: true }; // already on this profile
+      if (!profiles.some(p => p.id === profileId)) {
+        const error = `unknown profile '${profileId}'`;
+        console.warn(`[live] ${error} — ignoring switch`);
+        return { ok: false, error };
+      }
+      // Re-entrancy: this call spans two awaits, and a second pick on the same
+      // tab would read `wasActive` as false (call 1 already nulled the active
+      // slot), so it would never re-activate or `_initFetch` the process it
+      // spawned - leaving the tab attached to a live child whose opening
+      // envelopes were all dropped as `seq <= lastSeq` against the previous
+      // incarnation's journal.
+      if (_profileSwitching.has(id)) {
+        return { ok: false, error: "a profile switch is already in progress for this tab" };
+      }
+      _profileSwitching.add(id);
+      try {
+        // Awaited: `stop_session` must have removed the old incarnation from
+        // the backend's session map before `_spawnSession` installs the new
+        // one under the same id, or the late remove would reap the fresh
+        // process. See `_killSessionProcess`.
+        await _killSessionProcess(id);
+        // The tab may have been closed inside that round-trip: `closeSession`
+        // has no `_profileSwitching` guard, so it can `sessionRegistry.delete`
+        // this id while we are waiting. Writing the captured `entry` back
+        // below would then *resurrect* the deleted tab — and the
+        // `!sessionRegistry.has(id)` check after the spawn (which exists for
+        // the very same hazard one window later) would find the resurrected
+        // entry, skip its cleanup, and leave a live omp child bound to a tab
+        // the user closed. `_killSessionProcess` above already released the
+        // process and the git watcher, so bailing here leaks nothing.
+        if (!sessionRegistry.has(id)) {
+          return { ok: false, error: "tab closed" };
+        }
+        // Both re-read *after* that round-trip, never before it. It is a real
+        // IPC gap and `_profileSwitching` only blocks re-entry for this id, so
+        // a click on another tab can run `_switchToSession(other)` inside it —
+        // whose first act is `_saveCurrentSession()`, and `activeSessionId` is
+        // still this id at that moment. That both moves the active slot (so a
+        // `wasActive` captured earlier is stale and would detach the tab the
+        // user just picked) and re-creates the very snapshot
+        // `_killSessionProcess` just deleted.
+        const wasActive = id === activeSessionId;
+        sessionRegistry.set(id, { ...entry, profile: profileId, branch: null });
+        if (wasActive) await _detachActiveSession();
+        // After the detach, which nulls `activeSessionId` synchronously — so no
+        // later `_saveCurrentSession` can re-add it. A resurrected snapshot
+        // would restore the dead incarnation's `lastSeq`, and the respawned
+        // child's journal restarts at seq 1, so `_dispatchEnvelope` would drop
+        // every envelope it ever emits as `seq <= lastSeq`.
+        sessionSnapshots.delete(id);
+        notify();
+
+        // A respawn failure (profile deleted under us, omp not on PATH) must
+        // not strand the tab: `_detachActiveSession` already nulled
+        // `activeSessionId` and reset per-session state, so without
+        // re-activating here the UI keeps rendering an active tab whose
+        // `_send` calls go to `sessionId: null`.
+        let spawnError = null;
+        try {
+          await _spawnSession(id, entry.path, { profile: profileId });
+        } catch (e) {
+          spawnError = e?.message ?? String(e);
+          console.error("[live] profile respawn failed:", e);
+        }
+
+        // The tab may have been closed during the spawn. `closeSession` ran
+        // its whole teardown against a session whose respawn was still in
+        // flight, so everything below would wire the closed tab back up
+        // *behind* that teardown: a phantom active tab, a leaked
+        // `git://branch/{id}` listener, a `start_git_watch` issued after the
+        // matching `stop_git_watch`, and `_send` routed to an orphaned child
+        // no teardown path can reach. Undo our own spawn instead.
+        if (!sessionRegistry.has(id)) {
+          _killSessionProcess(id);
+          // `closeSession` saw `activeSessionId === null` (this switch had
+          // already detached) so it never handed focus on. Do it here, or the
+          // app sits with tabs rendered and `_send` routed at `null`.
+          const survivors = [...sessionRegistry.keys()];
+          if (activeSessionId === null && survivors.length > 0) {
+            await _switchToSession(survivors[survivors.length - 1]);
+          } else {
+            notify();
+          }
+          return spawnError ? { ok: false, error: spawnError } : { ok: true };
+        }
+
+        if (wasActive && activeSessionId === null) {
+          // Reclaim focus only if nothing else took the active slot while the
+          // spawn was in flight - the user can click another tab during those
+          // awaits, and `_switchGen` can't guard this call because it is the
+          // newer one.
+          await _switchToSession(id);
+          // After re-activation, never before: `_switchToSession` runs
+          // `_resetSessionVars()`, which would wipe the note. And re-checked
+          // *after* the await, not before: `_switchToSession` spans two
+          // `listen` calls plus two round-trips, and a tab click inside them
+          // bumps `_switchGen` so this call bails and leaves the other tab
+          // active - `_pushAssistantNote` would then file this failure in
+          // that tab's transcript, stickily. When we lose the slot, the
+          // reason is still cached by `start_session` and surfaces as
+          // "Agent failed to start" when the tab is next selected.
+          //
+          // Gated on the backend having cached nothing, because the two
+          // failure classes report through different paths and would
+          // otherwise double up: a real spawn failure (omp not on PATH, exec
+          // error) IS cached, so the `_switchToSession` above already pushed
+          // "Agent failed to start" with this same text. A refused profile is
+          // rejected by `store.resolve` before the bridge spawns anything, so
+          // nothing is cached and this note is the only report there is.
+          const cached = spawnError && activeSessionId === id
+            ? await _invokeSafe("session_status", { sessionId: id }, null)
+            : null;
+          if (spawnError && activeSessionId === id && !cached) {
+            _pushAssistantNote(`**Profile switch failed:** ${spawnError}`);
+          }
+        }
+        notify();
+        return spawnError ? { ok: false, error: spawnError } : { ok: true };
+      } finally {
+        _profileSwitching.delete(id);
+      }
     },
 
     /** Close a tab and kill its omp process. */
     async closeSession(id) {
-      if (window.__TAURI__) {
-        window.__TAURI__.core.invoke("stop_session",   { sessionId: id }).catch(() => {});
-        window.__TAURI__.core.invoke("stop_git_watch", { sessionId: id }).catch(() => {});
-      }
-      const gitUnlisten = gitListeners.get(id);
-      if (gitUnlisten) { gitUnlisten(); gitListeners.delete(id); }
+      _killSessionProcess(id);
       sessionRegistry.delete(id);
-      sessionSnapshots.delete(id);
       if (id === activeSessionId) {
         const remaining = [...sessionRegistry.keys()];
         if (remaining.length > 0) {
           await _switchToSession(remaining[remaining.length - 1]);
         } else {
           // No sessions left — reset to empty state
-          for (const ul of activeListeners) { try { await ul(); } catch (_) {} }
-          activeListeners = [];
-          activeSessionId = null;
-          _resetSessionVars();
+          await _detachActiveSession();
           notify();
         }
       } else {
@@ -1594,9 +2119,27 @@
   if (window.__TAURI__) {
     document.documentElement.classList.add("tauri-native");
 
-    // Register the "default" session that lib.rs::setup already started
+    // Register the "default" session that lib.rs::setup already started.
+    // `setup` spawns it under the *ticked* startup profile, which only
+    // `profiles.json` knows - so the id here is provisional and corrected
+    // below once the list arrives.
     sessionRegistry.set("default", {
       id: "default", name: "OMP Desktop", path: "", color: "var(--accent)", branch: null,
+      profile: DEFAULT_PROFILE_ID,
+    });
+
+    // Load the persisted profile list + ticked default so the selector can
+    // label tabs (fire-and-forget: it notifies once the list arrives), then
+    // stamp the launch tab with the profile its process actually runs under.
+    // Without this the chip would claim "default" while the child writes to
+    // `~/.omp/profiles/work/agent`, and the history panel - which scopes its
+    // query by the tab's profile - would query the wrong tree.
+    _refreshProfiles().then(() => {
+      const entry = sessionRegistry.get("default");
+      if (entry && _shouldStampLaunchProfile(entry.profile, startupProfileId)) {
+        sessionRegistry.set("default", { ...entry, profile: startupProfileId });
+        notify();
+      }
     });
 
     // Activate it — registers listener + fetches initial state

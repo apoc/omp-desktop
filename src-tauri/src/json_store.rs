@@ -339,21 +339,39 @@ const LOCK_TAKEOVER_ATTEMPTS: u32 = 10;
 /// stale — see [`with_lock`]'s doc comment.
 const LOCK_TAKEOVER_DELAY: Duration = Duration::from_millis(25);
 
-/// Render this process's lock-ownership marker: `{pid}:{unix_timestamp}`.
+/// Per-process, per-acquisition nonce appended to the lock token so two
+/// acquisitions minted by this process within the same wall-clock second
+/// (e.g. two `spawn_blocking` threads racing `with_lock` on the same
+/// path, see `lib.rs::with_profile_store`) still produce distinct
+/// tokens — `LockGuard`'s ownership check on drop depends on its token
+/// being unique to its own acquisition.
+static LOCK_NONCE: AtomicU64 = AtomicU64::new(0);
+
+/// Render this process's lock-ownership marker:
+/// `{pid}:{unix_timestamp}:{nonce}`. The nonce is a per-process monotonic
+/// counter, not part of the staleness calculation (`parse_lock_contents`
+/// / `lock_is_stale` only look at pid and timestamp) — it exists purely
+/// so two tokens minted in the same second are never byte-identical.
 fn lock_contents() -> String {
     let created_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    format!("{}:{created_at}", std::process::id())
+    let nonce = LOCK_NONCE.fetch_add(1, Ordering::Relaxed);
+    format!("{}:{created_at}:{nonce}", std::process::id())
 }
 
-/// Parse `pid:timestamp` lock file contents. Returns `None` if the contents
-/// aren't in the expected shape (e.g. truncated by an interrupted write, or
-/// from an incompatible future format) — treated as stale by the caller,
-/// since there's nothing sensible to compare against.
+/// Parse `pid:timestamp[:nonce]` lock file contents. The optional
+/// trailing nonce (see [`lock_contents`]) disambiguates same-second
+/// tokens but plays no part in staleness, so it's parsed and discarded
+/// here. Returns `None` if the contents aren't in the expected shape
+/// (e.g. truncated by an interrupted write, or from an incompatible
+/// future format) — treated as stale by the caller, since there's
+/// nothing sensible to compare against.
 fn parse_lock_contents(contents: &str) -> Option<(u32, u64)> {
-    let (pid, ts) = contents.trim().split_once(':')?;
-    Some((pid.parse().ok()?, ts.parse().ok()?))
+    let mut parts = contents.trim().splitn(3, ':');
+    let pid = parts.next()?.parse().ok()?;
+    let created_at = parts.next()?.parse().ok()?;
+    Some((pid, created_at))
 }
 
 /// Whether the process identified by `pid` is still alive. On Unix this
@@ -399,13 +417,28 @@ fn lock_is_stale(contents: &str, stale_after: Duration) -> bool {
 
 /// RAII guard that removes the lock file on drop, so a panic inside `f`
 /// still releases the lock instead of wedging it for every future caller.
+///
+/// Ownership-checked: `token` is the exact `{pid}:{unix_timestamp}` this
+/// process wrote when it acquired the lock. `lock_is_stale`'s comparison is
+/// wall-clock based (see [`STORE_LOCK_STALE_AFTER`]'s doc comment), so
+/// another caller can legitimately decide this lock is abandoned and take
+/// it over while this guard is still alive; an unconditional remove on drop
+/// would then delete *their* lock file instead of this one, letting a third
+/// caller in. Comparing the token before removing means this guard only
+/// ever cleans up the lock file it itself created.
 struct LockGuard<'a> {
     path: &'a Path,
+    token: String,
 }
 
 impl Drop for LockGuard<'_> {
     fn drop(&mut self) {
-        let _ = fs::remove_file(self.path);
+        // Best-effort: an unreadable lock file (already removed, permission
+        // race) is left alone rather than panicking or retrying — the same
+        // posture as every other cleanup path in this module.
+        if fs::read_to_string(self.path).is_ok_and(|contents| contents.trim() == self.token) {
+            let _ = fs::remove_file(self.path);
+        }
     }
 }
 
@@ -422,13 +455,15 @@ impl Drop for LockGuard<'_> {
 /// `flock`-grade mutual exclusion.
 ///
 /// The lock file is created with `create_new` (which atomically fails if
-/// the file already exists) holding `{pid}:{unix_timestamp}`. If creation
+/// the file already exists) holding this call's lock-ownership marker
+/// (see [`lock_contents`]). If creation
 /// fails because the file exists, its contents are inspected: if the owning
 /// pid is no longer alive (Unix only — see [`pid_is_alive`]) or
 /// `stale_after` has elapsed since its timestamp, the lock is considered
 /// abandoned and is forcibly taken over (best-effort remove, then retry —
-/// up to [`LOCK_TAKEOVER_ATTEMPTS`] times). The lock file is always removed
-/// after `f` returns (or panics), regardless of outcome.
+/// up to [`LOCK_TAKEOVER_ATTEMPTS`] times). The lock file is removed after
+/// `f` returns (or panics) only if it still carries the token this call
+/// wrote — see [`LockGuard`].
 ///
 /// # Errors
 /// Returns an error if the lock is currently held by a live, non-stale
@@ -446,21 +481,22 @@ pub fn with_lock<T>(
         fs::create_dir_all(dir)?;
     }
     let mut attempts = 0u32;
-    loop {
+    let token = loop {
+        let candidate = lock_contents();
         match OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(lock_path)
         {
             Ok(mut file) => {
-                file.write_all(lock_contents().as_bytes())?;
+                file.write_all(candidate.as_bytes())?;
                 file.sync_all()?;
-                break;
+                break candidate;
             }
             Err(err) if err.kind() == ErrorKind::AlreadyExists => {
                 let contents = fs::read_to_string(lock_path).unwrap_or_default();
                 if attempts >= LOCK_TAKEOVER_ATTEMPTS || !lock_is_stale(&contents, stale_after) {
-                    return Err(err);
+                    return Err(io::Error::new(ErrorKind::WouldBlock, err));
                 }
                 let _ = fs::remove_file(lock_path);
                 attempts += 1;
@@ -468,10 +504,52 @@ pub fn with_lock<T>(
             }
             Err(err) => return Err(err),
         }
-    }
+    };
 
-    let _guard = LockGuard { path: lock_path };
+    let _guard = LockGuard {
+        path: lock_path,
+        token,
+    };
     f()
+}
+
+/// Stale-after window used by the `String`-error stores (approval rules,
+/// profiles) — generous under normal conditions, but a heuristic, not a
+/// guarantee: `lock_is_stale` compares wall-clock seconds, so an NTP step
+/// or a VM/laptop resume can make a fresh lock look abandoned and trigger
+/// an immediate takeover. See [`with_lock`]'s own "not `flock`-grade"
+/// doc comment; [`LockGuard`]'s token check bounds the resulting damage to
+/// a lost update, not a deleted-out-from-under-you lock file.
+const STORE_LOCK_STALE_AFTER: Duration = Duration::from_secs(5);
+
+/// [`with_lock`] for callers whose read-modify-write reports `String`
+/// errors: `f`'s error is tunnelled through `io::Error` and flattened back
+/// to its message, so a store module never has to know about `io::Error`.
+/// A live, non-stale contending lock — re-wrapped by [`with_lock`] as
+/// `ErrorKind::WouldBlock` so it can never be confused with an unrelated
+/// `ErrorKind::AlreadyExists` (e.g. `fs::create_dir_all` racing a
+/// same-named file) — is rendered as a human-readable sentence instead
+/// of the raw `io::Error` text (`"File exists (os error 17)"`) — the
+/// message a UI like the profile menu or the approval prompt ends up
+/// displaying verbatim. Every other error kind renders via `Display` as
+/// before.
+///
+/// # Errors
+/// Same as [`with_lock`], rendered as a `String`.
+pub fn with_lock_str<T>(
+    lock_path: &Path,
+    f: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    with_lock(lock_path, STORE_LOCK_STALE_AFTER, || {
+        f().map_err(io::Error::other)
+    })
+    .map_err(|e| {
+        if e.kind() == ErrorKind::WouldBlock {
+            "another window is updating this file; try again".to_string()
+        } else {
+            e.to_string()
+        }
+    })
 }
 
 #[cfg(test)]
@@ -778,6 +856,64 @@ mod tests {
     }
 
     #[test]
+    fn with_lock_str_round_trips_the_callers_message_and_value() {
+        let dir = unique_test_dir("lock_str");
+        let lock_path = dir.join("state.lock");
+
+        assert_eq!(with_lock_str(&lock_path, || Ok(7)), Ok(7));
+        let err: Result<(), String> = with_lock_str(&lock_path, || Err("boom".to_string()));
+        assert_eq!(err, Err("boom".to_string()));
+        assert!(!lock_path.exists());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn lock_guard_does_not_delete_a_lock_file_taken_over_by_another_owner() {
+        let dir = unique_test_dir("lock_guard_token");
+        let lock_path = dir.join("state.lock");
+        fs::write(&lock_path, "111:1").expect("write initial token");
+
+        {
+            let _guard = LockGuard {
+                path: &lock_path,
+                token: "111:1".to_string(),
+            };
+            // Simulate a takeover by another owner while this guard is
+            // still alive: `lock_is_stale`'s wall-clock comparison (see
+            // `STORE_LOCK_STALE_AFTER`'s doc comment) can make this happen
+            // for a real caller too, not just this direct construction.
+            fs::write(&lock_path, "222:2").expect("simulate takeover");
+        }
+
+        assert_eq!(
+            fs::read_to_string(&lock_path).expect("lock file must survive"),
+            "222:2",
+            "a guard must never delete a lock file it does not own"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn with_lock_str_renders_already_exists_as_a_legible_contention_message() {
+        let dir = unique_test_dir("lock_str_contention");
+        let lock_path = dir.join("state.lock");
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_secs();
+        fs::write(&lock_path, format!("{}:{now}", std::process::id()))
+            .expect("write live, non-stale lock");
+
+        let err = with_lock_str(&lock_path, || Ok(())).expect_err("live lock must contend");
+
+        assert_eq!(err, "another window is updating this file; try again");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn with_lock_creates_missing_parent_directory() {
         // Regression: RuleBook (and any future json_store consumer) is
         // constructed with a config-dir path that may not exist yet on a
@@ -808,9 +944,47 @@ mod tests {
     #[test]
     fn parse_lock_contents_rejects_malformed_input() {
         assert_eq!(parse_lock_contents("123:456"), Some((123, 456)));
+        assert_eq!(
+            parse_lock_contents("123:456:789"),
+            Some((123, 456)),
+            "an optional trailing nonce (see lock_contents) must not affect parsing"
+        );
         assert_eq!(parse_lock_contents("not-a-lock"), None);
         assert_eq!(parse_lock_contents("abc:456"), None);
         assert_eq!(parse_lock_contents("123:abc"), None);
+    }
+
+    #[test]
+    fn lock_contents_never_repeats_within_the_same_process() {
+        // Regression: the token used to be `{pid}:{unix_timestamp}` alone,
+        // so two acquisitions from the same process within one
+        // wall-clock second minted byte-identical tokens - `LockGuard`'s
+        // ownership check could then delete a lock it did not create. The
+        // nonce must make every call distinct regardless of timing.
+        let a = lock_contents();
+        let b = lock_contents();
+        assert_ne!(a, b, "two calls in the same second must not collide");
+    }
+
+    #[test]
+    fn create_dir_all_already_exists_is_not_reported_as_contention() {
+        let base = unique_test_dir("lock_dir_shape");
+        // A regular file occupying the lock's immediate parent-directory
+        // path makes `fs::create_dir_all` return `ErrorKind::AlreadyExists`
+        // (ordinary `mkdir` EEXIST) - a filesystem-shape error, not lock
+        // contention.
+        let occupied = base.join("occupied-by-a-file");
+        fs::write(&occupied, b"not a directory").expect("occupy the path with a file");
+        let lock_path = occupied.join("state.lock");
+
+        let err = with_lock_str(&lock_path, || Ok(())).expect_err("parent is a file, not a dir");
+
+        assert_ne!(
+            err, "another window is updating this file; try again",
+            "a create_dir_all shape error must not be mislabelled as lock contention"
+        );
+
+        fs::remove_dir_all(&base).ok();
     }
 
     #[test]

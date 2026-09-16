@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::PathBuf;
 use std::process::{ChildStderr, ChildStdin, ChildStdout};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter};
@@ -199,7 +200,7 @@ fn try_auto_approve<W: std::io::Write>(
 }
 
 /// Grouped arguments for [`spawn_stdout_reader`] — bundled into one struct
-/// rather than nine positional parameters.
+/// rather than twelve positional parameters.
 pub(super) struct StdoutReaderConfig {
     pub(super) sessions: Arc<Mutex<HashMap<String, BridgeInner>>>,
     pub(super) sid: String,
@@ -210,6 +211,32 @@ pub(super) struct StdoutReaderConfig {
     pub(super) project_root: Option<PathBuf>,
     pub(super) app: AppHandle,
     pub(super) stdout: ChildStdout,
+    /// This incarnation's liveness flag — see [`BridgeInner::alive`].
+    /// Checked via [`should_emit`] immediately before every emit so a
+    /// superseded/reaped incarnation's reader goes mute without ever
+    /// taking `sessions`.
+    pub(super) alive: Arc<AtomicBool>,
+    /// Shared with this session's stderr reader. Read only when the child
+    /// exits without ever having produced a stdout frame, to turn a
+    /// silent-looking clean exit into the reason omp actually printed.
+    pub(super) stderr_tail: Arc<Mutex<StderrTail>>,
+    /// The bridge's `last_errors` map. A startup death is recorded here as
+    /// well as emitted, because the `agent://exit` event only reaches the
+    /// tab that happens to be listening: a background tab's failure is
+    /// otherwise invisible until `session_status` is asked, which is
+    /// exactly what a later tab switch does.
+    pub(super) last_errors: Arc<Mutex<HashMap<String, String>>>,
+}
+
+/// Whether an event from this incarnation should still reach the
+/// frontend. `false` once [`BridgeInner::alive`] has been cleared —
+/// superseded by a fresher `start_session`, reaped by `stop_session`, or
+/// retired by this incarnation's own reader thread as it gives up its map
+/// entry on ordinary child exit (see the end of [`spawn_stdout_reader`]).
+/// A plain atomic load, never the `sessions` mutex: this gates the
+/// per-stdout-line hot path, which must not contend with a global lock.
+fn should_emit(alive: &AtomicBool) -> bool {
+    alive.load(Ordering::Acquire)
 }
 
 pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
@@ -223,6 +250,9 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
         project_root,
         app,
         stdout,
+        alive,
+        stderr_tail,
+        last_errors,
     } = config;
     thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
@@ -230,6 +260,10 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
         let exit_event = format!("agent://exit/{sid}");
         let mut buf: Vec<u8> = Vec::with_capacity(8192);
         let mut exit_reason = String::new();
+        // omp announces itself with a `ready` frame, so "not one frame all
+        // run" means it died during startup. That is the only case where
+        // stderr is a better explanation than the empty clean-exit payload.
+        let mut saw_frame = false;
 
         loop {
             buf.clear();
@@ -253,6 +287,14 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
                         continue;
                     }
                     let (sanitized, parsed) = sanitize_line(&buf);
+                    // A successfully parsed frame — not a stray blank line
+                    // and not a terminal escape sequence flushed with no
+                    // trailing newline — is what proves omp got far enough
+                    // to talk in-protocol, matching the "ready frame"
+                    // definition above. Gating on the raw byte count
+                    // instead would let either of those silently disable
+                    // the stderr fallback this flag exists to gate.
+                    saw_frame |= parsed.is_some();
                     // A rule-covered approval prompt is answered directly on
                     // stdin and replaced with a synthetic notice — the human
                     // never sees the original ask, but does see that it was
@@ -273,7 +315,9 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
                     // by refcount rather than copied into it.
                     let shared: std::sync::Arc<str> = std::sync::Arc::from(text);
                     let seq = journal.lock().map_or(0, |mut j| j.push(shared.clone()));
-                    let _ = app.emit(&line_event, LineEvent { seq, text: &shared });
+                    if should_emit(&alive) {
+                        let _ = app.emit(&line_event, LineEvent { seq, text: &shared });
+                    }
                 }
                 Err(e) => {
                     exit_reason = format!("stdout read error: {e}");
@@ -282,27 +326,144 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
             }
         }
 
-        // Process exited. Only remove our own map entry — if start_session
-        // already replaced this session with a fresh incarnation (higher
-        // generation), leave it alone.
+        // A child that died during startup (no frame, non-error EOF) would
+        // otherwise report the empty payload the contract defines as a clean
+        // exit, leaving a blank tab with no explanation anywhere in the UI.
+        // omp's own reason is on stderr: `--mode rpc-ui` refuses to start
+        // when the profile has no usable model, which is exactly what a
+        // freshly created (credential-less) profile looks like.
+        if exit_reason.is_empty() && !saw_frame {
+            if let Some(reason) = stderr_tail.lock().ok().and_then(|t| t.to_reason()) {
+                exit_reason = reason;
+            }
+        }
+        // Process exited. Decide whether to announce inside the same
+        // critical section that gives up our map entry — deciding it
+        // separately (as before) left a window where a self-removed entry
+        // stayed `alive` forever: nothing else ever clears the flag for an
+        // incarnation that retires on its own, since `reap_and_clear_grants`
+        // only runs when *something else* supersedes or reaps this entry.
+        let mut announce = false;
         if let Ok(mut s) = sessions.lock() {
-            if let Some(inner) = s.get(&sid) {
-                if inner.gen == gen {
+            match s.get(&sid).map(|inner| inner.gen) {
+                Some(g) if g == gen => {
+                    // Still ours — we're the last stop for this id. Clear
+                    // `alive` ourselves before giving up the entry.
                     s.remove(&sid);
+                    alive.store(false, Ordering::Release);
+                    announce = true;
                 }
+                // A fresher incarnation already owns the id — stay mute,
+                // its own reader speaks for it now.
+                Some(_) => {}
+                // Entry already gone: a racing `stop_session` or a
+                // superseding `start_session` removed it and cleared
+                // `alive` inside that same critical section before
+                // releasing the `sessions` lock (see `agent/mod.rs`), so
+                // `should_emit` is guaranteed to already read `false`
+                // here — kept as an explicit defensive check rather than
+                // hard-coding `false`, in case a future removal path ever
+                // forgets to clear it under the lock.
+                None => announce = should_emit(&alive),
             }
         }
         // Empty payload = clean exit; non-empty = error reason. See the
         // AgentBridge doc-comment for the full event contract.
-        let _ = app.emit(&exit_event, exit_reason);
+        if announce {
+            if !exit_reason.is_empty() {
+                // Recorded before the emit so a `session_status` query that
+                // races the event still finds it. Only for the incarnation
+                // that still owned the id: a superseded reader must not
+                // stamp its reason onto its replacement. `exit_reason`
+                // is cloned (not moved) because the emit below still needs
+                // the original — `sid` has no such later use, so it moves.
+                if let Ok(mut e) = last_errors.lock() {
+                    e.insert(sid, exit_reason.clone());
+                }
+            }
+            let _ = app.emit(&exit_event, exit_reason);
+        }
     });
 }
 
-pub(super) fn spawn_stderr_reader(sid: String, stderr: ChildStderr) {
+/// Bounded ring of the child's most recent stderr lines.
+///
+/// omp writes startup diagnostics to stderr and, in `--mode rpc-ui`, exits
+/// non-zero *before* emitting a single stdout frame when the profile it was
+/// pointed at has no usable model (a freshly created profile with no
+/// credentials is the common case). Without this the stdout reader hits EOF
+/// with nothing to report, emits the empty payload the event contract
+/// defines as a *clean* exit, and the tab sits blank with the real reason
+/// visible only on the desktop's own stderr — see
+/// [`StdoutReaderConfig::stderr_tail`].
+pub(super) struct StderrTail {
+    lines: VecDeque<String>,
+    bytes: usize,
+}
+
+/// Keep the tail small: it exists to explain a startup failure, not to
+/// mirror the child's log. A refusal banner is a handful of lines.
+const STDERR_TAIL_LINES: usize = 24;
+const STDERR_TAIL_BYTES: usize = 4096;
+
+impl StderrTail {
+    pub(super) fn new() -> Self {
+        Self {
+            lines: VecDeque::with_capacity(STDERR_TAIL_LINES),
+            bytes: 0,
+        }
+    }
+
+    fn push(&mut self, mut line: String) {
+        // A line larger than the whole tail budget would otherwise evict
+        // every other retained line *and* itself in the loop below,
+        // leaving `to_reason` with nothing at all to report — the exact
+        // blank-tab failure this type exists to prevent. Keep a prefix
+        // instead. Cut on a char boundary: `String::truncate` panics
+        // otherwise, and omp's banners are not pure ASCII.
+        if line.len() > STDERR_TAIL_BYTES {
+            let mut cut = STDERR_TAIL_BYTES;
+            while cut > 0 && !line.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            line.truncate(cut);
+        }
+        self.bytes += line.len();
+        self.lines.push_back(line);
+        while self.lines.len() > STDERR_TAIL_LINES || self.bytes > STDERR_TAIL_BYTES {
+            // `pop_front` on a non-empty deque; the loop condition can only
+            // hold while at least one line is present.
+            if let Some(dropped) = self.lines.pop_front() {
+                self.bytes -= dropped.len();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// The retained lines as one blank-line-collapsed message, or `None`
+    /// when the child said nothing. omp's banners are double-spaced for a
+    /// terminal; collapsing keeps the UI note compact.
+    fn to_reason(&self) -> Option<String> {
+        let joined = self
+            .lines
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        (!joined.is_empty()).then_some(joined)
+    }
+}
+
+pub(super) fn spawn_stderr_reader(sid: String, stderr: ChildStderr, tail: Arc<Mutex<StderrTail>>) {
     thread::spawn(move || {
         let reader = BufReader::new(stderr);
         for line in reader.lines().map_while(Result::ok) {
             eprintln!("[omp/{sid}] {line}");
+            if let Ok(mut t) = tail.lock() {
+                t.push(line);
+            }
         }
     });
 }
@@ -690,5 +851,118 @@ mod tests {
         let (n, truncated) = read_until_capped(&mut r, b'\n', &mut out, 1024).unwrap();
         assert_eq!(n, 0);
         assert!(!truncated);
+    }
+
+    #[test]
+    fn stderr_tail_is_empty_when_the_child_said_nothing() {
+        // Drives the branch that decides between "clean exit" and a reason:
+        // no stderr must stay `None` so the empty-payload contract holds.
+        assert_eq!(StderrTail::new().to_reason(), None);
+    }
+
+    #[test]
+    fn stderr_tail_collapses_blank_lines_into_one_reason() {
+        // omp double-spaces its refusal banner for a terminal; the UI note
+        // is one line, and a reason of "a\n\n\nb" would render as a gap.
+        let mut tail = StderrTail::new();
+        for line in ["No models available.", "", "  Set an API key: ", ""] {
+            tail.push(line.to_string());
+        }
+        assert_eq!(
+            tail.to_reason(),
+            Some("No models available. Set an API key:".to_string())
+        );
+    }
+
+    #[test]
+    fn stderr_tail_keeps_the_newest_lines_within_its_line_bound() {
+        // A chatty child must not let the tail grow without bound, and the
+        // *newest* lines are the ones that explain an exit.
+        let mut tail = StderrTail::new();
+        for n in 0..(STDERR_TAIL_LINES + 10) {
+            tail.push(format!("line{n}"));
+        }
+        let reason = tail.to_reason().expect("lines were pushed");
+        assert!(
+            reason.starts_with("line10 "),
+            "oldest lines must be evicted first, got: {reason}"
+        );
+        assert!(reason.ends_with(&format!("line{}", STDERR_TAIL_LINES + 9)));
+        // No assertion on the private `tail.lines.len()` field here: the
+        // `starts_with("line10 ")`/`ends_with("line33")` pair above already
+        // uniquely pins "exactly the newest STDERR_TAIL_LINES entries
+        // survived" (any other eviction count would shift both boundary
+        // values) — a `lines.len()` check would only restate that fact
+        // via a field no consumer of `StderrTail` ever reads.
+    }
+
+    #[test]
+    fn stderr_tail_evicts_to_stay_within_its_byte_bound() {
+        // One pathological line must not pin kilobytes per session: the byte
+        // bound evicts even when the line count is well under its own cap.
+        let mut tail = StderrTail::new();
+        tail.push("x".repeat(STDERR_TAIL_BYTES - 1));
+        tail.push("the real reason".to_string());
+        assert_eq!(
+            tail.to_reason(),
+            Some("the real reason".to_string()),
+            "the oversized line must have been dropped"
+        );
+        assert!(tail.bytes <= STDERR_TAIL_BYTES);
+    }
+
+    #[test]
+    fn stderr_tail_truncates_an_oversized_line_instead_of_wiping_the_tail() {
+        // Before the fix, a single line longer than STDERR_TAIL_BYTES made
+        // the eviction condition true until the deque was *empty* —
+        // evicting the line itself along with everything else, so
+        // `to_reason()` returned `None`: the exact blank-tab failure this
+        // type exists to prevent.
+        let mut tail = StderrTail::new();
+        tail.push("z".repeat(STDERR_TAIL_BYTES + 500));
+        let reason = tail
+            .to_reason()
+            .expect("an oversized line must still produce a reason");
+        // The retained bytes are the line's own content, not a placeholder:
+        // a truncated reason still has to explain the exit.
+        assert!(reason.starts_with("zzz"));
+        assert!(reason.len() <= STDERR_TAIL_BYTES);
+        assert!(tail.bytes <= STDERR_TAIL_BYTES);
+    }
+
+    #[test]
+    fn stderr_tail_truncation_cuts_on_a_char_boundary() {
+        // omp's banners are not pure ASCII; truncating mid-character would
+        // panic (`String::truncate`'s documented panic condition). Build a
+        // line whose STDERR_TAIL_BYTES-th byte lands inside a multi-byte
+        // character and confirm `push` neither panics nor keeps a partial
+        // character.
+        let mut line = "a".repeat(STDERR_TAIL_BYTES - 1);
+        line.push('€'); // 3-byte UTF-8 char straddling the cut point
+        line.push_str("-dropped-tail");
+        let mut tail = StderrTail::new();
+        tail.push(line);
+        let reason = tail
+            .to_reason()
+            .expect("truncated line still yields a reason");
+        // Exact value: proves the cut landed one byte before the 3-byte
+        // `€`, dropping the whole character (not a partial encoding of
+        // it) along with everything after.
+        assert_eq!(reason, "a".repeat(STDERR_TAIL_BYTES - 1));
+    }
+
+    #[test]
+    fn stderr_tail_oversized_line_evicts_older_lines_but_not_itself() {
+        // The truncated line's length fills the whole byte budget, so
+        // older retained lines are evicted to make room for it — the same
+        // "newest wins" priority `stderr_tail_evicts_to_stay_within_its_byte_bound`
+        // already pins. What must not happen (the bug) is the truncated
+        // line evicting itself too, leaving nothing.
+        let mut tail = StderrTail::new();
+        tail.push("first, superseded by the newer report".to_string());
+        tail.push("z".repeat(STDERR_TAIL_BYTES + 10));
+        let reason = tail.to_reason().expect("the oversized line must survive");
+        assert!(!reason.contains("superseded"));
+        assert!(reason.starts_with('z'));
     }
 }

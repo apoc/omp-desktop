@@ -10,6 +10,7 @@ mod files;
 mod git;
 mod git_watcher;
 mod json_store;
+mod profiles;
 mod saved_sessions;
 mod workspace;
 
@@ -18,7 +19,7 @@ use approval::RuleBook;
 use git_watcher::GitWatcherState;
 use std::path::Path;
 use std::sync::Arc;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 /// Write a JSON command to a specific session's omp stdin.
 #[tauri::command]
@@ -30,39 +31,191 @@ fn send_command(
     bridge.send(&session_id, &json)
 }
 
+/// Session-start payload from the frontend. A struct rather than four loose
+/// command arguments so the IPC surface stays one strongly-typed shape (and
+/// the handler keeps a sane argument count as Tauri `State` injections grow).
+// `deny_unknown_fields`: `profile` is `Option<String>`, and `None` is not a
+// neutral value - it means the built-in profile, i.e. no `--profile` flag and
+// the shared `~/.omp/agent` tree. Without this, renaming the key on the JS
+// side (to `profileId`, matching `switchSessionProfile`'s parameter) would
+// deserialize cleanly and silently write a named profile's conversation into
+// the default profile's history. An IPC error is the loud failure that
+// `agent::spawn` argues for.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StartSessionArgs {
+    session_id: String,
+    /// Absolute path to the project folder (empty string = omp's default).
+    cwd: String,
+    /// Optional file path or session id to resume. Validated against the
+    /// profile's sessions directory before it reaches omp's argv (see
+    /// `saved_sessions::validate_resume`) — the frontend cannot pass an
+    /// arbitrary path or a flag-shaped string through.
+    resume: Option<String>,
+    /// Which omp profile this tab runs under (`None`/`"default"` = omp's own
+    /// `~/.omp/agent` tree); resolved by `profiles::ProfileStore::resolve`.
+    profile: Option<String>,
+}
+
 /// Start an omp process for a new tab session.
-/// `cwd`: absolute path to the project folder (empty string = omp's default).
-/// `resume`: optional file path or session ID to resume an existing session.
-/// The value is validated against the sessions directory before being
-/// forwarded to omp's argv (see `saved_sessions::validate_resume`) — the
-/// frontend cannot pass an arbitrary path or a flag-shaped string through.
 #[tauri::command]
 fn start_session(
-    session_id: String,
-    cwd: String,
-    resume: Option<String>,
+    args: StartSessionArgs,
     bridge: State<'_, AgentBridge>,
     rule_book: State<'_, Arc<RuleBook>>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    if let Some(r) = resume.as_deref() {
-        saved_sessions::validate_resume(&app, r)?;
+    let profile = store.resolve(args.profile.as_deref())?;
+    if let Some(r) = args.resume.as_deref() {
+        saved_sessions::validate_resume(&app, r, profile)?;
     }
-    let cwd_opt = if cwd.is_empty() {
+    let cwd_opt = if args.cwd.is_empty() {
         None
     } else {
-        Some(cwd.as_str())
+        Some(args.cwd.as_str())
     };
     bridge.start_session(
-        session_id,
+        args.session_id,
         cwd_opt,
-        resume.as_deref(),
+        args.resume.as_deref(),
+        profile,
         app,
-        rule_book.inner().clone(),
+        Arc::clone(rule_book.inner()),
     )
 }
 
-/// List saved sessions from disk (~/.omp/agent/sessions).
+/// Run a profile-store mutation off the main command thread: each one is a
+/// locked, fsync'd read-modify-write of `profiles.json` (same rationale as
+/// `approval_rules_grant`).
+async fn with_profile_store<T: Send + 'static>(
+    store: &Arc<profiles::ProfileStore>,
+    f: impl FnOnce(&profiles::ProfileStore) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let store = Arc::clone(store);
+    tauri::async_runtime::spawn_blocking(move || f(&store))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+}
+
+/// The profile list plus which entry is the startup default, in one payload.
+///
+/// Returned together so the selector can never render a checkmark against a
+/// stale default: two commands could interleave with a `set_startup_profile`
+/// from another window and disagree.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileList {
+    profiles: Vec<profiles::Profile>,
+    /// Always a listed id — the built-in `"default"` when nothing is set.
+    startup_id: String,
+}
+
+/// Every selectable profile, built-in first (served from the in-memory cache).
+#[tauri::command]
+fn list_profiles(store: State<'_, Arc<profiles::ProfileStore>>) -> ProfileList {
+    let (profiles, startup_id) = store.snapshot();
+    ProfileList {
+        profiles,
+        startup_id,
+    }
+}
+
+/// Choose the profile new tabs and the next launch start in. Running tabs
+/// keep their own — a profile is fixed at spawn.
+#[tauri::command]
+async fn set_startup_profile(
+    id: String,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+) -> Result<(), String> {
+    with_profile_store(&store, move |s| s.set_startup(&id)).await
+}
+
+/// Create a profile named `name`, deriving its id with [`slugify`] +
+/// [`unique_id`]. Returns the created profile.
+///
+/// Also seeds the profile's placeholder `models.yml` — without it omp's RPC
+/// mode exits at startup for a credential-less profile and the new tab could
+/// never reach `/login`. See `profiles::seed_bootstrap`.
+///
+/// Runs `async` + `spawn_blocking` (via `with_profile_store`): both the
+/// list mutation and the seed write are blocking filesystem I/O, so the
+/// seed is folded into the same blocking closure instead of running
+/// directly on the async command thread.
+#[tauri::command]
+async fn create_profile(
+    name: String,
+    app: AppHandle,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+) -> Result<profiles::Profile, String> {
+    let home = app.path().home_dir().ok();
+    with_profile_store(&store, move |s| {
+        let created = s.create(&name)?;
+        // Best-effort: the profile exists and is listed either way, and a
+        // failure here only costs the in-app login path (the tab still
+        // explains itself via the startup-exit note). Failing the whole
+        // create would be worse — the list entry is already committed.
+        if let Some(home) = home {
+            if let Err(e) = profiles::seed_bootstrap(&home, &created.id) {
+                eprintln!(
+                    "[omp-desktop] could not seed models.yml for '{}': {e}",
+                    created.id
+                );
+            }
+        }
+        Ok(created)
+    })
+    .await
+}
+
+/// Drop a profile's placeholder `models.yml` once it has real credentials.
+/// Called by the frontend after a successful login; a no-op unless the
+/// file's YAML still matches what `create_profile` seeded (comment prose
+/// aside — see `profiles::clear_bootstrap`).
+///
+/// Runs `async` + `spawn_blocking`: reading and possibly removing the seed
+/// file is blocking filesystem I/O.
+#[tauri::command]
+async fn clear_profile_bootstrap(
+    id: String,
+    app: AppHandle,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+) -> Result<(), String> {
+    // Resolved, so a blank/"default" id can't aim this at the built-in tree
+    // (which has no seed) and an unlisted id can't reach the disk at all.
+    let Some(id) = store.resolve(Some(&id))?.map(ToString::to_string) else {
+        return Ok(());
+    };
+    let home = app.path().home_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || profiles::clear_bootstrap(&home, &id))
+        .await
+        .map_err(|e| format!("join error: {e}"))
+}
+
+/// Rename a profile. Only the display label changes — see
+/// `profiles::ProfileStore::rename`.
+#[tauri::command]
+async fn rename_profile(
+    id: String,
+    name: String,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+) -> Result<profiles::Profile, String> {
+    with_profile_store(&store, move |s| s.rename(&id, &name)).await
+}
+
+/// Unlist a profile (files stay on disk — see `profiles::ProfileStore::remove`).
+/// Callers must ensure no open tab is still running under `id`; the frontend
+/// enforces that, since only it knows the tab set.
+#[tauri::command]
+async fn delete_profile(
+    id: String,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+) -> Result<(), String> {
+    with_profile_store(&store, move |s| s.remove(&id)).await
+}
+
+/// List saved sessions from disk for `profile` (`~/.omp/agent/sessions`, or
+/// `~/.omp/profiles/<id>/agent/sessions` for a named profile).
 ///
 /// Runs `async` + `spawn_blocking`: `scan_saved_sessions` opens and parses
 /// every persisted `.jsonl` file, which for large histories can take long
@@ -70,10 +223,21 @@ fn start_session(
 #[tauri::command]
 async fn list_saved_sessions(
     cwd: Option<String>,
+    profile: Option<String>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
     app: tauri::AppHandle,
 ) -> Result<Vec<saved_sessions::SavedSession>, String> {
+    // `resolve` returns `Option<&str>` borrowed from `profile`, which this
+    // command already owns and is about to move into the spawned closure
+    // below — so validate through the borrow, then move the original
+    // instead of allocating a second `String` via `.map(str::to_owned)`.
+    let profile = if store.resolve(profile.as_deref())?.is_some() {
+        profile
+    } else {
+        None
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        saved_sessions::scan_saved_sessions(&app, cwd.as_deref())
+        saved_sessions::scan_saved_sessions(&app, cwd.as_deref(), profile.as_deref())
     })
     .await
     .map_err(|e| format!("join error: {e}"))?
@@ -131,7 +295,7 @@ async fn approval_rules_list(
     project_root: Option<String>,
     rule_book: State<'_, Arc<RuleBook>>,
 ) -> Result<Vec<approval::Rule>, String> {
-    let rule_book = rule_book.inner().clone();
+    let rule_book = Arc::clone(rule_book.inner());
     tauri::async_runtime::spawn_blocking(move || {
         rule_book.list(&session_id, project_root.as_deref().map(Path::new))
     })
@@ -153,7 +317,7 @@ async fn approval_rules_grant(
     scope: String,
     rule_book: State<'_, Arc<RuleBook>>,
 ) -> Result<(), String> {
-    let rule_book = rule_book.inner().clone();
+    let rule_book = Arc::clone(rule_book.inner());
     tauri::async_runtime::spawn_blocking(move || {
         let scope = parse_rule_scope(&scope)?;
         rule_book.grant(
@@ -179,7 +343,7 @@ async fn approval_rules_revoke(
     scope: String,
     rule_book: State<'_, Arc<RuleBook>>,
 ) -> Result<(), String> {
-    let rule_book = rule_book.inner().clone();
+    let rule_book = Arc::clone(rule_book.inner());
     tauri::async_runtime::spawn_blocking(move || {
         let scope = parse_rule_scope(&scope)?;
         rule_book.revoke(
@@ -372,23 +536,45 @@ pub fn run() {
             workspace_accept,
             workspace_reject,
             list_project_files,
+            list_profiles,
+            create_profile,
+            rename_profile,
+            delete_profile,
+            set_startup_profile,
+            clear_profile_bootstrap,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
             if let Some(win) = app.get_webview_window("main") {
                 win.open_devtools();
             }
-            // Approval-rule store: project-scoped grants persist under
-            // <app_config_dir>/approval-rules/<project-hash>.json. Falls
-            // back to a temp-dir subfolder if the config dir can't be
-            // resolved (e.g. a locked-down test environment) rather than
-            // failing startup — grants just won't survive a restart there.
-            let rules_root = app
+            // Falls back to the temp dir if the config dir can't be resolved
+            // (e.g. a locked-down test environment) rather than failing
+            // startup — approval grants and profiles just won't survive a
+            // restart there.
+            let config_dir = app
                 .path()
                 .app_config_dir()
-                .unwrap_or_else(|_| std::env::temp_dir())
-                .join("approval-rules");
-            app.manage(Arc::new(RuleBook::new(rules_root)));
+                .unwrap_or_else(|_| std::env::temp_dir());
+            // Approval-rule store: project-scoped grants persist under
+            // <app_config_dir>/approval-rules/<project-hash>.json.
+            app.manage(Arc::new(RuleBook::new(config_dir.join("approval-rules"))));
+            // Profile list: <app_config_dir>/profiles.json.
+            let store = Arc::new(profiles::ProfileStore::load(
+                config_dir.join("profiles.json"),
+            ));
+            // The user's chosen startup profile. `startup_id` is always a
+            // listed id, and `resolve` maps the built-in one to `None` (no
+            // `--profile` flag), so a deleted default degrades to omp's own
+            // tree instead of failing the launch spawn.
+            let startup = store
+                .resolve(Some(&store.startup_id()))
+                .ok()
+                .flatten()
+                .map(str::to_owned);
+            // Moved, not `Arc::clone`d: `store` is not read after this point,
+            // so a second handle would be dropped with the setup closure.
+            app.manage(store);
 
             // Start the default session (no cwd = omp's working directory).
             // The frontend activates this session on load via OMP_BRIDGE.activateSession("default").
@@ -403,8 +589,15 @@ pub fn run() {
                 "default".into(),
                 None,
                 None,
+                // The startup profile chosen in the selector; `None` is the
+                // built-in profile (omp's own ~/.omp/agent). Tabs the user
+                // opens later inherit the active tab's profile.
+                startup.as_deref(),
+                // `app.handle()` returns a borrow and `start_session` needs an
+                // owned handle; `AppHandle` is not an `Arc`, so `Arc::clone`
+                // does not apply here.
                 app.handle().clone(),
-                rule_book.inner().clone(),
+                Arc::clone(rule_book.inner()),
             );
             if let Err(e) = default_session {
                 eprintln!("[omp-desktop] failed to start default session: {e}");
@@ -413,4 +606,47 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StartSessionArgs;
+
+    /// The exact payload `live.js::_spawnSession` sends. Tauri hands the
+    /// `args` object straight to serde, so a field-name or casing change on
+    /// either side silently breaks session start — this pins the contract.
+    #[test]
+    fn start_session_payload_deserializes_from_the_frontend_shape() {
+        let payload = serde_json::json!({
+            "sessionId": "session-1",
+            "cwd": "/home/dev/project",
+            "resume": null,
+            "profile": "work",
+        });
+        let args: StartSessionArgs = serde_json::from_value(payload).expect("deserialize");
+        assert_eq!(args.session_id, "session-1");
+        assert_eq!(args.cwd, "/home/dev/project");
+        assert_eq!(args.resume, None);
+        assert_eq!(args.profile.as_deref(), Some("work"));
+    }
+
+    /// The contract `deny_unknown_fields` exists for (see the attribute's
+    /// doc comment above `StartSessionArgs`): a renamed/misspelled key must
+    /// fail loudly, not deserialize with `profile: None` and silently write
+    /// a named profile's conversation into the shared `~/.omp/agent` tree.
+    /// The happy-path test above would still pass with the attribute
+    /// deleted, so it alone doesn't pin this.
+    #[test]
+    fn start_session_payload_rejects_an_unknown_field_instead_of_silently_dropping_it() {
+        let payload = serde_json::json!({
+            "sessionId": "session-1",
+            "cwd": "/home/dev/project",
+            "resume": null,
+            "profileId": "work",
+        });
+        assert!(
+            serde_json::from_value::<StartSessionArgs>(payload).is_err(),
+            "a renamed profile field must be a loud deserialize error, not a silent None"
+        );
+    }
 }
