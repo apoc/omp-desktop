@@ -610,9 +610,14 @@ mod tests {
         // the bytes actually written are directly inspectable below.
         let stdin: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
+        // The real emitted shape: `Allow tool: <name>` plus the tool's own
+        // `formatApprovalDetails()` lines (see approval.rs' module doc). A
+        // single-line title here would keep passing even if the first-line
+        // parse regressed, so this fixture is the end-to-end guard for it.
         let frame = json!({
             "type": "extension_ui_request", "id": "req-9", "method": "select",
-            "title": "Allow tool: bash", "options": ["Approve", "Deny"]
+            "title": "Allow tool: bash\nCommand: ls -la\nCwd: /tmp",
+            "options": ["Approve", "Deny"]
         });
         let notice = try_auto_approve(&frame, &rule_book, "sess-1", None, &stdin);
         assert!(notice.is_some());

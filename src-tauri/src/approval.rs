@@ -16,9 +16,17 @@
 //!
 //! [`approval_tool_name`] recognises the *exact* prompt shape omp emits for
 //! a tool-approval request (`method:"select"`, `options:["Approve","Deny"]`,
-//! title `Allow tool: <name>`) and refuses to match anything else — a rule
-//! can never accidentally answer an unrelated `select` prompt (e.g. the ask
-//! tool, a login provider picker).
+//! title whose **first line** is `Allow tool: <name>`) and refuses to match
+//! anything else — a rule can never accidentally answer an unrelated
+//! `select` prompt (e.g. the ask tool, a login provider picker).
+//!
+//! The title is multi-line: omp joins `Allow tool: <name>` with an optional
+//! `Origin:`/`Reason:` line and whatever the tool's own
+//! `formatApprovalDetails()` returns (path, command, content preview —
+//! elided at 2000 chars). Only the first line identifies the tool, so
+//! everything after the first `\n` is ignored here; matching against the
+//! whole title meant [`is_valid_tool_name`] rejected every real prompt and
+//! no rule ever auto-answered.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -87,7 +95,10 @@ pub fn approval_tool_name(frame: &serde_json::Value) -> Option<&str> {
         }
     }
     let title = frame.get("title").and_then(serde_json::Value::as_str)?;
-    let name = title.strip_prefix(TITLE_PREFIX)?;
+    // `lines()` drops the `\r` of a CRLF line ending, so a CRLF-framed
+    // title can't smuggle one into the tool name; a lone trailing `\r`
+    // (no `\n`) stays in the line and `is_valid_tool_name` rejects it.
+    let name = title.lines().next()?.strip_prefix(TITLE_PREFIX)?;
     is_valid_tool_name(name).then_some(name)
 }
 
@@ -548,6 +559,50 @@ mod tests {
         let frame = json!({
             "type": "extension_ui_request", "method": "select",
             "title": "Allow tool: ../../etc/passwd", "options": ["Approve", "Deny"]
+        });
+        assert_eq!(approval_tool_name(&frame), None);
+    }
+
+    /// The shape omp actually emits: `Allow tool: <name>` followed by the
+    /// tool's `formatApprovalDetails()` lines. Reconstructed field-for-field
+    /// from a real `write` approval (path + content preview, content elided
+    /// at 2000 chars upstream). Before the first-line fix this matched
+    /// nothing, so no granted rule ever auto-approved anything.
+    #[test]
+    fn approval_tool_name_reads_first_line_of_multiline_title() {
+        let frame = json!({
+            "type": "extension_ui_request",
+            "id": "req-2",
+            "method": "select",
+            "title": "Allow tool: write\nPath: xd://mcp__ida_pro_mcp_py_eval\nContent:\n{\"code\":\"import importlib\"}",
+            "options": ["Approve", "Deny"]
+        });
+        assert_eq!(approval_tool_name(&frame), Some("write"));
+        assert_eq!(approval_request_id(&frame), Some("req-2"));
+    }
+
+    #[test]
+    fn approval_tool_name_tolerates_crlf_in_multiline_title() {
+        let frame = json!({
+            "type": "extension_ui_request", "method": "select",
+            "title": "Allow tool: mcp__ida_pro_mcp_decompile\r\nOrigin: MCP server tool",
+            "options": ["Approve", "Deny"]
+        });
+        assert_eq!(
+            approval_tool_name(&frame),
+            Some("mcp__ida_pro_mcp_decompile")
+        );
+    }
+
+    /// A detail line is never a tool name: only the first line is parsed, so
+    /// a bad first line rejects the whole frame even when a later line looks
+    /// like a valid prompt header.
+    #[test]
+    fn approval_tool_name_ignores_prompt_header_in_detail_lines() {
+        let frame = json!({
+            "type": "extension_ui_request", "method": "select",
+            "title": "Allow tool: ../../etc/passwd\nAllow tool: bash",
+            "options": ["Approve", "Deny"]
         });
         assert_eq!(approval_tool_name(&frame), None);
     }

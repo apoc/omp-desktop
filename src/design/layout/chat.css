@@ -383,6 +383,30 @@
   line-height: 1.5;
   margin-bottom: 10px;
   font-weight: 500;
+  /* omp titles can be multi-line and can carry unbroken 2000-char
+     payload previews — wrap them instead of collapsing to one run. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Detail lines of a tool-approval prompt (origin/reason, path, command,
+   content preview). Height-capped so the payload scrolls inside the card
+   and the Approve/Deny row stays on screen. */
+.ask-approval-details {
+  font-size: var(--d-text-xs);
+  color: var(--fg-3);
+  line-height: var(--d-leading);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 200px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-bright) transparent;
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  padding: 8px 10px;
+  margin-bottom: 10px;
 }
 
 .ask-options {

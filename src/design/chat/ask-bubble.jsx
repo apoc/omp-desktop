@@ -10,29 +10,59 @@ const { Icon: _AskIcon } = window;
 const DONE_LABEL_PREFIX = "Done selecting";
 
 // Tool-approval prompts are a specific select shape omp emits before
-// running an exec-tier tool: options exactly ["Approve","Deny"], title
-// "Allow tool: <name>". Mirrors the Rust-side match in
-// src-tauri/src/approval.rs::approval_tool_name — kept in sync manually
-// since this is a display-only echo of that fingerprint, not a second
-// enforcement point (the Rust side is what actually auto-answers).
-// isApprovalPrompt/approvalToolName proven with an eval-kernel cell
-// (10/10 cases: exact-shape match, tool-name extraction incl. dotted
-// names, wrong option count/labels/order, unrelated select prompt,
-// prefix-in-middle false positive, missing/non-string title).
+// running an exec-tier tool: options exactly ["Approve","Deny"], and a
+// title whose *first line* is "Allow tool: <name>". The title is
+// multi-line: omp appends an optional "Origin:"/"Reason:" line plus
+// whatever the tool's formatApprovalDetails() returns (path, command,
+// content preview — elided at 2000 chars), all joined with "\n". Only
+// the first line identifies the tool; treating the whole title as the
+// name matched nothing (see approval.rs::is_valid_tool_name) so every
+// grant was silently rejected, and rendered the payload as one collapsed
+// wall of text.
+//
+// Mirrors the Rust-side match in src-tauri/src/approval.rs
+// (approval_tool_name + is_valid_tool_name) — kept in sync manually since
+// this is a display-only echo of that fingerprint, not a second
+// enforcement point (the Rust side is what actually auto-answers). The
+// name grammar is enforced here too, so the "remember this" buttons only
+// appear when the grant the Rust side receives will actually be accepted
+// — but an unparseable name only withholds those buttons, it never
+// demotes the card back to a generic select (the head/details split and
+// its height cap must apply to every "Allow tool:" prompt, and a binary
+// approval must never regain a free-text answer box).
+// approvalInfo proven with an eval-kernel cell (24/24 cases: the real
+// captured 4-line 1159-char `write` title, single-line titles, CRLF vs a
+// lone trailing `\r` (Rust-parity), tool-name extraction incl.
+// dotted/mcp names, 64-char boundary, over-long/path-like/empty names
+// (card without grant), wrong option count/labels/order, unrelated
+// select prompt, prefix-in-middle and leading-newline false positives,
+// non-string title, missing options).
 const APPROVAL_TITLE_PREFIX = "Allow tool: ";
+const APPROVAL_TOOL_NAME = /^[A-Za-z0-9][\w.:-]{0,63}$/;
 
-function isApprovalPrompt(msg) {
-  return (
-    typeof msg.title === "string" &&
-    msg.title.startsWith(APPROVAL_TITLE_PREFIX) &&
-    msg.options.length === 2 &&
-    msg.options[0] === "Approve" &&
-    msg.options[1] === "Deny"
-  );
+// Split a prompt title into its first line and the (possibly empty)
+// remainder. Mirrors Rust `str::lines()`: only the `\r` of a CRLF ending
+// is dropped, a lone trailing `\r` stays in the line (and then fails
+// APPROVAL_TOOL_NAME, exactly as is_valid_tool_name rejects it there).
+function splitTitle(title) {
+  const nl = title.indexOf("\n");
+  if (nl === -1) return [title, ""];
+  return [title.slice(0, nl).replace(/\r$/, ""), title.slice(nl + 1).replace(/\r/g, "")];
 }
 
-function approvalToolName(msg) {
-  return msg.title.slice(APPROVAL_TITLE_PREFIX.length);
+// `{ tool, head, details }` for an "Allow tool:" prompt, else null. `tool`
+// is null when the name fails the Rust-side grammar: the card still
+// renders as an approval (split head, capped details, no free-text box)
+// but offers no grant, since that grant would be rejected anyway.
+function approvalInfo(msg) {
+  if (typeof msg.title !== "string" || !Array.isArray(msg.options)) return null;
+  if (msg.options.length !== 2 || msg.options[0] !== "Approve" || msg.options[1] !== "Deny") {
+    return null;
+  }
+  const [head, details] = splitTitle(msg.title);
+  if (!head.startsWith(APPROVAL_TITLE_PREFIX)) return null;
+  const tool = head.slice(APPROVAL_TITLE_PREFIX.length);
+  return { tool: APPROVAL_TOOL_NAME.test(tool) ? tool : null, head, details };
 }
 
 function isDoneOption(opt) {
@@ -44,8 +74,9 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, on
   const [draft, setDraft] = React.useState(msg.method === "editor" ? (msg.prefill ?? "") : "");
   const done = msg.answered || msg.cancelled;
   const method = msg.method ?? "select";
-  const isApproval = method === "select" && isApprovalPrompt(msg);
-  const tool = isApproval ? approvalToolName(msg) : null;
+  const approval = method === "select" ? approvalInfo(msg) : null;
+  const isApproval = approval !== null;
+  const tool = approval?.tool ?? null;
 
   const submit = (value) => {
     if (done) return;
@@ -153,7 +184,14 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, on
     // select (default — also covers any legacy message without a `method`)
     body = (
       <>
-        <div className="ask-question">{msg.title}</div>
+        <div className="ask-question">{approval ? approval.head : msg.title}</div>
+
+        {/* Detail lines omp appends to the title (origin/reason, path,
+            command, content preview). Capped + scrollable in CSS so a
+            2000-char payload can never push Approve/Deny out of reach. */}
+        {approval?.details && (
+          <div className="ask-approval-details mono selectable">{approval.details}</div>
+        )}
 
         {msg.options.length > 0 && (
           <div className="ask-options">
@@ -181,7 +219,7 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, on
           </div>
         )}
 
-        {isApproval && !done && (
+        {tool && !done && (
           <div className="ask-approval-rules">
             <button className="ask-opt ask-remember" onClick={() => grant("session")}>
               <_AskIcon name="clock" size={10} />
