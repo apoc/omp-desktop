@@ -11,6 +11,7 @@ mod files;
 mod git;
 mod git_watcher;
 mod json_store;
+mod keybindings;
 mod profiles;
 mod saved_sessions;
 mod workspace;
@@ -519,6 +520,89 @@ async fn workspace_reject(path: String, rel_path: String) -> Result<(), String> 
         .map_err(|e| format!("join error: {e}"))?
 }
 
+/// Shared profile-resolution and home-dir setup for the three keybindings
+/// commands. Returns `(home, resolved_profile, env_dir)` ready to pass to
+/// `keybindings::read_omp` / `keybindings::payload`.
+fn kb_resolve(
+    profile: Option<&str>,
+    store: &profiles::ProfileStore,
+    app: &AppHandle,
+) -> Result<
+    (
+        std::path::PathBuf,
+        Option<String>,
+        Option<std::ffi::OsString>,
+    ),
+    String,
+> {
+    // Validate the profile id and normalise to `None` for the built-in one.
+    let resolved = store.resolve(profile)?.map(str::to_owned);
+    let home = app.path().home_dir().map_err(|e| e.to_string())?;
+    let env_dir = std::env::var_os("PI_CODING_AGENT_DIR");
+    Ok((home, resolved, env_dir))
+}
+
+/// Return the current keybinding payload for `profile`.
+///
+/// Runs `spawn_blocking` because both the omp config and the overlay are
+/// filesystem reads that can block on a slow or network-mounted home dir.
+#[tauri::command]
+async fn keybindings_list(
+    profile: Option<String>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+    overlay: State<'_, Arc<keybindings::overlay::OverlayStore>>,
+    app: AppHandle,
+) -> Result<keybindings::Payload, String> {
+    let (home, resolved, env_dir) = kb_resolve(profile.as_deref(), &store, &app)?;
+    // Clone the Arc handle — cheap, and required to move into spawn_blocking.
+    let overlay = Arc::clone(&overlay);
+    tauri::async_runtime::spawn_blocking(move || {
+        keybindings::payload(&home, resolved.as_deref(), env_dir.as_deref(), &overlay)
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+}
+
+/// Bind `action` to `keys` in the desktop overlay and return the updated
+/// payload.
+#[tauri::command]
+async fn keybindings_set(
+    action: String,
+    keys: Vec<String>,
+    profile: Option<String>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+    overlay: State<'_, Arc<keybindings::overlay::OverlayStore>>,
+    app: AppHandle,
+) -> Result<keybindings::Payload, String> {
+    let (home, resolved, env_dir) = kb_resolve(profile.as_deref(), &store, &app)?;
+    let overlay = Arc::clone(&overlay);
+    tauri::async_runtime::spawn_blocking(move || {
+        overlay.set(&action, &keys)?;
+        keybindings::payload(&home, resolved.as_deref(), env_dir.as_deref(), &overlay)
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+}
+
+/// Remove `action` from the desktop overlay and return the updated payload.
+#[tauri::command]
+async fn keybindings_reset(
+    action: String,
+    profile: Option<String>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+    overlay: State<'_, Arc<keybindings::overlay::OverlayStore>>,
+    app: AppHandle,
+) -> Result<keybindings::Payload, String> {
+    let (home, resolved, env_dir) = kb_resolve(profile.as_deref(), &store, &app)?;
+    let overlay = Arc::clone(&overlay);
+    tauri::async_runtime::spawn_blocking(move || {
+        overlay.remove(&action)?;
+        keybindings::payload(&home, resolved.as_deref(), env_dir.as_deref(), &overlay)
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+}
+
 /// Run the Tauri application. Panics if the runtime fails to initialise.
 ///
 /// # Panics
@@ -585,6 +669,9 @@ pub fn run() {
             delete_profile,
             set_startup_profile,
             clear_profile_bootstrap,
+            keybindings_list,
+            keybindings_set,
+            keybindings_reset,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
@@ -618,6 +705,10 @@ pub fn run() {
             // Moved, not `Arc::clone`d: `store` is not read after this point,
             // so a second handle would be dropped with the setup closure.
             app.manage(store);
+            // Keybinding overlay: <app_config_dir>/keybindings.json.
+            app.manage(Arc::new(keybindings::overlay::OverlayStore::new(
+                config_dir.join("keybindings.json"),
+            )));
 
             // Start the default session (no cwd = omp's working directory).
             // The frontend activates this session on load via OMP_BRIDGE.activateSession("default").
