@@ -58,7 +58,7 @@ function ProfileMenu({
   React.useEffect(() => {
     if (!open) return undefined;
     const onDown = e => { if (!rootRef.current?.contains(e.target)) close(); };
-    const onKey  = e => { if (e.key === "Escape") close(); };
+    const onKey  = e => { if (e.key === "Escape") { e.preventDefault(); close(); } };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
     return () => {

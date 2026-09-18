@@ -151,24 +151,35 @@ pub fn read_file(path: &Path) -> Result<BTreeMap<String, Vec<String>>, String> {
     };
 
     let raw_map = if path.extension().and_then(OsStr::to_str) == Some("json") {
-        // The JSON overlay format uses an object of `{ action: string | string[] }`.
-        // For omp's own JSON config (rarely used but supported) we accept the
-        // same shape and canonicalise below.
+        // JSON keybindings: `{ action: string | string[] }`.
+        // Non-conforming values are skipped (matching omp's `toKeybindingsConfig`
+        // which requires every array element to be a string — a mixed array
+        // like `[1]` or `["ctrl+x", null]` is dropped, not partially accepted).
         let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-        let obj = v
-            .as_object()
-            .ok_or_else(|| "keybindings JSON must be an object".to_string())?;
+        let serde_json::Value::Object(obj) = v else {
+            return Err("keybindings JSON must be an object".to_string());
+        };
         let mut map = BTreeMap::new();
         for (k, v) in obj {
             let chords: Vec<String> = match v {
-                serde_json::Value::String(s) => vec![s.clone()],
-                serde_json::Value::Array(arr) => arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(str::to_owned))
-                    .collect(),
+                serde_json::Value::String(s) => vec![s],
+                serde_json::Value::Array(arr) => {
+                    // Require every element to be a string; skip the key otherwise.
+                    match arr
+                        .into_iter()
+                        .map(|v| match v {
+                            serde_json::Value::String(s) => Ok(s),
+                            _ => Err(()),
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                    {
+                        Ok(strings) => strings,
+                        Err(()) => continue,
+                    }
+                }
                 _ => continue,
             };
-            map.insert(k.clone(), chords);
+            map.insert(k, chords);
         }
         map
     } else {
@@ -221,7 +232,13 @@ pub fn read_omp(
 
     // Named profile: read the built-in file first, then override with the
     // named profile's file — exactly `mergeKeybindingsConfig` in omp.
-    let base_dir = agent_dir_for(home, None, env_dir);
+    //
+    // The built-in base is always `~/.omp/agent`, regardless of
+    // `PI_CODING_AGENT_DIR`. omp's own `resolveInheritedAgentDir`
+    // (`app-keybindings.ts:467-473`) calls `getBaseConfigRoot()` with no env
+    // override; honouring the var for the base would show bindings from a
+    // different directory than the tab's omp process actually merged from.
+    let base_dir = crate::profiles::agent_dir(home, None);
     let base_path = config_path(&base_dir);
     let base: BTreeMap<String, Vec<String>> = base_path
         .as_deref()
@@ -265,10 +282,33 @@ pub fn payload(
     Ok(Payload {
         omp: omp_layer.bindings,
         overlay: overlay_bindings,
-        omp_path: omp_layer.path.and_then(|p| p.to_str().map(str::to_owned)),
+        omp_path: omp_layer.path.map(|p| p.to_string_lossy().into_owned()),
         inherited_path: omp_layer
             .inherited_path
-            .and_then(|p| p.to_str().map(str::to_owned)),
-        overlay_path: store.path().to_str().map(str::to_owned).unwrap_or_default(),
+            .map(|p| p.to_string_lossy().into_owned()),
+        overlay_path: store.path().to_string_lossy().into_owned(),
+    })
+}
+
+/// Like [`payload`] but accepts a pre-computed overlay map — avoids a second
+/// filesystem read when the caller already holds the freshly-written overlay
+/// (e.g. `keybindings_set`/`keybindings_reset` get the updated map back from
+/// `OverlayStore::set`/`remove` and can pass it directly).
+pub fn payload_with_overlay(
+    home: &Path,
+    profile: Option<&str>,
+    env_dir: Option<&OsStr>,
+    overlay_bindings: BTreeMap<String, Vec<String>>,
+    overlay_path: &Path,
+) -> Result<Payload, String> {
+    let omp_layer = read_omp(home, profile, env_dir)?;
+    Ok(Payload {
+        omp: omp_layer.bindings,
+        overlay: overlay_bindings,
+        omp_path: omp_layer.path.map(|p| p.to_string_lossy().into_owned()),
+        inherited_path: omp_layer
+            .inherited_path
+            .map(|p| p.to_string_lossy().into_owned()),
+        overlay_path: overlay_path.to_string_lossy().into_owned(),
     })
 }

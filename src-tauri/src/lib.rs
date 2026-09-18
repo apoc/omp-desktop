@@ -524,7 +524,7 @@ async fn workspace_reject(path: String, rel_path: String) -> Result<(), String> 
 /// commands. Returns `(home, resolved_profile, env_dir)` ready to pass to
 /// `keybindings::read_omp` / `keybindings::payload`.
 fn kb_resolve(
-    profile: Option<&str>,
+    profile: Option<String>,
     store: &profiles::ProfileStore,
     app: &AppHandle,
 ) -> Result<
@@ -535,11 +535,17 @@ fn kb_resolve(
     ),
     String,
 > {
-    // Validate the profile id and normalise to `None` for the built-in one.
-    let resolved = store.resolve(profile)?.map(str::to_owned);
+    // Validate through the borrow, then move the original — same pattern as
+    // `list_saved_sessions` (lib.rs). Avoids a `str::to_owned` re-allocation on
+    // the happy path when the id is already an owned `String`.
+    let profile = if store.resolve(profile.as_deref())?.is_some() {
+        profile
+    } else {
+        None
+    };
     let home = app.path().home_dir().map_err(|e| e.to_string())?;
     let env_dir = std::env::var_os("PI_CODING_AGENT_DIR");
-    Ok((home, resolved, env_dir))
+    Ok((home, profile, env_dir))
 }
 
 /// Return the current keybinding payload for `profile`.
@@ -553,8 +559,8 @@ async fn keybindings_list(
     overlay: State<'_, Arc<keybindings::overlay::OverlayStore>>,
     app: AppHandle,
 ) -> Result<keybindings::Payload, String> {
-    let (home, resolved, env_dir) = kb_resolve(profile.as_deref(), &store, &app)?;
-    // Clone the Arc handle — cheap, and required to move into spawn_blocking.
+    let (home, resolved, env_dir) = kb_resolve(profile, &store, &app)?;
+    // Clone the Arc handle — cheap, required to move into spawn_blocking.
     let overlay = Arc::clone(&overlay);
     tauri::async_runtime::spawn_blocking(move || {
         keybindings::payload(&home, resolved.as_deref(), env_dir.as_deref(), &overlay)
@@ -574,11 +580,18 @@ async fn keybindings_set(
     overlay: State<'_, Arc<keybindings::overlay::OverlayStore>>,
     app: AppHandle,
 ) -> Result<keybindings::Payload, String> {
-    let (home, resolved, env_dir) = kb_resolve(profile.as_deref(), &store, &app)?;
+    let (home, resolved, env_dir) = kb_resolve(profile, &store, &app)?;
     let overlay = Arc::clone(&overlay);
     tauri::async_runtime::spawn_blocking(move || {
-        overlay.set(&action, &keys)?;
-        keybindings::payload(&home, resolved.as_deref(), env_dir.as_deref(), &overlay)
+        // Use the map returned by set() directly — avoids a second file read.
+        let overlay_bindings = overlay.set(&action, &keys)?;
+        keybindings::payload_with_overlay(
+            &home,
+            resolved.as_deref(),
+            env_dir.as_deref(),
+            overlay_bindings,
+            overlay.path(),
+        )
     })
     .await
     .map_err(|e| format!("join error: {e}"))?
@@ -593,11 +606,17 @@ async fn keybindings_reset(
     overlay: State<'_, Arc<keybindings::overlay::OverlayStore>>,
     app: AppHandle,
 ) -> Result<keybindings::Payload, String> {
-    let (home, resolved, env_dir) = kb_resolve(profile.as_deref(), &store, &app)?;
+    let (home, resolved, env_dir) = kb_resolve(profile, &store, &app)?;
     let overlay = Arc::clone(&overlay);
     tauri::async_runtime::spawn_blocking(move || {
-        overlay.remove(&action)?;
-        keybindings::payload(&home, resolved.as_deref(), env_dir.as_deref(), &overlay)
+        let overlay_bindings = overlay.remove(&action)?;
+        keybindings::payload_with_overlay(
+            &home,
+            resolved.as_deref(),
+            env_dir.as_deref(),
+            overlay_bindings,
+            overlay.path(),
+        )
     })
     .await
     .map_err(|e| format!("join error: {e}"))?

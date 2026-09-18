@@ -6,7 +6,6 @@ const {
   Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar,
   StatusBar, AmbientRail, PlanKanban, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakSelect, TweakToggle, TweakColor,
-  useCommandShortcut,
 } = window;
 
 // EDITMODE block — tweak defaults
@@ -61,7 +60,6 @@ function App() {
     return () => clearTimeout(id);
   }, []);
 
-  useCommandShortcut(setBridgeOpen, setBridgeView);
 
   const project = data.projects.find((p) => p.id === activeTabId);
   const todoCounts = data.kanban.reduce(

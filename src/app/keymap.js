@@ -59,10 +59,15 @@
   };
 
   /**
-   * Port of omp's `canonicalKeyId`. Strips modifier prefixes (case-insensitive,
-   * any order), lowercases the base, aliases `esc`→`escape` / `return`→`enter`,
-   * infers `shift` for a bare uppercase ASCII letter (no other modifiers), then
-   * emits in `ctrl, shift, alt, super` order.
+   * Chord canonicaliser — port of omp's `canonicalKeyId` with one deliberate
+   * deviation: omp infers `shift` for any single uppercase ASCII base when
+   * `shift` is not already present, regardless of other modifiers
+   * (`Ctrl+P` → `ctrl+shift+p` in the TUI). This implementation only infers
+   * shift when **no** modifier is present (`P` → `shift+p`; `Ctrl+P` → `ctrl+p`).
+   * Consequence: a `keybindings.yml` entry spelled `app.x: Ctrl+P` maps to
+   * `ctrl+shift+p` in the TUI but `ctrl+p` in the desktop dispatcher. Users who
+   * write all-lowercase chord spellings (omp's own defaults do) get identical
+   * behaviour in both. See the matching comment in yaml.rs `canonical_chord`.
    *
    * Returns `""` when there is no base (invalid chord).
    * @param {string} raw
@@ -102,7 +107,15 @@
   /**
    * Derive a canonical chord string from a KeyboardEvent (or event-shaped object).
    * Returns `null` for bare modifier presses.
-   * @param {Pick<KeyboardEvent, "key"|"ctrlKey"|"shiftKey"|"altKey"|"metaKey">} e
+   *
+   * `e.code` is read when `e.altKey`/`e.ctrlKey` is set AND `e.key` is a
+   * non-ASCII-alphanumeric character (macOS composed-char recovery, e.g. "µ"
+   * for Alt+M). Plain ASCII keys always use `e.key` directly so AZERTY/Dvorak
+   * layouts are not broken. Note: on Windows, AltGr is reported as
+   * `ctrlKey+altKey`, so AltGr+E ("€", code "KeyE") canonicalises to
+   * `ctrl+alt+e` — a user who binds that chord will accidentally claim AltGr+E.
+   *
+   * @param {Pick<KeyboardEvent, "key"|"code"|"ctrlKey"|"shiftKey"|"altKey"|"metaKey">} e
    * @returns {string|null}
    */
   function chordFromEvent(e) {
@@ -269,8 +282,11 @@
     try {
       return (
         (typeof navigator !== "undefined") &&
-        (navigator.userAgentData?.platform ?? navigator.platform ?? navigator.userAgent ?? "")
-          .includes("Mac")
+        // UA Client Hints platform value on macOS is "macOS" (lowercase m);
+        // navigator.platform is "MacIntel". Use case-insensitive match for both.
+        /mac/i.test(
+          navigator.userAgentData?.platform ?? navigator.platform ?? navigator.userAgent ?? ""
+        )
       );
     } catch (_) {
       return false;
@@ -292,15 +308,16 @@
    */
   function formatChord(chord, isMac = detectMac()) {
     const parts = chord.split("+");
-    return parts.map((p, idx) => {
+    return parts.map(p => {
       // The last part is the base; everything before is a modifier.
-      const isLast = idx === parts.length - 1;
       if (p === "alt"   && isMac)  return "Option";
       if (p === "super" && isMac)  return "Cmd";
       if (DISPLAY_MAP[p])          return DISPLAY_MAP[p];
-      if (!isLast)                 return p.charAt(0).toUpperCase() + p.slice(1);
-      // Base key: single char → uppercase, otherwise as-is.
-      return p.length === 1 ? p.toUpperCase() : p;
+      // Capitalise first char of every part — single char → uppercase,
+      // multi-char → title-case (e.g. "home"→"Home", "f5"→"F5").
+      // The `!isLast` guard for modifiers is redundant now since they all
+      // hit DISPLAY_MAP first, but kept for clarity.
+      return p.length === 1 ? p.toUpperCase() : p.charAt(0).toUpperCase() + p.slice(1);
     }).join("+");
   }
 

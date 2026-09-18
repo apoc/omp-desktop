@@ -36,8 +36,12 @@ pub fn parse(content: &str) -> BTreeMap<String, Vec<String>> {
         let values = if value.is_empty() {
             let mut items = Vec::new();
             while let Some(item) = lines.get(i).and_then(|l| block_item(l)) {
-                items.push(item);
                 i += 1;
+                // block_item returns "" as a sentinel for blank/comment lines
+                // that should be skipped but not terminate the sequence.
+                if !item.is_empty() {
+                    items.push(item);
+                }
             }
             items
         } else if let Some(rest) = value.strip_prefix('[') {
@@ -74,16 +78,35 @@ fn entry(line: &str) -> Option<(&str, &str)> {
     {
         return None;
     }
-    Some((key, line[colon + 1..].trim()))
+    let value = line[colon + 1..].trim();
+    // A value that starts with `#` after trimming is a YAML comment — the
+    // entry has no value (e.g. `app.session.new: # unbound`). Treat as empty
+    // so it behaves the same as `app.session.new:` (falls through to the
+    // registry default), not as a bogus chord `# unbound`.
+    let value = if value.starts_with('#') { "" } else { value };
+    Some((key, value))
 }
 
-/// `  - ctrl+a` → `ctrl+a`. `None` ends the block sequence.
+/// `  - ctrl+a` → `ctrl+a`. `None` terminates the block sequence.
+///
+/// Blank and comment-only indented lines are skipped rather than ending the
+/// sequence, so `app.model.select:\n  # primary\n  - alt+m` correctly
+/// yields `["alt+m"]` instead of `[]` (explicitly disabled).
 fn block_item(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
-    if trimmed.len() == line.len() && !trimmed.starts_with('-') {
-        // Unindented non-item: the next entry, not part of this sequence.
+    // An unindented line that is not blank is the next top-level entry.
+    if !line.starts_with(|c: char| c.is_whitespace()) && !line.is_empty() {
         return None;
     }
+    // Blank line inside the block — skip, don't terminate.
+    if trimmed.is_empty() {
+        return Some(String::new()); // sentinel: caller discards empty strings
+    }
+    // Comment-only line inside the block — skip.
+    if trimmed.starts_with('#') {
+        return Some(String::new()); // sentinel
+    }
+    // Require the `- ` item prefix; anything else terminates (e.g. a nested map).
     let rest = trimmed.strip_prefix("- ")?.trim();
     Some(if rest.starts_with('"') || rest.starts_with('\'') {
         unquote(rest)
@@ -93,36 +116,48 @@ fn block_item(line: &str) -> Option<String> {
 }
 
 /// Items of a flow sequence, given everything after the opening `[`.
-/// Commas inside quotes do not split.
+///
+/// Commas inside quotes do not split. Backslash-escapes inside double-quoted
+/// items are tracked so that `"ctrl+\"` does not look like a closing quote,
+/// matching the same logic in `unquote`.
 fn flow_items(rest: &str) -> Vec<String> {
     let body = rest.rfind(']').map_or(rest, |end| &rest[..end]);
-    let mut items = Vec::new();
+    let mut out = Vec::new();
     let mut start = 0;
-    let mut quote = None;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
     for (idx, ch) in body.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
         match (quote, ch) {
+            (Some('"'), '\\') => escaped = true,
             (None, '"' | '\'') => quote = Some(ch),
             (Some(q), c) if c == q => quote = None,
             (None, ',') => {
-                items.push(&body[start..idx]);
+                let raw = body[start..idx].trim();
+                if !raw.is_empty() {
+                    out.push(if raw.starts_with('"') || raw.starts_with('\'') {
+                        unquote(raw)
+                    } else {
+                        plain_scalar(raw)
+                    });
+                }
                 start = idx + 1;
             }
             _ => {}
         }
     }
-    items.push(&body[start..]);
-    items
-        .into_iter()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| {
-            if s.starts_with('"') || s.starts_with('\'') {
-                unquote(s)
-            } else {
-                plain_scalar(s)
-            }
-        })
-        .collect()
+    let raw = body[start..].trim();
+    if !raw.is_empty() {
+        out.push(if raw.starts_with('"') || raw.starts_with('\'') {
+            unquote(raw)
+        } else {
+            plain_scalar(raw)
+        });
+    }
+    out
 }
 
 /// A quoted scalar with its quotes removed. Escapes are honoured inside
@@ -181,15 +216,27 @@ fn plain_scalar(value: &str) -> String {
         .to_string()
 }
 
-/// Port of omp's `canonicalKeyId` (`packages/tui/src/keybindings.ts`).
+/// Chord canonicaliser shared by the YAML reader and the overlay validator.
 ///
 /// Modifiers are recognised case-insensitively in any order and re-emitted in
 /// omp's canonical `ctrl, shift, alt, super` order; the base key is
-/// lowercased, `esc`/`return` are aliased to `escape`/`enter`, and a bare
-/// uppercase ASCII letter implies `shift` (`"P"` == `"shift+p"`).
+/// lowercased; `esc`→`escape`, `return`→`enter`.
 ///
-/// Returns an empty string when there is no base key (`"ctrl+"`, `""`), which
-/// callers treat as an invalid chord.
+/// **Deliberate deviation from omp's `canonicalKeyId`:** omp infers `shift`
+/// for any single uppercase ASCII base letter when `shift` is not already
+/// among the modifiers — so `Ctrl+P` → `ctrl+shift+p` in the TUI. The
+/// desktop applies this inference only when **no** modifier is present at
+/// all, giving `Ctrl+P` → `ctrl+p`. The consequence: a `keybindings.yml`
+/// entry spelled `app.model.cycleForward: Ctrl+P` maps to the `ctrl+shift+p`
+/// chord in the TUI but to `ctrl+p` in the desktop dispatcher. Users who
+/// write chords without a modifier (`P: ...`) get identical behaviour in both;
+/// users who write `Ctrl+UppercaseLetter` do not. This is intentional: the
+/// desktop's default registry uses all-lowercase chord spellings, and the
+/// shift-on-modifier path would silently merge `ctrl+p` (cycleForward) and
+/// `ctrl+shift+p` (cycleBackward), creating a permanent conflict.
+///
+/// Returns an empty string when there is no base key (`"ctrl+"`, `""`);
+/// callers treat an empty return as an invalid chord.
 pub fn canonical_chord(raw: &str) -> String {
     const MODIFIERS: [&str; 4] = ["ctrl+", "shift+", "alt+", "super+"];
     let mut rest = raw.trim();
@@ -202,25 +249,25 @@ pub fn canonical_chord(raw: &str) -> String {
                 .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
             {
                 flags[idx] = true;
-                // The matched prefix is ASCII, so this split is on a char
-                // boundary even when the base key is not.
                 rest = rest[prefix.len()..].trim_start();
                 continue 'strip;
             }
         }
         break;
     }
-    let base = rest.trim();
-    // A bare uppercase ASCII letter with NO other modifiers implies shift:
-    // `"P"` → `"shift+p"`, but `"Ctrl+P"` → `"ctrl+p"` (modifier already
-    // present; the uppercase is just how the user typed it).
-    if base.len() == 1 && base.as_bytes()[0].is_ascii_uppercase() && !flags.iter().any(|&f| f) {
+    let base_raw = rest.trim();
+    if base_raw.len() == 1
+        && base_raw.as_bytes()[0].is_ascii_uppercase()
+        && !flags.iter().any(|&f| f)
+    {
         flags[1] = true;
     }
-    let base = match base.to_ascii_lowercase().as_str() {
-        "esc" => "escape".to_string(),
-        "return" => "enter".to_string(),
-        other => other.to_string(),
+    // Lower-case base; resolve aliases in a single match on the lowercase str.
+    let lower = base_raw.to_ascii_lowercase();
+    let base: &str = match lower.as_str() {
+        "esc" => "escape",
+        "return" => "enter",
+        other => other,
     };
     if base.is_empty() {
         return String::new();
@@ -231,7 +278,7 @@ pub fn canonical_chord(raw: &str) -> String {
             out.push_str(prefix);
         }
     }
-    out.push_str(&base);
+    out.push_str(base);
     out
 }
 

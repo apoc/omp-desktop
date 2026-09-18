@@ -213,7 +213,9 @@ function App() {
     "app.model.cycleBackward": () => {
       if (models.length < 2) return;
       const idx = models.findIndex(m => m.id === model.id && m.provider === model.provider);
-      handlePickModel(models[(idx < 0 ? 0 : (idx - 1 + models.length)) % models.length]);
+      // No-op when the current model isn't in the list (plan §7).
+      if (idx < 0) return;
+      handlePickModel(models[(idx - 1 + models.length) % models.length]);
     },
     "app.model.select":        () => openBridge("models"),
     "app.plan.toggle":         togglePlanMode,
@@ -226,12 +228,12 @@ function App() {
     "desktop.tab.close":       () => { if (activeProject.id) handleCloseTab(activeProject.id); },
     "desktop.tab.next":        () => {
       if (sessions.length < 2) return;
-      const idx = sessions.findIndex(s => s.id === activeSessionId);
+      const idx = sessions.findIndex(s => s.id === activeProject.id);
       bridge?.activateSession(sessions[(idx + 1) % sessions.length].id);
     },
     "desktop.tab.prev":        () => {
       if (sessions.length < 2) return;
-      const idx = sessions.findIndex(s => s.id === activeSessionId);
+      const idx = sessions.findIndex(s => s.id === activeProject.id);
       bridge?.activateSession(sessions[(idx - 1 + sessions.length) % sessions.length].id);
     },
     "desktop.panel.todo":      () => setPlanOpen(v => !v),
@@ -461,11 +463,13 @@ function App() {
         <ApprovalRulesPanel onClose={() => setRulesOpen(false)} />
       )}
 
-      <ShortcutsModal
-        open={shortcutsOpen}
-        onClose={() => setShortcutsOpen(false)}
-        keymap={keymap}
-      />
+      {shortcutsOpen && (
+        <ShortcutsModal
+          open={shortcutsOpen}
+          onClose={() => setShortcutsOpen(false)}
+          keymap={keymap}
+        />
+      )}
 
       <TweaksPanel title="Tweaks" noDeckControls>
         <TweakSection label="Look">

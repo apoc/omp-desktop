@@ -28,6 +28,11 @@ use crate::keybindings::{yaml, ACTION_IDS};
 
 // ── on-disk representation ────────────────────────────────────────────────────
 
+// The one-level `{ bindings: … }` wrapper was chosen so a future top-level
+// field (e.g. `version`, `migrated_at`) can be added without a format break.
+// Note: unknown top-level fields are currently *dropped* on read because
+// `OverlayFile` has no `#[serde(flatten)]` catch-all; when adding a new field,
+// add it to this struct first before writing it to disk.
 #[derive(Default, Serialize, Deserialize)]
 struct OverlayFile {
     #[serde(default)]
@@ -115,9 +120,9 @@ impl OverlayStore {
             let mut file_data = read_file_strict(&self.path)?;
             f(&mut file_data.bindings);
             let serialised = serde_json::to_vec_pretty(&file_data).map_err(|e| e.to_string())?;
-            if let Some(parent) = self.path.parent() {
-                fs::create_dir_all(parent).map_err(|e| format!("create dir: {e}"))?;
-            }
+            // `json_store::with_lock` already calls `fs::create_dir_all` on the
+            // lock-file's parent before acquiring — same directory as
+            // `keybindings.json` — so no explicit `create_dir_all` is needed here.
             json_store::write_atomic(&self.path, &serialised).map_err(|e| e.to_string())?;
             Ok(file_data.bindings)
         })
@@ -145,13 +150,14 @@ fn read_file_strict(path: &Path) -> Result<OverlayFile, String> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
-
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    /// Fresh directory per test; caller cleans up with `cleanup()`.
     fn make_store() -> (OverlayStore, PathBuf) {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("omp-overlay-{id}"));
+        // Include the process id so parallel test processes (`cargo test`
+        // running twice concurrently) don't collide and delete each other's
+        // scratch directories — same pattern as profiles.rs and json_store.rs.
+        let dir = std::env::temp_dir().join(format!("omp-overlay-{}-{}", std::process::id(), id));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create test dir");
         let path = dir.join("keybindings.json");
@@ -260,12 +266,18 @@ mod tests {
     fn corrupt_file_makes_read_and_set_error_without_rewriting() {
         let (store, dir) = make_store();
         fs::write(&store.path, b"this is not json").unwrap();
+        // read() must error.
         assert!(store.read().is_err());
         let before = fs::read(&store.path).unwrap();
-        // set should also fail.
-        let _ = store.set("desktop.panel.changes", &["ctrl+g".to_string()]);
+        // set() must also error and leave the bytes unchanged.
+        store
+            .set("desktop.panel.changes", &["ctrl+g".to_string()])
+            .unwrap_err();
         let after = fs::read(&store.path).unwrap();
         assert_eq!(before, after, "corrupt file must not be overwritten");
+        // remove() must error too.
+        store.remove("desktop.panel.changes").unwrap_err();
+        assert_eq!(fs::read(&store.path).unwrap(), before);
         cleanup(&dir);
     }
 

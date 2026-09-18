@@ -24,7 +24,7 @@ struct TmpHome {
 impl TmpHome {
     fn new() -> Self {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = env::temp_dir().join(format!("omp-kb-test-{id}"));
+        let path = env::temp_dir().join(format!("omp-kb-test-{}-{}", std::process::id(), id));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("create home");
         Self { path }

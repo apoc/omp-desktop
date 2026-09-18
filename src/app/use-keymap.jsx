@@ -53,14 +53,24 @@ function useKeymap(bridge, profileId) {
   const setBinding = React.useCallback(async (action, keys) => {
     if (!bridge) return "no bridge";
     const res = await bridge.setKeybinding(action, keys);
-    if (res.ok) { applyPayload(res.value); return null; }
+    if (res.ok) {
+      // Bump generation so any in-flight reload() response is discarded —
+      // the mutation result is authoritative.
+      ++genRef.current;
+      applyPayload(res.value);
+      return null;
+    }
     return res.error;
   }, [bridge, applyPayload]);
 
   const resetBinding = React.useCallback(async (action) => {
     if (!bridge) return "no bridge";
     const res = await bridge.resetKeybinding(action);
-    if (res.ok) { applyPayload(res.value); return null; }
+    if (res.ok) {
+      ++genRef.current;
+      applyPayload(res.value);
+      return null;
+    }
     return res.error;
   }, [bridge, applyPayload]);
 

@@ -5,6 +5,19 @@
 const { Icon } = window;
 const { parseMentionQuery, applyMention } = window.OMP_MENTIONS;
 
+// Derive display hints from the live keymap so they update when the user
+// rebinds. Falls back to the omp/platform defaults when the registry is not
+// yet loaded (first render before keymap.js runs — should never happen in
+// normal script order, but guard anyway).
+function hintFor(actionId, fallback) {
+  try {
+    const chord = window.OMP_KEYMAP?.keysFor(actionId)?.[0];
+    return chord ? window.OMP_KEYMAP.formatChord(chord) : fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
 // ── The composer (input + plan/steer modes + send) ────────────────────
 function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp }) {
   const [text, setText]       = React.useState("");
@@ -148,10 +161,13 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
   // either `onSend` (normal) or `onFollowUp` (follow-up); both get the same
   // paste-expansion, state-reset and focus-restore treatment.
   const sendWith = (dispatcher) => {
-    // If the slash popup is open, Enter executes the highlighted command
-    // regardless of which dispatcher was requested.
     if (showSlash) { execCmd(filtered[clampedIdx]); return; }
-    const canSend = text.trim() || (planMode && annotationCount > 0);
+    // follow-up (`onFollowUp` dispatcher) requires non-empty text — annotations
+    // are a send-only affordance (app-live.jsx merges them into the message).
+    // Plain send can proceed with annotations alone (annotationCount > 0).
+    const canSend = dispatcher === onSend
+      ? (text.trim() || (planMode && annotationCount > 0))
+      : !!text.trim();
     if (!canSend) return;
     dispatcher(expandPastes(text.trim()));
     setText("");
@@ -263,7 +279,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
                 ? (microcopy?.planTip ?? "describe what to build, or give feedback on the plan…")
                 : isStreaming
                   ? microcopy?.streamingTip
-                  : (microcopy?.paletteTip ?? "what should we ship?  ·  / for commands  ·  ⌘K for the bridge")
+                  : (microcopy?.paletteTip ?? `what should we ship?  ·  / for commands  ·  ${hintFor("desktop.commands.open", "⌘K")} for the bridge`)
             }
             value={text}
             onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart); }}
@@ -277,9 +293,9 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
             aria-activedescendant={showMention ? `mention-row-${mentionActiveIdx}` : undefined}
           />
         </div>
-        <button className="btn outlined" title="open command bridge (⌘K)" onClick={onOpenCmd}>
+        <button className="btn outlined" title={`open command bridge (${hintFor("desktop.commands.open", "⌘K")})`} onClick={onOpenCmd}>
           <Icon name="command" size={11} />
-          <span className="kbd" style={{ marginLeft: 2 }}>K</span>
+          <span className="kbd" style={{ marginLeft: 2 }}>{hintFor("desktop.commands.open", "K")}</span>
         </button>
         {isStreaming ? (
           <>
@@ -290,7 +306,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
               </button>
             )}
             <button className="btn danger" onClick={onAbort}>
-              <Icon name="stop" size={10} /> abort <span className="kbd">⎋</span>
+              <Icon name="stop" size={10} /> abort <span className="kbd">{hintFor("app.interrupt", "⎋")}</span>
             </button>
           </>
         ) : (

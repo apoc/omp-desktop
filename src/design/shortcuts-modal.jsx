@@ -43,7 +43,7 @@ function ShortcutsModal({ open, onClose, keymap }) {
       groups[groups.length - 1].actions.push(action);
     }
     return groups;
-  }, [q, keymap]);
+  }, [q, keymap.payload, keymap.error]);
 
   // ── Source classification per action ───────────────────────────────────────
 
@@ -53,9 +53,6 @@ function ShortcutsModal({ open, onClose, keymap }) {
     return "default";
   }
 
-  function effectiveChords(id) {
-    return window.OMP_KEYMAP.keysFor(id);
-  }
 
   // ── Open: reload + focus ───────────────────────────────────────────────────
 
@@ -194,7 +191,7 @@ function ShortcutsModal({ open, onClose, keymap }) {
               <div className="bridge-group" key={group.name}>
                 <div className="bridge-group-head">{group.name}</div>
                 {group.actions.map(a => {
-                  const chords  = effectiveChords(a.id);
+                  const chords  = window.OMP_KEYMAP.keysFor(a.id);
                   const src     = sourceFor(a.id);
                   const rErr    = rowError?.id === a.id ? rowError.message : null;
                   const conflict = conflictFor(a.id);
