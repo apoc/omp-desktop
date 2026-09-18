@@ -61,7 +61,7 @@ impl OverlayStore {
     /// Read the current overlay. A missing file returns an empty map; a
     /// malformed or unreadable file returns `Err`.
     pub fn read(&self) -> Result<BTreeMap<String, Vec<String>>, String> {
-        read_file(&self.path)
+        read_file_strict(&self.path).map(|f| f.bindings)
     }
 
     /// Set `action` → `keys` in the overlay and return the updated map.
@@ -82,6 +82,7 @@ impl OverlayStore {
         if !ACTION_IDS.contains(&action) {
             return Err("unknown action".to_string());
         }
+        let mut seen = std::collections::BTreeSet::new();
         let canonical: Vec<String> = keys
             .iter()
             .map(|k| {
@@ -92,33 +93,44 @@ impl OverlayStore {
                     Ok(c)
                 }
             })
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            // De-duplicate while keeping first-seen order — the Shortcuts
+            // modal's "+ chord" path can re-record a chord the action
+            // already has (plan §8), which must not persist as a repeat.
+            .filter(|c| seen.insert(c.clone()))
+            .collect();
 
         self.mutate(|bindings| {
             bindings.insert(action.to_string(), canonical);
+            true
         })
     }
 
-    /// Remove `action` from the overlay (a no-op when absent) and return the
-    /// updated map.
+    /// Remove `action` from the overlay (a no-op when absent, including no
+    /// file write) and return the updated map.
     ///
     /// Refuses to write if the current file is malformed.
     pub fn remove(&self, action: &str) -> Result<BTreeMap<String, Vec<String>>, String> {
-        self.mutate(|bindings| {
-            bindings.remove(action);
-        })
+        self.mutate(|bindings| bindings.remove(action).is_some())
     }
 
     // ── internal ─────────────────────────────────────────────────────────────
 
-    /// Read, modify with `f`, write atomically, return the new bindings.
+    /// Read, modify with `f`, write atomically **only when `f` reports a
+    /// change**, return the resulting bindings. `f` returns whether it
+    /// mutated the map; a no-op `remove` of an absent action must not
+    /// rewrite the file (or create it, for a fresh install) with identical
+    /// content.
     fn mutate(
         &self,
-        f: impl FnOnce(&mut BTreeMap<String, Vec<String>>),
+        f: impl FnOnce(&mut BTreeMap<String, Vec<String>>) -> bool,
     ) -> Result<BTreeMap<String, Vec<String>>, String> {
         json_store::with_lock_str(&self.path.with_extension("lock"), || {
             let mut file_data = read_file_strict(&self.path)?;
-            f(&mut file_data.bindings);
+            if !f(&mut file_data.bindings) {
+                return Ok(file_data.bindings);
+            }
             let serialised = serde_json::to_vec_pretty(&file_data).map_err(|e| e.to_string())?;
             // `json_store::with_lock` already calls `fs::create_dir_all` on the
             // lock-file's parent before acquiring — same directory as
@@ -131,13 +143,15 @@ impl OverlayStore {
 
 // ── file helpers ──────────────────────────────────────────────────────────────
 
-/// Read the overlay file. `NotFound` ⇒ empty map; any other error ⇒ `Err`.
-fn read_file(path: &Path) -> Result<BTreeMap<String, Vec<String>>, String> {
-    read_file_strict(path).map(|f| f.bindings)
-}
-
-/// Like `read_file` but returns the full `OverlayFile` (needed by `mutate`
-/// so the outer struct survives a round-trip without dropping future keys).
+/// Read the overlay file's full on-disk shape. `NotFound` ⇒ default (empty)
+/// `OverlayFile`; any other error (malformed JSON, IO failure) ⇒ `Err`.
+///
+/// Returns the whole struct, not just `bindings` — `mutate` re-serialises
+/// this same struct after editing its `bindings` field, which is also where
+/// a future sibling field would round-trip once `OverlayFile` gains one.
+/// Today `OverlayFile` has no `#[serde(flatten)]` catch-all, so an *unknown*
+/// top-level key is dropped on the first write; add one before introducing a
+/// second field.
 fn read_file_strict(path: &Path) -> Result<OverlayFile, String> {
     match fs::read(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(OverlayFile::default()),
@@ -152,7 +166,18 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    fn make_store() -> (OverlayStore, PathBuf) {
+    /// Scratch directory removed on drop, including on a panicking assertion
+    /// — the manual `cleanup(&dir)` calls this replaces would otherwise leak
+    /// a temp directory per failed test.
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn make_store() -> (OverlayStore, Scratch) {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
         // Include the process id so parallel test processes (`cargo test`
         // running twice concurrently) don't collide and delete each other's
@@ -161,23 +186,48 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create test dir");
         let path = dir.join("keybindings.json");
-        (OverlayStore::new(path), dir)
+        (OverlayStore::new(path), Scratch(dir))
     }
 
-    fn cleanup(dir: &Path) {
-        let _ = fs::remove_dir_all(dir);
+    /// A store under a directory that does not exist yet — proves `set`
+    /// creates the parent directory on a fresh install rather than relying
+    /// on a test fixture that always pre-creates it.
+    fn make_fresh_store() -> (OverlayStore, Scratch) {
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("omp-overlay-fresh-{}-{}", std::process::id(), id));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("keybindings.json");
+        (OverlayStore::new(path), Scratch(dir))
     }
 
     #[test]
     fn missing_file_reads_as_empty() {
-        let (store, dir) = make_store();
+        let (store, _dir) = make_store();
         assert_eq!(store.read().unwrap().len(), 0);
-        cleanup(&dir);
+    }
+
+    #[test]
+    fn empty_object_file_reads_as_empty() {
+        let (store, _dir) = make_store();
+        fs::write(&store.path, b"{}").unwrap();
+        assert_eq!(store.read().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn fresh_config_dir_is_created_on_first_set() {
+        let (store, _dir) = make_fresh_store();
+        assert!(!store.path().exists());
+        let result = store
+            .set("desktop.panel.changes", &["ctrl+g".to_string()])
+            .unwrap();
+        assert_eq!(result["desktop.panel.changes"], ["ctrl+g"]);
+        assert!(store.path().exists());
     }
 
     #[test]
     fn set_round_trips() {
-        let (store, dir) = make_store();
+        let (store, _dir) = make_store();
         let result = store
             .set("desktop.panel.changes", &["ctrl+g".to_string()])
             .unwrap();
@@ -185,44 +235,69 @@ mod tests {
         // Survives a fresh read.
         let read = store.read().unwrap();
         assert_eq!(read["desktop.panel.changes"], ["ctrl+g"]);
-        cleanup(&dir);
     }
 
     #[test]
     fn set_canonicalises_chords() {
-        let (store, dir) = make_store();
+        let (store, _dir) = make_store();
         store
             .set("desktop.panel.changes", &["Ctrl+G".to_string()])
             .unwrap();
         assert_eq!(store.read().unwrap()["desktop.panel.changes"], ["ctrl+g"]);
-        cleanup(&dir);
+    }
+
+    #[test]
+    fn set_deduplicates_equivalent_chords() {
+        let (store, _dir) = make_store();
+        let result = store
+            .set(
+                "desktop.panel.changes",
+                &["Ctrl+G".to_string(), "ctrl+g".to_string()],
+            )
+            .unwrap();
+        assert_eq!(result["desktop.panel.changes"], ["ctrl+g"]);
     }
 
     #[test]
     fn set_empty_keys_stores_explicit_disabled() {
-        let (store, dir) = make_store();
+        let (store, _dir) = make_store();
         store.set("desktop.panel.changes", &[]).unwrap();
         let read = store.read().unwrap();
         assert!(read.contains_key("desktop.panel.changes"));
         assert_eq!(read["desktop.panel.changes"], [] as [String; 0]);
-        cleanup(&dir);
     }
 
     #[test]
     fn remove_of_absent_action_is_noop() {
-        let (store, dir) = make_store();
+        let (store, _dir) = make_store();
         store
             .set("desktop.panel.changes", &["ctrl+g".to_string()])
             .unwrap();
-        // Remove a key that was never set — must not error, must not disturb others.
+        let before = fs::read(&store.path).unwrap();
+        // Remove a key that was never set — must not error, must not disturb
+        // others, and must not rewrite the file at all.
         store.remove("desktop.panel.todo").unwrap();
         assert!(store.read().unwrap().contains_key("desktop.panel.changes"));
-        cleanup(&dir);
+        assert_eq!(
+            fs::read(&store.path).unwrap(),
+            before,
+            "removing an absent action must not touch the file"
+        );
+    }
+
+    #[test]
+    fn remove_on_fresh_store_does_not_create_file() {
+        let (store, _dir) = make_fresh_store();
+        store.remove("desktop.panel.changes").unwrap();
+        assert!(
+            !store.path().exists(),
+            "a no-op remove must not create the overlay file"
+        );
     }
 
     #[test]
     fn two_sequential_sets_both_survive() {
-        let (store, dir) = make_store();
+        let (store, _dir) = make_store();
         store
             .set("desktop.panel.changes", &["ctrl+g".to_string()])
             .unwrap();
@@ -232,12 +307,11 @@ mod tests {
         let read = store.read().unwrap();
         assert_eq!(read["desktop.panel.changes"], ["ctrl+g"]);
         assert_eq!(read["desktop.panel.todo"], ["ctrl+u"]);
-        cleanup(&dir);
     }
 
     #[test]
     fn set_on_unknown_action_errors_and_leaves_file_untouched() {
-        let (store, dir) = make_store();
+        let (store, _dir) = make_store();
         store
             .set("desktop.panel.changes", &["ctrl+g".to_string()])
             .unwrap();
@@ -247,24 +321,22 @@ mod tests {
         assert!(err.contains("unknown action"), "got: {err}");
         // The previously-written file is intact.
         assert_eq!(store.read().unwrap()["desktop.panel.changes"], ["ctrl+g"]);
-        cleanup(&dir);
     }
 
     #[test]
     fn invalid_chord_errors_without_writing() {
-        let (store, dir) = make_store();
+        let (store, _dir) = make_store();
         let err = store
             .set("desktop.panel.changes", &["ctrl+".to_string()])
             .unwrap_err();
         assert!(err.contains("invalid chord"), "got: {err}");
         // Nothing was written.
         assert_eq!(store.read().unwrap().len(), 0);
-        cleanup(&dir);
     }
 
     #[test]
     fn corrupt_file_makes_read_and_set_error_without_rewriting() {
-        let (store, dir) = make_store();
+        let (store, _dir) = make_store();
         fs::write(&store.path, b"this is not json").unwrap();
         // read() must error.
         assert!(store.read().is_err());
@@ -278,17 +350,15 @@ mod tests {
         // remove() must error too.
         store.remove("desktop.panel.changes").unwrap_err();
         assert_eq!(fs::read(&store.path).unwrap(), before);
-        cleanup(&dir);
     }
 
     #[test]
     fn set_then_remove_leaves_key_absent() {
-        let (store, dir) = make_store();
+        let (store, _dir) = make_store();
         store
             .set("desktop.panel.changes", &["ctrl+g".to_string()])
             .unwrap();
         store.remove("desktop.panel.changes").unwrap();
         assert!(!store.read().unwrap().contains_key("desktop.panel.changes"));
-        cleanup(&dir);
     }
 }

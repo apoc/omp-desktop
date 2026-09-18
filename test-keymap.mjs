@@ -21,7 +21,12 @@ const K = win.OMP_KEYMAP;
 
 let passed = 0;
 function check(label, fn) {
-  fn();
+  try {
+    fn();
+  } catch (err) {
+    console.error(`FAILED: ${label}`);
+    throw err;
+  }
   passed++;
 }
 
@@ -79,6 +84,27 @@ check("chordFromEvent: macOS Alt+M yields composed char — recover from e.code"
 
 check("chordFromEvent: AZERTY Ctrl+A — plain ASCII key must not use e.code", () =>
   assert.equal(K.chordFromEvent({ key: "a", code: "KeyQ", ctrlKey: true, shiftKey: false, altKey: false, metaKey: false }), "ctrl+a"));
+
+check("chordFromEvent: AltGraph key is not a chord", () =>
+  assert.equal(K.chordFromEvent({ key: "AltGraph", ctrlKey: true, shiftKey: false, altKey: true, metaKey: false }), null));
+
+check("chordFromEvent: CapsLock key is not a chord", () =>
+  assert.equal(K.chordFromEvent({ key: "CapsLock", ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }), null));
+
+check("chordFromEvent: IME Process key is not a chord", () =>
+  assert.equal(K.chordFromEvent({ key: "Process", ctrlKey: true, shiftKey: false, altKey: false, metaKey: false }), null));
+
+check("chordFromEvent: unrecovered Dead compose step is not a chord", () =>
+  assert.equal(K.chordFromEvent({ key: "Dead", code: "BracketLeft", ctrlKey: false, shiftKey: false, altKey: true, metaKey: false }), null));
+
+check("chordFromEvent: Dead key recovers the physical letter from e.code", () =>
+  assert.equal(K.chordFromEvent({ key: "Dead", code: "KeyN", ctrlKey: false, shiftKey: false, altKey: true, metaKey: false }), "alt+n"));
+
+check("chordFromEvent: IME composition is never a chord regardless of key", () =>
+  assert.equal(K.chordFromEvent({ key: "Escape", isComposing: true, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }), null));
+
+check("chordFromEvent: ASCII shifted symbol ignores e.code even under Ctrl+Alt", () =>
+  assert.equal(K.chordFromEvent({ key: "@", code: "Digit2", ctrlKey: true, shiftKey: true, altKey: false, metaKey: false }), "ctrl+@"));
 
 // ── resolve ───────────────────────────────────────────────────────────────────
 

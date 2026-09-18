@@ -6,13 +6,35 @@ const { Icon } = window;
 const { parseMentionQuery, applyMention } = window.OMP_MENTIONS;
 
 // Derive display hints from the live keymap so they update when the user
-// rebinds. Falls back to the omp/platform defaults when the registry is not
-// yet loaded (first render before keymap.js runs — should never happen in
-// normal script order, but guard anyway).
+// rebinds. Two variants:
+//   - `hintFor` — the full formatted chord (e.g. "Ctrl+K"), used for text
+//     that stands alone (placeholders, titles, kbd chips with no icon).
+//   - `hintKeyFor` — just the trailing base key (e.g. "K"), used next to an
+//     icon that already conveys the modifier (the command-bridge button's
+//     ⌘ glyph) so the chip doesn't repeat "Ctrl"/"Cmd" a second time.
+// Both distinguish "registry not loaded yet" (window.OMP_KEYMAP absent —
+// first render before keymap.js runs, should never happen in normal script
+// order but guarded anyway) from "loaded but unbound" (the user cleared the
+// binding in the Shortcuts screen): the former keeps showing `fallback`,
+// the latter returns "" so callers can omit the hint entirely instead of
+// advertising a chord that no longer does anything.
 function hintFor(actionId, fallback) {
   try {
-    const chord = window.OMP_KEYMAP?.keysFor(actionId)?.[0];
-    return chord ? window.OMP_KEYMAP.formatChord(chord) : fallback;
+    if (!window.OMP_KEYMAP) return fallback;
+    const chord = window.OMP_KEYMAP.keysFor(actionId)?.[0];
+    return chord ? window.OMP_KEYMAP.formatChord(chord) : "";
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function hintKeyFor(actionId, fallback) {
+  try {
+    if (!window.OMP_KEYMAP) return fallback;
+    const chord = window.OMP_KEYMAP.keysFor(actionId)?.[0];
+    if (!chord) return "";
+    const base = chord.split("+").pop();
+    return base.length === 1 ? base.toUpperCase() : base.charAt(0).toUpperCase() + base.slice(1);
   } catch (_) {
     return fallback;
   }
@@ -159,9 +181,13 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
 
   // Route a completed draft through the full send pipeline. `dispatcher` is
   // either `onSend` (normal) or `onFollowUp` (follow-up); both get the same
-  // paste-expansion, state-reset and focus-restore treatment.
+  // paste-expansion, state-reset and focus-restore treatment. The slash-popup
+  // shortcut only applies to a plain send — a follow-up must always send the
+  // literal draft (plan §7: Ctrl+Q/Ctrl+Enter sends a follow-up even while a
+  // '/' command is being typed), never silently reroute into executing the
+  // highlighted palette command instead.
   const sendWith = (dispatcher) => {
-    if (showSlash) { execCmd(filtered[clampedIdx]); return; }
+    if (showSlash && dispatcher === onSend) { execCmd(filtered[clampedIdx]); return; }
     // follow-up (`onFollowUp` dispatcher) requires non-empty text — annotations
     // are a send-only affordance (app-live.jsx merges them into the message).
     // Plain send can proceed with annotations alone (annotationCount > 0).
@@ -226,6 +252,13 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     if (isSubmitEnter(e) && !e.shiftKey) { e.preventDefault(); send(); return; }
   };
 
+  // Live keymap hints — computed once per render, reused across the
+  // placeholder, title, kbd chips and footer so they can never disagree.
+  const bridgeHint    = hintFor("desktop.commands.open", "⌘K");
+  const bridgeKeyHint = hintKeyFor("desktop.commands.open", "K");
+  const abortHint     = hintFor("app.interrupt", "⎋");
+  const abortFootSeg  = abortHint ? `${abortHint} abort` : "abort";
+
   return (
     <div className={`composer ${planMode ? "plan-on" : ""}`}>
       {planMode && (
@@ -279,7 +312,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
                 ? (microcopy?.planTip ?? "describe what to build, or give feedback on the plan…")
                 : isStreaming
                   ? microcopy?.streamingTip
-                  : (microcopy?.paletteTip ?? `what should we ship?  ·  / for commands  ·  ${hintFor("desktop.commands.open", "⌘K")} for the bridge`)
+                  : (microcopy?.paletteTip ?? `what should we ship?  ·  / for commands${bridgeHint ? `  ·  ${bridgeHint} for the bridge` : ""}`)
             }
             value={text}
             onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart); }}
@@ -293,9 +326,9 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
             aria-activedescendant={showMention ? `mention-row-${mentionActiveIdx}` : undefined}
           />
         </div>
-        <button className="btn outlined" title={`open command bridge (${hintFor("desktop.commands.open", "⌘K")})`} onClick={onOpenCmd}>
+        <button className="btn outlined" title={bridgeHint ? `open command bridge (${bridgeHint})` : "open command bridge"} onClick={onOpenCmd}>
           <Icon name="command" size={11} />
-          <span className="kbd" style={{ marginLeft: 2 }}>{hintFor("desktop.commands.open", "K")}</span>
+          {bridgeKeyHint && <span className="kbd" style={{ marginLeft: 2 }}>{bridgeKeyHint}</span>}
         </button>
         {isStreaming ? (
           <>
@@ -306,7 +339,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
               </button>
             )}
             <button className="btn danger" onClick={onAbort}>
-              <Icon name="stop" size={10} /> abort <span className="kbd">{hintFor("app.interrupt", "⎋")}</span>
+              <Icon name="stop" size={10} /> abort {abortHint && <span className="kbd">{abortHint}</span>}
             </button>
           </>
         ) : (
@@ -344,7 +377,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
         </button>
         <div style={{ flex: 1 }} />
         <span className="mono" style={{ color: "var(--fg-4)", fontSize: "var(--d-text-xs)" }}>
-          {isStreaming && text.trim() ? "↵ steer · ⎋ abort" : "↵ send · ⇧↵ newline · ⎋ abort"}
+          {isStreaming && text.trim() ? `↵ steer · ${abortFootSeg}` : `↵ send · ⇧↵ newline · ${abortFootSeg}`}
         </span>
       </div>
     </div>

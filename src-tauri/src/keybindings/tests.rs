@@ -4,7 +4,6 @@
 //! and/or an overlay, then asserts the `Payload` fields exactly — matching the
 //! plan's §Verification.2 "layer-precedence proof" requirement.
 
-use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -159,6 +158,43 @@ fn unreadable_file_yields_err() {
     assert!(read_file(&path).is_err());
 }
 
+#[test]
+fn malformed_json_config_degrades_to_empty_map() {
+    // A `.json` keybindings file with a JSONC-style comment is invalid JSON
+    // but is exactly the shape omp's `loadRawConfig` tolerates (logs a
+    // warning, falls back to `{}`). This must not fail the whole command.
+    let home = TmpHome::new();
+    let dir = home.agent_dir();
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("keybindings.json");
+    fs::write(&path, b"{\n  // comment\n  \"app.exit\": \"ctrl+c\"\n}\n").unwrap();
+    let result = read_file(&path).unwrap();
+    assert_eq!(result.len(), 0, "malformed JSON degrades to an empty map");
+}
+
+#[test]
+fn non_object_json_config_degrades_to_empty_map() {
+    let home = TmpHome::new();
+    let dir = home.agent_dir();
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("keybindings.json");
+    fs::write(&path, b"[1, 2, 3]").unwrap();
+    assert_eq!(read_file(&path).unwrap().len(), 0);
+}
+
+#[test]
+fn bom_prefixed_yaml_is_parsed() {
+    let home = TmpHome::new();
+    let dir = home.agent_dir();
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("keybindings.yml");
+    let mut bytes = vec![0xEF, 0xBB, 0xBF]; // UTF-8 BOM
+    bytes.extend_from_slice(b"app.exit: ctrl+c\n");
+    fs::write(&path, bytes).unwrap();
+    let result = read_file(&path).unwrap();
+    assert_eq!(result["app.exit"], ["ctrl+c"]);
+}
+
 // ── read_omp + profile merge ──────────────────────────────────────────────────
 
 #[test]
@@ -235,27 +271,53 @@ fn overlay_does_not_write_omp_file_and_payload_layers_correctly() {
     );
 }
 
+#[test]
+fn corrupt_overlay_does_not_drop_omp_layer() {
+    // A malformed overlay file must not take the omp layer down with it —
+    // dispatch keeps working on omp + defaults, and the Shortcuts screen's
+    // error banner (which promises exactly that) stays true.
+    let home = TmpHome::new();
+    home.write_omp_yml("app.plan.toggle: Alt+Shift+O\n");
+    let store = home.overlay_store();
+    fs::write(store.path(), b"not json").unwrap();
+
+    let p = payload(&home.path, None, None, &store).unwrap();
+    assert_eq!(p.omp["app.plan.toggle"], ["shift+alt+o"]);
+    assert_eq!(p.overlay.len(), 0);
+    assert!(p.overlay_error.is_some());
+}
+
 // ── ACTION_IDS ────────────────────────────────────────────────────────────────
 
 #[test]
 fn action_ids_are_unique() {
-    let mut seen = BTreeMap::new();
+    let mut seen = std::collections::BTreeSet::new();
     for id in ACTION_IDS {
-        assert!(
-            seen.insert(*id, true).is_none(),
-            "duplicate ACTION_ID: {id}"
-        );
+        assert!(seen.insert(*id), "duplicate ACTION_ID: {id}");
     }
 }
 
 #[test]
-fn action_ids_count_matches_expected() {
-    // This is the 21-action registry from the plan; update the count here when
-    // the registry grows (a failing assertion is the signal to also update
-    // `keymap.js`).
+fn action_ids_match_keymap_js_registry() {
+    // Real sync check, not a count pin: every `ACTION_IDS` entry must appear
+    // as a `KEYMAP_ACTIONS` row (`id: "<id>"`) in the same repo's
+    // `src/app/keymap.js`, and the number of `id: "` occurrences there must
+    // equal `ACTION_IDS.len()` — so neither side can drift without the other
+    // noticing (a stale count constant would stay green if both sides added
+    // one differently-spelled id).
+    let keymap_js = include_str!("../../../src/app/keymap.js");
+    for id in ACTION_IDS {
+        let needle = format!("id: \"{id}\"");
+        assert!(
+            keymap_js.contains(&needle),
+            "ACTION_IDS has {id:?} but keymap.js KEYMAP_ACTIONS does not"
+        );
+    }
+    let row_count = keymap_js.matches("id: \"").count();
     assert_eq!(
+        row_count,
         ACTION_IDS.len(),
-        21,
-        "ACTION_IDS count changed — update keymap.js KEYMAP_ACTIONS to match"
+        "keymap.js KEYMAP_ACTIONS has {row_count} rows but ACTION_IDS has {} — one side has an id the other lacks",
+        ACTION_IDS.len()
     );
 }

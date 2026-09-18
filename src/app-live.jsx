@@ -8,9 +8,12 @@
    re-fetches from omp — so the right panel (sparkline, activity radar,
    minimap, kanban, context gauge) always reflects the active session.
 
-   Constants and the cross-cutting effects (bridge subscription, theme,
-   ⌘K shortcut) live in app/constants.js and app/use-bridge-snapshot.jsx
-   respectively. This file owns only the App component itself: state
+   Constants and the cross-cutting effects (bridge subscription, theme)
+   live in app/constants.js and app/use-bridge-snapshot.jsx respectively.
+   Keyboard shortcuts are resolved by app/use-keymap.jsx (useKeymap loads
+   the backend payload and resolves it; useKeymapDispatch installs the
+   single window keydown listener) and handled by the handler map built
+   below. This file owns only the App component itself: state
    declarations, handlers, and the render tree.
    ═════════════════════════════════════════════════════════════════════ */
 
@@ -199,50 +202,6 @@ function App() {
     else if (c.name === "shortcuts") { setShortcutsOpen(true); }
   };
 
-  // ── Global keymap handler map ─────────────────────────────────────────────
-  // Written into handlersRef every render so the dispatch hook always reads
-  // the latest closures without re-subscribing to the window listener.
-  handlersRef.current = {
-    "app.interrupt":           () => {
-      // Only abort when no overlay is open (overlays handle Escape themselves).
-      if (bridgeOpen || historyOpen || changesOpen || rulesOpen || planOpen || shortcutsOpen) return;
-      if (streaming) handleAbort();
-    },
-    "app.thinking.cycle":      cycleThinking,
-    "app.model.cycleForward":  () => bridge?.cycleModel(),
-    "app.model.cycleBackward": () => {
-      if (models.length < 2) return;
-      const idx = models.findIndex(m => m.id === model.id && m.provider === model.provider);
-      // No-op when the current model isn't in the list (plan §7).
-      if (idx < 0) return;
-      handlePickModel(models[(idx - 1 + models.length) % models.length]);
-    },
-    "app.model.select":        () => openBridge("models"),
-    "app.plan.toggle":         togglePlanMode,
-    "app.session.new":         () => bridge?.newSession(),
-    "app.session.resume":      () => setHistoryOpen(v => !v),
-    "desktop.commands.open":   () => { setBridgeView("commands"); setBridgeOpen(v => !v); },
-    "desktop.history.open":    () => setHistoryOpen(v => !v),
-    "desktop.shortcuts.open":  () => setShortcutsOpen(v => !v),
-    "desktop.tab.new":         () => handleNewProject(),
-    "desktop.tab.close":       () => { if (activeProject.id) handleCloseTab(activeProject.id); },
-    "desktop.tab.next":        () => {
-      if (sessions.length < 2) return;
-      const idx = sessions.findIndex(s => s.id === activeProject.id);
-      bridge?.activateSession(sessions[(idx + 1) % sessions.length].id);
-    },
-    "desktop.tab.prev":        () => {
-      if (sessions.length < 2) return;
-      const idx = sessions.findIndex(s => s.id === activeProject.id);
-      bridge?.activateSession(sessions[(idx - 1 + sessions.length) % sessions.length].id);
-    },
-    "desktop.panel.todo":      () => setPlanOpen(v => !v),
-    "desktop.panel.changes":   () => setChangesOpen(v => !v),
-    "desktop.panel.rules":     () => setRulesOpen(v => !v),
-    "desktop.session.compact": () => bridge?.compact(),
-    "desktop.session.export":  () => bridge?.exportHtml(),
-  };
-
   const handleResumeSession = async (session) => {
     if (!bridge || !session) return;
     try {
@@ -290,6 +249,59 @@ function App() {
 
   // Close tab → kills that session's omp process; bridge updates tab list
   const handleCloseTab = id => { bridge?.closeSession(id); };
+
+  // ── Global keymap handler map ─────────────────────────────────────────────
+  // Written into handlersRef every render so the dispatch hook always reads
+  // the latest closures without re-subscribing to the window listener.
+  // Placed after handleNewProject/handleCloseTab so every entry can be a
+  // direct function reference (matching cycleThinking/togglePlanMode above)
+  // instead of a `() => handleNewProject()` wrapper that only exists to
+  // dodge a TDZ that a closure never actually hits.
+  handlersRef.current = {
+    "app.interrupt":           () => {
+      // Only abort when no overlay is open (overlays handle Escape themselves).
+      if (bridgeOpen || historyOpen || changesOpen || rulesOpen || planOpen || shortcutsOpen) return;
+      if (streaming) handleAbort();
+    },
+    "app.thinking.cycle":      cycleThinking,
+    "app.model.cycleForward":  () => bridge?.cycleModel(),
+    "app.model.cycleBackward": () => {
+      if (models.length < 2) return;
+      const idx = models.findIndex(m => m.id === model.id && m.provider === model.provider);
+      // No-op when the current model isn't in the list (plan §7).
+      if (idx < 0) return;
+      handlePickModel(models[(idx - 1 + models.length) % models.length]);
+    },
+    "app.model.select":        () => openBridge("models"),
+    "app.plan.toggle":         togglePlanMode,
+    "app.session.new":         () => bridge?.newSession(),
+    "app.session.resume":      () => setHistoryOpen(v => !v),
+    "desktop.commands.open":   () => { setBridgeView("commands"); setBridgeOpen(v => !v); },
+    "desktop.history.open":    () => setHistoryOpen(v => !v),
+    "desktop.shortcuts.open":  () => setShortcutsOpen(v => !v),
+    "desktop.tab.new":         handleNewProject,
+    "desktop.tab.close":       () => { if (activeProject.id) handleCloseTab(activeProject.id); },
+    // Indexed on `activeProject.id`, not `activeSessionId` — same rationale
+    // as `handleSelectProfile` below: `activeProject` falls back to
+    // `sessions[0]` when the snapshot's `activeSessionId` is stale or empty,
+    // so `findIndex` can never return -1 here while `sessions.length >= 2`.
+    // Indexing on `activeSessionId` directly would reintroduce that -1.
+    "desktop.tab.next":        () => {
+      if (sessions.length < 2) return;
+      const idx = sessions.findIndex(s => s.id === activeProject.id);
+      bridge?.activateSession(sessions[(idx + 1) % sessions.length].id);
+    },
+    "desktop.tab.prev":        () => {
+      if (sessions.length < 2) return;
+      const idx = sessions.findIndex(s => s.id === activeProject.id);
+      bridge?.activateSession(sessions[(idx - 1 + sessions.length) % sessions.length].id);
+    },
+    "desktop.panel.todo":      () => setPlanOpen(v => !v),
+    "desktop.panel.changes":   () => setChangesOpen(v => !v),
+    "desktop.panel.rules":     () => setRulesOpen(v => !v),
+    "desktop.session.compact": () => bridge?.compact(),
+    "desktop.session.export":  () => bridge?.exportHtml(),
+  };
 
   // Profile switch applies to the active tab only: its omp process is
   // respawned under the new profile (a live process can't be moved to a

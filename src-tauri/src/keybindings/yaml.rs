@@ -18,9 +18,17 @@ use std::collections::BTreeMap;
 /// [`canonical_chord`] over them so the JSON and YAML paths canonicalise in
 /// exactly one place.
 ///
-/// An entry whose value is an empty sequence (`[]`, or a key with no value
-/// and no `- ` items under it) yields an empty `Vec`, which is omp's
-/// "explicitly disabled" state — distinct from an absent key.
+/// # Null is absent, `[]` is disabled
+///
+/// An entry whose value is an **empty sequence** — `[]` inline, or `[]` on
+/// the indented line below the key, which is the shape Bun's YAML writer
+/// emits — yields an empty `Vec`: omp's "explicitly disabled" state.
+///
+/// An entry whose value is **YAML null** — a bare `key:`, `key: # comment`,
+/// `key: null` or `key: ~` — is left out of the map entirely. omp's
+/// `toKeybindingsConfig` (`app-keybindings.ts:333-343`) skips a null value,
+/// so the action keeps its default there; recording it as `[]` here would
+/// disable the action in the desktop while the TUI still honoured it.
 ///
 /// Duplicate keys: the last occurrence wins.
 pub fn parse(content: &str) -> BTreeMap<String, Vec<String>> {
@@ -43,18 +51,32 @@ pub fn parse(content: &str) -> BTreeMap<String, Vec<String>> {
                     items.push(item);
                 }
             }
-            items
+            if items.is_empty() {
+                // No `- ` items. Either an indented flow sequence — `key:`
+                // followed by `  []`, an explicit disable — or YAML null,
+                // which means *absent* (see the null-vs-`[]` note above).
+                match lines.get(i).and_then(|l| indented_flow(l)) {
+                    Some(flow) => {
+                        i += 1;
+                        flow
+                    }
+                    None => continue,
+                }
+            } else {
+                items
+            }
         } else if let Some(rest) = value.strip_prefix('[') {
             flow_items(rest)
         } else if value.starts_with('"') || value.starts_with('\'') {
+            // Quoted, so a literal `"null"` stays a (nonsensical but honest)
+            // chord rather than being read as YAML null.
             vec![unquote(value)]
         } else {
-            let scalar = plain_scalar(value);
-            if scalar.is_empty() {
-                Vec::new()
-            } else {
-                vec![scalar]
+            let s = plain_scalar(value);
+            if matches!(s.to_ascii_lowercase().as_str(), "" | "null" | "~") {
+                continue;
             }
+            vec![s]
         };
         out.insert(key.to_string(), values);
     }
@@ -80,9 +102,9 @@ fn entry(line: &str) -> Option<(&str, &str)> {
     }
     let value = line[colon + 1..].trim();
     // A value that starts with `#` after trimming is a YAML comment — the
-    // entry has no value (e.g. `app.session.new: # unbound`). Treat as empty
-    // so it behaves the same as `app.session.new:` (falls through to the
-    // registry default), not as a bogus chord `# unbound`.
+    // entry has YAML null as its value (e.g. `app.session.new: # unbound`).
+    // Reported as empty here and skipped by `parse`, so the action falls
+    // through to omp's config-less default rather than being disabled.
     let value = if value.starts_with('#') { "" } else { value };
     Some((key, value))
 }
@@ -91,28 +113,50 @@ fn entry(line: &str) -> Option<(&str, &str)> {
 ///
 /// Blank and comment-only indented lines are skipped rather than ending the
 /// sequence, so `app.model.select:\n  # primary\n  - alt+m` correctly
-/// yields `["alt+m"]` instead of `[]` (explicitly disabled).
+/// yields `["alt+m"]` instead of falling through to the default.
 fn block_item(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
-    // An unindented line that is not blank is the next top-level entry.
+    // A `- ` item belongs to the sequence at *any* indentation, column 0
+    // included — that is the sequence-at-parent-indentation style `js-yaml`
+    // emits by default and hand-written files commonly use. There is no
+    // ambiguity with a top-level entry: `entry` requires a `:` and a key of
+    // `[A-Za-z0-9._-]`, which `- alt+m` cannot satisfy.
+    if let Some(rest) = trimmed.strip_prefix("- ") {
+        return Some(scalar(rest.trim()));
+    }
+    // Any other unindented, non-blank line is the next top-level entry.
     if !line.starts_with(|c: char| c.is_whitespace()) && !line.is_empty() {
         return None;
     }
-    // Blank line inside the block — skip, don't terminate.
-    if trimmed.is_empty() {
+    // Blank or comment-only line inside the block — skip, don't terminate.
+    if trimmed.is_empty() || trimmed.starts_with('#') {
         return Some(String::new()); // sentinel: caller discards empty strings
     }
-    // Comment-only line inside the block — skip.
-    if trimmed.starts_with('#') {
-        return Some(String::new()); // sentinel
+    // Anything else indented (a nested map) terminates the sequence.
+    None
+}
+
+/// An indented flow sequence on the line after a key with no inline value:
+/// `app.model.select:\n  []`. This is what Bun's YAML writer emits for a
+/// disabled action, so it must read as an empty `Vec` (disabled) and not as
+/// the null that a bare `key:` means.
+fn indented_flow(line: &str) -> Option<Vec<String>> {
+    if !line.starts_with(|c: char| c.is_whitespace()) {
+        return None;
     }
-    // Require the `- ` item prefix; anything else terminates (e.g. a nested map).
-    let rest = trimmed.strip_prefix("- ")?.trim();
-    Some(if rest.starts_with('"') || rest.starts_with('\'') {
-        unquote(rest)
+    let rest = line.trim_start().strip_prefix('[')?;
+    Some(flow_items(rest))
+}
+
+/// One scalar item of a sequence: quoted (escapes honoured) or plain
+/// (truncated at a ` #` comment). The single place the two spellings are
+/// chosen between, shared by [`block_item`] and [`flow_items`].
+fn scalar(raw: &str) -> String {
+    if raw.starts_with('"') || raw.starts_with('\'') {
+        unquote(raw)
     } else {
-        plain_scalar(rest)
-    })
+        plain_scalar(raw)
+    }
 }
 
 /// Items of a flow sequence, given everything after the opening `[`.
@@ -120,6 +164,10 @@ fn block_item(line: &str) -> Option<String> {
 /// Commas inside quotes do not split. Backslash-escapes inside double-quoted
 /// items are tracked so that `"ctrl+\"` does not look like a closing quote,
 /// matching the same logic in `unquote`.
+///
+/// A quote only *opens* at the start of an item, as in YAML: `[ctrl+', alt+k]`
+/// is two items whose first one ends in an apostrophe, not one item with a
+/// swallowed comma.
 fn flow_items(rest: &str) -> Vec<String> {
     let body = rest.rfind(']').map_or(rest, |end| &rest[..end]);
     let mut out = Vec::new();
@@ -133,16 +181,12 @@ fn flow_items(rest: &str) -> Vec<String> {
         }
         match (quote, ch) {
             (Some('"'), '\\') => escaped = true,
-            (None, '"' | '\'') => quote = Some(ch),
+            (None, '"' | '\'') if body[start..idx].trim().is_empty() => quote = Some(ch),
             (Some(q), c) if c == q => quote = None,
             (None, ',') => {
                 let raw = body[start..idx].trim();
                 if !raw.is_empty() {
-                    out.push(if raw.starts_with('"') || raw.starts_with('\'') {
-                        unquote(raw)
-                    } else {
-                        plain_scalar(raw)
-                    });
+                    out.push(scalar(raw));
                 }
                 start = idx + 1;
             }
@@ -151,11 +195,7 @@ fn flow_items(rest: &str) -> Vec<String> {
     }
     let raw = body[start..].trim();
     if !raw.is_empty() {
-        out.push(if raw.starts_with('"') || raw.starts_with('\'') {
-            unquote(raw)
-        } else {
-            plain_scalar(raw)
-        });
+        out.push(scalar(raw));
     }
     out
 }
@@ -312,11 +352,47 @@ mod tests {
         let map =
             parse("---\n# just a comment\nnested:\n  child:\n    deep: x\napp.exit: ctrl+c\n");
         assert_eq!(keys(&map, "app.exit"), ["ctrl+c"]);
-        // `nested:` is an entry with an empty value and no `- ` items, so it
-        // reads as "disabled"; its indented body never becomes a binding.
-        assert_eq!(keys(&map, "nested"), [] as [&str; 0]);
+        // `nested:` is YAML null (empty value, no `- ` items, no indented
+        // `[]`) — absent, not disabled; its indented body never becomes a
+        // binding either.
+        assert!(!map.contains_key("nested"));
         assert!(!map.contains_key("child"));
         assert!(!map.contains_key("deep"));
+    }
+
+    #[test]
+    fn null_value_is_absent_not_disabled() {
+        let map = parse(
+            "app.a:\n\
+             app.b: # unbound\n\
+             app.c: null\n\
+             app.d: ~\n\
+             app.e: NULL\n",
+        );
+        for id in ["app.a", "app.b", "app.c", "app.d", "app.e"] {
+            assert!(!map.contains_key(id), "{id} should be absent, not disabled");
+        }
+    }
+
+    #[test]
+    fn quoted_null_string_is_a_literal_chord() {
+        let map = parse("app.a: \"null\"\n");
+        assert_eq!(keys(&map, "app.a"), ["null"]);
+    }
+
+    #[test]
+    fn indented_empty_flow_sequence_is_disabled() {
+        let map = parse("app.a:\n  []\napp.b: ctrl+c\n");
+        assert!(map.contains_key("app.a"));
+        assert_eq!(keys(&map, "app.a"), [] as [&str; 0]);
+        assert_eq!(keys(&map, "app.b"), ["ctrl+c"]);
+    }
+
+    #[test]
+    fn block_sequence_at_column_zero_is_accepted() {
+        let map = parse("app.model.select:\n- alt+m\n- alt+n\napp.other: ctrl+z\n");
+        assert_eq!(keys(&map, "app.model.select"), ["alt+m", "alt+n"]);
+        assert_eq!(keys(&map, "app.other"), ["ctrl+z"]);
     }
 
     #[test]
@@ -338,6 +414,14 @@ mod tests {
     fn flow_sequence_keeps_commas_inside_quotes() {
         let map = parse("app.x: [\"ctrl+,\", alt+k]\n");
         assert_eq!(keys(&map, "app.x"), ["ctrl+,", "alt+k"]);
+    }
+
+    #[test]
+    fn quote_only_opens_at_the_start_of_a_flow_item() {
+        // An apostrophe mid-item (a base key of `'`) must not be mistaken for
+        // an opening quote that swallows the rest of the sequence.
+        let map = parse("app.x: [ctrl+', alt+k]\n");
+        assert_eq!(keys(&map, "app.x"), ["ctrl+'", "alt+k"]);
     }
 
     #[test]

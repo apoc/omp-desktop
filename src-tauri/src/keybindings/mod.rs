@@ -95,8 +95,15 @@ pub struct OmpLayer {
 pub struct Payload {
     /// From omp's read-only config (profile-merged). Empty vec = omp disabled it.
     pub omp: BTreeMap<String, Vec<String>>,
-    /// Desktop overlay — the only layer this app writes.
+    /// Desktop overlay — the only layer this app writes. Empty (with
+    /// `overlay_error` set) when the overlay file exists but could not be
+    /// read — the omp layer above is still valid and dispatch keeps working
+    /// on it plus the registry defaults.
     pub overlay: BTreeMap<String, Vec<String>>,
+    /// Set when the overlay file is present but malformed/unreadable. The
+    /// omp and default layers are unaffected; only overlay rebinds are
+    /// unavailable until the file is fixed or deleted.
+    pub overlay_error: Option<String>,
     /// omp file actually read; `None` when the user has no keybindings file.
     pub omp_path: Option<String>,
     /// Built-in profile's file merged underneath, when `profile` is named.
@@ -142,30 +149,37 @@ pub fn config_path(agent_dir: &Path) -> Option<PathBuf> {
 /// Read one keybinding file (any of `.yml`, `.yaml`, `.json`). Chords are
 /// canonicalised via [`yaml::canonical_chord`]; action ids are kept verbatim.
 ///
-/// `NotFound` ⇒ empty map. Any other IO error ⇒ `Err`.
+/// `NotFound` ⇒ empty map. A genuine IO error (permissions, …) ⇒ `Err`.
+/// Malformed or non-object JSON degrades to an empty map with a logged
+/// warning, mirroring omp's `loadRawConfig` (`app-keybindings.ts:409-425`),
+/// which JSONC-parses and falls back to `{}` on any failure rather than
+/// treating the whole tab as broken — a legacy `keybindings.json` with a
+/// `//` comment is valid JSONC but not valid JSON.
 pub fn read_file(path: &Path) -> Result<BTreeMap<String, Vec<String>>, String> {
     let raw = match std::fs::read_to_string(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
         Err(e) => return Err(e.to_string()),
         Ok(s) => s,
     };
+    // A BOM-prefixed file (common from Windows editors) would otherwise merge
+    // into the first key, failing its `[A-Za-z0-9._-]` check and silently
+    // dropping that binding.
+    let content = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
 
     let raw_map = if path.extension().and_then(OsStr::to_str) == Some("json") {
         // JSON keybindings: `{ action: string | string[] }`.
-        // Non-conforming values are skipped (matching omp's `toKeybindingsConfig`
-        // which requires every array element to be a string — a mixed array
-        // like `[1]` or `["ctrl+x", null]` is dropped, not partially accepted).
-        let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-        let serde_json::Value::Object(obj) = v else {
-            return Err("keybindings JSON must be an object".to_string());
-        };
-        let mut map = BTreeMap::new();
-        for (k, v) in obj {
-            let chords: Vec<String> = match v {
-                serde_json::Value::String(s) => vec![s],
-                serde_json::Value::Array(arr) => {
-                    // Require every element to be a string; skip the key otherwise.
-                    match arr
+        if let Ok(serde_json::Value::Object(obj)) =
+            serde_json::from_str::<serde_json::Value>(content)
+        {
+            let mut map = BTreeMap::new();
+            for (k, v) in obj {
+                // Non-conforming values are skipped (matching omp's
+                // `toKeybindingsConfig`, which requires every array element
+                // to be a string — a mixed array like `[1]` or
+                // `["ctrl+x", null]` is dropped, not partially accepted).
+                let chords: Vec<String> = match v {
+                    serde_json::Value::String(s) => vec![s],
+                    serde_json::Value::Array(arr) => match arr
                         .into_iter()
                         .map(|v| match v {
                             serde_json::Value::String(s) => Ok(s),
@@ -175,15 +189,24 @@ pub fn read_file(path: &Path) -> Result<BTreeMap<String, Vec<String>>, String> {
                     {
                         Ok(strings) => strings,
                         Err(()) => continue,
-                    }
-                }
-                _ => continue,
-            };
-            map.insert(k, chords);
+                    },
+                    _ => continue,
+                };
+                map.insert(k, chords);
+            }
+            map
+        } else {
+            // Malformed or non-object JSON degrades to an empty map, matching
+            // omp's own tolerance for a bad config file (see the doc comment
+            // above).
+            eprintln!(
+                "keybindings: ignoring malformed config at {}",
+                path.display()
+            );
+            BTreeMap::new()
         }
-        map
     } else {
-        yaml::parse(&raw)
+        yaml::parse(content)
     };
 
     // Canonicalise all chords in a single pass, regardless of source format.
@@ -256,9 +279,7 @@ pub fn read_omp(
 
     // named overrides base action-by-action.
     let mut bindings = base;
-    for (k, v) in named {
-        bindings.insert(k, v);
-    }
+    bindings.extend(named);
 
     Ok(OmpLayer {
         bindings,
@@ -269,8 +290,34 @@ pub fn read_omp(
 
 // ── payload builder ───────────────────────────────────────────────────────────
 
+/// Assemble the `Payload` struct shared by [`payload`] and
+/// [`payload_with_overlay`] — the only place the field list is written out.
+fn assemble_payload(
+    omp_layer: OmpLayer,
+    overlay: BTreeMap<String, Vec<String>>,
+    overlay_error: Option<String>,
+    overlay_path: &Path,
+) -> Payload {
+    Payload {
+        omp: omp_layer.bindings,
+        overlay,
+        overlay_error,
+        omp_path: omp_layer.path.map(|p| p.to_string_lossy().into_owned()),
+        inherited_path: omp_layer
+            .inherited_path
+            .map(|p| p.to_string_lossy().into_owned()),
+        overlay_path: overlay_path.to_string_lossy().into_owned(),
+    }
+}
+
 /// Build the full `Payload` for the frontend — one read of the omp layer and
 /// one of the overlay.
+///
+/// A malformed/unreadable overlay does **not** fail the whole payload: the
+/// omp layer is still valid and the frontend can keep dispatching on it plus
+/// the registry defaults, which is what the Shortcuts screen's error banner
+/// promises. The overlay's read error is surfaced via `overlay_error`
+/// instead of propagating out of this function.
 pub fn payload(
     home: &Path,
     profile: Option<&str>,
@@ -278,22 +325,24 @@ pub fn payload(
     store: &overlay::OverlayStore,
 ) -> Result<Payload, String> {
     let omp_layer = read_omp(home, profile, env_dir)?;
-    let overlay_bindings = store.read()?;
-    Ok(Payload {
-        omp: omp_layer.bindings,
-        overlay: overlay_bindings,
-        omp_path: omp_layer.path.map(|p| p.to_string_lossy().into_owned()),
-        inherited_path: omp_layer
-            .inherited_path
-            .map(|p| p.to_string_lossy().into_owned()),
-        overlay_path: store.path().to_string_lossy().into_owned(),
-    })
+    let (overlay, overlay_error) = match store.read() {
+        Ok(bindings) => (bindings, None),
+        Err(e) => (BTreeMap::new(), Some(e)),
+    };
+    Ok(assemble_payload(
+        omp_layer,
+        overlay,
+        overlay_error,
+        store.path(),
+    ))
 }
 
 /// Like [`payload`] but accepts a pre-computed overlay map — avoids a second
 /// filesystem read when the caller already holds the freshly-written overlay
 /// (e.g. `keybindings_set`/`keybindings_reset` get the updated map back from
-/// `OverlayStore::set`/`remove` and can pass it directly).
+/// `OverlayStore::set`/`remove` and can pass it directly). The overlay read
+/// already succeeded to produce `overlay_bindings`, so `overlay_error` is
+/// always `None` here.
 pub fn payload_with_overlay(
     home: &Path,
     profile: Option<&str>,
@@ -302,13 +351,10 @@ pub fn payload_with_overlay(
     overlay_path: &Path,
 ) -> Result<Payload, String> {
     let omp_layer = read_omp(home, profile, env_dir)?;
-    Ok(Payload {
-        omp: omp_layer.bindings,
-        overlay: overlay_bindings,
-        omp_path: omp_layer.path.map(|p| p.to_string_lossy().into_owned()),
-        inherited_path: omp_layer
-            .inherited_path
-            .map(|p| p.to_string_lossy().into_owned()),
-        overlay_path: overlay_path.to_string_lossy().into_owned(),
-    })
+    Ok(assemble_payload(
+        omp_layer,
+        overlay_bindings,
+        None,
+        overlay_path,
+    ))
 }

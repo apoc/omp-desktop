@@ -48,6 +48,18 @@
   /** Modifier prefix strip order and canonical output order. */
   const MOD_PREFIXES = ["ctrl+", "shift+", "alt+", "super+"];
 
+  /**
+   * Keys that are never a chord's base: real modifiers, lock/IME/context
+   * sentinels. A stray keydown for one of these (AltGr, CapsLock mid-record,
+   * a dead-key compose step, an IME candidate window) must not turn into a
+   * bogus binding — `chordFromEvent` returns `null` for all of them.
+   */
+  const NON_CHORD_KEYS = new Set([
+    "Control", "Shift", "Alt", "Meta", "AltGraph",
+    "CapsLock", "NumLock", "ScrollLock", "ContextMenu",
+    "Process", "Unidentified",
+  ]);
+
   /** Named key map: KeyboardEvent.key → canonical base name. */
   const KEY_MAP = {
     Escape: "escape", Enter: "enter", Tab: "tab", " ": "space",
@@ -106,40 +118,50 @@
 
   /**
    * Derive a canonical chord string from a KeyboardEvent (or event-shaped object).
-   * Returns `null` for bare modifier presses.
+   * Returns `null` for bare modifier presses and for lock/IME/dead-key
+   * sentinels that are never a real chord (see `NON_CHORD_KEYS`).
    *
-   * `e.code` is read when `e.altKey`/`e.ctrlKey` is set AND `e.key` is a
-   * non-ASCII-alphanumeric character (macOS composed-char recovery, e.g. "µ"
-   * for Alt+M). Plain ASCII keys always use `e.key` directly so AZERTY/Dvorak
-   * layouts are not broken. Note: on Windows, AltGr is reported as
-   * `ctrlKey+altKey`, so AltGr+E ("€", code "KeyE") canonicalises to
-   * `ctrl+alt+e` — a user who binds that chord will accidentally claim AltGr+E.
+   * `e.code` is read for recovery only when `e.altKey`/`e.ctrlKey` is set AND
+   * `e.key` is a **non-ASCII** character (macOS composed-char recovery, e.g.
+   * "µ" for Alt+M, or a `Dead` compose step). ASCII symbols produced by a
+   * plain Shift combo (`Ctrl+Shift+/` → key `"?"`) are read from `e.key`
+   * directly, matching the plan's "reads only `key`/modifier flags" contract
+   * — recovering those from `e.code` too would canonicalise `Ctrl+Shift+2`
+   * (key `"@"`, code `"Digit2"`) and `Ctrl+Shift+/` (key `"?"`, code
+   * `"Slash"`) inconsistently, since only the digit has a `Key*`/`Digit*`
+   * code pattern this recovery understands.
    *
-   * @param {Pick<KeyboardEvent, "key"|"code"|"ctrlKey"|"shiftKey"|"altKey"|"metaKey">} e
+   * @param {Pick<KeyboardEvent, "key"|"code"|"ctrlKey"|"shiftKey"|"altKey"|"metaKey"|"isComposing">} e
    * @returns {string|null}
    */
   function chordFromEvent(e) {
-    if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return null;
+    if (e.isComposing || NON_CHORD_KEYS.has(e.key)) return null;
     const flags = [e.ctrlKey, e.shiftKey, e.altKey, e.metaKey]; // ctrl, shift, alt, super
 
     // Resolve base name.
     let base = KEY_MAP[e.key];
     if (!base) {
       const k = e.key;
-      if (k.length === 1) {
+      if (k.length === 1 || k === "Dead") {
         // When a modifier (Alt, Ctrl) is held, the browser may report a
-        // composed character for e.key (e.g. Alt+M on macOS → "µ").
+        // composed character for e.key (e.g. Alt+M on macOS → "µ") or, for
+        // an incomplete compose sequence, the literal string "Dead".
         // Recover the physical Latin key from e.code when available.
         let effectiveKey = k;
-        // Only recover from e.code when e.key is already a non-ASCII-alphanumeric
-        // character (e.g. "µ" on macOS Alt+M). When e.key is already a plain
-        // ASCII letter/digit ("a", "1", …) the browser reported the physical key
-        // correctly — using e.code there would break non-QWERTY layouts (e.g.
-        // AZERTY: Ctrl+A has key:"a" but code:"KeyQ" — must stay ctrl+a).
-        if ((e.altKey || e.ctrlKey) && e.code && !/^[a-zA-Z0-9]$/.test(k)) {
+        // Only recover from e.code when e.key is genuinely non-ASCII (or the
+        // "Dead" sentinel) — a plain ASCII letter/digit/symbol ("a", "1",
+        // "?", "@") is already the physical key the browser reported;
+        // recovering those from e.code would break non-QWERTY layouts (e.g.
+        // AZERTY: Ctrl+A has key:"a" but code:"KeyQ" — must stay ctrl+a) and
+        // would canonicalise ASCII shifted symbols inconsistently (see the
+        // doc comment above).
+        if ((e.altKey || e.ctrlKey) && e.code && (k === "Dead" || k.charCodeAt(0) > 127)) {
           const fromCode = e.code.match(/^Key([A-Z])$|^Digit(\d)$/);
           if (fromCode) effectiveKey = fromCode[1] ?? fromCode[2];
         }
+        // An unrecovered dead-key compose step is not a chord — bail rather
+        // than binding the literal word "dead".
+        if (effectiveKey === "Dead") return null;
         const lower = effectiveKey.toLowerCase();
         base = lower;
         // A non-[a-z0-9] character already encodes the shift state (e.g. `?`
@@ -169,9 +191,18 @@
    * Config values: string (single chord) | string[] | [] (disabled) | absent
    * (use defaultKeys).
    *
+   * **Precedence is two-pass, not single-pass registry order**: every
+   * explicitly configured action (a value present in `config`, including an
+   * explicit `[]` disable) claims its chords before any action still on its
+   * registry default does. This means a user's rebind always beats another
+   * action's *default* chord regardless of which one appears first in
+   * `KEYMAP_ACTIONS` — a plain first-claimant-wins single pass would let an
+   * earlier action's default permanently shadow a later action's rebind.
+   * Within each pass, ties still resolve in registry order.
+   *
    * Returns:
    *   - `byAction`: Map<id, string[]>  — effective chords per action
-   *   - `byChord`:  Map<chord, id>    — first claimant wins; later ones are conflicts
+   *   - `byChord`:  Map<chord, id>    — winner per the two-pass rule above
    *   - `conflicts`: [{chord, actions:[winner,loser]}]
    *
    * @param {typeof KEYMAP_ACTIONS} actions
@@ -315,8 +346,6 @@
       if (DISPLAY_MAP[p])          return DISPLAY_MAP[p];
       // Capitalise first char of every part — single char → uppercase,
       // multi-char → title-case (e.g. "home"→"Home", "f5"→"F5").
-      // The `!isLast` guard for modifiers is redundant now since they all
-      // hit DISPLAY_MAP first, but kept for clarity.
       return p.length === 1 ? p.toUpperCase() : p.charAt(0).toUpperCase() + p.slice(1);
     }).join("+");
   }

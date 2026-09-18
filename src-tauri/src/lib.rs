@@ -522,7 +522,7 @@ async fn workspace_reject(path: String, rel_path: String) -> Result<(), String> 
 
 /// Shared profile-resolution and home-dir setup for the three keybindings
 /// commands. Returns `(home, resolved_profile, env_dir)` ready to pass to
-/// `keybindings::read_omp` / `keybindings::payload`.
+/// `keybindings::payload` / `keybindings::payload_with_overlay`.
 fn kb_resolve(
     profile: Option<String>,
     store: &profiles::ProfileStore,

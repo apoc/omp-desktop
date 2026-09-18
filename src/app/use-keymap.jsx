@@ -52,27 +52,39 @@ function useKeymap(bridge, profileId) {
 
   const setBinding = React.useCallback(async (action, keys) => {
     if (!bridge) return "no bridge";
+    // Capture the generation *before* awaiting: if a newer reload (e.g. a
+    // tab/profile switch) starts while this write is in flight, applying
+    // this call's payload afterward would show tab A's profile on tab B's
+    // screen. The write itself already landed on disk regardless — only the
+    // local apply is guarded, so re-sync via `reload()` instead of
+    // overwriting whatever profile is now active.
+    const gen = genRef.current;
     const res = await bridge.setKeybinding(action, keys);
-    if (res.ok) {
-      // Bump generation so any in-flight reload() response is discarded —
-      // the mutation result is authoritative.
+    if (!res.ok) return res.error;
+    if (gen === genRef.current) {
+      // Bump generation so any in-flight reload() response (started before
+      // this call) is discarded — the mutation result is authoritative.
       ++genRef.current;
       applyPayload(res.value);
-      return null;
+    } else {
+      reload();
     }
-    return res.error;
-  }, [bridge, applyPayload]);
+    return null;
+  }, [bridge, applyPayload, reload]);
 
   const resetBinding = React.useCallback(async (action) => {
     if (!bridge) return "no bridge";
+    const gen = genRef.current;
     const res = await bridge.resetKeybinding(action);
-    if (res.ok) {
+    if (!res.ok) return res.error;
+    if (gen === genRef.current) {
       ++genRef.current;
       applyPayload(res.value);
-      return null;
+    } else {
+      reload();
     }
-    return res.error;
-  }, [bridge, applyPayload]);
+    return null;
+  }, [bridge, applyPayload, reload]);
 
   return {
     payload,
@@ -91,7 +103,7 @@ function useKeymapDispatch(handlersRef) {
   // every render.
   React.useEffect(() => {
     const onKey = (e) => {
-      if (e.defaultPrevented) return;
+      if (e.defaultPrevented || e.isComposing) return;
       if (e.repeat) return; // ignore auto-repeat; prevents tab-close/new storms on Ctrl+W/Ctrl+T hold
       const chord = window.OMP_KEYMAP.chordFromEvent(e);
       if (!chord) return;

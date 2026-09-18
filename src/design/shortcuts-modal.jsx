@@ -96,6 +96,11 @@ function ShortcutsModal({ open, onClose, keymap }) {
     if (!recordingId) return;
 
     const capture = (e) => {
+      // Let an active IME composition (CJK candidate window, dead-key
+      // compose step) run its own key handling — don't hijack it into a
+      // chord, and don't preventDefault/stopPropagation what the IME needs
+      // to see (e.g. its own Escape to cancel the candidate window).
+      if (e.isComposing) return;
       e.preventDefault();
       e.stopPropagation();
       if (e.key === "Escape") { setRecordingId(null); return; }
