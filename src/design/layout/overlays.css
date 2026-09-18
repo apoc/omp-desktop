@@ -350,17 +350,3 @@
   padding: 6px 8px;
   border-top: 1px solid color-mix(in oklab, var(--amber) 15%, var(--line));
 }
-
-
-/* ── Keyboard shortcuts modal (kb-*) ──────────────────────────────────────── */
-.kb-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: var(--r-1); }
-.kb-row:hover { background: var(--bg-hover); }
-.kb-label { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-.kb-id { color: var(--fg-4); font-size: var(--d-text-xs); }
-.kb-chords { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
-.kb-unbound { color: var(--fg-4); font-size: var(--d-text-xs); }
-.kb-recording { margin-left: auto; color: var(--amber); font-size: var(--d-text-xs); flex-shrink: 0; }
-.kb-src { font-size: 10px; padding: 1px 6px; flex-shrink: 0; }
-.kb-actions { display: flex; gap: 4px; flex-shrink: 0; }
-.kb-warn { padding: 0 10px 6px 10px; color: var(--amber); font-size: var(--d-text-xs); }
-.kb-banner { padding: 8px 16px; color: var(--amber); font-size: var(--d-text-xs); border-bottom: 1px solid var(--line); }

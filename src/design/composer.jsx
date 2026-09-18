@@ -144,18 +144,23 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     txt.replace(/\[paste #(\d+) \+\d+ lines?\]/g, (match, id) =>
       pasteBlocksRef.current.get(Number(id)) ?? match);
 
-  const send = () => {
+  // Route a completed draft through the full send pipeline. `dispatcher` is
+  // either `onSend` (normal) or `onFollowUp` (follow-up); both get the same
+  // paste-expansion, state-reset and focus-restore treatment.
+  const sendWith = (dispatcher) => {
     // If the slash popup is open, Enter executes the highlighted command
+    // regardless of which dispatcher was requested.
     if (showSlash) { execCmd(filtered[clampedIdx]); return; }
     const canSend = text.trim() || (planMode && annotationCount > 0);
     if (!canSend) return;
-    onSend(expandPastes(text.trim()));
+    dispatcher(expandPastes(text.trim()));
     setText("");
     setMentionDismissedKey(null);
     pasteBlocksRef.current.clear();
     pasteCounterRef.current = 0;
     requestAnimationFrame(() => taRef.current?.focus());
   };
+  const send = () => sendWith(onSend);
 
   // Collapse long pastes into a token so the textarea stays navigable.
   // Threshold: more than 5 lines OR more than 500 characters.
@@ -194,15 +199,15 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
       if (e.key === "Escape")     { e.preventDefault(); setText(""); return; }
       if (e.key === "Tab")        { e.preventDefault(); setActiveIdx(i => (i + 1) % filtered.length); return; }
     }
-    // isSubmitEnter (app/constants.js) owns the IME-composition guard.
-    if (isSubmitEnter(e) && !e.shiftKey) { e.preventDefault(); send(); return; }
+    // followUp must be checked before the plain-Enter branch: `ctrl+enter` is
+    // a default followUp chord and `isSubmitEnter` would match it first.
     if (window.OMP_KEYMAP?.matches(e, "app.message.followUp")) {
       e.preventDefault();
-      const t = expandPastes(text.trim());
-      if (t) onFollowUp?.(t);
-      setText("");
+      if (onFollowUp) sendWith(onFollowUp);
       return;
     }
+    // isSubmitEnter (app/constants.js) owns the IME-composition guard.
+    if (isSubmitEnter(e) && !e.shiftKey) { e.preventDefault(); send(); return; }
   };
 
   return (

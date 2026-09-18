@@ -114,20 +114,22 @@
     if (!base) {
       const k = e.key;
       if (k.length === 1) {
-        // Single printable character.
-        // When the base is a non-[a-z0-9] character (shifted symbol, e.g. `?`),
-        // the shift modifier is already encoded in the character itself — drop it
-        // so `Shift+?` doesn't become `shift+?` (mirrors omp's `addKeyAliases`).
-        const lower = k.toLowerCase();
+        // When a modifier (Alt, Ctrl) is held, the browser may report a
+        // composed character for e.key (e.g. Alt+M on macOS → "µ").
+        // Recover the physical Latin key from e.code when available.
+        let effectiveKey = k;
+        if ((e.altKey || e.ctrlKey) && e.code) {
+          const fromCode = e.code.match(/^Key([A-Z])$|^Digit(\d)$/);
+          if (fromCode) effectiveKey = fromCode[1] ?? fromCode[2];
+        }
+        const lower = effectiveKey.toLowerCase();
         base = lower;
         // A non-[a-z0-9] character already encodes the shift state (e.g. `?`
-        // is produced by Shift+/ but `?` itself is the base — mirrors omp's
-        // `addKeyAliases`). Drop the redundant shift flag.
+        // is produced by Shift+/ — drop the redundant shift flag).
         if (!lower.match(/^[a-z0-9]$/)) {
           flags[1] = false;
         }
       } else {
-        // Multi-char key names (rare, e.g. "Dead", "Unidentified") — pass through lowercased.
         base = e.key.toLowerCase();
       }
     }
@@ -162,7 +164,7 @@
     const byChord  = new Map();
     const conflicts = [];
 
-    for (const action of actions) {
+    function chordsFor(action) {
       const raw = config[action.id];
       let chords;
       if (Array.isArray(raw)) {
@@ -170,27 +172,41 @@
       } else if (typeof raw === "string") {
         const c = canonicalChord(raw);
         chords = c ? [c] : [];
-      } else if (raw === undefined || raw === null) {
-        // Absent: use registry default.
-        chords = action.defaultKeys.slice();
       } else {
+        // Absent/null/other → registry default.
         chords = action.defaultKeys.slice();
       }
-      // De-duplicate within this action's chord list.
       const seen = new Set();
       const deduped = [];
       for (const c of chords) {
         if (!seen.has(c)) { seen.add(c); deduped.push(c); }
       }
       byAction.set(action.id, deduped);
+      return { chords: deduped, configured: config[action.id] !== undefined };
+    }
 
-      for (const chord of deduped) {
+    function claim(action, chords) {
+      for (const chord of chords) {
         if (byChord.has(chord)) {
           conflicts.push({ chord, actions: [byChord.get(chord), action.id] });
         } else {
           byChord.set(chord, action.id);
         }
       }
+    }
+
+    // Pre-compute chords for all actions (fills byAction).
+    const computed = actions.map(a => ({ action: a, ...chordsFor(a) }));
+
+    // Pass 1: explicitly configured actions claim their chords first.
+    // This ensures a user rebind beats any other action's default chord,
+    // regardless of registry order.
+    for (const { action, chords, configured } of computed) {
+      if (configured) claim(action, chords);
+    }
+    // Pass 2: actions using registry defaults claim remaining chords.
+    for (const { action, chords, configured } of computed) {
+      if (!configured) claim(action, chords);
     }
 
     return { byAction, byChord, conflicts };

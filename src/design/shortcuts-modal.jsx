@@ -27,9 +27,6 @@ function ShortcutsModal({ open, onClose, keymap }) {
       if (!lq) return true;
       if (a.label.toLowerCase().includes(lq)) return true;
       if (a.id.toLowerCase().includes(lq)) return true;
-      const chords = keymap.payload
-        ? [...(keymap.payload.omp[a.id] ?? []), ...(keymap.payload.overlay[a.id] ?? [])]
-        : (keymap.conflicts ? [] : KEYMAP_ACTIONS.find(x => x.id === a.id)?.defaultKeys ?? []);
       const effectiveChords = window.OMP_KEYMAP.keysFor(a.id);
       if (effectiveChords.some(c => formatChord(c).toLowerCase().includes(lq))) return true;
       return false;
@@ -129,7 +126,7 @@ function ShortcutsModal({ open, onClose, keymap }) {
 
     window.addEventListener("keydown", capture, true); // capture phase
     return () => window.removeEventListener("keydown", capture, true);
-  }, [recordingId, recordMode, keymap]);
+  }, [recordingId, recordMode, keymap.setBinding]);
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 

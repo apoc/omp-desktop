@@ -74,6 +74,9 @@ check("chordFromEvent: shifted symbol drops shift", () =>
 check("chordFromEvent: metaKey maps to super", () =>
   assert.equal(K.chordFromEvent({ key: "k", ctrlKey: false, shiftKey: false, altKey: false, metaKey: true }), "super+k"));
 
+check("chordFromEvent: macOS Alt+M yields composed char — recover from e.code", () =>
+  assert.equal(K.chordFromEvent({ key: "µ", code: "KeyM", ctrlKey: false, shiftKey: false, altKey: true, metaKey: false }), "alt+m"));
+
 // ── resolve ───────────────────────────────────────────────────────────────────
 
 check("resolve: empty config gives every action its defaultKeys", () => {
@@ -94,15 +97,17 @@ check("resolve: bare string value is accepted and canonicalised", () => {
   assert.deepEqual(r.byAction.get("app.plan.toggle"), ["ctrl+shift+o"]);
 });
 
-check("resolve: conflict detected when two actions claim the same chord", () => {
-  // desktop.tab.new default is ctrl+t, super+t.  Give it ctrl+k (claimed by desktop.commands.open default).
+check("resolve: configured chord beats default — two-pass semantics", () => {
+  // desktop.tab.new default is ctrl+t. Explicitly bind it to ctrl+k.
+  // ctrl+k is desktop.commands.open's *default* — the configured binding wins.
   const r = K.resolve(K.KEYMAP_ACTIONS, { "desktop.tab.new": "ctrl+k" });
   const winner = r.byChord.get("ctrl+k");
-  assert.equal(winner, "desktop.commands.open");  // first claimant wins
+  assert.equal(winner, "desktop.tab.new",  // configured beats default, regardless of registry order
+    `expected desktop.tab.new to win but got ${winner}`);
   assert.ok(r.conflicts.some(c => c.chord === "ctrl+k"), "conflict recorded");
   const conflict = r.conflicts.find(c => c.chord === "ctrl+k");
-  assert.ok(conflict.actions.includes("desktop.commands.open"));
-  assert.ok(conflict.actions.includes("desktop.tab.new"));
+  assert.ok(conflict.actions.includes("desktop.tab.new"), "winner in conflict");
+  assert.ok(conflict.actions.includes("desktop.commands.open"), "loser in conflict");
 });
 
 check("resolve: duplicate chords for one action are de-duplicated", () => {

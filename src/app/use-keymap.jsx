@@ -15,10 +15,13 @@ function useKeymap(bridge, profileId) {
   // Cache the last-known overlay path so the error banner can print it even
   // if the most recent load failed (corrupt file → null payload).
   const overlayPathRef = React.useRef(null);
+  // Staleness guard: each reload increments the generation; an async response
+  // that arrives after a newer reload has started is silently discarded.
+  // Without this, two quick tab switches can apply the earlier profile's map.
+  const genRef = React.useRef(0);
 
   const applyPayload = React.useCallback((p) => {
     if (!p) {
-      // Network failure or unstarted: resolve against registry defaults.
       const r = window.OMP_KEYMAP.resolve(window.OMP_KEYMAP.KEYMAP_ACTIONS, {});
       window.OMP_KEYMAP.setResolved(r);
       setPayload(null);
@@ -27,8 +30,6 @@ function useKeymap(bridge, profileId) {
       return;
     }
     overlayPathRef.current = p.overlayPath;
-    // Overlay wins over omp layer per action; absent entries fall through to
-    // the registry's own defaultKeys (handled inside OMP_KEYMAP.resolve).
     const config = { ...p.omp, ...p.overlay };
     const r = window.OMP_KEYMAP.resolve(window.OMP_KEYMAP.KEYMAP_ACTIONS, config);
     window.OMP_KEYMAP.setResolved(r);
@@ -39,12 +40,12 @@ function useKeymap(bridge, profileId) {
 
   const reload = React.useCallback(async () => {
     if (!bridge) return;
+    const gen = ++genRef.current;
     const result = await bridge.listKeybindings();
+    if (gen !== genRef.current) return; // stale — a newer reload started, discard
     applyPayload(result);
   }, [bridge, applyPayload]);
 
-  // Load on mount and whenever the tab switches to a different profile (a
-  // tab switch can change which omp config file applies).
   React.useEffect(() => {
     reload();
   }, [bridge, profileId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -81,6 +82,7 @@ function useKeymapDispatch(handlersRef) {
   React.useEffect(() => {
     const onKey = (e) => {
       if (e.defaultPrevented) return;
+      if (e.repeat) return; // ignore auto-repeat; prevents tab-close/new storms on Ctrl+W/Ctrl+T hold
       const chord = window.OMP_KEYMAP.chordFromEvent(e);
       if (!chord) return;
       const id = window.OMP_KEYMAP.lookup(chord);
