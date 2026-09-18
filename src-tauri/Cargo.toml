@@ -28,6 +28,13 @@ windows-sys = { version = "0.52", features = [
     "Win32_System_Threading",
 ] }
 
+# Folder "Open with" on Windows/Linux launches the executable with the path
+# in argv; this forwards it to the already-running instance instead of
+# starting a second app. macOS routes the same request through
+# `RunEvent::Opened` and needs no plugin - see `src/external_open.rs`.
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

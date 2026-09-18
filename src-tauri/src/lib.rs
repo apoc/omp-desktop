@@ -6,6 +6,7 @@
 
 mod agent;
 mod approval;
+mod external_open;
 mod files;
 mod git;
 mod git_watcher;
@@ -16,6 +17,7 @@ mod workspace;
 
 use agent::AgentBridge;
 use approval::RuleBook;
+use external_open::OpenProjectState;
 use git_watcher::GitWatcherState;
 use std::path::Path;
 use std::sync::Arc;
@@ -267,6 +269,18 @@ fn session_status(session_id: String, bridge: State<'_, AgentBridge>) -> Option<
     bridge.last_error(&session_id)
 }
 
+/// Claim every folder the OS asked this app to open as a project, emptying
+/// the queue (see `external_open`).
+///
+/// Called by the frontend on init and on every `open://project` event. The
+/// drain is the whole protocol: because this is the only way out of the
+/// queue, an event that races the startup drain costs one empty round-trip
+/// instead of needing request ids and acknowledgements.
+#[tauri::command]
+fn take_pending_open_projects(state: State<'_, OpenProjectState>) -> Vec<String> {
+    state.take_pending()
+}
+
 /// Events a session's frontend hasn't seen yet, per its bounded event
 /// journal. Called on tab reactivation (after re-arming the live listener)
 /// to recover state that arrived while no listener was attached — the
@@ -509,14 +523,42 @@ async fn workspace_reject(path: String, rel_path: String) -> Result<(), String> 
 ///
 /// # Panics
 ///
-/// Panics if `tauri::Builder::run` returns an error (e.g. the webview
+/// Panics if `tauri::Builder::build` returns an error (e.g. the webview
 /// runtime cannot be initialised). This is a fatal startup condition;
 /// there is no meaningful recovery from inside `main`.
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Windows and Linux deliver a folder "Open with" by launching the
+    // executable with the path in argv, so without this a second open would
+    // start a whole second app — a second launch session, a second set of
+    // omp children — instead of adding a tab to the running one. The
+    // forwarded argv goes through the same queue as a cold start's.
+    //
+    // macOS needs none of it: LaunchServices reuses the running instance
+    // and delivers `RunEvent::Opened` to it (see the `app.run` callback).
+    //
+    // Registered first, as the plugin requires. Shadowed rather than
+    // reassigned through a `mut` binding, which would be an `unused_mut`
+    // warning (and so a lint-gate error) on macOS.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+        // `cwd` is why the plugin sends it: the second process' argv may hold
+        // a relative path (`omp-desktop .` from another shell), and resolving
+        // that here would otherwise pick *this* instance's directory.
+        external_open::ingest_args(app, Path::new(&cwd), argv);
+        // The file manager is the caller, not the user: an open forwarded
+        // into a minimised or buried window would otherwise add its tab
+        // out of sight and read as a no-op.
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.unminimize();
+            let _ = win.set_focus();
+        }
+    }));
+    let app = builder
         .plugin(tauri_plugin_dialog::init())
         .manage(AgentBridge::new())
         .manage(GitWatcherState::new())
+        .manage(OpenProjectState::new())
         .invoke_handler(tauri::generate_handler![
             send_command,
             start_session,
@@ -524,6 +566,7 @@ pub fn run() {
             session_status,
             replay_events,
             open_project,
+            take_pending_open_projects,
             start_git_watch,
             stop_git_watch,
             open_url_external,
@@ -602,10 +645,49 @@ pub fn run() {
             if let Err(e) = default_session {
                 eprintln!("[omp-desktop] failed to start default session: {e}");
             }
+
+            // A cold start *is* how Windows and Linux file managers open a
+            // folder, so the launch argv is the third delivery path into the
+            // queue (alongside the single-instance forward and macOS'
+            // `Opened` event). Queued, not opened here: the webview has no
+            // listener yet, so `live.js` drains it on init.
+            //
+            // `args_os`, not `args`: the latter panics on a non-UTF-8
+            // argument, and a Linux directory name is an arbitrary byte
+            // string that the `.desktop` entry's `%F` passes verbatim. A
+            // lossy path fails `canonicalize` and is logged like any other
+            // unusable request instead of killing the launch. Only this
+            // cold-start path is protected — a forwarded open goes through
+            // `tauri-plugin-single-instance`, whose sending process collects
+            // `std::env::args()` and so aborts before anything reaches us.
+            //
+            // A cold start's argv was produced in this process' own cwd, so
+            // that is the base for a relative path; an unreadable cwd
+            // degrades to the empty path, which means the same thing.
+            external_open::ingest_args(
+                app.handle(),
+                &std::env::current_dir().unwrap_or_default(),
+                std::env::args_os().map(|arg| arg.to_string_lossy().into_owned()),
+            );
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app, event| {
+        // macOS' "Open with" for a folder (see `Info.plist`) arrives as a
+        // run-loop event, on launch *and* while already running — the one
+        // delivery path that is neither argv nor a plugin. `RunEvent::Opened`
+        // does not exist on the other targets, hence the discard below.
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Opened { urls } = &event {
+            external_open::ingest_urls(app, urls);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            _ = (app, event);
+        }
+    });
 }
 
 #[cfg(test)]

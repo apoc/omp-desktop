@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX fragment for the MSI (bundle.windows.wix.fragmentPaths +
+  componentGroupRefs), mirroring src-tauri/packaging/windows-folder-verb.nsh:
+  the "Open with OMP Desktop" verb on directories. The MSI is the installer
+  the release notes recommend, so it must register the verb too.
+
+  Notes:
+    * `INSTALLDIR` and the `External` feature that pulls in
+      `component_group_refs` both come from Tauri's main.wxs.
+    * `[!Path]` is the main binary's File row in that template — referencing
+      it keeps the command in sync with `mainBinaryName`.
+    * Root=HKLM because Tauri's MSI is `InstallScope="perMachine"`.
+    * The display string is hardcoded: fragments are passed to candle
+      verbatim, so `productName` is not substituted here. Keep it in sync
+      with tauri.conf.json.
+    * Win64 must be re-derived — preprocessor defines do not cross files, and
+      a 32-bit component would land in the Wow6432Node view where the 64-bit
+      Explorer never looks.
+-->
+<?if $(sys.BUILDARCH)="x86"?>
+    <?define Win64 = "no" ?>
+<?else?>
+    <?define Win64 = "yes" ?>
+<?endif?>
+
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Fragment>
+        <ComponentGroup Id="OpenFolderVerb" Directory="INSTALLDIR">
+            <Component Id="OpenFolderVerb" Guid="A01ADD48-C9E9-4715-B01A-E5BBF217819A" Win64="$(var.Win64)">
+                <!-- Right-click on a folder. -->
+                <RegistryKey Root="HKLM" Key="Software\Classes\Directory\shell\OpenWithOmpDesktop" ForceDeleteOnUninstall="yes">
+                    <RegistryValue Type="string" Value="Open with OMP Desktop" KeyPath="yes" />
+                    <RegistryValue Type="string" Name="Icon" Value="&quot;[!Path]&quot;,0" />
+                    <RegistryKey Key="command">
+                        <RegistryValue Type="string" Value="&quot;[!Path]&quot; &quot;%V&quot;" />
+                    </RegistryKey>
+                </RegistryKey>
+                <!-- Right-click inside an open folder. -->
+                <RegistryKey Root="HKLM" Key="Software\Classes\Directory\Background\shell\OpenWithOmpDesktop" ForceDeleteOnUninstall="yes">
+                    <RegistryValue Type="string" Value="Open with OMP Desktop" />
+                    <RegistryValue Type="string" Name="Icon" Value="&quot;[!Path]&quot;,0" />
+                    <RegistryKey Key="command">
+                        <RegistryValue Type="string" Value="&quot;[!Path]&quot; &quot;%V&quot;" />
+                    </RegistryKey>
+                </RegistryKey>
+            </Component>
+        </ComponentGroup>
+    </Fragment>
+</Wix>

@@ -889,6 +889,134 @@
     return id;
   }
 
+  // ── OS folder-open requests ───────────────────────────────────────────────
+  // "Open with OMP Desktop" on a folder in Finder, Explorer or a Linux file
+  // manager. Each platform hands the request to the Rust side through its
+  // own channel (macOS run-loop event, argv, single-instance forward - see
+  // src-tauri/src/external_open.rs), where it lands in a queue and is
+  // announced with an `open://project` event.
+  //
+  // The queue, not the event payload, is the source of truth: a cold start
+  // delivers the request before this file has even run, and
+  // `take_pending_open_projects` empties the queue, so the startup drain and
+  // the event handler are the same idempotent call.
+
+  /** Pure: may the pathless launch tab be retired, now that an OS request
+   *  has opened a real project tab?
+   *
+   *  Only the launch tab qualifies (any tab with a `path` was asked for),
+   *  and only while it is untouched - a transcript means a prompt the user
+   *  sent or a note about a failed spawn, neither of which is ours to
+   *  discard. `snapshot` is the tab's cached state (`sessionSnapshots`),
+   *  absent when it was never activated.
+   *
+   *  Proven with an eval-kernel cell (6/6 cases: no entry, project tab,
+   *  empty launch tab, launch tab with a transcript, never-activated tab,
+   *  snapshot without a messages array). */
+  function _isRetirableLaunchTab(entry, snapshot) {
+    if (!entry || entry.path) return false;
+    return (snapshot?.messages?.length ?? 0) === 0;
+  }
+
+  /** Turn one queued folder into a project tab. Side-effectful (spawns omp,
+   *  switches the active tab, may close the launch tab). */
+  async function _openExternalProject(path) {
+    let opened;
+    try {
+      opened = await _startProjectSession(path, { profile: _activeProfileId() });
+    } catch (e) {
+      // `_startProjectSession` already rolled the tab back, so the only
+      // thing left is telling the user: the OS has no UI to report into and
+      // silently ignoring a double-clicked folder looks like a hang.
+      console.error(`[live] folder open failed for '${path}':`, e);
+      _pushAssistantNote(`**Could not open project:** ${String(e?.message ?? e)}`);
+      notify();
+      return;
+    }
+    // The launch tab is a pathless session with nothing in it, so retire it
+    // instead of leaving a stray tab beside the folder the user opened - on
+    // a cold start it is the tab this request replaced, on a warm one an
+    // untouched tab the project tab supersedes. Read after the open: the
+    // snapshot only exists once `_switchToSession` left that tab.
+    //
+    // Gated on the new tab still being active, because a tab click landing
+    // inside the open above bumps `_switchGen`, making our own
+    // `_switchToSession` bail - and `activeSessionId` may then *be*
+    // "default", whose snapshot this switch already emptied. Closing it
+    // there would kill the tab the user just picked, mid-turn.
+    if (activeSessionId === opened
+        && _isRetirableLaunchTab(sessionRegistry.get("default"), sessionSnapshots.get("default"))) {
+      await window.OMP_BRIDGE.closeSession("default");
+    }
+  }
+
+  let _externalOpenDraining = false;
+  // Set when an event is dropped by the guard below: the in-flight drain may
+  // already have taken its (then-empty) snapshot of the queue, so it owes
+  // one more `take` before it is allowed to stop.
+  let _externalOpenWake = false;
+
+  /** Drain the backend queue, opening a tab per folder.
+   *
+   *  Serialised: `_startProjectSession` switches the active session, so two
+   *  concurrent drains would interleave two activations. A coalesced event
+   *  is recorded rather than dropped, because the lossy window is *not*
+   *  synchronous: Rust empties the queue when `take_pending` releases its
+   *  mutex, but the guard only clears once the IPC response is back in JS,
+   *  and an `open://project` travelling the event channel can overtake that
+   *  response. Without the flag the folder queued in between would sit in
+   *  `OpenProjectState` until an unrelated open - the user's "Open with"
+   *  reading as a no-op. */
+  async function _drainExternalOpens() {
+    if (_externalOpenDraining) {
+      _externalOpenWake = true;
+      return;
+    }
+    _externalOpenDraining = true;
+    try {
+      do {
+        // Cleared before the take, so an event arriving during it is kept.
+        _externalOpenWake = false;
+        // `null` fallback, not `[]`: a failed round-trip must not read as
+        // an empty queue. The folders stay queued in Rust instead of being
+        // silently marked done. Nothing to retry into - the command itself
+        // is infallible, so only a dead IPC channel lands here - but a
+        // later event still drains them if the app is alive.
+        const paths = await _invokeSafe("take_pending_open_projects", undefined, null);
+        if (!paths) return;
+        for (const path of paths) {
+          // `take_pending` already handed the whole batch over, so one
+          // failed open must not abandon the rest of it - nor the re-take
+          // this loop promises.
+          try {
+            await _openExternalProject(path);
+          } catch (e) {
+            console.error(`[live] folder open aborted for '${path}':`, e);
+          }
+        }
+        // A non-empty batch may have been joined by later requests.
+        if (paths.length > 0) _externalOpenWake = true;
+      } while (_externalOpenWake);
+    } finally {
+      _externalOpenDraining = false;
+    }
+  }
+
+  /** Listen for `open://project`, then drain what the OS queued before the
+   *  webview existed. Listener first: an event landing during that first
+   *  drain is coalesced by the guard and picked up by the drain's own loop,
+   *  whereas arming it afterwards would strand the request. */
+  async function _setupExternalOpens() {
+    try {
+      await window.__TAURI__.event.listen("open://project", () => {
+        void _drainExternalOpens();
+      });
+    } catch (e) {
+      console.error("[live] failed to listen for folder-open requests:", e);
+    }
+    void _drainExternalOpens();
+  }
+
   // ── RPC line handler ──────────────────────────────────────────────────────
   // `agent://line/{id}` payloads and `replay_events` results share one shape:
   // `{seq, text}` — `seq` is the event's position in the backend's bounded
@@ -2134,7 +2262,7 @@
     // Without this the chip would claim "default" while the child writes to
     // `~/.omp/profiles/work/agent`, and the history panel - which scopes its
     // query by the tab's profile - would query the wrong tree.
-    _refreshProfiles().then(() => {
+    const profilesReady = _refreshProfiles().then(() => {
       const entry = sessionRegistry.get("default");
       if (entry && _shouldStampLaunchProfile(entry.profile, startupProfileId)) {
         sessionRegistry.set("default", { ...entry, profile: startupProfileId });
@@ -2143,7 +2271,22 @@
     });
 
     // Activate it — registers listener + fetches initial state
-    _switchToSession("default");
+    const launchReady = _switchToSession("default");
+
+    // OS folder-open requests, drained only after both of the above: a
+    // cold-start "Open with" is already queued in Rust, and opening it
+    // early would race the launch tab's own activation (which the open may
+    // then retire) and inherit the *provisional* built-in profile instead
+    // of the ticked startup one.
+    // `allSettled`, not `all`: neither failure may disable folder opens. It
+    // also marks both promises handled, so a rejection that used to surface
+    // as an unhandled one is only visible if logged here.
+    Promise.allSettled([profilesReady, launchReady]).then(results => {
+      for (const r of results) {
+        if (r.status === "rejected") console.error("[live] startup step failed:", r.reason);
+      }
+      _setupExternalOpens();
+    });
 
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", _setupWindowChrome);

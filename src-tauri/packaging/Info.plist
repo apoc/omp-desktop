@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the bundle's generated Info.plist (bundle.macOS.infoPlist).
+
+  Declares OMP Desktop as an opener for directories, which is what puts it in
+  Finder's "Open With" menu for a folder. LaunchServices then delivers the
+  selection as a `file://` URL through `tauri::RunEvent::Opened` — see
+  src-tauri/src/external_open.rs.
+
+  LSHandlerRank=Alternate deliberately: the default handler for a folder must
+  stay Finder itself.
+
+  Not expressible through `bundle.fileAssociations`, which is keyed by file
+  extension (`ext` is required) and a folder has none.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Folder</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.folder</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>

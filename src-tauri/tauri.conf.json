@@ -40,6 +40,26 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "infoPlist": "packaging/Info.plist"
+    },
+    "linux": {
+      "deb": {
+        "desktopTemplate": "packaging/omp-desktop.desktop"
+      },
+      "rpm": {
+        "desktopTemplate": "packaging/omp-desktop.desktop"
+      }
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "packaging/windows-folder-verb.nsh"
+      },
+      "wix": {
+        "fragmentPaths": ["packaging/windows-folder-verb.wxs"],
+        "componentGroupRefs": ["OpenFolderVerb"]
+      }
+    }
   }
 }
