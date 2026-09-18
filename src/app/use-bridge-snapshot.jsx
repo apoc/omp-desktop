@@ -3,11 +3,8 @@
    - useBridgeSnapshot:  subscribes to OMP_BRIDGE.onUpdate and routes the
                          snapshot fields into a setter map.
    - useThemeEffect:     reflects tweaks state onto <html> classes /
-                         CSS custom properties.
-   - useCommandShortcut: ⌘K / ⌃K toggles the command bridge; Escape closes
-                         it. Centralised here so app-live.jsx only owns
-                         render + handlers.
-   - useHistoryShortcut: ⌘H / ⌃H toggles the conversation-history modal. */
+                         CSS custom properties. Shortcuts dispatch is handled
+                         by useKeymapDispatch in app/use-keymap.jsx. */
 
 const { NULL_MODEL: _UB_NULL_MODEL, DEFAULT_PROFILE_ID: _UB_DEFAULT_PROFILE_ID } = window;
 
@@ -48,34 +45,5 @@ function useThemeEffect(t) {
   }, [t.theme, t.density, t.accent, t.monoChat, t.fontSize]);
 }
 
-function useCommandShortcut(setBridgeOpen, setBridgeView) {
-  React.useEffect(() => {
-    const onKey = (e) => {
-      if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        setBridgeOpen((v) => {
-          if (!v) setBridgeView("commands");
-          return !v;
-        });
-      }
-      if (e.key === "Escape") setBridgeOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [setBridgeOpen, setBridgeView]);
-}
 
-function useHistoryShortcut(setHistoryOpen) {
-  React.useEffect(() => {
-    const onKey = (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "h") {
-        e.preventDefault();
-        setHistoryOpen((v) => !v);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [setHistoryOpen]);
-}
-
-Object.assign(window, { useBridgeSnapshot, useThemeEffect, useCommandShortcut, useHistoryShortcut });
+Object.assign(window, { useBridgeSnapshot, useThemeEffect });

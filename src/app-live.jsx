@@ -20,7 +20,8 @@ const {
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, NULL_PEER, DEFAULT_PROFILE_ID,
   INTENT_FRAMING, APPROVAL_PROMPT,
-  useBridgeSnapshot, useThemeEffect, useCommandShortcut, useHistoryShortcut, timeNow,
+  useBridgeSnapshot, useThemeEffect, timeNow,
+  useKeymap, useKeymapDispatch, ShortcutsModal,
 } = window;
 
 function App() {
@@ -34,6 +35,7 @@ function App() {
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [changesOpen, setChangesOpen] = React.useState(false);
   const [rulesOpen,   setRulesOpen]   = React.useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [planOpen,    setPlanOpen]    = React.useState(false);
   const [planMode,    setPlanMode]    = React.useState(false);
   const planStartedRef = React.useRef(false); // true after first send in plan mode
@@ -78,7 +80,7 @@ function App() {
   // App-wide and persisted, unlike a tab's own profile.
   const [startupProfileId, setStartupProfileId] = React.useState(DEFAULT_PROFILE_ID);
 
-  // ── Cross-cutting effects (bridge subscription, theme, ⌘K) ────────────────
+  // ── Cross-cutting effects ─────────────────────────────────────────────────
   useBridgeSnapshot(bridge, {
     setMessages, setStreaming, setCtx, setKanban, setPlanMeta,
     setModels, setActivity, setSparkline,
@@ -86,8 +88,6 @@ function App() {
     setSessions, setActiveSessionId, setProfiles, setStartupProfileId,
   });
   useThemeEffect(t);
-  useCommandShortcut(setBridgeOpen, setBridgeView);
-  useHistoryShortcut(setHistoryOpen);
 
   // Fetch OAuth providers whenever the login view opens (ensures fresh auth status)
   React.useEffect(() => {
@@ -110,6 +110,14 @@ function App() {
     },
     { total: 0, done: 0 }
   );
+
+  // ── Keymap ────────────────────────────────────────────────────────────────
+  // Placed after activeProject so useKeymap can pass the active tab's profile.
+  const keymap = useKeymap(bridge, activeProject?.profile);
+
+  // Handler map read through a ref so the dispatch effect never re-subscribes.
+  const handlersRef = React.useRef({});
+  useKeymapDispatch(handlersRef);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleSend = text => {
@@ -167,16 +175,70 @@ function App() {
   };
   const cycleThinking    = () => bridge?.cycleThinking();
 
+  // Extracted so both the global keymap handler and the composer prop share
+  // the same implementation (plan §7: "extract into a togglePlanMode callback").
+  const togglePlanMode = () => {
+    const next = !planMode;
+    setPlanMode(next);
+    if (!next) planStartedRef.current = false;
+  };
+
+  // Composer-scoped follow-up: the composer owns the draft text.
+  const handleFollowUp = text => { bridge?.followUp(text); };
+
   const handleCommand = c => {
-    if      (c.name === "plan")     { setPlanMode(true); planStartedRef.current = false; }
-    else if (c.name === "todo")     { setPlanOpen(true); }
-    else if (c.name === "compact")  { bridge?.compact(); }
-    else if (c.name === "export")   { bridge?.exportHtml(); }
-    else if (c.name === "thinking") { cycleThinking(); }
-    else if (c.name === "model")    { openBridge("models"); }
-    else if (c.name === "login")    { openBridge("login"); }
-    else if (c.name === "new")      { bridge?.newSession(); }
-    else if (c.name === "history")  { setHistoryOpen(true); }
+    if      (c.name === "plan")      { setPlanMode(true); planStartedRef.current = false; }
+    else if (c.name === "todo")      { setPlanOpen(true); }
+    else if (c.name === "compact")   { bridge?.compact(); }
+    else if (c.name === "export")    { bridge?.exportHtml(); }
+    else if (c.name === "thinking")  { cycleThinking(); }
+    else if (c.name === "model")     { openBridge("models"); }
+    else if (c.name === "login")     { openBridge("login"); }
+    else if (c.name === "new")       { bridge?.newSession(); }
+    else if (c.name === "history")   { setHistoryOpen(true); }
+    else if (c.name === "shortcuts") { setShortcutsOpen(true); }
+  };
+
+  // ── Global keymap handler map ─────────────────────────────────────────────
+  // Written into handlersRef every render so the dispatch hook always reads
+  // the latest closures without re-subscribing to the window listener.
+  handlersRef.current = {
+    "app.interrupt":           () => {
+      // Only abort when no overlay is open (overlays handle Escape themselves).
+      if (bridgeOpen || historyOpen || changesOpen || rulesOpen || planOpen || shortcutsOpen) return;
+      if (streaming) handleAbort();
+    },
+    "app.thinking.cycle":      cycleThinking,
+    "app.model.cycleForward":  () => bridge?.cycleModel(),
+    "app.model.cycleBackward": () => {
+      if (models.length < 2) return;
+      const idx = models.findIndex(m => m.id === model.id && m.provider === model.provider);
+      handlePickModel(models[(idx < 0 ? 0 : (idx - 1 + models.length)) % models.length]);
+    },
+    "app.model.select":        () => openBridge("models"),
+    "app.plan.toggle":         togglePlanMode,
+    "app.session.new":         () => bridge?.newSession(),
+    "app.session.resume":      () => setHistoryOpen(v => !v),
+    "desktop.commands.open":   () => { setBridgeView("commands"); setBridgeOpen(v => !v); },
+    "desktop.history.open":    () => setHistoryOpen(v => !v),
+    "desktop.shortcuts.open":  () => setShortcutsOpen(v => !v),
+    "desktop.tab.new":         () => handleNewProject(),
+    "desktop.tab.close":       () => { if (activeProject.id) handleCloseTab(activeProject.id); },
+    "desktop.tab.next":        () => {
+      if (sessions.length < 2) return;
+      const idx = sessions.findIndex(s => s.id === activeSessionId);
+      bridge?.activateSession(sessions[(idx + 1) % sessions.length].id);
+    },
+    "desktop.tab.prev":        () => {
+      if (sessions.length < 2) return;
+      const idx = sessions.findIndex(s => s.id === activeSessionId);
+      bridge?.activateSession(sessions[(idx - 1 + sessions.length) % sessions.length].id);
+    },
+    "desktop.panel.todo":      () => setPlanOpen(v => !v),
+    "desktop.panel.changes":   () => setChangesOpen(v => !v),
+    "desktop.panel.rules":     () => setRulesOpen(v => !v),
+    "desktop.session.compact": () => bridge?.compact(),
+    "desktop.session.export":  () => bridge?.exportHtml(),
   };
 
   const handleResumeSession = async (session) => {
@@ -312,11 +374,7 @@ function App() {
               <Composer
                 onSend={handleSend}
                 planMode={planMode}
-                onTogglePlan={() => {
-                  const next = !planMode;
-                  setPlanMode(next);
-                  if (!next) planStartedRef.current = false;
-                }}
+                onTogglePlan={togglePlanMode}
                 onOpenCmd={() => openBridge("commands")}
                 onOpenModel={() => openBridge("models")}
                 currentModel={model}
@@ -328,6 +386,7 @@ function App() {
                 annotationCount={Object.keys(planAnnotations).length}
                 microcopy={data.microcopy}
                 onPick={handleCommand}
+                onFollowUp={handleFollowUp}
               />
               <StatusBar
                 ctx={liveCtx}
@@ -401,6 +460,12 @@ function App() {
       {rulesOpen && (
         <ApprovalRulesPanel onClose={() => setRulesOpen(false)} />
       )}
+
+      <ShortcutsModal
+        open={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
+        keymap={keymap}
+      />
 
       <TweaksPanel title="Tweaks" noDeckControls>
         <TweakSection label="Look">

@@ -6,7 +6,7 @@ const { Icon } = window;
 const { parseMentionQuery, applyMention } = window.OMP_MENTIONS;
 
 // ── The composer (input + plan/steer modes + send) ────────────────────
-function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy }) {
+function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp }) {
   const [text, setText]       = React.useState("");
   const [activeIdx, setActiveIdx] = React.useState(0);
   const taRef   = React.useRef(null);
@@ -196,8 +196,13 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     }
     // isSubmitEnter (app/constants.js) owns the IME-composition guard.
     if (isSubmitEnter(e) && !e.shiftKey) { e.preventDefault(); send(); return; }
-    if (e.key === "Escape" && isStreaming) { onAbort(); return; }
-    if (e.key === "k" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onOpenCmd(); }
+    if (window.OMP_KEYMAP?.matches(e, "app.message.followUp")) {
+      e.preventDefault();
+      const t = expandPastes(text.trim());
+      if (t) onFollowUp?.(t);
+      setText("");
+      return;
+    }
   };
 
   return (
