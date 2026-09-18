@@ -77,6 +77,9 @@ check("chordFromEvent: metaKey maps to super", () =>
 check("chordFromEvent: macOS Alt+M yields composed char — recover from e.code", () =>
   assert.equal(K.chordFromEvent({ key: "µ", code: "KeyM", ctrlKey: false, shiftKey: false, altKey: true, metaKey: false }), "alt+m"));
 
+check("chordFromEvent: AZERTY Ctrl+A — plain ASCII key must not use e.code", () =>
+  assert.equal(K.chordFromEvent({ key: "a", code: "KeyQ", ctrlKey: true, shiftKey: false, altKey: false, metaKey: false }), "ctrl+a"));
+
 // ── resolve ───────────────────────────────────────────────────────────────────
 
 check("resolve: empty config gives every action its defaultKeys", () => {

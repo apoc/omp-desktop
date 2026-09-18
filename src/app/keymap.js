@@ -118,7 +118,12 @@
         // composed character for e.key (e.g. Alt+M on macOS → "µ").
         // Recover the physical Latin key from e.code when available.
         let effectiveKey = k;
-        if ((e.altKey || e.ctrlKey) && e.code) {
+        // Only recover from e.code when e.key is already a non-ASCII-alphanumeric
+        // character (e.g. "µ" on macOS Alt+M). When e.key is already a plain
+        // ASCII letter/digit ("a", "1", …) the browser reported the physical key
+        // correctly — using e.code there would break non-QWERTY layouts (e.g.
+        // AZERTY: Ctrl+A has key:"a" but code:"KeyQ" — must stay ctrl+a).
+        if ((e.altKey || e.ctrlKey) && e.code && !/^[a-zA-Z0-9]$/.test(k)) {
           const fromCode = e.code.match(/^Key([A-Z])$|^Digit(\d)$/);
           if (fromCode) effectiveKey = fromCode[1] ?? fromCode[2];
         }
