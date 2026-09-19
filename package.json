@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:keymap": "node test-keymap.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

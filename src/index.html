@@ -59,6 +59,9 @@
        components because composer.jsx and chat/ask-bubble.jsx call its
        isSubmitEnter helper (and app-live.jsx destructures the rest). -->
   <script src="app/constants.js"></script>
+  <!-- Keymap registry + chord algebra. Dependency-free IIFE; must load before
+       any Babel file (composer.jsx, use-keymap.jsx, shortcuts-modal.jsx). -->
+  <script src="app/keymap.js"></script>
 
   <!-- Mention-parsing helpers. Dependency-free IIFE; composer.jsx
        destructures window.OMP_MENTIONS at top level, so this must load
@@ -90,6 +93,7 @@
   <script type="text/babel" src="design/changes-panel.jsx"></script>
   <script type="text/babel" src="design/approval-rules-panel.jsx"></script>
   <script type="text/babel" src="design/history-modal.jsx"></script>
+  <script type="text/babel" src="design/shortcuts-modal.jsx"></script>
 
   <!-- Live data layer (must load before app-live.jsx) -->
   <script src="model-names.js"></script>
@@ -99,6 +103,7 @@
   <!-- App root — wired to OMP_BRIDGE, no demo effects -->
   <!-- Cross-cutting hooks (must load before app-live.jsx) -->
   <script type="text/babel" src="app/use-bridge-snapshot.jsx"></script>
+  <script type="text/babel" src="app/use-keymap.jsx"></script>
 
   <script type="text/babel" src="app-live.jsx"></script>
 </body>

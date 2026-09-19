@@ -14,6 +14,7 @@ Tauri 2 desktop shell for `omp` (oh-my-pi). React UI loaded from `src/` by Tauri
 | Rust lint (must stay clean) | `cd src-tauri && cargo +nightly clippy --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery -D warnings` |
 | Rust tests | `cd src-tauri && cargo test` |
 | Probe omp RPC | `node test-rpc.mjs` |
+| Keymap chord regression | `node test-keymap.mjs` (or `npm run test:keymap`) |
 
 `omp` must be on PATH (`%LOCALAPPDATA%\omp\omp.exe` on Win). CI = `cargo check` + `cargo test` on win/linux/mac.
 
@@ -31,7 +32,7 @@ Three layers:
 
 2. **Bridge (`src/live.js`)** — listens to `agent://line/{id}` for active session only. Holds per-session live state and a `sessionRegistry` (tabs). Tab switch: snapshot → tear down listeners → restore (or reset+`_initFetch`) → re-listen. Exposes `window.OMP_BRIDGE` (commands + `onUpdate`) and legacy `window.OMP_DATA`.
 
-3. **React (`src/app-live.jsx` + `src/app/` + `src/design/*/`)** — sole React root. Uses `useBridgeSnapshot` (in `src/app/use-bridge-snapshot.jsx`) to mirror `OMP_BRIDGE.onUpdate` into hooks. Cross-cutting effects (theme on `<html>`, ⌘K) live there. Constants/framing strings in `src/app/constants.js`. Pure RPC↔UI shape transforms in `src/adapter.js` (no side effects, depends on `model-names.js`).
+3. **React (`src/app-live.jsx` + `src/app/` + `src/design/*/`)** — sole React root. Uses `useBridgeSnapshot` (in `src/app/use-bridge-snapshot.jsx`) to mirror `OMP_BRIDGE.onUpdate` into hooks. Cross-cutting effects (theme on `<html>`) live there; keyboard shortcuts are resolved and dispatched by `src/app/use-keymap.jsx` (registry in `src/app/keymap.js`). Constants/framing strings in `src/app/constants.js`. Pure RPC↔UI shape transforms in `src/adapter.js` (no side effects, depends on `model-names.js`).
 
 ## Session model
 
@@ -64,14 +65,15 @@ Paths are canonicalised in Rust (`canonical_folder`) before they reach the front
 Script order **is** the dependency graph:
 
 1. Vendored libs: React, ReactDOM, Babel, `marked.min.js`, `highlight.min.js` + marked-wiring inline.
-2. App constants: `app/constants.js` → `mentions.js` (plain, IIFE). **Before** the `design/` layer *and* before `app/use-bridge-snapshot.jsx` — `profile-menu.jsx`, `chrome.jsx`, `live.js` and `use-bridge-snapshot.jsx` destructure `DEFAULT_PROFILE_ID`/`isSubmitEnter` off `window` at *top level*, so moving this after any of them silently yields `undefined` (no resolver, no error). `composer.jsx` and `chat/ask-bubble.jsx` only call `isSubmitEnter` inside handlers — late-bound global lookups, insensitive to script order.
+2. App constants: `app/constants.js` → `app/keymap.js` (plain, IIFE — defines `window.OMP_KEYMAP`; must load before any Babel file that calls `OMP_KEYMAP.matches`/`.keysFor`, including `composer.jsx`, `shortcuts-modal.jsx`, `use-keymap.jsx`) → `mentions.js` (plain, IIFE). **Before** the `design/` layer *and* before `app/use-bridge-snapshot.jsx` — `profile-menu.jsx`, `chrome.jsx`, `live.js` and `use-bridge-snapshot.jsx` destructure `DEFAULT_PROFILE_ID`/`isSubmitEnter` off `window` at *top level*, so moving this after any of them silently yields `undefined` (no resolver, no error). `composer.jsx` and `chat/ask-bubble.jsx` only call `isSubmitEnter` inside handlers — late-bound global lookups, insensitive to script order.
 3. Tweaks: `tweaks/style.js`, `tweaks/use-tweaks.js` (plain, IIFE) → `tweaks/panel.jsx`, `tweaks/controls.jsx` (Babel; controls depends on panel).
 4. UI primitives: `ui/icons.jsx` (defines `Icon`, `TOOL_META`) → `ui/sparks.jsx` → `ui/markdown.jsx` → `ui/plan-annotations.jsx`.
 5. Chat: `chat/user-bubble.jsx` → `chat/eval-cell.jsx` → `chat/assistant-bubble.jsx` → `chat/tool-card.jsx` → `chat/ask-bubble.jsx` → `chat/chat-view.jsx`.
-6. `design/mention-menu.jsx` → `design/composer.jsx` → `design/profile-menu.jsx` (before `chrome.jsx`, which destructures `window.ProfileMenu`) → `design/chrome.jsx` → `design/panels.jsx` → the remaining panels/modals.
+6. `design/mention-menu.jsx` → `design/composer.jsx` → `design/profile-menu.jsx` (before `chrome.jsx`, which destructures `window.ProfileMenu`) → `design/chrome.jsx` → `design/panels.jsx` → the remaining panels/modals → `design/shortcuts-modal.jsx` (after `history-modal.jsx`; reads `window.OMP_KEYMAP` at top level).
 7. Live data: `model-names.js` → `adapter.js` → `live.js`.
 8. `app/use-bridge-snapshot.jsx` (after `live.js`, whose snapshot it mirrors).
-9. `app-live.jsx` last.
+9. `app/use-keymap.jsx` (after `live.js` — calls `bridge.listKeybindings`; after `use-bridge-snapshot.jsx`; before `app-live.jsx`).
+10. `app-live.jsx` last.
 
 When adding a file, insert at the correct point — there is no resolver to catch ordering bugs.
 
@@ -134,7 +136,7 @@ Trigger: 6th major component in one file, or 4th unrelated concern in one Rust m
 **Rust:**
 - **Toolchain/edition:** edition **2021**, stable toolchain (clippy only is nightly). No `rust-version` key — check `src-tauri/Cargo.toml` before using a newer-edition or recently-stabilised feature; don't assume 2024 idioms (`gen` blocks, RPIT lifetime capture changes) are available.
 - **Verify before finishing a task:** `cargo fmt` → `cargo test --locked` → `cargo +nightly clippy --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery -D warnings`. Pedantic+nursery is stricter than the generic `clippy -D warnings`; `redundant_clone` and `too_many_arguments` fire here and are hard errors.
-- **Errors:** `thiserror`/`anyhow` are deliberately *not* dependencies. Tauri serialises command errors to JS, so the IPC boundary is `Result<T, String>` — 18 of the 23 `#[tauri::command]` fns; the rest return `ProfileList`, `Option<String>`, or nothing. Internal helpers match it (`json_store::with_lock_str` exists purely to tunnel `String` errors through `io::Error`). Add `thiserror` only alongside a genuine library-shaped module with variants a caller matches on — not to restyle existing `String` errors.
+- **Errors:** `thiserror`/`anyhow` are deliberately *not* dependencies. Tauri serialises command errors to JS, so the IPC boundary is `Result<T, String>` — 22 of the 28 `#[tauri::command]` fns; the rest return `ProfileList`, `Option<String>`, `Vec<String>`, or nothing. Internal helpers match it (`json_store::with_lock_str` exists purely to tunnel `String` errors through `io::Error`). Add `thiserror` only alongside a genuine library-shaped module with variants a caller matches on — not to restyle existing `String` errors.
 - No `unwrap`/`expect` outside `#[cfg(test)]` unless the invariant is unrecoverable **and** commented (see `run()`'s documented `# Panics`).
 - Prefer borrowing (`&str`, `&[T]`, `&Path`) in params; owned only when ownership is required. No needless `String`↔`&str` conversions.
 - **Cloning is a last resort, and every surviving `.clone()` must be load-bearing.** Before writing one, in this order:

@@ -43,27 +43,13 @@ pub struct SavedSession {
 
 /// Resolve the sessions directory from already-gathered inputs.
 ///
-/// The `profile.is_none()` gate is the single line separating per-profile
-/// history isolation from cross-profile leakage: honour `PI_CODING_AGENT_DIR`
-/// for a *named* profile and its history panel would read the shared tree (or
-/// another profile's) while its child process writes under
-/// `~/.omp/profiles/<id>/agent`. Extracted from [`sessions_root_dir`] purely
-/// so that precedence is assertable without a Tauri `AppHandle` - the same
-/// split `scan_dir` uses.
+/// Delegates the `PI_CODING_AGENT_DIR`-for-built-in-only precedence to
+/// [`crate::profiles::agent_dir_for`] — the same rule `keybindings::mod`
+/// needs for its config reader, now defined once so the two cannot diverge.
+/// Extracted from [`sessions_root_dir`] purely so that precedence is
+/// assertable without a Tauri `AppHandle` - the same split `scan_dir` uses.
 fn sessions_root_for(home: &Path, profile: Option<&str>, env_dir: Option<&OsStr>) -> PathBuf {
-    // Same defence-in-depth filter as `agent::spawn::omp_args`: the write and
-    // read sides of this invariant must not disagree on the degenerate input.
-    // `Some("")` would otherwise skip the env override *and* resolve to
-    // `<home>/.omp/profiles/agent` (`Path::join("")` just adds a separator),
-    // while the child spawned from the same value writes `<home>/.omp/agent`.
-    // Unreachable through `ProfileStore::resolve`, which maps blank to `None`.
-    let profile = profile.filter(|id| !id.is_empty());
-    if profile.is_none() {
-        if let Some(dir) = env_dir.filter(|d| !d.is_empty()) {
-            return PathBuf::from(dir).join("sessions");
-        }
-    }
-    crate::profiles::agent_dir(home, profile).join("sessions")
+    crate::profiles::agent_dir_for(home, profile, env_dir).join("sessions")
 }
 
 /// Locate the directory where omp persists sessions for a resolved `profile`

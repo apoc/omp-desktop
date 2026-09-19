@@ -31,6 +31,7 @@
       { name: "login",    hint: "authenticate with a model provider",   icon: "⊙", group: "Agent"   },
       { name: "todo",     hint: "open the kanban surface",            icon: "▦", group: "View"    },
       { name: "export",   hint: "export this session to HTML",        icon: "⇪", group: "View"    },
+      { name: "shortcuts", hint: "view and rebind keyboard shortcuts", icon: "⌘", group: "View"    },
     ],
     models: [],
     activity: [],
@@ -1986,6 +1987,25 @@
         cwd: cwd || null, profile: _activeProfileId(),
       }, []);
       return sessions || [];
+    },
+
+    /** Return the full keybinding payload for the active tab's profile.
+     *  Resolves to the `Payload` struct or `null` on error (network or
+     *  corrupt overlay — the frontend falls back to omp + registry defaults). */
+    async listKeybindings() {
+      return _invokeSafe("keybindings_list", { profile: _activeProfileId() }, null);
+    },
+
+    /** Bind `action` to `keys` in the desktop overlay. Resolves to
+     *  `{ok:true, value: Payload}` or `{ok:false, error: string}`. */
+    async setKeybinding(action, keys) {
+      return _invokeResult("keybindings_set", { action, keys, profile: _activeProfileId() });
+    },
+
+    /** Remove `action` from the desktop overlay (reset to omp/default).
+     *  Resolves to `{ok:true, value: Payload}` or `{ok:false, error: string}`. */
+    async resetKeybinding(action) {
+      return _invokeResult("keybindings_reset", { action, profile: _activeProfileId() });
     },
 
     /** Resume a saved session into a new tab, under the active tab's profile

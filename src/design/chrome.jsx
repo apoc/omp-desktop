@@ -8,6 +8,14 @@
 
 const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID } = window;
 
+// Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` — same
+// guard and rationale as composer.jsx's copy (kept local rather than a
+// third file to import from; see composer.jsx's doc comment for why the
+// registry-not-loaded fallback can't move into keymap.js itself).
+function hintFor(actionId, fallback) {
+  return window.OMP_KEYMAP ? window.OMP_KEYMAP.hintFor(actionId) : fallback;
+}
+
 // ── Platform detection ────────────────────────────────────────────────
 const IS_WIN = typeof navigator !== "undefined" &&
   (navigator.userAgent.includes("Windows") || navigator.platform.startsWith("Win"));
@@ -56,7 +64,7 @@ function WindowChrome({
       <div className="chrome-right">
         <button className="btn ghost outlined" onClick={onCmd}>
           <Icon name="command" size={11} /> bridge{" "}
-          <span className="kbd">{IS_WIN ? "^K" : "⌘K"}</span>
+          <span className="kbd">{hintFor("desktop.commands.open", IS_WIN ? "^K" : "⌘K")}</span>
         </button>
 
         {/* Windows controls — right side, hidden on macOS/Linux */}
@@ -115,7 +123,7 @@ function TabBar({ projects, activeId, onSelect, onClose, peer, onNew, onHistory,
       <button className="tab-add" title="open project" onClick={onNew}>
         <Icon name="plus" size={11} />
       </button>
-      <button className="tab-add" title="conversation history (Ctrl+H)" onClick={onHistory}>
+      <button className="tab-add" title={`conversation history (${hintFor("desktop.history.open", "Ctrl+H")})`} onClick={onHistory}>
         <Icon name="clock" size={11} />
       </button>
       <div style={{ flex: 1 }} />

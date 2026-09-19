@@ -5,8 +5,23 @@
 const { Icon } = window;
 const { parseMentionQuery, applyMention } = window.OMP_MENTIONS;
 
+// Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` (display
+// logic lives there so chrome.jsx's ⌘K/history hints can reuse it too,
+// instead of each file re-deriving chord display independently). The guard
+// here is the one thing that can't move: "registry not loaded yet"
+// (`window.OMP_KEYMAP` absent — first render before keymap.js runs, should
+// never happen in normal script order but guarded anyway) keeps showing
+// `fallback`, distinct from "loaded but unbound" (the user cleared the
+// binding), which `OMP_KEYMAP.hintFor`/`hintKeyFor` already report as `""`.
+function hintFor(actionId, fallback) {
+  return window.OMP_KEYMAP ? window.OMP_KEYMAP.hintFor(actionId) : fallback;
+}
+function hintKeyFor(actionId, fallback) {
+  return window.OMP_KEYMAP ? window.OMP_KEYMAP.hintKeyFor(actionId) : fallback;
+}
+
 // ── The composer (input + plan/steer modes + send) ────────────────────
-function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy }) {
+function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp }) {
   const [text, setText]       = React.useState("");
   const [activeIdx, setActiveIdx] = React.useState(0);
   const taRef   = React.useRef(null);
@@ -144,18 +159,30 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     txt.replace(/\[paste #(\d+) \+\d+ lines?\]/g, (match, id) =>
       pasteBlocksRef.current.get(Number(id)) ?? match);
 
-  const send = () => {
-    // If the slash popup is open, Enter executes the highlighted command
-    if (showSlash) { execCmd(filtered[clampedIdx]); return; }
-    const canSend = text.trim() || (planMode && annotationCount > 0);
+  // Route a completed draft through the full send pipeline. `dispatcher` is
+  // either `onSend` (normal) or `onFollowUp` (follow-up); both get the same
+  // paste-expansion, state-reset and focus-restore treatment. The slash-popup
+  // shortcut only applies to a plain send — a follow-up must always send the
+  // literal draft (plan §7: Ctrl+Q/Ctrl+Enter sends a follow-up even while a
+  // '/' command is being typed), never silently reroute into executing the
+  // highlighted palette command instead.
+  const sendWith = (dispatcher, { followUp = false } = {}) => {
+    if (showSlash && !followUp) { execCmd(filtered[clampedIdx]); return; }
+    // follow-up (`onFollowUp` dispatcher) requires non-empty text — annotations
+    // are a send-only affordance (app-live.jsx merges them into the message).
+    // Plain send can proceed with annotations alone (annotationCount > 0).
+    const canSend = followUp
+      ? !!text.trim()
+      : (text.trim() || (planMode && annotationCount > 0));
     if (!canSend) return;
-    onSend(expandPastes(text.trim()));
+    dispatcher(expandPastes(text.trim()));
     setText("");
     setMentionDismissedKey(null);
     pasteBlocksRef.current.clear();
     pasteCounterRef.current = 0;
     requestAnimationFrame(() => taRef.current?.focus());
   };
+  const send = () => sendWith(onSend);
 
   // Collapse long pastes into a token so the textarea stays navigable.
   // Threshold: more than 5 lines OR more than 500 characters.
@@ -194,11 +221,22 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
       if (e.key === "Escape")     { e.preventDefault(); setText(""); return; }
       if (e.key === "Tab")        { e.preventDefault(); setActiveIdx(i => (i + 1) % filtered.length); return; }
     }
+    // followUp must be checked before the plain-Enter branch: `ctrl+enter` is
+    // a default followUp chord and `isSubmitEnter` would match it first.
+    if (window.OMP_KEYMAP?.matches(e.nativeEvent ?? e, "app.message.followUp")) {
+      e.preventDefault();
+      if (onFollowUp) sendWith(onFollowUp, { followUp: true });
+      return;
+    }
     // isSubmitEnter (app/constants.js) owns the IME-composition guard.
     if (isSubmitEnter(e) && !e.shiftKey) { e.preventDefault(); send(); return; }
-    if (e.key === "Escape" && isStreaming) { onAbort(); return; }
-    if (e.key === "k" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onOpenCmd(); }
   };
+
+  // Live keymap hints — computed once per render, reused across the
+  // placeholder, title, kbd chips and footer so they can never disagree.
+  const bridgeHint    = hintFor("desktop.commands.open", "⌘K");
+  const bridgeKeyHint = hintKeyFor("desktop.commands.open", "K");
+  const abortHint = hintFor("app.interrupt", "⎋");
 
   return (
     <div className={`composer ${planMode ? "plan-on" : ""}`}>
@@ -253,7 +291,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
                 ? (microcopy?.planTip ?? "describe what to build, or give feedback on the plan…")
                 : isStreaming
                   ? microcopy?.streamingTip
-                  : (microcopy?.paletteTip ?? "what should we ship?  ·  / for commands  ·  ⌘K for the bridge")
+                  : (microcopy?.paletteTip ?? `what should we ship?  ·  / for commands${bridgeHint ? `  ·  ${bridgeHint} for the bridge` : ""}`)
             }
             value={text}
             onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart); }}
@@ -267,9 +305,9 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
             aria-activedescendant={showMention ? `mention-row-${mentionActiveIdx}` : undefined}
           />
         </div>
-        <button className="btn outlined" title="open command bridge (⌘K)" onClick={onOpenCmd}>
+        <button className="btn outlined" title={bridgeHint ? `open command bridge (${bridgeHint})` : "open command bridge"} onClick={onOpenCmd}>
           <Icon name="command" size={11} />
-          <span className="kbd" style={{ marginLeft: 2 }}>K</span>
+          {bridgeKeyHint && <span className="kbd" style={{ marginLeft: 2 }}>{bridgeKeyHint}</span>}
         </button>
         {isStreaming ? (
           <>
@@ -280,7 +318,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
               </button>
             )}
             <button className="btn danger" onClick={onAbort}>
-              <Icon name="stop" size={10} /> abort <span className="kbd">⎋</span>
+              <Icon name="stop" size={10} /> abort {abortHint && <span className="kbd">{abortHint}</span>}
             </button>
           </>
         ) : (
@@ -318,7 +356,12 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
         </button>
         <div style={{ flex: 1 }} />
         <span className="mono" style={{ color: "var(--fg-4)", fontSize: "var(--d-text-xs)" }}>
-          {isStreaming && text.trim() ? "↵ steer · ⎋ abort" : "↵ send · ⇧↵ newline · ⎋ abort"}
+          {[
+            ...(isStreaming && text.trim() ? ["↵ steer"] : ["↵ send", "⇧↵ newline"]),
+            // Dropped entirely when unbound rather than showing a keyless
+            // "abort" segment that advertises a shortcut that isn't there.
+            ...(abortHint ? [`${abortHint} abort`] : []),
+          ].join(" · ")}
         </span>
       </div>
     </div>
