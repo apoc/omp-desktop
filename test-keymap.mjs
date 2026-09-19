@@ -38,8 +38,8 @@ check("canonicalChord: modifier reorder Alt+Shift+P", () =>
 check("canonicalChord: Ctrl+P stays ctrl+p (no implied shift)", () =>
   assert.equal(K.canonicalChord("Ctrl+P"), "ctrl+p"));
 
-check("canonicalChord: bare uppercase P implies shift", () =>
-  assert.equal(K.canonicalChord("P"), "shift+p"));
+check("canonicalChord: bare uppercase P is no longer shift-inferred (matches omp's lowercase-before-canonicalise config path)", () =>
+  assert.equal(K.canonicalChord("P"), "p"));
 
 check("canonicalChord: lowercase p unchanged", () =>
   assert.equal(K.canonicalChord("p"), "p"));
@@ -103,8 +103,18 @@ check("chordFromEvent: Dead key recovers the physical letter from e.code", () =>
 check("chordFromEvent: IME composition is never a chord regardless of key", () =>
   assert.equal(K.chordFromEvent({ key: "Escape", isComposing: true, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }), null));
 
-check("chordFromEvent: ASCII shifted symbol ignores e.code even under Ctrl+Alt", () =>
+check("chordFromEvent: ASCII shifted symbol ignores e.code even under Ctrl", () =>
   assert.equal(K.chordFromEvent({ key: "@", code: "Digit2", ctrlKey: true, shiftKey: true, altKey: false, metaKey: false }), "ctrl+@"));
+
+check("chordFromEvent: NON_CHORD_KEYS covers the Super/Hyper/Fn family so a stray press never becomes a bogus recordable chord", () => {
+  for (const key of ["Super", "Hyper", "OS", "Fn", "FnLock", "Symbol", "SymbolLock"]) {
+    assert.equal(
+      K.chordFromEvent({ key, ctrlKey: false, shiftKey: false, altKey: false, metaKey: true }),
+      null,
+      `key=${key} must not yield a chord`
+    );
+  }
+});
 
 check("chordFromEvent: real-world WebKitGTK bug — key=Unidentified, code=Tab recovers shift+tab", () =>
   assert.equal(K.chordFromEvent({ key: "Unidentified", code: "Tab", ctrlKey: false, shiftKey: true, altKey: false, metaKey: false }), "shift+tab"));
@@ -163,6 +173,26 @@ check("resolve: overlay wins over omp layer per action", () => {
   const overlay = { "app.plan.toggle": ["ctrl+shift+o"] };
   const r = K.resolve(K.KEYMAP_ACTIONS, { ...omp, ...overlay });
   assert.deepEqual(r.byAction.get("app.plan.toggle"), ["ctrl+shift+o"]);
+});
+
+check("resolve: setResolved + lookup/keysFor reflect a rebind", () => {
+  const r = K.resolve(K.KEYMAP_ACTIONS, { "app.plan.toggle": "ctrl+shift+o" });
+  K.setResolved(r);
+  assert.equal(K.lookup("ctrl+shift+o"), "app.plan.toggle");
+  assert.deepEqual(K.keysFor("app.plan.toggle"), ["ctrl+shift+o"]);
+  assert.deepEqual(K.keysFor("no.such.action"), []);
+});
+
+check("matches: true for the event that resolves to the given action under the current resolution", () => {
+  K.setResolved(K.resolve(K.KEYMAP_ACTIONS, { "app.plan.toggle": "ctrl+shift+o" }));
+  assert.equal(
+    K.matches({ key: "O", ctrlKey: true, shiftKey: true, altKey: false, metaKey: false }, "app.plan.toggle"),
+    true
+  );
+  assert.equal(
+    K.matches({ key: "O", ctrlKey: true, shiftKey: true, altKey: false, metaKey: false }, "app.other.action"),
+    false
+  );
 });
 
 // ── allowedInInput ────────────────────────────────────────────────────────────

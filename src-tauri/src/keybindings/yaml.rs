@@ -1,5 +1,4 @@
-//! A deliberately narrow reader for omp's `keybindings.yml`, plus the chord
-//! canonicaliser both layers share.
+//! A deliberately narrow reader for omp's `keybindings.yml`.
 //!
 //! This is **not** a YAML library and must not grow into one. `Cargo.toml`
 //! carries no YAML crate, the file this parses is documented as a flat
@@ -10,13 +9,16 @@
 //! reports no omp binding for that action, which is a visible, harmless
 //! degradation rather than a parse failure that would hide every *other*
 //! binding in the file.
+//!
+//! Chord canonicalisation lives in [`super::chord`], shared with the JSON
+//! overlay validator.
 
 use std::collections::BTreeMap;
 
 /// Parse a flat `action: value` map. Values are returned **verbatim**
 /// (trimmed and unquoted, but not canonicalised) — `super::read_file` runs
-/// [`canonical_chord`] over them so the JSON and YAML paths canonicalise in
-/// exactly one place.
+/// [`super::chord::canonical_chord`] over them so the JSON and YAML paths
+/// canonicalise in exactly one place.
 ///
 /// # Null is absent, `[]` is disabled
 ///
@@ -189,27 +191,34 @@ fn is_quoted(s: &str) -> bool {
 /// is two items whose first one ends in an apostrophe, not one item with a
 /// swallowed comma.
 fn flow_items(rest: &str) -> Vec<String> {
-    let body = rest.rfind(']').map_or(rest, |end| &rest[..end]);
     let mut out = Vec::new();
     let mut start = 0;
     let mut idx = 0;
-    while idx < body.len() {
-        let ch = body[idx..]
-            .chars()
-            .next()
-            .expect("idx < body.len() guarantees a char at idx");
-        if (ch == '"' || ch == '\'') && body[start..idx].trim().is_empty() {
+    while let Some(ch) = rest[idx..].chars().next() {
+        if (ch == '"' || ch == '\'') && rest[start..idx].trim().is_empty() {
             // A quote only *opens* at the start of an item — jump straight
             // to its close via the scanner `unquote` also uses, rather than
             // re-walking the escape state machine a second time here.
-            idx = quoted_end(body, idx + ch.len_utf8(), ch);
-            if idx < body.len() {
+            idx = quoted_end(rest, idx + ch.len_utf8(), ch);
+            if idx < rest.len() {
                 idx += ch.len_utf8(); // step past the closing quote
             }
             continue;
         }
+        if ch == ']' {
+            // The sequence's closing bracket. Stopping at the *first*
+            // unquoted one means anything after it — a trailing
+            // `# comment`, in particular — is never mistaken for part of
+            // the last item (regression: this used to be found via
+            // `rfind(']')`, which picked the *last* `]` on the line,
+            // silently corrupting the last item when a comment after the
+            // sequence itself contained a `]`, e.g. `[...] # see [docs]`).
+            // An unquoted base key spelled `]` is indistinguishable from
+            // this close; like YAML, such a key must be quoted.
+            break;
+        }
         if ch == ',' {
-            let raw = body[start..idx].trim();
+            let raw = rest[start..idx].trim();
             if !raw.is_empty() {
                 out.push(scalar(raw));
             }
@@ -217,7 +226,7 @@ fn flow_items(rest: &str) -> Vec<String> {
         }
         idx += ch.len_utf8();
     }
-    let raw = body[start..].trim();
+    let raw = rest[start..idx].trim();
     if !raw.is_empty() {
         out.push(scalar(raw));
     }
@@ -291,86 +300,12 @@ fn plain_scalar(value: &str) -> String {
         .to_string()
 }
 
-/// Chord canonicaliser shared by the YAML reader and the overlay validator.
-///
-/// Modifiers are recognised case-insensitively in any order and re-emitted in
-/// omp's canonical `ctrl, shift, alt, super` order; the base key is
-/// lowercased; `esc`→`escape`, `return`→`enter`.
-///
-/// **Deliberate deviation from omp's `canonicalKeyId`:** omp infers `shift`
-/// for any single uppercase ASCII base letter when `shift` is not already
-/// among the modifiers — so `Ctrl+P` → `ctrl+shift+p` in the TUI. This
-/// reader applies that inference only when **no** modifier is present at
-/// all, giving `Ctrl+P` → `ctrl+p`.
-///
-/// This is not an oversight: both this function and its JS twin
-/// (`src/app/keymap.js`'s `canonicalChord`) hold the same narrower rule on
-/// purpose, because it is what the desktop's own default registry
-/// (`ACTION_IDS`, `KEYMAP_ACTIONS`) is defined against — every default
-/// chord is spelled all-lowercase with an explicit modifier where one is
-/// meant (`ctrl+p`, not `Ctrl+P`), so the desktop dispatcher never needs
-/// omp's shift-on-modifier inference to disambiguate its own defaults.
-///
-/// The accepted consequence: a `keybindings.yml` entry spelled
-/// `app.model.cycleForward: Ctrl+P` maps to `ctrl+shift+p` in the TUI but
-/// `ctrl+p` in the desktop — a real, deliberate divergence for that one
-/// spelling, not a bug. Users who write chords without a modifier
-/// (`P: ...`), or in the desktop's own all-lowercase style, get identical
-/// behaviour in both.
-///
-/// Returns an empty string when there is no base key (`"ctrl+"`, `""`);
-/// callers treat an empty return as an invalid chord.
-pub fn canonical_chord(raw: &str) -> String {
-    const MODIFIERS: [&str; 4] = ["ctrl+", "shift+", "alt+", "super+"];
-    let mut rest = raw.trim();
-    let mut flags = [false; 4];
-    'strip: loop {
-        for (idx, prefix) in MODIFIERS.iter().enumerate() {
-            if rest
-                .as_bytes()
-                .get(..prefix.len())
-                .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
-            {
-                flags[idx] = true;
-                rest = rest[prefix.len()..].trim_start();
-                continue 'strip;
-            }
-        }
-        break;
-    }
-    let base_raw = rest.trim();
-    if base_raw.len() == 1
-        && base_raw.as_bytes()[0].is_ascii_uppercase()
-        && !flags.iter().any(|&f| f)
-    {
-        flags[1] = true;
-    }
-    // Lower-case base; resolve aliases in a single match on the lowercase str.
-    let lower = base_raw.to_lowercase();
-    let base: &str = match lower.as_str() {
-        "esc" => "escape",
-        "return" => "enter",
-        other => other,
-    };
-    if base.is_empty() {
-        return String::new();
-    }
-    let mut out = String::with_capacity(base.len() + 16);
-    for (idx, prefix) in MODIFIERS.iter().enumerate() {
-        if flags[idx] {
-            out.push_str(prefix);
-        }
-    }
-    out.push_str(base);
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn keys(map: &BTreeMap<String, Vec<String>>, key: &str) -> Vec<String> {
-        map.get(key).cloned().unwrap_or_default()
+    fn keys<'a>(map: &'a BTreeMap<String, Vec<String>>, key: &str) -> &'a [String] {
+        map.get(key).map_or(&[], Vec::as_slice)
     }
 
     #[test]
@@ -486,21 +421,12 @@ mod tests {
     }
 
     #[test]
-    fn canonical_chord_matches_omp_ordering_and_aliases() {
-        assert_eq!(canonical_chord("Alt+Shift+P"), "shift+alt+p");
-        assert_eq!(canonical_chord("Ctrl+P"), "ctrl+p");
-        assert_eq!(canonical_chord("P"), "shift+p");
-        assert_eq!(canonical_chord("p"), "p");
-        assert_eq!(canonical_chord("Esc"), "escape");
-        assert_eq!(canonical_chord("Return"), "enter");
-        assert_eq!(canonical_chord("CTRL+ALT+]"), "ctrl+alt+]");
-        assert_eq!(canonical_chord("super+K"), "super+k");
-        assert_eq!(canonical_chord("  ctrl+  Tab "), "ctrl+tab");
-    }
-
-    #[test]
-    fn canonical_chord_rejects_a_missing_base() {
-        assert_eq!(canonical_chord("ctrl+"), "");
-        assert_eq!(canonical_chord("   "), "");
+    fn flow_sequence_stops_at_first_unquoted_bracket_ignoring_a_trailing_comment() {
+        // A `# comment` after the sequence's closing `]` must not be
+        // mistaken for part of the last item — regression for a version
+        // that found the *last* `]` on the line instead of the first
+        // unquoted one.
+        let map = parse("app.x: [ctrl+q, alt+k] # see [docs]\n");
+        assert_eq!(keys(&map, "app.x"), ["ctrl+q", "alt+k"]);
     }
 }

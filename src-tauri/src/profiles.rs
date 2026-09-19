@@ -23,6 +23,7 @@
 /// the frontend, and (b) checked by [`validate_id`] plus membership in the
 /// persisted list before any tab is allowed to spawn under one, before a
 /// seed is written, or before a seed is cleared.
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -94,6 +95,29 @@ pub fn agent_dir(home: &Path, profile: Option<&str>) -> PathBuf {
         || omp.join("agent"),
         |id| omp.join("profiles").join(id).join("agent"),
     )
+}
+
+/// Resolve the omp agent directory honouring `PI_CODING_AGENT_DIR` for the
+/// **built-in** profile only — a named profile always resolves under
+/// `~/.omp/profiles/<id>/agent`, matching the installed omp binary's own
+/// precedence (the env var loses to `--profile`, verified against the real
+/// binary). `Some("")` is treated as "unspecified" (built-in), not as a
+/// named profile with an empty id — `Path::join("")` would otherwise just
+/// add a trailing separator instead of falling through to the built-in path.
+///
+/// Shared by every reader that must agree with the installed omp binary and
+/// the spawned child on where a profile's tree lives — `saved_sessions`'s
+/// history panel and `keybindings`'s config reader both call this so neither
+/// can silently point at a different directory than the other for the same
+/// profile.
+pub fn agent_dir_for(home: &Path, profile: Option<&str>, env_dir: Option<&OsStr>) -> PathBuf {
+    let profile = profile.filter(|id| !id.is_empty());
+    if profile.is_none() {
+        if let Some(dir) = env_dir.filter(|d| !d.is_empty()) {
+            return PathBuf::from(dir);
+        }
+    }
+    agent_dir(home, profile)
 }
 
 /// The bootstrap `models.yml` seeded into a freshly created profile.

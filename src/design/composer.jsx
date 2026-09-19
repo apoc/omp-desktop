@@ -5,33 +5,19 @@
 const { Icon } = window;
 const { parseMentionQuery, applyMention } = window.OMP_MENTIONS;
 
-// Derive display hints from the live keymap so they update when the user
-// rebinds. Two variants:
-//   - `hintFor` — the full formatted chord (e.g. "Ctrl+K"), used for text
-//     that stands alone (placeholders, titles, kbd chips with no icon).
-//   - `hintKeyFor` — just the trailing base key (e.g. "K"), used next to an
-//     icon that already conveys the modifier (the command-bridge button's
-//     ⌘ glyph) so the chip doesn't repeat "Ctrl"/"Cmd" a second time.
-// Both distinguish "registry not loaded yet" (window.OMP_KEYMAP absent —
-// first render before keymap.js runs, should never happen in normal script
-// order but guarded anyway) from "loaded but unbound" (the user cleared the
-// binding in the Shortcuts screen): the former keeps showing `fallback`,
-// the latter returns "" so callers can omit the hint entirely instead of
-// advertising a chord that no longer does anything.
+// Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` (display
+// logic lives there so chrome.jsx's ⌘K/history hints can reuse it too,
+// instead of each file re-deriving chord display independently). The guard
+// here is the one thing that can't move: "registry not loaded yet"
+// (`window.OMP_KEYMAP` absent — first render before keymap.js runs, should
+// never happen in normal script order but guarded anyway) keeps showing
+// `fallback`, distinct from "loaded but unbound" (the user cleared the
+// binding), which `OMP_KEYMAP.hintFor`/`hintKeyFor` already report as `""`.
 function hintFor(actionId, fallback) {
-  if (!window.OMP_KEYMAP) return fallback;
-  const chord = window.OMP_KEYMAP.keysFor(actionId)?.[0];
-  return chord ? window.OMP_KEYMAP.formatChord(chord) : "";
+  return window.OMP_KEYMAP ? window.OMP_KEYMAP.hintFor(actionId) : fallback;
 }
-
-// Derives from `hintFor`'s already-formatted chord instead of re-deriving
-// the base-key display form independently — two separate formatters could
-// render the same rebound chord differently (e.g. `ctrl+pageup` → "PgUp"
-// from `formatChord` vs a hand-rolled "Pageup" here).
 function hintKeyFor(actionId, fallback) {
-  if (!window.OMP_KEYMAP) return fallback;
-  const full = hintFor(actionId, fallback);
-  return full ? full.split("+").pop() : "";
+  return window.OMP_KEYMAP ? window.OMP_KEYMAP.hintKeyFor(actionId) : fallback;
 }
 
 // ── The composer (input + plan/steer modes + send) ────────────────────
@@ -250,8 +236,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
   // placeholder, title, kbd chips and footer so they can never disagree.
   const bridgeHint    = hintFor("desktop.commands.open", "⌘K");
   const bridgeKeyHint = hintKeyFor("desktop.commands.open", "K");
-  const abortHint     = hintFor("app.interrupt", "⎋");
-  const abortFootSeg  = abortHint ? `${abortHint} abort` : "abort";
+  const abortHint = hintFor("app.interrupt", "⎋");
 
   return (
     <div className={`composer ${planMode ? "plan-on" : ""}`}>
@@ -371,7 +356,12 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
         </button>
         <div style={{ flex: 1 }} />
         <span className="mono" style={{ color: "var(--fg-4)", fontSize: "var(--d-text-xs)" }}>
-          {isStreaming && text.trim() ? `↵ steer · ${abortFootSeg}` : `↵ send · ⇧↵ newline · ${abortFootSeg}`}
+          {[
+            ...(isStreaming && text.trim() ? ["↵ steer"] : ["↵ send", "⇧↵ newline"]),
+            // Dropped entirely when unbound rather than showing a keyless
+            // "abort" segment that advertises a shortcut that isn't there.
+            ...(abortHint ? [`${abortHint} abort`] : []),
+          ].join(" · ")}
         </span>
       </div>
     </div>

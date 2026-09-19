@@ -12,6 +12,58 @@
 const { Icon } = window;
 const { KEYMAP_ACTIONS, formatChord } = window.OMP_KEYMAP;
 
+/** `KEYMAP_ACTIONS` label lookup shared by the conflict-refusal message
+ *  (record listener) and the row's own conflict warning. */
+function labelFor(id) {
+  return KEYMAP_ACTIONS.find(a => a.id === id)?.label ?? id;
+}
+
+/** One action's row: chords/source chip/action buttons, plus its error or
+ *  conflict warning line. Split out of `ShortcutsModal` to keep that
+ *  function focused on state/effects rather than per-row markup. */
+function ShortcutRow({ action, chords, src, recording, rowError, conflict, disabled, onRebind, onAddChord, onClear, onReset }) {
+  return (
+    <React.Fragment>
+      <div className="kb-row">
+        <div className="kb-label">
+          {action.label}
+          <span className="kb-id mono">{action.id}</span>
+        </div>
+
+        {recording
+          ? <span className="kb-recording mono">press a chord · esc cancels</span>
+          : <div className="kb-chords">
+              {chords.length
+                ? chords.map(c => <span className="kbd" key={c}>{formatChord(c)}</span>)
+                : <span className="kb-unbound mono">unbound</span>}
+            </div>}
+
+        <span className={`chip kb-src ${src}`}>{src}</span>
+
+        <div className="kb-actions">
+          <button className="btn ghost" disabled={disabled} onClick={onRebind}>rebind</button>
+          <button className="btn ghost" disabled={disabled} onClick={onAddChord}>+ chord</button>
+          <button className="btn ghost" disabled={disabled} onClick={onClear}>clear</button>
+          {src === "desktop" && (
+            <button className="btn ghost" disabled={disabled} onClick={onReset}>reset</button>
+          )}
+        </div>
+      </div>
+
+      {(rowError || conflict) && (
+        <div className="kb-warn">
+          {rowError && <div>{rowError}</div>}
+          {!rowError && conflict && (
+            <div>
+              also bound to &ldquo;{labelFor(conflict.actions[0])}&rdquo; — that binding wins
+            </div>
+          )}
+        </div>
+      )}
+    </React.Fragment>
+  );
+}
+
 function ShortcutsModal({ open, onClose, keymap }) {
   const [q,           setQ]           = React.useState("");
   const [recordingId, setRecordingId] = React.useState(null);
@@ -103,15 +155,21 @@ function ShortcutsModal({ open, onClose, keymap }) {
       if (e.isComposing) return;
       e.preventDefault();
       e.stopPropagation();
-      if (e.key === "Escape") { setRecordingId(null); return; }
+      // Only a *bare* Escape cancels recording — a modified variant
+      // (ctrl+escape, shift+escape, …) is a real chord a user may want to
+      // record (e.g. moving app.interrupt off bare escape) and must fall
+      // through to chordFromEvent below instead of silently cancelling.
+      if (e.key === "Escape" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+        setRecordingId(null);
+        return;
+      }
       const chord = window.OMP_KEYMAP.chordFromEvent(e);
       if (!chord) return; // bare modifier — wait for a real key
 
       // Check for conflict with another action.
       const existing = window.OMP_KEYMAP.lookup(chord);
       if (existing && existing !== recordingId) {
-        const other = KEYMAP_ACTIONS.find(a => a.id === existing);
-        const label = other?.label ?? existing;
+        const label = labelFor(existing);
         setRowError({ id: recordingId, message: `${formatChord(chord)} is already bound to \u201c${label}\u201d — clear that binding first.` });
         setRecordingId(null);
         return;
@@ -195,57 +253,22 @@ function ShortcutsModal({ open, onClose, keymap }) {
             : grouped.map(group => (
               <div className="bridge-group" key={group.name}>
                 <div className="bridge-group-head">{group.name}</div>
-                {group.actions.map(a => {
-                  const chords  = window.OMP_KEYMAP.keysFor(a.id);
-                  const src     = sourceFor(a.id);
-                  const rErr    = rowError?.id === a.id ? rowError.message : null;
-                  const conflict = conflictFor(a.id);
-
-                  return (
-                    <React.Fragment key={a.id}>
-                      <div className="kb-row">
-                        <div className="kb-label">
-                          {a.label}
-                          <span className="kb-id mono">{a.id}</span>
-                        </div>
-
-                        {recordingId === a.id
-                          ? <span className="kb-recording mono">press a chord · esc cancels</span>
-                          : <div className="kb-chords">
-                              {chords.length
-                                ? chords.map(c => <span className="kbd" key={c}>{formatChord(c)}</span>)
-                                : <span className="kb-unbound mono">unbound</span>}
-                            </div>}
-
-                        <span className={`chip kb-src ${src}`}>{src}</span>
-
-                        <div className="kb-actions">
-                          <button className="btn ghost" disabled={disabled}
-                            onClick={() => startRecord(a.id, "replace")}>rebind</button>
-                          <button className="btn ghost" disabled={disabled}
-                            onClick={() => startRecord(a.id, "add")}>+ chord</button>
-                          <button className="btn ghost" disabled={disabled}
-                            onClick={() => handleClear(a.id)}>clear</button>
-                          {src === "desktop" && (
-                            <button className="btn ghost" disabled={disabled}
-                              onClick={() => handleReset(a.id)}>reset</button>
-                          )}
-                        </div>
-                      </div>
-
-                      {(rErr || conflict) && (
-                        <div className="kb-warn">
-                          {rErr && <div>{rErr}</div>}
-                          {!rErr && conflict && (
-                            <div>
-                              also bound to &ldquo;{KEYMAP_ACTIONS.find(x => x.id === conflict.actions[0])?.label ?? conflict.actions[0]}&rdquo; — that binding wins
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
+                {group.actions.map(a => (
+                  <ShortcutRow
+                    key={a.id}
+                    action={a}
+                    chords={window.OMP_KEYMAP.keysFor(a.id)}
+                    src={sourceFor(a.id)}
+                    recording={recordingId === a.id}
+                    rowError={rowError?.id === a.id ? rowError.message : null}
+                    conflict={conflictFor(a.id)}
+                    disabled={disabled}
+                    onRebind={() => startRecord(a.id, "replace")}
+                    onAddChord={() => startRecord(a.id, "add")}
+                    onClear={() => handleClear(a.id)}
+                    onReset={() => handleReset(a.id)}
+                  />
+                ))}
               </div>
             ))}
         </div>

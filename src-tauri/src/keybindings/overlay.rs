@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::json_store;
-use crate::keybindings::{yaml, Bindings, ACTION_IDS};
+use crate::keybindings::{chord, Bindings, ACTION_IDS};
 
 // ── on-disk representation ────────────────────────────────────────────────────
 
@@ -44,12 +44,17 @@ struct OverlayFile {
 /// that stores user rebinds for actions in the desktop's own registry.
 pub struct OverlayStore {
     path: PathBuf,
+    /// `path.with_extension("lock")`, computed once at construction rather
+    /// than allocated on every `set`/`remove` — same precedent as
+    /// `ProfileStore::load`'s own `lock` field.
+    lock: PathBuf,
 }
 
 impl OverlayStore {
     /// Create a store pointing at `path`. The file need not exist yet.
-    pub const fn new(path: PathBuf) -> Self {
-        Self { path }
+    pub fn new(path: PathBuf) -> Self {
+        let lock = path.with_extension("lock");
+        Self { path, lock }
     }
 
     /// The absolute path of the overlay file (used by the Shortcuts footer).
@@ -84,7 +89,7 @@ impl OverlayStore {
         // check membership before pushing.
         let mut canonical: Vec<String> = Vec::with_capacity(keys.len());
         for k in keys {
-            let c = yaml::canonical_chord(k);
+            let c = chord::canonical_chord(k);
             if c.is_empty() {
                 return Err(format!("invalid chord: {k:?}"));
             }
@@ -118,7 +123,7 @@ impl OverlayStore {
     /// rewrite the file (or create it, for a fresh install) with identical
     /// content.
     fn mutate(&self, f: impl FnOnce(&mut Bindings) -> bool) -> Result<Bindings, String> {
-        json_store::with_lock_str(&self.path.with_extension("lock"), || {
+        json_store::with_lock_str(&self.lock, || {
             let mut file_data = read_file_strict(&self.path)?;
             if !f(&mut file_data.bindings) {
                 return Ok(file_data.bindings);
@@ -169,46 +174,59 @@ mod tests {
         }
     }
 
-    fn make_store() -> (OverlayStore, Scratch) {
+    /// `pre_create: true` creates the scratch directory up front (the
+    /// common case); `false` leaves it absent — proves `set` creates the
+    /// parent directory itself on a fresh install, rather than relying on a
+    /// fixture that always pre-creates it.
+    fn make_store(pre_create: bool) -> (OverlayStore, Scratch) {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
         // Include the process id so parallel test processes (`cargo test`
         // running twice concurrently) don't collide and delete each other's
         // scratch directories — same pattern as profiles.rs and json_store.rs.
         let dir = std::env::temp_dir().join(format!("omp-overlay-{}-{}", std::process::id(), id));
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create test dir");
-        let path = dir.join("keybindings.json");
-        (OverlayStore::new(path), Scratch(dir))
-    }
-
-    /// A store under a directory that does not exist yet — proves `set`
-    /// creates the parent directory on a fresh install rather than relying
-    /// on a test fixture that always pre-creates it.
-    fn make_fresh_store() -> (OverlayStore, Scratch) {
-        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir =
-            std::env::temp_dir().join(format!("omp-overlay-fresh-{}-{}", std::process::id(), id));
-        let _ = fs::remove_dir_all(&dir);
+        if pre_create {
+            fs::create_dir_all(&dir).expect("create test dir");
+        }
         let path = dir.join("keybindings.json");
         (OverlayStore::new(path), Scratch(dir))
     }
 
     #[test]
     fn missing_file_reads_as_empty() {
-        let (store, _dir) = make_store();
+        let (store, _dir) = make_store(true);
         assert_eq!(store.read().unwrap().len(), 0);
     }
 
     #[test]
     fn empty_object_file_reads_as_empty() {
-        let (store, _dir) = make_store();
+        let (store, _dir) = make_store(true);
         fs::write(&store.path, b"{}").unwrap();
         assert_eq!(store.read().unwrap().len(), 0);
     }
 
     #[test]
+    fn read_parses_the_documented_on_disk_shape() {
+        // Every other test reaches `read()` only after a `set()` round-trip,
+        // which never pins the literal `{ "bindings": { … } }` shape the
+        // module doc comment promises — a hand-edited overlay (the doc
+        // footer prints the path specifically to invite this) or a stray
+        // `#[serde(default)]`/field-rename regression could silently break
+        // that contract while every `set`-based test stayed green.
+        let (store, _dir) = make_store(true);
+        fs::write(
+            &store.path,
+            br#"{ "bindings": { "desktop.panel.changes": ["ctrl+g"], "app.plan.toggle": [] } }"#,
+        )
+        .unwrap();
+        let read = store.read().unwrap();
+        assert_eq!(read["desktop.panel.changes"], ["ctrl+g"]);
+        assert_eq!(read["app.plan.toggle"], [] as [String; 0]);
+    }
+
+    #[test]
     fn fresh_config_dir_is_created_on_first_set() {
-        let (store, _dir) = make_fresh_store();
+        let (store, _dir) = make_store(false);
         assert!(!store.path().exists());
         let result = store
             .set("desktop.panel.changes", &["ctrl+g".to_string()])
@@ -219,7 +237,7 @@ mod tests {
 
     #[test]
     fn set_round_trips() {
-        let (store, _dir) = make_store();
+        let (store, _dir) = make_store(true);
         let result = store
             .set("desktop.panel.changes", &["ctrl+g".to_string()])
             .unwrap();
@@ -231,7 +249,7 @@ mod tests {
 
     #[test]
     fn set_canonicalises_chords() {
-        let (store, _dir) = make_store();
+        let (store, _dir) = make_store(true);
         store
             .set("desktop.panel.changes", &["Ctrl+G".to_string()])
             .unwrap();
@@ -240,7 +258,7 @@ mod tests {
 
     #[test]
     fn set_deduplicates_equivalent_chords() {
-        let (store, _dir) = make_store();
+        let (store, _dir) = make_store(true);
         let result = store
             .set(
                 "desktop.panel.changes",
@@ -252,7 +270,7 @@ mod tests {
 
     #[test]
     fn set_empty_keys_stores_explicit_disabled() {
-        let (store, _dir) = make_store();
+        let (store, _dir) = make_store(true);
         store.set("desktop.panel.changes", &[]).unwrap();
         let read = store.read().unwrap();
         assert!(read.contains_key("desktop.panel.changes"));
@@ -261,7 +279,7 @@ mod tests {
 
     #[test]
     fn remove_of_absent_action_is_noop() {
-        let (store, _dir) = make_store();
+        let (store, _dir) = make_store(true);
         store
             .set("desktop.panel.changes", &["ctrl+g".to_string()])
             .unwrap();
@@ -279,7 +297,7 @@ mod tests {
 
     #[test]
     fn remove_on_fresh_store_does_not_create_file() {
-        let (store, _dir) = make_fresh_store();
+        let (store, _dir) = make_store(false);
         store.remove("desktop.panel.changes").unwrap();
         assert!(
             !store.path().exists(),
@@ -289,7 +307,7 @@ mod tests {
 
     #[test]
     fn two_sequential_sets_both_survive() {
-        let (store, _dir) = make_store();
+        let (store, _dir) = make_store(true);
         store
             .set("desktop.panel.changes", &["ctrl+g".to_string()])
             .unwrap();
@@ -303,7 +321,7 @@ mod tests {
 
     #[test]
     fn set_on_unknown_action_errors_and_leaves_file_untouched() {
-        let (store, _dir) = make_store();
+        let (store, _dir) = make_store(true);
         store
             .set("desktop.panel.changes", &["ctrl+g".to_string()])
             .unwrap();
@@ -317,7 +335,7 @@ mod tests {
 
     #[test]
     fn invalid_chord_errors_without_writing() {
-        let (store, _dir) = make_store();
+        let (store, _dir) = make_store(true);
         let err = store
             .set("desktop.panel.changes", &["ctrl+".to_string()])
             .unwrap_err();
@@ -328,7 +346,7 @@ mod tests {
 
     #[test]
     fn corrupt_file_makes_read_and_set_error_without_rewriting() {
-        let (store, _dir) = make_store();
+        let (store, _dir) = make_store(true);
         fs::write(&store.path, b"this is not json").unwrap();
         // read() must error.
         assert!(store.read().is_err());
@@ -346,7 +364,7 @@ mod tests {
 
     #[test]
     fn set_then_remove_leaves_key_absent() {
-        let (store, _dir) = make_store();
+        let (store, _dir) = make_store(true);
         store
             .set("desktop.panel.changes", &["ctrl+g".to_string()])
             .unwrap();

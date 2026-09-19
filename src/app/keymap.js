@@ -75,6 +75,12 @@
     "Control", "Shift", "Alt", "Meta", "AltGraph",
     "CapsLock", "NumLock", "ScrollLock", "ContextMenu",
     "Process",
+    // Additional modifier-key values from the UI Events `key` spec that
+    // "Control"/"Shift"/"Alt"/"Meta" above don't cover: a UA reporting the
+    // Super/Hyper key under one of these names must not let it fall through
+    // to the generic base-key branch below and become a bogus recordable
+    // chord (e.g. "super" or "super+super" while holding metaKey).
+    "Super", "Hyper", "OS", "Fn", "FnLock", "Symbol", "SymbolLock",
     // "Unidentified" is deliberately NOT here — see chordFromEvent's
     // code-based recovery for it below. It still yields no chord when that
     // recovery fails (an unmapped printable character), so this doesn't
@@ -92,15 +98,16 @@
   };
 
   /**
-   * Chord canonicaliser — port of omp's `canonicalKeyId` with one deliberate
-   * deviation: omp infers `shift` for any single uppercase ASCII base when
-   * `shift` is not already present, regardless of other modifiers
-   * (`Ctrl+P` → `ctrl+shift+p` in the TUI). This implementation only infers
-   * shift when **no** modifier is present (`P` → `shift+p`; `Ctrl+P` → `ctrl+p`).
-   * Consequence: a `keybindings.yml` entry spelled `app.x: Ctrl+P` maps to
-   * `ctrl+shift+p` in the TUI but `ctrl+p` in the desktop dispatcher. Users who
-   * write all-lowercase chord spellings (omp's own defaults do) get identical
-   * behaviour in both. See the matching comment in yaml.rs `canonical_chord`.
+   * Chord canonicaliser — matches omp's `canonicalKeyId` exactly for
+   * config-sourced chords. `canonicalKeyId` does infer `shift` for a bare
+   * uppercase ASCII base letter (`Ctrl+P` → `ctrl+shift+p`), but only when
+   * called on *live parsed terminal input* — a config value never reaches it
+   * in that form: omp's `KeybindingsManager.#rebuild` lowercases every
+   * `keybindings.yml`/user-config chord (`normalizeKeys`) *before*
+   * canonicalising it, so the uppercase base a config file might spell is
+   * already gone by the time shift-inference would run. `app.x: P` and
+   * `app.x: p` are therefore identical to omp — this must not infer shift
+   * from either. See the matching comment in `chord.rs`'s `canonical_chord`.
    *
    * Returns `""` when there is no base (invalid chord).
    * @param {string} raw
@@ -122,11 +129,8 @@
         }
       }
     }
-    // Bare uppercase ASCII letter with no other modifiers implies shift.
-    if (rest.length === 1 && rest >= "A" && rest <= "Z" && !flags.some(Boolean)) {
-      flags[1] = true;
-    }
-    let base = rest.toLowerCase();
+    // No shift-inference from a bare uppercase base — see the doc comment.
+    let base = rest.trim().toLowerCase();
     if (base === "esc")    base = "escape";
     if (base === "return") base = "enter";
     if (!base) return "";
@@ -381,6 +385,54 @@
     }).join("+");
   }
 
+  /**
+   * The chord to display for an action, preferring the one matching the
+   * current platform when more than one is effective. Registry defaults for
+   * cross-platform actions (command bridge, history) list both a `ctrl+`
+   * and a `super+` variant; naively taking `keysFor(id)[0]` would show
+   * "Ctrl+K" on macOS instead of "⌘K" since the ctrl variant is listed
+   * first. Falls back to the first effective chord when none match.
+   * @param {string} actionId
+   * @param {boolean} [isMac]
+   */
+  function displayChordFor(actionId, isMac = IS_MAC) {
+    const chords = keysFor(actionId);
+    if (!chords.length) return null;
+    const bySuper = c => c.startsWith("super+");
+    return (isMac ? chords.find(bySuper) : chords.find(c => !bySuper(c))) ?? chords[0];
+  }
+
+  /**
+   * Full formatted chord for an action's current display chord (see
+   * [`displayChordFor`]), or `""` when the action is explicitly unbound
+   * (cleared in the Shortcuts screen). Callers distinguish this from
+   * "registry not loaded yet" themselves — `window.OMP_KEYMAP` is always
+   * defined by the time this can be called.
+   * @param {string} actionId
+   */
+  function hintFor(actionId) {
+    const chord = displayChordFor(actionId);
+    return chord ? formatChord(chord) : "";
+  }
+
+  /**
+   * Just the trailing base key of [`hintFor`]'s chord, for a chip placed
+   * next to an icon that already conveys one modifier (e.g. a ⌘ glyph).
+   * Only compresses when the chord is exactly a single ctrl/super modifier
+   * + base; any other combination (no modifier, more than one, or a rebind
+   * like `shift+alt+b`) returns the full formatted chord instead, so the
+   * chip never advertises a modifier the binding doesn't have. Matching the
+   * prefix directly (not `hintFor(id).split("+").pop()`) also survives a
+   * base key that is itself `+` (e.g. `ctrl++`).
+   * @param {string} actionId
+   */
+  function hintKeyFor(actionId) {
+    const chord = displayChordFor(actionId);
+    if (!chord) return "";
+    const stripped = /^(?:ctrl|super)\+(.+)$/.exec(chord);
+    return formatChord(stripped ? stripped[1] : chord);
+  }
+
   // ── Export ────────────────────────────────────────────────────────────────
 
   window.OMP_KEYMAP = {
@@ -395,6 +447,8 @@
     isTypingTarget,
     allowedInInput,
     formatChord,
+    hintFor,
+    hintKeyFor,
     detectMac,
   };
 })();

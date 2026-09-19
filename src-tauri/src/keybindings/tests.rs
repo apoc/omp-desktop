@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{env, fs};
 
-use super::{agent_dir_for, config_path, overlay, payload, read_file, read_omp, ACTION_IDS};
+use super::{config_path, overlay, payload, payload_with_overlay, read_file, read_omp, ACTION_IDS};
+use crate::profiles::agent_dir_for;
 
 // ── scratch-home helpers ──────────────────────────────────────────────────────
 
@@ -236,6 +237,35 @@ fn missing_omp_config_yields_empty_layer() {
     assert!(layer.inherited_path.is_none());
 }
 
+#[test]
+fn named_profile_inherited_base_ignores_pi_coding_agent_dir() {
+    // `read_omp`'s inherited (built-in) base must always resolve under
+    // `~/.omp/agent`, never redirected by `PI_CODING_AGENT_DIR` — that env
+    // var is honoured only for the *built-in* profile's own directory, not
+    // for the base a named profile merges underneath (see `read_omp`'s doc
+    // comment). Point the env var at a directory holding a *different*
+    // `keybindings.yml` and confirm the named-profile read is unaffected.
+    let home = TmpHome::new();
+    home.write_omp_yml("app.plan.toggle: Alt+Shift+O\n");
+    home.write_named_yml("work", "app.model.select: ctrl+m\n");
+
+    let elsewhere = TmpHome::new();
+    elsewhere.write_omp_yml("app.plan.toggle: ctrl+shift+z\n");
+    let env_dir = elsewhere.agent_dir();
+
+    let layer = read_omp(&home.path, Some("work"), Some(env_dir.as_os_str())).unwrap();
+
+    // The named profile's own binding still applies.
+    assert_eq!(layer.bindings["app.model.select"], ["ctrl+m"]);
+    // The inherited base came from `home`'s real `~/.omp/agent`, not the
+    // env-var directory's file.
+    assert_eq!(layer.bindings["app.plan.toggle"], ["shift+alt+o"]);
+    assert!(layer
+        .inherited_path
+        .as_deref()
+        .is_some_and(|p| p.starts_with(home.agent_dir())));
+}
+
 // ── layer-precedence proof (plan §Verification.2) ─────────────────────────────
 
 #[test]
@@ -285,6 +315,47 @@ fn corrupt_overlay_does_not_drop_omp_layer() {
     assert_eq!(p.omp["app.plan.toggle"], ["shift+alt+o"]);
     assert_eq!(p.overlay.len(), 0);
     assert!(p.overlay_error.is_some());
+}
+
+#[test]
+fn payload_with_no_overlay_file_is_empty_and_pathed() {
+    // Fresh install: no overlay file has ever been written. `payload()`
+    // must not treat that as an error — `overlay_error` stays `None`, the
+    // overlay map is empty, and `overlay_path` still names where the file
+    // *would* live (the Shortcuts footer prints it even before any rebind).
+    let home = TmpHome::new();
+    home.write_omp_yml("app.plan.toggle: Alt+Shift+O\n");
+    let store = home.overlay_store();
+
+    let p = payload(&home.path, None, None, &store).unwrap();
+
+    assert_eq!(p.omp["app.plan.toggle"], ["shift+alt+o"]);
+    assert_eq!(p.overlay.len(), 0);
+    assert!(p.overlay_error.is_none());
+    assert_eq!(p.overlay_path, store.path().to_string_lossy());
+}
+
+#[test]
+fn payload_with_overlay_matches_payload_for_the_same_state() {
+    // `payload_with_overlay` is the return path of `keybindings_set`/
+    // `keybindings_reset` — it must describe exactly the same state
+    // `payload()` would read fresh from disk, given the map `set`/`remove`
+    // already handed back.
+    let home = TmpHome::new();
+    home.write_omp_yml("app.plan.toggle: Alt+Shift+O\n");
+    let store = home.overlay_store();
+    let overlay_bindings = store
+        .set("app.plan.toggle", &["ctrl+shift+o".to_string()])
+        .unwrap();
+
+    let via_overlay =
+        payload_with_overlay(&home.path, None, None, overlay_bindings, store.path()).unwrap();
+    let via_fresh_read = payload(&home.path, None, None, &store).unwrap();
+
+    assert_eq!(via_overlay.omp, via_fresh_read.omp);
+    assert_eq!(via_overlay.overlay, via_fresh_read.overlay);
+    assert!(via_overlay.overlay_error.is_none());
+    assert_eq!(via_overlay.overlay_path, via_fresh_read.overlay_path);
 }
 
 // ── ACTION_IDS ────────────────────────────────────────────────────────────────

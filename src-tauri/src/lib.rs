@@ -89,15 +89,17 @@ fn start_session(
     )
 }
 
-/// Run a profile-store mutation off the main command thread: each one is a
-/// locked, fsync'd read-modify-write of `profiles.json` (same rationale as
-/// `approval_rules_grant`).
-async fn with_profile_store<T: Send + 'static>(
-    store: &Arc<profiles::ProfileStore>,
-    f: impl FnOnce(&profiles::ProfileStore) -> Result<T, String> + Send + 'static,
+/// Run a blocking operation against a shared `Arc<S>` off the main command
+/// thread — the `Arc::clone` + `spawn_blocking` + join-error tail every
+/// state-mutating command shares (`ProfileStore` and the keybindings
+/// `OverlayStore` alike): each one is a locked, fsync'd read-modify-write of
+/// its own JSON file (same rationale as `approval_rules_grant`).
+async fn with_blocking<S: Send + Sync + 'static, T: Send + 'static>(
+    shared: &Arc<S>,
+    f: impl FnOnce(&S) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    let store = Arc::clone(store);
-    tauri::async_runtime::spawn_blocking(move || f(&store))
+    let shared = Arc::clone(shared);
+    tauri::async_runtime::spawn_blocking(move || f(&shared))
         .await
         .map_err(|e| format!("join error: {e}"))?
 }
@@ -132,7 +134,7 @@ async fn set_startup_profile(
     id: String,
     store: State<'_, Arc<profiles::ProfileStore>>,
 ) -> Result<(), String> {
-    with_profile_store(&store, move |s| s.set_startup(&id)).await
+    with_blocking(&store, move |s| s.set_startup(&id)).await
 }
 
 /// Create a profile named `name`, deriving its id with [`slugify`] +
@@ -142,7 +144,7 @@ async fn set_startup_profile(
 /// mode exits at startup for a credential-less profile and the new tab could
 /// never reach `/login`. See `profiles::seed_bootstrap`.
 ///
-/// Runs `async` + `spawn_blocking` (via `with_profile_store`): both the
+/// Runs `async` + `spawn_blocking` (via `with_blocking`): both the
 /// list mutation and the seed write are blocking filesystem I/O, so the
 /// seed is folded into the same blocking closure instead of running
 /// directly on the async command thread.
@@ -153,7 +155,7 @@ async fn create_profile(
     store: State<'_, Arc<profiles::ProfileStore>>,
 ) -> Result<profiles::Profile, String> {
     let home = app.path().home_dir().ok();
-    with_profile_store(&store, move |s| {
+    with_blocking(&store, move |s| {
         let created = s.create(&name)?;
         // Best-effort: the profile exists and is listed either way, and a
         // failure here only costs the in-app login path (the tab still
@@ -204,7 +206,7 @@ async fn rename_profile(
     name: String,
     store: State<'_, Arc<profiles::ProfileStore>>,
 ) -> Result<profiles::Profile, String> {
-    with_profile_store(&store, move |s| s.rename(&id, &name)).await
+    with_blocking(&store, move |s| s.rename(&id, &name)).await
 }
 
 /// Unlist a profile (files stay on disk — see `profiles::ProfileStore::remove`).
@@ -215,7 +217,7 @@ async fn delete_profile(
     id: String,
     store: State<'_, Arc<profiles::ProfileStore>>,
 ) -> Result<(), String> {
-    with_profile_store(&store, move |s| s.remove(&id)).await
+    with_blocking(&store, move |s| s.remove(&id)).await
 }
 
 /// List saved sessions from disk for `profile` (`~/.omp/agent/sessions`, or
@@ -542,17 +544,30 @@ fn kb_resolve(
     Ok((home, profile, env_dir))
 }
 
-/// Run a keybindings-overlay operation off the main command thread — the
-/// `Arc::clone` + `spawn_blocking` + join-error tail all three keybindings
-/// commands share, mirroring `with_profile_store`'s shape above.
-async fn with_keybindings_overlay<T: Send + 'static>(
+/// Shared tail of [`keybindings_set`]/[`keybindings_reset`]: resolve the
+/// profile, run `mutate` against the overlay off the main thread, and
+/// rebuild the payload from its result without a second overlay read.
+async fn kb_mutate(
+    profile: Option<String>,
+    store: &profiles::ProfileStore,
     overlay: &Arc<keybindings::overlay::OverlayStore>,
-    f: impl FnOnce(&keybindings::overlay::OverlayStore) -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
-    let overlay = Arc::clone(overlay);
-    tauri::async_runtime::spawn_blocking(move || f(&overlay))
-        .await
-        .map_err(|e| format!("join error: {e}"))?
+    app: &AppHandle,
+    mutate: impl FnOnce(&keybindings::overlay::OverlayStore) -> Result<keybindings::Bindings, String>
+        + Send
+        + 'static,
+) -> Result<keybindings::Payload, String> {
+    let (home, resolved, env_dir) = kb_resolve(profile, store, app)?;
+    with_blocking(overlay, move |overlay| {
+        let overlay_bindings = mutate(overlay)?;
+        keybindings::payload_with_overlay(
+            &home,
+            resolved.as_deref(),
+            env_dir.as_deref(),
+            overlay_bindings,
+            overlay.path(),
+        )
+    })
+    .await
 }
 
 /// Return the current keybinding payload for `profile`.
@@ -567,7 +582,7 @@ async fn keybindings_list(
     app: AppHandle,
 ) -> Result<keybindings::Payload, String> {
     let (home, resolved, env_dir) = kb_resolve(profile, &store, &app)?;
-    with_keybindings_overlay(&overlay, move |overlay| {
+    with_blocking(&overlay, move |overlay| {
         keybindings::payload(&home, resolved.as_deref(), env_dir.as_deref(), overlay)
     })
     .await
@@ -584,17 +599,9 @@ async fn keybindings_set(
     overlay: State<'_, Arc<keybindings::overlay::OverlayStore>>,
     app: AppHandle,
 ) -> Result<keybindings::Payload, String> {
-    let (home, resolved, env_dir) = kb_resolve(profile, &store, &app)?;
-    with_keybindings_overlay(&overlay, move |overlay| {
+    kb_mutate(profile, &store, &overlay, &app, move |overlay| {
         // Use the map returned by set() directly — avoids a second file read.
-        let overlay_bindings = overlay.set(&action, &keys)?;
-        keybindings::payload_with_overlay(
-            &home,
-            resolved.as_deref(),
-            env_dir.as_deref(),
-            overlay_bindings,
-            overlay.path(),
-        )
+        overlay.set(&action, &keys)
     })
     .await
 }
@@ -608,16 +615,8 @@ async fn keybindings_reset(
     overlay: State<'_, Arc<keybindings::overlay::OverlayStore>>,
     app: AppHandle,
 ) -> Result<keybindings::Payload, String> {
-    let (home, resolved, env_dir) = kb_resolve(profile, &store, &app)?;
-    with_keybindings_overlay(&overlay, move |overlay| {
-        let overlay_bindings = overlay.remove(&action)?;
-        keybindings::payload_with_overlay(
-            &home,
-            resolved.as_deref(),
-            env_dir.as_deref(),
-            overlay_bindings,
-            overlay.path(),
-        )
+    kb_mutate(profile, &store, &overlay, &app, move |overlay| {
+        overlay.remove(&action)
     })
     .await
 }

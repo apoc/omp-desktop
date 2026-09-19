@@ -2,7 +2,7 @@
    resolver, and install the global dispatch listener.
 
    useKeymap(bridge, profileId)
-     → { payload, conflicts, error, reload, setBinding, resetBinding }
+     → { payload, conflicts, error, overlayPath, reload, setBinding, resetBinding }
 
    useKeymapDispatch(handlersRef)
      — installs one window keydown listener; reads handlers through a ref
@@ -15,20 +15,31 @@ function useKeymap(bridge, profileId) {
   // Cache the last-known overlay path so the error banner can print it even
   // if the most recent load failed (corrupt file → null payload).
   const overlayPathRef = React.useRef(null);
-  // Staleness guard: each reload increments the generation; an async response
-  // that arrives after a newer reload has started is silently discarded.
-  // Without this, two quick tab switches can apply the earlier profile's map.
-  const genRef = React.useRef(0);
+  // Whether a payload has ever loaded successfully — gates the null-payload
+  // branch below between "nothing to fall back on yet" (seed registry
+  // defaults) and "a later reload failed" (keep the last-good resolution).
+  const hasResolvedRef = React.useRef(false);
 
   const applyPayload = React.useCallback((p) => {
     if (!p) {
-      const r = window.OMP_KEYMAP.resolve(window.OMP_KEYMAP.KEYMAP_ACTIONS, {});
-      window.OMP_KEYMAP.setResolved(r);
-      setPayload(null);
-      setConflicts(r.conflicts);
+      if (!hasResolvedRef.current) {
+        // First-ever load failed: no prior resolution exists to fall back
+        // on, so seed dispatch with registry defaults rather than leaving
+        // it with nothing bound at all.
+        const r = window.OMP_KEYMAP.resolve(window.OMP_KEYMAP.KEYMAP_ACTIONS, {});
+        window.OMP_KEYMAP.setResolved(r);
+        setConflicts(r.conflicts);
+        setPayload(null);
+      }
+      // Else: keep the last-good resolution, `payload`, and `conflicts`
+      // live — only surface the error banner. The Shortcuts modal reloads
+      // on every open, so a transient IPC failure must not revert dispatch
+      // to registry defaults or blank the footer's omp/overlay path info
+      // until the next successful reload.
       setError("Keybinding configuration could not be loaded.");
       return;
     }
+    hasResolvedRef.current = true;
     overlayPathRef.current = p.overlayPath;
     const config = { ...p.omp, ...p.overlay };
     const r = window.OMP_KEYMAP.resolve(window.OMP_KEYMAP.KEYMAP_ACTIONS, config);

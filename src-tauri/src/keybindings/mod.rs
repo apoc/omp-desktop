@@ -24,8 +24,11 @@
 //! `Cargo.toml` carries no YAML crate. `keybindings.yml` / `.yaml` files are
 //! parsed by the small flat-map reader in [`yaml`] (omp's format is a
 //! documented flat `action: chord | [chords]` map). JSON overlay files are
-//! handled by `serde_json`, which is already a dependency.
+//! handled by `serde_json`, which is already a dependency. Chord
+//! canonicalisation (shared with the JSON overlay validator) lives in
+//! [`chord`], not `yaml` — it isn't YAML parsing.
 
+mod chord;
 pub mod overlay;
 mod yaml;
 
@@ -121,23 +124,6 @@ pub struct Payload {
 
 // ── path helpers ──────────────────────────────────────────────────────────────
 
-/// Resolve the omp agent directory from already-gathered inputs.
-///
-/// Mirrors `saved_sessions::sessions_root_for` exactly — same
-/// `PI_CODING_AGENT_DIR`-only-for-built-in gate and `filter(|id| !id.is_empty())`
-/// guard. Both must agree; diverging them silently points at the wrong tree.
-fn agent_dir_for(home: &Path, profile: Option<&str>, env_dir: Option<&OsStr>) -> PathBuf {
-    // Same defence-in-depth as `saved_sessions::sessions_root_for`: `Some("")`
-    // must not sneak past the `is_none()` gate.
-    let profile = profile.filter(|id| !id.is_empty());
-    if profile.is_none() {
-        if let Some(dir) = env_dir.filter(|d| !d.is_empty()) {
-            return PathBuf::from(dir);
-        }
-    }
-    crate::profiles::agent_dir(home, profile)
-}
-
 /// Probe `keybindings.yml`, then `keybindings.yaml`, then `keybindings.json`
 /// — omp's own precedence order. Returns `None` when none of the three exist.
 fn config_path(agent_dir: &Path) -> Option<PathBuf> {
@@ -152,8 +138,55 @@ fn config_path(agent_dir: &Path) -> Option<PathBuf> {
 
 // ── reading ───────────────────────────────────────────────────────────────────
 
+/// Legacy pre-namespace action names still found in an old `keybindings.yml`
+/// written by omp before the namespaced-id migration, restricted to the
+/// subset of `KEYBINDING_NAME_MIGRATIONS` (`app-keybindings.ts:253-319`)
+/// that overlaps [`ACTION_IDS`] — the desktop has no namespace for the dozens
+/// of TUI-editor-only legacy names and does not migrate those.
+const LEGACY_ACTION_NAMES: &[(&str, &str)] = &[
+    ("interrupt", "app.interrupt"),
+    ("cycleThinkingLevel", "app.thinking.cycle"),
+    ("cycleModelForward", "app.model.cycleForward"),
+    ("cycleModelBackward", "app.model.cycleBackward"),
+    ("selectModel", "app.model.select"),
+    ("togglePlanMode", "app.plan.toggle"),
+    ("followUp", "app.message.followUp"),
+    ("newSession", "app.session.new"),
+    ("resume", "app.session.resume"),
+];
+
+/// Rewrite any [`LEGACY_ACTION_NAMES`] key to its namespaced id, mirroring
+/// omp's own `migrateKeybindingNames` (`app-keybindings.ts:350-370`) so a
+/// pre-migration file still resolves against the desktop's namespaced
+/// registry instead of being silently ignored.
+///
+/// omp's migration picks a winner by file order when both the legacy and
+/// namespaced spelling of the same action are present ("last wins"); that
+/// order is already lost once a `BTreeMap` has collected the raw entries, so
+/// a namespaced entry always wins over a legacy alias here instead — the
+/// deterministic, conservative choice for a case omp itself treats as
+/// unusual (a file straddling both naming schemes for one action).
+fn migrate_legacy_names(raw_map: Bindings) -> Bindings {
+    let mut migrated = Bindings::new();
+    let mut legacy_pending = Bindings::new();
+    for (key, chords) in raw_map {
+        match LEGACY_ACTION_NAMES.iter().find(|(old, _)| key == *old) {
+            Some((_, new_key)) => {
+                legacy_pending.insert((*new_key).to_string(), chords);
+            }
+            None => {
+                migrated.insert(key, chords);
+            }
+        }
+    }
+    for (key, chords) in legacy_pending {
+        migrated.entry(key).or_insert(chords);
+    }
+    migrated
+}
+
 /// Read one keybinding file (any of `.yml`, `.yaml`, `.json`). Chords are
-/// canonicalised via [`yaml::canonical_chord`]; action ids are kept verbatim.
+/// canonicalised via [`chord::canonical_chord`]; action ids are kept verbatim.
 ///
 /// `NotFound` ⇒ empty map. A genuine IO error (permissions, …) ⇒ `Err`.
 /// Malformed or non-object JSON degrades to an empty map with a logged
@@ -206,7 +239,7 @@ fn read_file(path: &Path) -> Result<Bindings, String> {
             // omp's own tolerance for a bad config file (see the doc comment
             // above).
             eprintln!(
-                "keybindings: ignoring malformed config at {}",
+                "[omp-desktop] keybindings: ignoring malformed config at {}",
                 path.display()
             );
             BTreeMap::new()
@@ -214,6 +247,7 @@ fn read_file(path: &Path) -> Result<Bindings, String> {
     } else {
         yaml::parse(content)
     };
+    let raw_map = migrate_legacy_names(raw_map);
 
     // Canonicalise all chords in a single pass, regardless of source format.
     Ok(raw_map
@@ -223,7 +257,7 @@ fn read_file(path: &Path) -> Result<Bindings, String> {
                 id,
                 chords
                     .into_iter()
-                    .map(|c| yaml::canonical_chord(&c))
+                    .map(|c| chord::canonical_chord(&c))
                     .filter(|c| !c.is_empty())
                     .collect(),
             )
@@ -245,7 +279,7 @@ pub fn read_omp(
 
     // For the built-in profile there is only one file.
     if profile.is_none() {
-        let (path, bindings) = read_layer(&agent_dir_for(home, None, env_dir))?;
+        let (path, bindings) = read_layer(&crate::profiles::agent_dir_for(home, None, env_dir))?;
         return Ok(OmpLayer {
             bindings,
             path,
@@ -262,7 +296,7 @@ pub fn read_omp(
     // override; honouring the var for the base would show bindings from a
     // different directory than the tab's omp process actually merged from.
     let (base_path, base) = read_layer(&crate::profiles::agent_dir(home, None))?;
-    let (named_path, named) = read_layer(&agent_dir_for(home, profile, env_dir))?;
+    let (named_path, named) = read_layer(&crate::profiles::agent_dir_for(home, profile, env_dir))?;
 
     // named overrides base action-by-action.
     let mut bindings = base;
