@@ -112,7 +112,7 @@ function ShortcutsModal({ open, onClose, keymap }) {
       if (existing && existing !== recordingId) {
         const other = KEYMAP_ACTIONS.find(a => a.id === existing);
         const label = other?.label ?? existing;
-        setRowError({ id: recordingId, message: `${formatChord(chord)} is already bound to "${label}" — clear that binding first.` });
+        setRowError({ id: recordingId, message: `${formatChord(chord)} is already bound to \u201c${label}\u201d — clear that binding first.` });
         setRecordingId(null);
         return;
       }

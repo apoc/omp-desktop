@@ -305,15 +305,29 @@ fn action_ids_match_keymap_js_registry() {
     // equal `ACTION_IDS.len()` — so neither side can drift without the other
     // noticing (a stale count constant would stay green if both sides added
     // one differently-spelled id).
+    //
+    // Scoped to the `KEYMAP_ACTIONS = [ … ];` array body, not the whole
+    // file: counting `id: "` anywhere in keymap.js would also catch a
+    // future unrelated `id: "…"` literal (a doc-comment example, a second
+    // table) and turn a harmless addition into a spurious count mismatch.
     let keymap_js = include_str!("../../../src/app/keymap.js");
+    let start = keymap_js
+        .find("const KEYMAP_ACTIONS = [")
+        .expect("keymap.js must define `const KEYMAP_ACTIONS = [`");
+    let body = &keymap_js[start..];
+    let end = body
+        .find("\n  ];")
+        .expect("KEYMAP_ACTIONS array must close with `\\n  ];`");
+    let registry = &body[..end];
+
     for id in ACTION_IDS {
         let needle = format!("id: \"{id}\"");
         assert!(
-            keymap_js.contains(&needle),
+            registry.contains(&needle),
             "ACTION_IDS has {id:?} but keymap.js KEYMAP_ACTIONS does not"
         );
     }
-    let row_count = keymap_js.matches("id: \"").count();
+    let row_count = registry.matches("id: \"").count();
     assert_eq!(
         row_count,
         ACTION_IDS.len(),

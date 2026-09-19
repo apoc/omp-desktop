@@ -19,25 +19,19 @@ const { parseMentionQuery, applyMention } = window.OMP_MENTIONS;
 // the latter returns "" so callers can omit the hint entirely instead of
 // advertising a chord that no longer does anything.
 function hintFor(actionId, fallback) {
-  try {
-    if (!window.OMP_KEYMAP) return fallback;
-    const chord = window.OMP_KEYMAP.keysFor(actionId)?.[0];
-    return chord ? window.OMP_KEYMAP.formatChord(chord) : "";
-  } catch (_) {
-    return fallback;
-  }
+  if (!window.OMP_KEYMAP) return fallback;
+  const chord = window.OMP_KEYMAP.keysFor(actionId)?.[0];
+  return chord ? window.OMP_KEYMAP.formatChord(chord) : "";
 }
 
+// Derives from `hintFor`'s already-formatted chord instead of re-deriving
+// the base-key display form independently — two separate formatters could
+// render the same rebound chord differently (e.g. `ctrl+pageup` → "PgUp"
+// from `formatChord` vs a hand-rolled "Pageup" here).
 function hintKeyFor(actionId, fallback) {
-  try {
-    if (!window.OMP_KEYMAP) return fallback;
-    const chord = window.OMP_KEYMAP.keysFor(actionId)?.[0];
-    if (!chord) return "";
-    const base = chord.split("+").pop();
-    return base.length === 1 ? base.toUpperCase() : base.charAt(0).toUpperCase() + base.slice(1);
-  } catch (_) {
-    return fallback;
-  }
+  if (!window.OMP_KEYMAP) return fallback;
+  const full = hintFor(actionId, fallback);
+  return full ? full.split("+").pop() : "";
 }
 
 // ── The composer (input + plan/steer modes + send) ────────────────────
@@ -186,14 +180,14 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
   // literal draft (plan §7: Ctrl+Q/Ctrl+Enter sends a follow-up even while a
   // '/' command is being typed), never silently reroute into executing the
   // highlighted palette command instead.
-  const sendWith = (dispatcher) => {
-    if (showSlash && dispatcher === onSend) { execCmd(filtered[clampedIdx]); return; }
+  const sendWith = (dispatcher, { followUp = false } = {}) => {
+    if (showSlash && !followUp) { execCmd(filtered[clampedIdx]); return; }
     // follow-up (`onFollowUp` dispatcher) requires non-empty text — annotations
     // are a send-only affordance (app-live.jsx merges them into the message).
     // Plain send can proceed with annotations alone (annotationCount > 0).
-    const canSend = dispatcher === onSend
-      ? (text.trim() || (planMode && annotationCount > 0))
-      : !!text.trim();
+    const canSend = followUp
+      ? !!text.trim()
+      : (text.trim() || (planMode && annotationCount > 0));
     if (!canSend) return;
     dispatcher(expandPastes(text.trim()));
     setText("");
@@ -243,9 +237,9 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     }
     // followUp must be checked before the plain-Enter branch: `ctrl+enter` is
     // a default followUp chord and `isSubmitEnter` would match it first.
-    if (window.OMP_KEYMAP?.matches(e, "app.message.followUp")) {
+    if (window.OMP_KEYMAP?.matches(e.nativeEvent ?? e, "app.message.followUp")) {
       e.preventDefault();
-      if (onFollowUp) sendWith(onFollowUp);
+      if (onFollowUp) sendWith(onFollowUp, { followUp: true });
       return;
     }
     // isSubmitEnter (app/constants.js) owns the IME-composition guard.

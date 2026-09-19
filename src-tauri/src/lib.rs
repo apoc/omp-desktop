@@ -20,7 +20,8 @@ use agent::AgentBridge;
 use approval::RuleBook;
 use external_open::OpenProjectState;
 use git_watcher::GitWatcherState;
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 
@@ -527,14 +528,7 @@ fn kb_resolve(
     profile: Option<String>,
     store: &profiles::ProfileStore,
     app: &AppHandle,
-) -> Result<
-    (
-        std::path::PathBuf,
-        Option<String>,
-        Option<std::ffi::OsString>,
-    ),
-    String,
-> {
+) -> Result<(PathBuf, Option<String>, Option<OsString>), String> {
     // Validate through the borrow, then move the original — same pattern as
     // `list_saved_sessions` (lib.rs). Avoids a `str::to_owned` re-allocation on
     // the happy path when the id is already an owned `String`.
@@ -546,6 +540,19 @@ fn kb_resolve(
     let home = app.path().home_dir().map_err(|e| e.to_string())?;
     let env_dir = std::env::var_os("PI_CODING_AGENT_DIR");
     Ok((home, profile, env_dir))
+}
+
+/// Run a keybindings-overlay operation off the main command thread — the
+/// `Arc::clone` + `spawn_blocking` + join-error tail all three keybindings
+/// commands share, mirroring `with_profile_store`'s shape above.
+async fn with_keybindings_overlay<T: Send + 'static>(
+    overlay: &Arc<keybindings::overlay::OverlayStore>,
+    f: impl FnOnce(&keybindings::overlay::OverlayStore) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let overlay = Arc::clone(overlay);
+    tauri::async_runtime::spawn_blocking(move || f(&overlay))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
 }
 
 /// Return the current keybinding payload for `profile`.
@@ -560,13 +567,10 @@ async fn keybindings_list(
     app: AppHandle,
 ) -> Result<keybindings::Payload, String> {
     let (home, resolved, env_dir) = kb_resolve(profile, &store, &app)?;
-    // Clone the Arc handle — cheap, required to move into spawn_blocking.
-    let overlay = Arc::clone(&overlay);
-    tauri::async_runtime::spawn_blocking(move || {
-        keybindings::payload(&home, resolved.as_deref(), env_dir.as_deref(), &overlay)
+    with_keybindings_overlay(&overlay, move |overlay| {
+        keybindings::payload(&home, resolved.as_deref(), env_dir.as_deref(), overlay)
     })
     .await
-    .map_err(|e| format!("join error: {e}"))?
 }
 
 /// Bind `action` to `keys` in the desktop overlay and return the updated
@@ -581,8 +585,7 @@ async fn keybindings_set(
     app: AppHandle,
 ) -> Result<keybindings::Payload, String> {
     let (home, resolved, env_dir) = kb_resolve(profile, &store, &app)?;
-    let overlay = Arc::clone(&overlay);
-    tauri::async_runtime::spawn_blocking(move || {
+    with_keybindings_overlay(&overlay, move |overlay| {
         // Use the map returned by set() directly — avoids a second file read.
         let overlay_bindings = overlay.set(&action, &keys)?;
         keybindings::payload_with_overlay(
@@ -594,7 +597,6 @@ async fn keybindings_set(
         )
     })
     .await
-    .map_err(|e| format!("join error: {e}"))?
 }
 
 /// Remove `action` from the desktop overlay and return the updated payload.
@@ -607,8 +609,7 @@ async fn keybindings_reset(
     app: AppHandle,
 ) -> Result<keybindings::Payload, String> {
     let (home, resolved, env_dir) = kb_resolve(profile, &store, &app)?;
-    let overlay = Arc::clone(&overlay);
-    tauri::async_runtime::spawn_blocking(move || {
+    with_keybindings_overlay(&overlay, move |overlay| {
         let overlay_bindings = overlay.remove(&action)?;
         keybindings::payload_with_overlay(
             &home,
@@ -619,7 +620,6 @@ async fn keybindings_reset(
         )
     })
     .await
-    .map_err(|e| format!("join error: {e}"))?
 }
 
 /// Run the Tauri application. Panics if the runtime fails to initialise.

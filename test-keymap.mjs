@@ -106,6 +106,18 @@ check("chordFromEvent: IME composition is never a chord regardless of key", () =
 check("chordFromEvent: ASCII shifted symbol ignores e.code even under Ctrl+Alt", () =>
   assert.equal(K.chordFromEvent({ key: "@", code: "Digit2", ctrlKey: true, shiftKey: true, altKey: false, metaKey: false }), "ctrl+@"));
 
+check("chordFromEvent: real-world WebKitGTK bug — key=Unidentified, code=Tab recovers shift+tab", () =>
+  assert.equal(K.chordFromEvent({ key: "Unidentified", code: "Tab", ctrlKey: false, shiftKey: true, altKey: false, metaKey: false }), "shift+tab"));
+
+check("chordFromEvent: key=Unidentified recovers any KEY_MAP-named code, e.g. Escape", () =>
+  assert.equal(K.chordFromEvent({ key: "Unidentified", code: "Escape", ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }), "escape"));
+
+check("chordFromEvent: key=Unidentified with an unmapped code still yields no chord", () =>
+  assert.equal(K.chordFromEvent({ key: "Unidentified", code: "KeyQ", ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }), null));
+
+check("chordFromEvent: key=Unidentified with no code at all still yields no chord", () =>
+  assert.equal(K.chordFromEvent({ key: "Unidentified", ctrlKey: false, shiftKey: true, altKey: false, metaKey: false }), null));
+
 // ── resolve ───────────────────────────────────────────────────────────────────
 
 check("resolve: empty config gives every action its defaultKeys", () => {

@@ -35,7 +35,12 @@ function useKeymap(bridge, profileId) {
     window.OMP_KEYMAP.setResolved(r);
     setPayload(p);
     setConflicts(r.conflicts);
-    setError(null);
+    // A malformed/unreadable overlay doesn't fail the whole payload (the omp
+    // layer above is still valid, per mod.rs::payload's contract) — it comes
+    // back as `overlayError` instead. Surface it as the hook's `error` so the
+    // Shortcuts modal's banner + disabled-buttons gate actually fires for it,
+    // not just for a total load failure.
+    setError(p.overlayError ?? null);
   }, []);
 
   const reload = React.useCallback(async () => {
@@ -103,8 +108,7 @@ function useKeymapDispatch(handlersRef) {
   // every render.
   React.useEffect(() => {
     const onKey = (e) => {
-      if (e.defaultPrevented || e.isComposing) return;
-      if (e.repeat) return; // ignore auto-repeat; prevents tab-close/new storms on Ctrl+W/Ctrl+T hold
+      if (e.defaultPrevented) return;
       const chord = window.OMP_KEYMAP.chordFromEvent(e);
       if (!chord) return;
       const id = window.OMP_KEYMAP.lookup(chord);
@@ -113,7 +117,15 @@ function useKeymapDispatch(handlersRef) {
       if (!handler) return;
       if (window.OMP_KEYMAP.isTypingTarget(e.target) &&
           !window.OMP_KEYMAP.allowedInInput(chord)) return;
+      // preventDefault unconditionally once a bound handler is found, even
+      // on an auto-repeat keydown: this is what actually suppresses the
+      // browser/WebView default action (e.g. Shift+Tab moving focus) while
+      // the chord is held. Only the *handler* is repeat-guarded below —
+      // firing it on every repeat would storm tab-close/tab-new on a held
+      // Ctrl+W/Ctrl+T. Order matters: bailing on `e.repeat` before this
+      // point would let the repeats fall through un-prevented.
       e.preventDefault();
+      if (e.repeat) return;
       handler(e);
     };
     window.addEventListener("keydown", onKey);

@@ -32,32 +32,33 @@ use std::collections::BTreeMap;
 ///
 /// Duplicate keys: the last occurrence wins.
 pub fn parse(content: &str) -> BTreeMap<String, Vec<String>> {
-    let lines: Vec<&str> = content.lines().collect();
     let mut out = BTreeMap::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i];
-        i += 1;
+    let mut it = content.lines().peekable();
+    while let Some(line) = it.next() {
         let Some((key, value)) = entry(line) else {
             continue;
         };
         let values = if value.is_empty() {
             let mut items = Vec::new();
-            while let Some(item) = lines.get(i).and_then(|l| block_item(l)) {
-                i += 1;
-                // block_item returns "" as a sentinel for blank/comment lines
-                // that should be skipped but not terminate the sequence.
-                if !item.is_empty() {
-                    items.push(item);
+            loop {
+                match it.peek().map(|l| block_item(l)) {
+                    Some(BlockLine::Item(s)) => {
+                        items.push(s);
+                        it.next();
+                    }
+                    Some(BlockLine::Skip) => {
+                        it.next();
+                    }
+                    Some(BlockLine::End) | None => break,
                 }
             }
             if items.is_empty() {
                 // No `- ` items. Either an indented flow sequence — `key:`
                 // followed by `  []`, an explicit disable — or YAML null,
                 // which means *absent* (see the null-vs-`[]` note above).
-                match lines.get(i).and_then(|l| indented_flow(l)) {
+                match it.peek().and_then(|l| indented_flow(l)) {
                     Some(flow) => {
-                        i += 1;
+                        it.next();
                         flow
                     }
                     None => continue,
@@ -67,13 +68,13 @@ pub fn parse(content: &str) -> BTreeMap<String, Vec<String>> {
             }
         } else if let Some(rest) = value.strip_prefix('[') {
             flow_items(rest)
-        } else if value.starts_with('"') || value.starts_with('\'') {
+        } else if is_quoted(value) {
             // Quoted, so a literal `"null"` stays a (nonsensical but honest)
             // chord rather than being read as YAML null.
             vec![unquote(value)]
         } else {
             let s = plain_scalar(value);
-            if matches!(s.to_ascii_lowercase().as_str(), "" | "null" | "~") {
+            if s.is_empty() || s == "~" || s.eq_ignore_ascii_case("null") {
                 continue;
             }
             vec![s]
@@ -109,12 +110,24 @@ fn entry(line: &str) -> Option<(&str, &str)> {
     Some((key, value))
 }
 
-/// `  - ctrl+a` → `ctrl+a`. `None` terminates the block sequence.
-///
-/// Blank and comment-only indented lines are skipped rather than ending the
-/// sequence, so `app.model.select:\n  # primary\n  - alt+m` correctly
-/// yields `["alt+m"]` instead of falling through to the default.
-fn block_item(line: &str) -> Option<String> {
+/// The three outcomes of examining one line while scanning a block sequence.
+/// An explicit enum instead of `Option<String>` + an empty-string sentinel:
+/// "this line isn't part of the sequence at all" (`End`) and "it's part of
+/// the sequence but contributes no item" (`Skip`, blank/comment) are
+/// different things a caller must not conflate.
+enum BlockLine {
+    /// A `- item` line.
+    Item(String),
+    /// Blank or comment-only line inside the block — skip, don't terminate.
+    Skip,
+    /// Anything else: the sequence is over (a `- `-item at any indentation
+    /// wasn't found, and it isn't blank/comment either).
+    End,
+}
+
+/// Classify one line while scanning a block sequence begun by a `key:` with
+/// an empty inline value.
+fn block_item(line: &str) -> BlockLine {
     let trimmed = line.trim_start();
     // A `- ` item belongs to the sequence at *any* indentation, column 0
     // included — that is the sequence-at-parent-indentation style `js-yaml`
@@ -122,18 +135,19 @@ fn block_item(line: &str) -> Option<String> {
     // ambiguity with a top-level entry: `entry` requires a `:` and a key of
     // `[A-Za-z0-9._-]`, which `- alt+m` cannot satisfy.
     if let Some(rest) = trimmed.strip_prefix("- ") {
-        return Some(scalar(rest.trim()));
+        return BlockLine::Item(scalar(rest.trim()));
     }
-    // Any other unindented, non-blank line is the next top-level entry.
-    if !line.starts_with(|c: char| c.is_whitespace()) && !line.is_empty() {
-        return None;
-    }
-    // Blank or comment-only line inside the block — skip, don't terminate.
+    // Blank or comment-only line — at *any* indentation, column 0 included,
+    // same reasoning as `- ` above. Checked before the "next top-level
+    // entry" test below: a column-0 `# comment` between two `- ` items must
+    // not be mistaken for the next entry and terminate the sequence early.
     if trimmed.is_empty() || trimmed.starts_with('#') {
-        return Some(String::new()); // sentinel: caller discards empty strings
+        return BlockLine::Skip;
     }
-    // Anything else indented (a nested map) terminates the sequence.
-    None
+    // Anything else — an unindented non-comment line (the next top-level
+    // entry) or an indented one (a nested map this parser doesn't
+    // understand) — ends the sequence.
+    BlockLine::End
 }
 
 /// An indented flow sequence on the line after a key with no inline value:
@@ -152,11 +166,17 @@ fn indented_flow(line: &str) -> Option<Vec<String>> {
 /// (truncated at a ` #` comment). The single place the two spellings are
 /// chosen between, shared by [`block_item`] and [`flow_items`].
 fn scalar(raw: &str) -> String {
-    if raw.starts_with('"') || raw.starts_with('\'') {
+    if is_quoted(raw) {
         unquote(raw)
     } else {
         plain_scalar(raw)
     }
+}
+
+/// True when `s` opens a quoted scalar (`"…` or `'…`). Shared by [`parse`]
+/// (which needs to skip its null-check for a quoted value) and [`scalar`].
+fn is_quoted(s: &str) -> bool {
+    s.starts_with('"') || s.starts_with('\'')
 }
 
 /// Items of a flow sequence, given everything after the opening `[`.
@@ -172,26 +192,30 @@ fn flow_items(rest: &str) -> Vec<String> {
     let body = rest.rfind(']').map_or(rest, |end| &rest[..end]);
     let mut out = Vec::new();
     let mut start = 0;
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    for (idx, ch) in body.char_indices() {
-        if escaped {
-            escaped = false;
+    let mut idx = 0;
+    while idx < body.len() {
+        let ch = body[idx..]
+            .chars()
+            .next()
+            .expect("idx < body.len() guarantees a char at idx");
+        if (ch == '"' || ch == '\'') && body[start..idx].trim().is_empty() {
+            // A quote only *opens* at the start of an item — jump straight
+            // to its close via the scanner `unquote` also uses, rather than
+            // re-walking the escape state machine a second time here.
+            idx = quoted_end(body, idx + ch.len_utf8(), ch);
+            if idx < body.len() {
+                idx += ch.len_utf8(); // step past the closing quote
+            }
             continue;
         }
-        match (quote, ch) {
-            (Some('"'), '\\') => escaped = true,
-            (None, '"' | '\'') if body[start..idx].trim().is_empty() => quote = Some(ch),
-            (Some(q), c) if c == q => quote = None,
-            (None, ',') => {
-                let raw = body[start..idx].trim();
-                if !raw.is_empty() {
-                    out.push(scalar(raw));
-                }
-                start = idx + 1;
+        if ch == ',' {
+            let raw = body[start..idx].trim();
+            if !raw.is_empty() {
+                out.push(scalar(raw));
             }
-            _ => {}
+            start = idx + ch.len_utf8();
         }
+        idx += ch.len_utf8();
     }
     let raw = body[start..].trim();
     if !raw.is_empty() {
@@ -206,28 +230,13 @@ fn flow_items(rest: &str) -> Vec<String> {
 /// When the value has trailing content after the closing quote (e.g.
 /// `"ctrl+q" # comment`) only the content inside the quotes is returned.
 fn unquote(value: &str) -> String {
-    let bytes = value.as_bytes();
-    if bytes.is_empty() {
+    let mut chars = value.char_indices();
+    let Some((_, quote)) = chars.next() else {
         return String::new();
-    }
-    let quote = bytes[0] as char;
-    // Scan from position 1 for the matching closing quote.  For double
-    // quotes, honour `\"` escapes so an escaped quote isn't mistaken for
-    // the closer.
-    let mut close = None;
-    let mut i = 1usize;
-    while i < bytes.len() {
-        if quote == '"' && bytes[i] == b'\\' {
-            i += 2; // skip the escaped character
-            continue;
-        }
-        if bytes[i] as char == quote {
-            close = Some(i);
-            break;
-        }
-        i += 1;
-    }
-    let body = close.map_or_else(|| &value[1..], |end| &value[1..end]);
+    };
+    let open = quote.len_utf8();
+    let close = quoted_end(value, open, quote);
+    let body = &value[open..close];
     if quote != '"' {
         return body.to_string();
     }
@@ -244,6 +253,32 @@ fn unquote(value: &str) -> String {
         }
     }
     out
+}
+
+/// Index in `s` of the `quote` char that closes a quoted region opened just
+/// before byte offset `start`, scanning from `start`. Escapes (`\"`) are
+/// honoured only when `quote == '"'` — single-quoted YAML has no escape
+/// mechanism. Returns `s.len()` when unterminated, so `&s[start..end]` is
+/// "the rest of the string", matching this parser's forgiving-degradation
+/// policy for a malformed line. Shared by [`unquote`] (find the one closing
+/// quote of a whole quoted scalar) and [`flow_items`] (skip a quoted item
+/// while scanning for top-level commas).
+fn quoted_end(s: &str, start: usize, quote: char) -> usize {
+    let mut escaped = false;
+    for (idx, ch) in s.char_indices().filter(|&(i, _)| i >= start) {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if quote == '"' && ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == quote {
+            return idx;
+        }
+    }
+    s.len()
 }
 
 /// An unquoted scalar: everything before the first ` #` comment, trimmed.
@@ -264,16 +299,24 @@ fn plain_scalar(value: &str) -> String {
 ///
 /// **Deliberate deviation from omp's `canonicalKeyId`:** omp infers `shift`
 /// for any single uppercase ASCII base letter when `shift` is not already
-/// among the modifiers — so `Ctrl+P` → `ctrl+shift+p` in the TUI. The
-/// desktop applies this inference only when **no** modifier is present at
-/// all, giving `Ctrl+P` → `ctrl+p`. The consequence: a `keybindings.yml`
-/// entry spelled `app.model.cycleForward: Ctrl+P` maps to the `ctrl+shift+p`
-/// chord in the TUI but to `ctrl+p` in the desktop dispatcher. Users who
-/// write chords without a modifier (`P: ...`) get identical behaviour in both;
-/// users who write `Ctrl+UppercaseLetter` do not. This is intentional: the
-/// desktop's default registry uses all-lowercase chord spellings, and the
-/// shift-on-modifier path would silently merge `ctrl+p` (cycleForward) and
-/// `ctrl+shift+p` (cycleBackward), creating a permanent conflict.
+/// among the modifiers — so `Ctrl+P` → `ctrl+shift+p` in the TUI. This
+/// reader applies that inference only when **no** modifier is present at
+/// all, giving `Ctrl+P` → `ctrl+p`.
+///
+/// This is not an oversight: both this function and its JS twin
+/// (`src/app/keymap.js`'s `canonicalChord`) hold the same narrower rule on
+/// purpose, because it is what the desktop's own default registry
+/// (`ACTION_IDS`, `KEYMAP_ACTIONS`) is defined against — every default
+/// chord is spelled all-lowercase with an explicit modifier where one is
+/// meant (`ctrl+p`, not `Ctrl+P`), so the desktop dispatcher never needs
+/// omp's shift-on-modifier inference to disambiguate its own defaults.
+///
+/// The accepted consequence: a `keybindings.yml` entry spelled
+/// `app.model.cycleForward: Ctrl+P` maps to `ctrl+shift+p` in the TUI but
+/// `ctrl+p` in the desktop — a real, deliberate divergence for that one
+/// spelling, not a bug. Users who write chords without a modifier
+/// (`P: ...`), or in the desktop's own all-lowercase style, get identical
+/// behaviour in both.
 ///
 /// Returns an empty string when there is no base key (`"ctrl+"`, `""`);
 /// callers treat an empty return as an invalid chord.
@@ -303,7 +346,7 @@ pub fn canonical_chord(raw: &str) -> String {
         flags[1] = true;
     }
     // Lower-case base; resolve aliases in a single match on the lowercase str.
-    let lower = base_raw.to_ascii_lowercase();
+    let lower = base_raw.to_lowercase();
     let base: &str = match lower.as_str() {
         "esc" => "escape",
         "return" => "enter",
@@ -391,6 +434,24 @@ mod tests {
     #[test]
     fn block_sequence_at_column_zero_is_accepted() {
         let map = parse("app.model.select:\n- alt+m\n- alt+n\napp.other: ctrl+z\n");
+        assert_eq!(keys(&map, "app.model.select"), ["alt+m", "alt+n"]);
+        assert_eq!(keys(&map, "app.other"), ["ctrl+z"]);
+    }
+
+    #[test]
+    fn comment_and_blank_lines_inside_a_block_sequence_do_not_truncate_it() {
+        // Regression: `block_item` used to check "is this the next
+        // unindented entry?" before "is this blank/comment?", so a column-0
+        // `#` between `- ` items looked like the next top-level entry and
+        // silently ended the sequence one item early.
+        let map = parse(
+            "app.model.select:\n\
+             - alt+m\n\
+             # column-0 comment between items\n\
+             \n\
+             - alt+n\n\
+             app.other: ctrl+z\n",
+        );
         assert_eq!(keys(&map, "app.model.select"), ["alt+m", "alt+n"]);
         assert_eq!(keys(&map, "app.other"), ["ctrl+z"]);
     }

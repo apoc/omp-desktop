@@ -17,14 +17,13 @@
 //! surfaced to the Shortcuts screen; dispatch still works because the frontend
 //! falls back to omp + defaults.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::json_store;
-use crate::keybindings::{yaml, ACTION_IDS};
+use crate::keybindings::{yaml, Bindings, ACTION_IDS};
 
 // ── on-disk representation ────────────────────────────────────────────────────
 
@@ -36,7 +35,7 @@ use crate::keybindings::{yaml, ACTION_IDS};
 #[derive(Default, Serialize, Deserialize)]
 struct OverlayFile {
     #[serde(default)]
-    bindings: BTreeMap<String, Vec<String>>,
+    bindings: Bindings,
 }
 
 // ── OverlayStore ─────────────────────────────────────────────────────────────
@@ -60,7 +59,7 @@ impl OverlayStore {
 
     /// Read the current overlay. A missing file returns an empty map; a
     /// malformed or unreadable file returns `Err`.
-    pub fn read(&self) -> Result<BTreeMap<String, Vec<String>>, String> {
+    pub fn read(&self) -> Result<Bindings, String> {
         read_file_strict(&self.path).map(|f| f.bindings)
     }
 
@@ -74,32 +73,28 @@ impl OverlayStore {
     /// beats both omp's config and the registry default.
     ///
     /// Refuses to write if the current file is malformed.
-    pub fn set(
-        &self,
-        action: &str,
-        keys: &[String],
-    ) -> Result<BTreeMap<String, Vec<String>>, String> {
+    pub fn set(&self, action: &str, keys: &[String]) -> Result<Bindings, String> {
         if !ACTION_IDS.contains(&action) {
             return Err("unknown action".to_string());
         }
-        let mut seen = std::collections::BTreeSet::new();
-        let canonical: Vec<String> = keys
-            .iter()
-            .map(|k| {
-                let c = yaml::canonical_chord(k);
-                if c.is_empty() {
-                    Err(format!("invalid chord: {k:?}"))
-                } else {
-                    Ok(c)
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
+        // Validate and canonicalise in one pass, de-duplicating by simple
+        // linear scan rather than a `BTreeSet` — `keys` is a couple of
+        // chords at most (one rebind, or the Shortcuts modal's "+ chord"
+        // append), so `Vec::contains` costs nothing and needs no clone to
+        // check membership before pushing.
+        let mut canonical: Vec<String> = Vec::with_capacity(keys.len());
+        for k in keys {
+            let c = yaml::canonical_chord(k);
+            if c.is_empty() {
+                return Err(format!("invalid chord: {k:?}"));
+            }
             // De-duplicate while keeping first-seen order — the Shortcuts
             // modal's "+ chord" path can re-record a chord the action
             // already has (plan §8), which must not persist as a repeat.
-            .filter(|c| seen.insert(c.clone()))
-            .collect();
+            if !canonical.contains(&c) {
+                canonical.push(c);
+            }
+        }
 
         self.mutate(|bindings| {
             bindings.insert(action.to_string(), canonical);
@@ -111,7 +106,7 @@ impl OverlayStore {
     /// file write) and return the updated map.
     ///
     /// Refuses to write if the current file is malformed.
-    pub fn remove(&self, action: &str) -> Result<BTreeMap<String, Vec<String>>, String> {
+    pub fn remove(&self, action: &str) -> Result<Bindings, String> {
         self.mutate(|bindings| bindings.remove(action).is_some())
     }
 
@@ -122,10 +117,7 @@ impl OverlayStore {
     /// mutated the map; a no-op `remove` of an absent action must not
     /// rewrite the file (or create it, for a fresh install) with identical
     /// content.
-    fn mutate(
-        &self,
-        f: impl FnOnce(&mut BTreeMap<String, Vec<String>>) -> bool,
-    ) -> Result<BTreeMap<String, Vec<String>>, String> {
+    fn mutate(&self, f: impl FnOnce(&mut Bindings) -> bool) -> Result<Bindings, String> {
         json_store::with_lock_str(&self.path.with_extension("lock"), || {
             let mut file_data = read_file_strict(&self.path)?;
             if !f(&mut file_data.bindings) {

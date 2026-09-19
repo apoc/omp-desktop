@@ -18,7 +18,11 @@
 
   /** @type {Array<{id: string, label: string, group: string, scope: "global"|"composer", defaultKeys: string[]}>} */
   const KEYMAP_ACTIONS = [
-    // Registry order = conflict-resolution order: first claimant wins.
+    // Registry order only breaks ties *within* a resolution pass — it is not
+    // itself the conflict-resolution order. `resolve()` is two-pass: every
+    // explicitly configured action (including an explicit `[]` disable)
+    // claims its chords before any action still on its default does,
+    // regardless of where either row sits here. See `resolve`'s doc comment.
     // Must match the plan §5 table row-for-row and Rust ACTION_IDS.
     { id: "app.interrupt",           label: "Interrupt turn",          group: "Session", scope: "global",   defaultKeys: ["escape"] },
     { id: "app.thinking.cycle",      label: "Cycle thinking level",    group: "Agent",   scope: "global",   defaultKeys: ["shift+tab"] },
@@ -49,6 +53,19 @@
   const MOD_PREFIXES = ["ctrl+", "shift+", "alt+", "super+"];
 
   /**
+   * Join modifier flags (`[ctrl, shift, alt, super]`) and a base key into a
+   * canonical chord string, in `MOD_PREFIXES` order. The single emit site
+   * shared by `canonicalChord` and `chordFromEvent` so the two never drift.
+   */
+  function joinChord(flags, base) {
+    let out = "";
+    for (let i = 0; i < MOD_PREFIXES.length; i++) {
+      if (flags[i]) out += MOD_PREFIXES[i];
+    }
+    return out + base;
+  }
+
+  /**
    * Keys that are never a chord's base: real modifiers, lock/IME/context
    * sentinels. A stray keydown for one of these (AltGr, CapsLock mid-record,
    * a dead-key compose step, an IME candidate window) must not turn into a
@@ -57,7 +74,11 @@
   const NON_CHORD_KEYS = new Set([
     "Control", "Shift", "Alt", "Meta", "AltGraph",
     "CapsLock", "NumLock", "ScrollLock", "ContextMenu",
-    "Process", "Unidentified",
+    "Process",
+    // "Unidentified" is deliberately NOT here — see chordFromEvent's
+    // code-based recovery for it below. It still yields no chord when that
+    // recovery fails (an unmapped printable character), so this doesn't
+    // widen what ends up bindable, only what's *recoverable*.
   ]);
 
   /** Named key map: KeyboardEvent.key → canonical base name. */
@@ -109,11 +130,7 @@
     if (base === "esc")    base = "escape";
     if (base === "return") base = "enter";
     if (!base) return "";
-    let out = "";
-    for (let i = 0; i < MOD_PREFIXES.length; i++) {
-      if (flags[i]) out += MOD_PREFIXES[i];
-    }
-    return out + base;
+    return joinChord(flags, base);
   }
 
   /**
@@ -131,6 +148,16 @@
    * `"Slash"`) inconsistently, since only the digit has a `Key*`/`Digit*`
    * code pattern this recovery understands.
    *
+   * Separately, a `key === "Unidentified"` event — the UA couldn't map the
+   * physical key to a logical value, a real WebKitGTK/XKB failure mode
+   * observed for Shift+Tab — is not bailed on outright via `NON_CHORD_KEYS`:
+   * `code` is layout-independent and, for the named keys in `KEY_MAP`,
+   * spelled identically ("Tab", "Escape", "Enter", …), so it recovers
+   * exactly the cases `KEY_MAP` already covers. An "Unidentified" event
+   * that isn't one of those named keys (an unmapped printable character)
+   * still yields no chord — there is no reliable recovery for an arbitrary
+   * character from `code` alone (layout-dependent).
+   *
    * @param {Pick<KeyboardEvent, "key"|"code"|"ctrlKey"|"shiftKey"|"altKey"|"metaKey"|"isComposing">} e
    * @returns {string|null}
    */
@@ -140,6 +167,10 @@
 
     // Resolve base name.
     let base = KEY_MAP[e.key];
+    if (!base && e.key === "Unidentified") {
+      base = KEY_MAP[e.code];
+    }
+    if (!base && e.key === "Unidentified") return null; // no code-based recovery available
     if (!base) {
       const k = e.key;
       if (k.length === 1 || k === "Dead") {
@@ -174,12 +205,7 @@
       }
     }
 
-    let out = "";
-    for (let i = 0; i < MOD_PREFIXES.length; i++) {
-      // For super use metaKey (index 3 in flags maps to index 3 in MOD_PREFIXES).
-      if (flags[i]) out += MOD_PREFIXES[i];
-    }
-    return out + base;
+    return joinChord(flags, base);
   }
 
   // ── Resolver ──────────────────────────────────────────────────────────────
@@ -299,7 +325,7 @@
   function allowedInInput(chord) {
     if (chord.includes("ctrl+") || chord.includes("alt+") || chord.includes("super+")) return true;
     if (chord === "escape" || chord === "shift+tab") return true;
-    if (/^f\d{1,2}$/.test(chord)) return true;
+    if (/^f([1-9]|1[0-2])$/.test(chord)) return true;
     return false;
   }
 
@@ -324,6 +350,11 @@
     }
   }
 
+  // Platform never changes at runtime — compute once rather than re-probing
+  // `navigator` on every `formatChord` call (the Shortcuts modal formats
+  // every visible chord on every render and filter keystroke).
+  const IS_MAC = detectMac();
+
   const DISPLAY_MAP = {
     ctrl: "Ctrl", shift: "Shift", alt: "Alt", super: "Super",
     escape: "Esc", enter: "Enter", tab: "Tab", space: "Space",
@@ -337,7 +368,7 @@
    * @param {string} chord
    * @param {boolean} [isMac]
    */
-  function formatChord(chord, isMac = detectMac()) {
+  function formatChord(chord, isMac = IS_MAC) {
     const parts = chord.split("+");
     return parts.map(p => {
       // The last part is the base; everything before is a modifier.

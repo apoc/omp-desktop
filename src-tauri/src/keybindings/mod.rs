@@ -27,7 +27,7 @@
 //! handled by `serde_json`, which is already a dependency.
 
 pub mod overlay;
-pub mod yaml;
+mod yaml;
 
 #[cfg(test)]
 mod tests;
@@ -35,6 +35,12 @@ mod tests;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+
+/// An action-id → chord-list map, the shape every layer (omp's config, the
+/// desktop overlay, the merged `Payload` fields) reads and writes. Named so
+/// `read_layer`'s `Result<(Option<PathBuf>, Bindings), String>` doesn't trip
+/// clippy's `type_complexity` lint on the bare nested generic.
+pub type Bindings = BTreeMap<String, Vec<String>>;
 
 // ── registry ──────────────────────────────────────────────────────────────────
 
@@ -77,7 +83,7 @@ pub const ACTION_IDS: &[&str] = &[
 pub struct OmpLayer {
     /// Action → chords from omp's profile-merged config. An empty `Vec` means
     /// omp has explicitly disabled that action.
-    pub bindings: BTreeMap<String, Vec<String>>,
+    pub bindings: Bindings,
     /// The file that was read (named-profile's file, or built-in profile's
     /// file when no named profile was given). `None` when the file does not
     /// exist yet.
@@ -94,12 +100,12 @@ pub struct OmpLayer {
 #[serde(rename_all = "camelCase")]
 pub struct Payload {
     /// From omp's read-only config (profile-merged). Empty vec = omp disabled it.
-    pub omp: BTreeMap<String, Vec<String>>,
+    pub omp: Bindings,
     /// Desktop overlay — the only layer this app writes. Empty (with
     /// `overlay_error` set) when the overlay file exists but could not be
     /// read — the omp layer above is still valid and dispatch keeps working
     /// on it plus the registry defaults.
-    pub overlay: BTreeMap<String, Vec<String>>,
+    pub overlay: Bindings,
     /// Set when the overlay file is present but malformed/unreadable. The
     /// omp and default layers are unaffected; only overlay rebinds are
     /// unavailable until the file is fixed or deleted.
@@ -120,7 +126,7 @@ pub struct Payload {
 /// Mirrors `saved_sessions::sessions_root_for` exactly — same
 /// `PI_CODING_AGENT_DIR`-only-for-built-in gate and `filter(|id| !id.is_empty())`
 /// guard. Both must agree; diverging them silently points at the wrong tree.
-pub fn agent_dir_for(home: &Path, profile: Option<&str>, env_dir: Option<&OsStr>) -> PathBuf {
+fn agent_dir_for(home: &Path, profile: Option<&str>, env_dir: Option<&OsStr>) -> PathBuf {
     // Same defence-in-depth as `saved_sessions::sessions_root_for`: `Some("")`
     // must not sneak past the `is_none()` gate.
     let profile = profile.filter(|id| !id.is_empty());
@@ -134,7 +140,7 @@ pub fn agent_dir_for(home: &Path, profile: Option<&str>, env_dir: Option<&OsStr>
 
 /// Probe `keybindings.yml`, then `keybindings.yaml`, then `keybindings.json`
 /// — omp's own precedence order. Returns `None` when none of the three exist.
-pub fn config_path(agent_dir: &Path) -> Option<PathBuf> {
+fn config_path(agent_dir: &Path) -> Option<PathBuf> {
     for name in ["keybindings.yml", "keybindings.yaml", "keybindings.json"] {
         let p = agent_dir.join(name);
         if p.exists() {
@@ -155,7 +161,7 @@ pub fn config_path(agent_dir: &Path) -> Option<PathBuf> {
 /// which JSONC-parses and falls back to `{}` on any failure rather than
 /// treating the whole tab as broken — a legacy `keybindings.json` with a
 /// `//` comment is valid JSONC but not valid JSON.
-pub fn read_file(path: &Path) -> Result<BTreeMap<String, Vec<String>>, String> {
+fn read_file(path: &Path) -> Result<Bindings, String> {
     let raw = match std::fs::read_to_string(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
         Err(e) => return Err(e.to_string()),
@@ -239,13 +245,7 @@ pub fn read_omp(
 
     // For the built-in profile there is only one file.
     if profile.is_none() {
-        let dir = agent_dir_for(home, None, env_dir);
-        let path = config_path(&dir);
-        let bindings = path
-            .as_deref()
-            .map(read_file)
-            .transpose()?
-            .unwrap_or_default();
+        let (path, bindings) = read_layer(&agent_dir_for(home, None, env_dir))?;
         return Ok(OmpLayer {
             bindings,
             path,
@@ -261,21 +261,8 @@ pub fn read_omp(
     // (`app-keybindings.ts:467-473`) calls `getBaseConfigRoot()` with no env
     // override; honouring the var for the base would show bindings from a
     // different directory than the tab's omp process actually merged from.
-    let base_dir = crate::profiles::agent_dir(home, None);
-    let base_path = config_path(&base_dir);
-    let base: BTreeMap<String, Vec<String>> = base_path
-        .as_deref()
-        .map(read_file)
-        .transpose()?
-        .unwrap_or_default();
-
-    let named_dir = agent_dir_for(home, profile, env_dir);
-    let named_path = config_path(&named_dir);
-    let named: BTreeMap<String, Vec<String>> = named_path
-        .as_deref()
-        .map(read_file)
-        .transpose()?
-        .unwrap_or_default();
+    let (base_path, base) = read_layer(&crate::profiles::agent_dir(home, None))?;
+    let (named_path, named) = read_layer(&agent_dir_for(home, profile, env_dir))?;
 
     // named overrides base action-by-action.
     let mut bindings = base;
@@ -288,13 +275,27 @@ pub fn read_omp(
     })
 }
 
+/// Probe `dir` for a keybindings file and read it in one step — the
+/// `config_path` + `read_file` pair [`read_omp`] chains three times (built-in
+/// profile, inherited base, named profile). `None` path ⇒ empty map, same as
+/// each of those three call sites used to spell out individually.
+fn read_layer(dir: &Path) -> Result<(Option<PathBuf>, Bindings), String> {
+    let path = config_path(dir);
+    let bindings = path
+        .as_deref()
+        .map(read_file)
+        .transpose()?
+        .unwrap_or_default();
+    Ok((path, bindings))
+}
+
 // ── payload builder ───────────────────────────────────────────────────────────
 
 /// Assemble the `Payload` struct shared by [`payload`] and
 /// [`payload_with_overlay`] — the only place the field list is written out.
 fn assemble_payload(
     omp_layer: OmpLayer,
-    overlay: BTreeMap<String, Vec<String>>,
+    overlay: Bindings,
     overlay_error: Option<String>,
     overlay_path: &Path,
 ) -> Payload {
@@ -347,7 +348,7 @@ pub fn payload_with_overlay(
     home: &Path,
     profile: Option<&str>,
     env_dir: Option<&OsStr>,
-    overlay_bindings: BTreeMap<String, Vec<String>>,
+    overlay_bindings: Bindings,
     overlay_path: &Path,
 ) -> Result<Payload, String> {
     let omp_layer = read_omp(home, profile, env_dir)?;
