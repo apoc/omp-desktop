@@ -19,6 +19,11 @@ function useKeymap(bridge, profileId) {
   // branch below between "nothing to fall back on yet" (seed registry
   // defaults) and "a later reload failed" (keep the last-good resolution).
   const hasResolvedRef = React.useRef(false);
+  // Reload/setBinding/resetBinding generation counter — guards against an
+  // in-flight request applying a stale result after a newer one started
+  // (tab/profile switch mid-await, or a mutation racing a reload). See the
+  // comments at each call site below.
+  const genRef = React.useRef(0);
 
   const applyPayload = React.useCallback((p) => {
     if (!p) {
