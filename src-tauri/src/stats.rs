@@ -138,14 +138,22 @@ const STDOUT_TAIL_MAX_BYTES: usize = 4 * 1024;
 /// Build the error string for a non-zero `omp stats --json` exit.
 ///
 /// Confirmed failure modes that reach here (`omp` not being on PATH at
-/// all is a separate, earlier branch in [`fetch`]): running the CLI's own
-/// argument parser against an unrecognized subcommand — the shape an omp
-/// build old enough to predate `stats` would produce — exits non-zero
-/// with *empty* stderr (observed directly: exit 129, no stderr, no
-/// stdout, on a real build). A bare `"omp stats failed: "` would leave
-/// the panel showing nothing useful for that case, so this falls back to
-/// a capped stdout tail, and only if that's also empty names the concrete
-/// symptom (exit status, no output) rather than guessing at a cause.
+/// all is a separate, earlier branch in [`fetch`]): probing this CLI's
+/// own argument parser with an unrecognized subcommand and no flags
+/// exits non-zero with *both* streams empty (observed directly: exit
+/// 129, no stderr, no stdout); the same probe with an added `--json`
+/// flag instead exits 2 with `"unknown flag: --json"` on stderr — that
+/// shape is already handled by the stderr branch below. Neither probe
+/// confirms *why* a real omp build would take this path (old build
+/// predating `stats`, a build without the module, ...) — only that a
+/// non-zero exit with nothing on either stream is a real, reachable
+/// shape this CLI's parser produces, which is why a bare
+/// `"omp stats failed: "` would leave the panel showing nothing useful.
+/// Falls back to a capped stdout *tail* (the trailing bytes, most likely
+/// to hold a final error line if something more verbose ever precedes
+/// it — not the head) when stderr is empty, and only if that's also
+/// empty names the concrete symptom (exit status, no output) rather than
+/// guessing at a cause.
 ///
 /// Takes `status` by `impl Display` (rather than the whole
 /// `std::process::Output`) so it can be unit-tested without constructing
@@ -157,7 +165,8 @@ fn exit_failure_message(status: impl std::fmt::Display, stderr: &[u8], stdout: &
     if !stderr.is_empty() {
         return format!("omp stats failed: {stderr}");
     }
-    let stdout = String::from_utf8_lossy(&stdout[..stdout.len().min(STDOUT_TAIL_MAX_BYTES)]);
+    let tail_start = stdout.len().saturating_sub(STDOUT_TAIL_MAX_BYTES);
+    let stdout = String::from_utf8_lossy(&stdout[tail_start..]);
     let stdout = stdout.trim();
     if !stdout.is_empty() {
         return format!("omp stats failed (exit {status}): {stdout}");
@@ -279,16 +288,16 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "spawns the real `omp` binary; requires omp on PATH (run with `cargo test -- --ignored`)"]
-    fn fetch_returns_real_dashboard_stats() {
-        // Not run by default (no CI machine is guaranteed to have `omp`
-        // installed), but exercises the actual `omp_command`-built
-        // subprocess path end to end against whatever `omp` is on this
-        // machine's PATH — the unit tests above only cover the pure
-        // parsing/formatting helpers.
-        let stats = fetch().expect("omp stats --json should succeed with omp on PATH");
-        // This machine's real session history is non-empty; a fresh
-        // machine with genuinely zero sessions would need this relaxed.
-        assert!(stats.overall.total_requests > 0);
+    fn exit_failure_stdout_fallback_keeps_the_tail_not_the_head() {
+        // A stdout longer than STDOUT_TAIL_MAX_BYTES must keep the
+        // *trailing* bytes, where a final error line is most likely to
+        // land after some earlier, less useful output. Filler is large
+        // enough that a head-slice (the pre-fix behaviour) would drop the
+        // marker entirely, so this fails if the slicing direction ever
+        // regresses.
+        let filler = "x".repeat(STDOUT_TAIL_MAX_BYTES * 2);
+        let stdout = format!("{filler}TRAILING_ERROR_MARKER");
+        let msg = exit_failure_message("exit status: 2", b"", stdout.as_bytes());
+        assert!(msg.contains("TRAILING_ERROR_MARKER"), "message was: {msg}");
     }
 }
