@@ -26,6 +26,7 @@ const {
   useBridgeSnapshot, useThemeEffect, timeNow,
   useKeymap, useKeymapDispatch, ShortcutsModal,
 } = window;
+const { isSlashCommand } = window.OMP_SLASH;
 
 function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
@@ -127,7 +128,15 @@ function App() {
     const hasAnnotations = Object.keys(planAnnotations).length > 0;
     if (!text.trim() && !hasAnnotations && !(images && images.length > 0)) return;
     let msg = text.trim();
-    if (planMode) {
+    // A slash command (typed by hand, or inserted by picking a non-desktop
+    // entry from the `/` popup or the ⌘K bridge) must reach omp with its
+    // leading `/` at position 0, or omp's dispatcher never recognizes it as
+    // a command — it just becomes ordinary prose. Checked against the real
+    // command list, not just "starts with /": plan-mode prose routinely
+    // starts with a path ("/etc/nginx.conf is wrong"), which both
+    // plan-mode rewrites below would otherwise skip by mistake.
+    const isCmd = isSlashCommand(data.commands, msg);
+    if (planMode && !isCmd) {
       if (hasAnnotations) {
         // Feedback with block comments — always takes priority over intent framing
         const lineComments = Object.entries(planAnnotations)
@@ -198,6 +207,14 @@ function App() {
   // the RPC echo's always-trimmed text (adaptUserContent) and duplicate
   // the bubble instead of reconciling it (see OMP_BRIDGE.followUp).
   const handleFollowUp = (text, images) => { bridge?.followUp(text.trim(), images); };
+
+  // CommandBridge (⌘K) picking a non-desktop (RPC) command — no local
+  // handler exists for it, unlike handleCommand's desktop entries. It has
+  // no textarea of its own, so it hands the `/name ` draft up here for the
+  // Composer to pick up and focus; the user fills in arguments and Enter
+  // sends it as a normal prompt, which omp executes.
+  const [draftInsert, setDraftInsert] = React.useState(null);
+  const handleInsertDraft = (text) => setDraftInsert({ text, nonce: Date.now() });
 
   const handleCommand = c => {
     if      (c.name === "plan")      { setPlanMode(true); planStartedRef.current = false; }
@@ -411,6 +428,7 @@ function App() {
                 microcopy={data.microcopy}
                 onPick={handleCommand}
                 onFollowUp={handleFollowUp}
+                draftInsert={draftInsert}
               />
               <StatusBar
                 ctx={liveCtx}
@@ -455,6 +473,7 @@ function App() {
         onPick={handleCommand}
         onPickModel={handlePickModel}
         onPickLogin={handlePickLogin}
+        onInsertDraft={handleInsertDraft}
         loginProviders={loginProviders}
         currentModelId={model.id}
       />

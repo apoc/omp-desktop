@@ -99,6 +99,13 @@
        before it. -->
   <script src="app/image-attach.js"></script>
 
+  <!-- Slash-command palette: local desktop list + RPC merge/filter helpers.
+       Dependency-free IIFE; composer.jsx destructures window.OMP_SLASH at
+       top level, so this must load before it. live.js also reads
+       OMP_SLASH.LOCAL_COMMANDS for the initial/reset command list, so this
+       must load before live.js too (see script order below). -->
+  <script src="app/slash-commands.js"></script>
+
   <!-- Chat "stick to bottom" pin state machine. Dependency-free IIFE;
        design/chat/chat-view.jsx destructures window.OMP_SCROLL_PIN at
        top level, so this must load before it. -->

@@ -5,6 +5,7 @@
 const { Icon } = window;
 const { parseMentionQuery, applyMention } = window.OMP_MENTIONS;
 const { prepareImage, imageFilesFromTransfer, imageFilesFromClipboardAsync, toDataUrl, MAX_ATTACHMENTS } = window.OMP_IMAGES;
+const { isDesktop, slashMenu, matchesQuery, insertText: slashInsertText } = window.OMP_SLASH;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` (display
 // logic lives there so chrome.jsx's ⌘K/history hints can reuse it too,
@@ -22,7 +23,7 @@ function hintKeyFor(actionId, fallback) {
 }
 
 // ── The composer (input + plan/steer modes + send) ────────────────────
-function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp }) {
+function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert }) {
   const [text, setText]       = React.useState("");
   const [activeIdx, setActiveIdx] = React.useState(0);
   const taRef   = React.useRef(null);
@@ -84,13 +85,13 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     return () => clearTimeout(timer);
   }, [mentionRange?.query, mentionRange !== null]);
 
-  // Derive slash state inline — no useEffect, no stale flicker.
-  // Suppressed while the mention menu is showing: both can't render in
-  // the same absolutely-positioned spot (e.g. "/plan add @src/foo.js").
-  const slashQ = text.startsWith("/") ? text.slice(1).split(" ")[0].toLowerCase() : null;
-  const filtered = slashQ !== null
-    ? cmds.filter(c => !slashQ || c.name.startsWith(slashQ) || c.name.includes(slashQ))
-    : [];
+  // Derive slash state inline — no useEffect, no stale flicker. Suppressed
+  // while the mention menu is showing: both can't render in the same
+  // absolutely-positioned spot (e.g. "/plan add @src/foo.js"). Once
+  // arguments are typed after a non-desktop (RPC) command, slashMenu
+  // returns [] — that command runs inside omp, not here, so the popup
+  // gets out of the way and Enter sends the literal text as a prompt.
+  const filtered = slashMenu(cmds, text);
   const showSlash = filtered.length > 0 && !showMention;
 
   // Keep activeIdx in bounds; auto-select when single result
@@ -122,7 +123,48 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     if (!isStreaming) requestAnimationFrame(() => taRef.current?.focus());
   }, [isStreaming]);
 
+  // Shared by the inline `/` popup's non-desktop pick and the ⌘K bridge's
+  // draftInsert below — both replace the composer's text with a command
+  // token and put the caret at its end, ready for arguments.
+  const replaceDraft = (next) => {
+    setText(next);
+    setActiveIdx(0);
+    requestAnimationFrame(() => {
+      const ta = taRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = next.length;
+    });
+  };
+
+  // CommandBridge (⌘K) hands a non-desktop pick here the same way — see
+  // its `onInsertDraft` prop. Keyed on `nonce` (not `text`) so picking the
+  // same command twice in a row still re-fires the effect. Unlike the
+  // inline popup (only ever visible while `text` already starts with the
+  // command being replaced), ⌘K has no textarea of its own — the composer
+  // may be holding an unrelated typed draft when it's opened. A non-empty,
+  // non-slash draft is kept as the inserted command's argument instead of
+  // silently discarded; `text` is deliberately read directly (not depended
+  // on) so this only fires on a new pick, using whatever draft is current
+  // at that moment.
+  React.useEffect(() => {
+    if (!draftInsert) return;
+    const trimmed = text.trim();
+    const next = trimmed && !trimmed.startsWith("/") ? draftInsert.text + trimmed : draftInsert.text;
+    replaceDraft(next);
+  }, [draftInsert?.nonce]);
+
   const execCmd = (cmd) => {
+    // A non-desktop (RPC) command has no handler in app-live.jsx's
+    // handleCommand — it runs inside omp. Insert `/name ` and leave focus
+    // in the composer instead of firing it immediately: the user adds
+    // arguments (or none) and Enter sends it as a normal prompt, same as
+    // typing the whole thing by hand. Guards against a one-click accident
+    // on a destructive command like `/delete`.
+    if (!isDesktop(cmd)) {
+      replaceDraft(slashInsertText(cmd));
+      return;
+    }
     setText("");
     setActiveIdx(0);
     setMentionDismissedKey(null);
@@ -323,9 +365,9 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
               onMouseEnter={() => setActiveIdx(i)}
               onMouseDown={(e) => { e.preventDefault(); execCmd(c); }}>
               <span className="slash-glyph">{c.icon}</span>
-              <span className="mono" style={{ color: "var(--accent)" }}>/{c.name}</span>
-              <span style={{ color: "var(--fg-3)" }}>{c.hint}</span>
-              <span className="chip muted" style={{ marginLeft: "auto" }}>{c.group}</span>
+              <span className="slash-name mono" style={{ color: "var(--accent)" }}>/{c.name}</span>
+              <span className="slash-hint" style={{ color: "var(--fg-3)" }} title={c.hint}>{c.hint}</span>
+              <span className="chip muted" style={{ marginLeft: "auto", flex: "none" }}>{c.group}</span>
             </button>
           ))}
         </div>
@@ -460,7 +502,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
 //  commands view  — lists all slash-commands; /model drills into picker
 //  models view    — filterable model list; Esc returns to commands
 //
-function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, onPickLogin, loginProviders, initialView = "commands" }) {
+function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, onPickLogin, onInsertDraft, loginProviders, initialView = "commands" }) {
   const [q, setQ]       = React.useState("");
   const [view, setView] = React.useState("commands");
   const inputRef = React.useRef(null);
@@ -606,7 +648,7 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, onP
 
   // ── Commands view ──────────────────────────────────────────────────
   const cmds    = window.OMP_DATA.commands;
-  const cmdHits = cmds.filter((c) => !q || fil(c.name) || fil(c.hint));
+  const cmdHits = cmds.filter((c) => matchesQuery(c, q));
   const groups  = {};
   cmdHits.forEach((c) => { (groups[c.group] = groups[c.group] || []).push(c); });
   const activeModelName = models.find((m) => m.id === currentModelId)?.name ?? "–";
@@ -634,11 +676,12 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, onP
                     onClick={() => {
                       if (isModel) { setQ(""); setView("models"); }
                       else if (isLogin) { setQ(""); setView("login"); }
-                      else { onPick(c); onClose(); }
+                      else if (isDesktop(c)) { onPick(c); onClose(); }
+                      else { onInsertDraft(slashInsertText(c)); onClose(); }
                     }}>
                     <span className="bridge-glyph">{c.icon}</span>
-                    <span className="mono" style={{ color: "var(--accent)" }}>/{c.name}</span>
-                    <span style={{ color: "var(--fg-3)" }}>{c.hint}</span>
+                    <span className="bridge-cmd-name mono" style={{ color: "var(--accent)" }}>/{c.name}</span>
+                    <span className="bridge-cmd-hint" style={{ color: "var(--fg-3)" }} title={c.hint}>{c.hint}</span>
                     {isModel && (
                       <span className="mono" style={{ color: "var(--fg-4)", marginLeft: "auto" }}>
                         {activeModelName}
