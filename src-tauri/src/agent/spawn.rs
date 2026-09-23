@@ -24,7 +24,7 @@ const CANDIDATES: &[&str] = if cfg!(windows) {
 /// profile-env-var strip ([`sanitize_child_env`] — without it an
 /// inherited `OMP_PROFILE`/`PI_PROFILE` silently redirects the child to
 /// one named profile's tree instead of whatever this call intends), an
-/// explicit closed-stdin default, and (Windows) [`CREATE_NO_WINDOW`] so a
+/// explicit closed-stdin default, and (Windows) `CREATE_NO_WINDOW` so a
 /// GUI-subsystem parent spawning a console-subsystem binary doesn't flash
 /// a console window.
 ///

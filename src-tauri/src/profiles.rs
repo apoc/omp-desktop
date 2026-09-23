@@ -523,7 +523,7 @@ impl ProfileStore {
         }
     }
 
-    /// [`resolve`], but for an owned `profile` a caller is about to move
+    /// [`Self::resolve`], but for an owned `profile` a caller is about to move
     /// into a `spawn_blocking` closure — the borrow-then-move dance
     /// `resolve` alone would force at every such call site (validate
     /// through the borrow, then move the original instead of allocating a
@@ -537,7 +537,7 @@ impl ProfileStore {
     /// purely to get past the borrow.
     ///
     /// # Errors
-    /// Same as [`resolve`]: an `Err` when `profile` names no listed profile.
+    /// Same as [`Self::resolve`]: an `Err` when `profile` names no listed profile.
     pub fn resolve_owned(&self, profile: Option<String>) -> Result<Option<String>, String> {
         Ok(if self.resolve(profile.as_deref())?.is_some() {
             profile
