@@ -1122,11 +1122,19 @@
       // tab (missed live events) are appended at the end. activeToolCards
       // indices are rebuilt so in-flight tool_execution_update events keep
       // landing on the right array slot.
+      //
+      // A still-`pendingEcho` bubble (queued follow-up/steer, see
+      // OMP_BRIDGE.followUp/.steer) is also kept in place rather than
+      // consuming a `pending` slot — omp hasn't persisted it yet, so
+      // `completed` doesn't contain it; treating it as an ordinary text
+      // entry here would misalign every slot after it (the next persisted
+      // turn would be substituted into its place, and the last real turn
+      // would then find nothing left and be dropped).
       const pending = [...completed];
       const merged = [];
       for (const m of state.messages) {
         if (m.streaming) continue; // streaming bubble handled separately below
-        if (m.kind === "tool" || m.kind === "ask" || m.kind === "compact") {
+        if (m.kind === "tool" || m.kind === "ask" || m.kind === "compact" || m.pendingEcho) {
           merged.push(m);
         } else if (pending.length > 0) {
           merged.push(pending.shift());
@@ -1349,9 +1357,24 @@
         const blocks = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: String(msg.content ?? "") }];
         const { text, images } = window.adaptUserContent(blocks);
         if (text || images.length > 0) {
-          const last = state.messages[state.messages.length - 1];
-          if (!(last?.kind === "user" && last.text === text)) {
-            state.messages = [...state.messages, { kind: "user", time, text, images }];
+          // A follow-up's or steer's optimistic bubble (see OMP_BRIDGE.followUp
+          // / .steer) is tagged `pendingEcho` and may no longer be the tail by
+          // the time omp echoes it back — omp holds a follow-up until the agent
+          // would otherwise stop, and defers a steer until the current turn's
+          // tool batch finishes, so any tool card/assistant turn in between
+          // appends after it. Reconcile against the oldest matching pending
+          // bubble wherever it is instead of only checking the tail, or a
+          // duplicate is appended.
+          const pendingIdx = state.messages.findIndex(m => m.kind === "user" && m.pendingEcho && m.text === text);
+          if (pendingIdx !== -1) {
+            const next = state.messages.slice();
+            next[pendingIdx] = { ...next[pendingIdx], pendingEcho: false };
+            state.messages = next;
+          } else {
+            const last = state.messages[state.messages.length - 1];
+            if (!(last?.kind === "user" && last.text === text)) {
+              state.messages = [...state.messages, { kind: "user", time, text, images }];
+            }
           }
           notify();
         }
@@ -1745,9 +1768,19 @@
       _send({ type: "prompt", message: text, images: images ?? [] });
     },
     abort()            { _send({ type: "abort" }); },
-    followUp(text, images) { _send({ type: "follow_up", message: text, images: images ?? [] }); },
+    // Both tagged `pendingEcho`: omp doesn't inject a follow-up until the
+    // agent would otherwise stop, and defers a steer until the current
+    // turn's tool batch finishes — so either bubble is usually no longer
+    // the tail by the time its message_start echo arrives. The echo
+    // handler reconciles by content match instead of assuming it's last.
+    followUp(text, images) {
+      const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [], pendingEcho: true };
+      state.messages = [...state.messages, userMsg];
+      notify();
+      _send({ type: "follow_up", message: text, images: images ?? [] });
+    },
     steer(text, images) {
-      const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [] };
+      const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [], pendingEcho: true };
       state.messages = [...state.messages, userMsg];
       notify();
       _send({ type: "steer", message: text, images: images ?? [] });

@@ -6,7 +6,8 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "tauri": "tauri",
-    "test:keymap": "node test-keymap.mjs"
+    "test:keymap": "node test-keymap.mjs",
+    "test:scroll-pin": "node test-scroll-pin.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

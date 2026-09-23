@@ -1,9 +1,13 @@
-/* chat/chat-view.jsx — top-level chat surface. Handles auto-scroll to
-   bottom when new messages land, and routes each message to the right
-   bubble component. The minimap-hover cross-highlight (mm-hot) flows
-   through here via the `hoveredMsgIdx` prop. */
+/* chat/chat-view.jsx — top-level chat surface. Sticks to the bottom while
+   the user is already there; a manual scroll up unpins the view and shows
+   a "Jump to latest" button instead of forcing the viewport back on every
+   streamed update (issue #20). See app/scroll-pin.js for the pin state
+   machine. Also routes each message to the right bubble component; the
+   minimap-hover cross-highlight (mm-hot) flows through here via the
+   `hoveredMsgIdx` prop. */
 
 const { UserBubble: _CV_UserBubble, ToolCard: _CV_ToolCard, AssistantBubble: _CV_AssistantBubble, AskBubble: _CV_AskBubble, Icon: _CV_Icon } = window;
+const { nextPinned: _CV_nextPinned, shouldRepin: _CV_shouldRepin } = window.OMP_SCROLL_PIN;
 
 // ── Per-bubble memo wrappers ────────────────────────────────────────────────
 // Primary streaming-perf win: only the live tail (new object ref per
@@ -72,30 +76,58 @@ const CompactRow = React.memo(function CompactRow({ msg }) {
 });
 
 function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, onAskAnswer, onConfirmAsk, onCancelAsk, onGrantApproval, hasProjectPath }) {
-  const scrollRef    = React.useRef(null);
-  const atBottomRef  = React.useRef(true);   // assume start at bottom
-  const prevCountRef = React.useRef(0);
+  const scrollRef   = React.useRef(null);
+  const pinnedRef   = React.useRef(true);   // assume start pinned to bottom
+  const prevTopRef  = React.useRef(0);
+  const lastIdRef   = React.useRef(null);
+  // Mirrors pinnedRef into render so the "Jump to latest" button can show —
+  // scroll position itself must not force a re-render on every wheel tick.
+  const [showJump, setShowJump] = React.useState(false);
 
-  // Track whether user is near the bottom
+  const setPinned = (val) => {
+    pinnedRef.current = val;
+    setShowJump(!val);
+  };
+
+  // Re-syncs prevTopRef after every programmatic scroll, or the next
+  // nextPinned call would misread it as a user scroll-up.
+  const stickToBottom = (el) => {
+    el.scrollTop = el.scrollHeight;
+    prevTopRef.current = el.scrollTop;
+  };
+
+  // Only a real user scroll — up and away from the bottom — unpins.
+  // Scrolling back down near the bottom re-pins. See app/scroll-pin.js.
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    const pinned = _CV_nextPinned(pinnedRef.current, prevTopRef.current, el);
+    prevTopRef.current = el.scrollTop;
+    if (pinned !== pinnedRef.current) setPinned(pinned);
   };
 
-  // Auto-scroll on every messages change
+  const jumpToLatest = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickToBottom(el);
+    setPinned(true);
+  };
+
+  // Auto-scroll only while pinned. A new message block (tool card, new
+  // assistant turn, …) during a run must NOT itself force a jump — that
+  // was issue #20: every streamed update snapped the view to the bottom
+  // even while the user was reading history. Sending a new prompt
+  // explicitly re-pins, and so does the transcript being reset to empty
+  // (/new, a profile switch respawning the tab, or the tab itself being
+  // torn down) — none of those change `activeSessionId`, so the `key`
+  // remount on tab switch (app-live.jsx) doesn't reach them, and a leftover
+  // unpinned state would otherwise strand the button over an empty chat.
   React.useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const count = messages.length;
-    const newMsg = count > prevCountRef.current;
-    prevCountRef.current = count;
-    // Always scroll when a new message block is added (user sent, agent
-    // started, tool card appeared). During streaming (same count, content
-    // grows) only scroll if already at bottom.
-    if (newMsg || atBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
-    }
+    if (!pinnedRef.current && _CV_shouldRepin(lastIdRef.current, messages)) setPinned(true);
+    lastIdRef.current = messages[messages.length - 1]?._id ?? null;
+    if (pinnedRef.current) stickToBottom(el);
   }, [messages]);
 
   // Only the last completed assistant message is annotatable in plan mode
@@ -107,26 +139,34 @@ function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, 
   }
 
   return (
-    <div className="chat-scroll selectable" ref={scrollRef} onScroll={onScroll}>
-      <div className="chat-pad">
-        {/* Note: after a trim, idx shifts for all surviving messages, causing a full
-           re-render of memo'd bubbles in that notify cycle (bounded at MINIMAP_MAX -
-           MINIMAP_COLS = 156). Streaming re-renders are unaffected. Driving annotable
-           and scroll-targeting off _id instead of idx would make trim zero-cost for
-           history, but requires a larger refactor. */}
-        {messages.map((m, i) => {
-          const hl = hoveredMsgIdx === i;
-          if (m.kind === "user")    return <_CV_UserBubble_M    key={m._id ?? i} idx={i} highlighted={hl} msg={m} />;
-          if (m.kind === "compact") return <CompactRow          key={m._id ?? i} msg={m} />;
-          if (m.kind === "tool")    return <_CV_ToolCard_M      key={m._id ?? i} idx={i} highlighted={hl} msg={m} />;
-          if (m.kind === "ask")     return <_CV_AskBubble_M     key={m._id ?? i} idx={i} highlighted={hl} msg={m} onAnswer={onAskAnswer} onConfirm={onConfirmAsk} onCancelAsk={onCancelAsk} onGrant={onGrantApproval} hasProjectPath={hasProjectPath} />;
-          return <_CV_AssistantBubble_M key={m._id ?? i} idx={i} highlighted={hl} msg={m}
-            annotable={i === lastAsstIdx}
-            annotations={annotations}
-            onAnnotate={onAnnotate} />;
-        })}
-        <div style={{ height: 24 }} />
+    <div className="chat-wrap">
+      <div className="chat-scroll selectable" ref={scrollRef} onScroll={onScroll}>
+        <div className="chat-pad">
+          {/* Note: after a trim, idx shifts for all surviving messages, causing a full
+             re-render of memo'd bubbles in that notify cycle (bounded at MINIMAP_MAX -
+             MINIMAP_COLS = 156). Streaming re-renders are unaffected. Driving annotable
+             and scroll-targeting off _id instead of idx would make trim zero-cost for
+             history, but requires a larger refactor. */}
+          {messages.map((m, i) => {
+            const hl = hoveredMsgIdx === i;
+            if (m.kind === "user")    return <_CV_UserBubble_M    key={m._id ?? i} idx={i} highlighted={hl} msg={m} />;
+            if (m.kind === "compact") return <CompactRow          key={m._id ?? i} msg={m} />;
+            if (m.kind === "tool")    return <_CV_ToolCard_M      key={m._id ?? i} idx={i} highlighted={hl} msg={m} />;
+            if (m.kind === "ask")     return <_CV_AskBubble_M     key={m._id ?? i} idx={i} highlighted={hl} msg={m} onAnswer={onAskAnswer} onConfirm={onConfirmAsk} onCancelAsk={onCancelAsk} onGrant={onGrantApproval} hasProjectPath={hasProjectPath} />;
+            return <_CV_AssistantBubble_M key={m._id ?? i} idx={i} highlighted={hl} msg={m}
+              annotable={i === lastAsstIdx}
+              annotations={annotations}
+              onAnnotate={onAnnotate} />;
+          })}
+          <div style={{ height: 24 }} />
+        </div>
       </div>
+      {showJump && (
+        <button type="button" className="chat-jump-latest" onClick={jumpToLatest}>
+          <_CV_Icon name="chev" size={12} />
+          Jump to latest
+        </button>
+      )}
     </div>
   );
 }

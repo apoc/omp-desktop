@@ -1,10 +1,41 @@
 /* Chat surface — bubbles, inline plan, tool card, eval, diff ────── */
 
 /* ── Chat ───────────────────────────────────────────────────────────── */
+.chat-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+}
 .chat-scroll {
   flex: 1;
   overflow-y: auto; overflow-x: hidden;
   background: var(--bg-window);
+}
+
+/* Shown only while unpinned from the bottom (issue #20) — an explicit,
+   deliberate way back to the live tail instead of every update yanking
+   the view there regardless of what the user is reading. */
+.chat-jump-latest {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-bright);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font-size: 12.5px; font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow-pop);
+  animation: chat-jump-in 0.15s var(--ease-out);
+}
+.chat-jump-latest:hover { border-color: var(--accent); color: var(--accent); }
+@keyframes chat-jump-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 .chat-pad {
   max-width: none;

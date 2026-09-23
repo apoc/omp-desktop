@@ -191,8 +191,13 @@ function App() {
     if (!next) planStartedRef.current = false;
   };
 
-  // Composer-scoped follow-up: the composer owns the draft text.
-  const handleFollowUp = (text, images) => { bridge?.followUp(text, images); };
+  // Composer-scoped follow-up: the composer owns the draft text. Re-trim
+  // here (mirrors handleSend's `msg = text.trim()`) — expandPastes runs
+  // after the composer's own trim and can reintroduce leading/trailing
+  // whitespace from the raw pasted content, which would otherwise mismatch
+  // the RPC echo's always-trimmed text (adaptUserContent) and duplicate
+  // the bubble instead of reconciling it (see OMP_BRIDGE.followUp).
+  const handleFollowUp = (text, images) => { bridge?.followUp(text.trim(), images); };
 
   const handleCommand = c => {
     if      (c.name === "plan")      { setPlanMode(true); planStartedRef.current = false; }
@@ -379,7 +384,7 @@ function App() {
 
           <div className={`stage ${showRail ? "with-rail" : ""}`}>
             <main className="session">
-              <ChatView messages={messages}
+              <ChatView key={activeSessionId} messages={messages}
                 planMode={planMode}
                 annotations={planAnnotations}
                 onAnnotate={handleAnnotate}
