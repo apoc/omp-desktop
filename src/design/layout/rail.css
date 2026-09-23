@@ -131,6 +131,22 @@
   animation: pulseDot 1.8s ease-in-out infinite;
 }
 
+.minimap-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  font-size: 10px;
+  color: var(--fg-4);
+}
+.minimap-legend-item { display: inline-flex; align-items: center; gap: 4px; }
+.minimap-legend-item i {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  flex: none;
+}
+
 /* Reverse highlight: hovering a minimap cell lights up the chat bubble. */
 .row.mm-hot .user-bubble,
 .row.mm-hot .ass-body,

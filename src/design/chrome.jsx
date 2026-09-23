@@ -263,6 +263,12 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
           );
         })}
       </div>
+      <div className="minimap-legend">
+        <span className="minimap-legend-item"><i style={{ background: "var(--fg-3)" }} />you</span>
+        <span className="minimap-legend-item"><i style={{ background: "var(--accent)" }} />assistant</span>
+        <span className="minimap-legend-item"><i style={{ background: "var(--amber)" }} />ask</span>
+        <span className="minimap-legend-item"><i style={{ background: "var(--fg-4)" }} />tool</span>
+      </div>
     </div>
   );
 }
