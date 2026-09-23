@@ -93,12 +93,6 @@
 .legend-item { display: inline-flex; align-items: center; gap: 4px; }
 .legend-item span:first-child { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 
-/* peer */
-.peer { display: flex; flex-direction: column; gap: 6px; }
-.peer-head { display: flex; align-items: center; gap: 6px; font-size: var(--d-text-sm); }
-.peer-title { color: var(--fg); font-size: var(--d-text-sm); }
-.peer-row { display: flex; align-items: center; gap: 6px; font-size: var(--d-text-xs); }
-
 /* ── Minimap (dense token-heatmap grid) ───────────────────────────── */
 .minimap { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
 .minimap-head { display: flex; align-items: center; gap: 6px; font-size: var(--d-text-xs); }

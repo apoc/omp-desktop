@@ -3,10 +3,10 @@
    - WindowChrome (traffic lights, title)
    - TabBar
    - StatusBar
-   - Ambient rail: TokenGauge, ActivityRadar, Minimap, Peer session
+   - Ambient rail: TokenGauge, ActivityRadar, subagents card, Minimap
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID } = window;
+const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID, SubagentRailCard } = window;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` — same
 // guard and rationale as composer.jsx's copy (kept local rather than a
@@ -22,7 +22,7 @@ const IS_WIN = typeof navigator !== "undefined" &&
 
 // ── Window chrome ─────────────────────────────────────────────────────
 function WindowChrome({
-  project, peer, onCmd,
+  project, onCmd,
   profiles, activeProfileId, startupProfileId,
   onSelectProfile, onCreateProfile, onRenameProfile, onDeleteProfile, onSetStartupProfile,
 }) {
@@ -81,7 +81,7 @@ function WindowChrome({
 }
 
 // ── Project tabs ─────────────────────────────────────────────────────
-function TabBar({ projects, activeId, onSelect, onClose, peer, onNew, onHistory, profiles = [] }) {
+function TabBar({ projects, activeId, onSelect, onClose, onNew, onHistory, profiles = [] }) {
   // Tabs can run under different profiles, so a tab whose profile is not the
   // built-in one is labelled with it — otherwise two tabs on the same folder
   // in different profiles look identical. Falls back to the raw id until the
@@ -112,9 +112,6 @@ function TabBar({ projects, activeId, onSelect, onClose, peer, onNew, onHistory,
             <span className="tab-name" title={p.name}>{p.name}</span>
             {profile && (
               <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
-            )}
-            {p.id === peer?.projectId && (
-              <span className="chip accent" style={{ padding: "1px 6px" }}>split</span>
             )}
             <button className="tab-close" onClick={e => { e.stopPropagation(); onClose?.(p.id); }}><Icon name="close" size={9} /></button>
           </div>
@@ -273,36 +270,11 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
   );
 }
 
-// ── Peer session widget — shows the OTHER agent, when split is on ────
-function PeerSession({ peer }) {
-  const meta = TOOL_META[peer.activity?.split(" · ")[0]] || TOOL_META.edit;
-  return (
-    <div className="peer">
-      <div className="peer-head">
-        <span className="dot live" style={{ background: "var(--cyan)", boxShadow: "0 0 0 0 var(--cyan)" }} />
-        <span className="mono" style={{ color: "var(--cyan)" }}>{peer.project}</span>
-        <span className="mono" style={{ marginLeft: "auto", color: "var(--fg-4)" }}>{peer.tps}t/s</span>
-      </div>
-      <div className="peer-title selectable">{peer.title}</div>
-      <div className="peer-row">
-        <span className="chip accent" style={{ borderColor: `color-mix(in oklab, ${meta.color} 40%, var(--line))`, color: meta.color, background: `color-mix(in oklab, ${meta.color} 12%, transparent)` }}>
-          <Icon name={meta.icon} size={9} color={meta.color} />
-          {peer.activity}
-        </span>
-      </div>
-      <div className="peer-row mono" style={{ color: "var(--fg-3)" }}>
-        todo {peer.todo.done}/{peer.todo.total}
-        <span className="status-bar-tube" style={{ marginLeft: 6, flex: 1 }}>
-          <span className="status-bar-fill" style={{ width: `${(peer.todo.done / peer.todo.total) * 100}%`, background: "var(--cyan)" }} />
-        </span>
-        <button className="btn ghost" style={{ marginLeft: 6, height: 18, padding: "0 6px", fontSize: "var(--d-text-xs)" }}>focus →</button>
-      </div>
-    </div>
-  );
-}
-
 // ── Right rail: ambient peripherals stacked ──────────────────────────
-function AmbientRail({ ctx, activity, peer, messages, microcopy, onClose, sparklineValues, hoveredMsgIdx, onMinimapHover, onMinimapClick }) {
+function AmbientRail({
+  ctx, activity, messages, microcopy, onClose, sparklineValues, hoveredMsgIdx, onMinimapHover, onMinimapClick,
+  subagents, subagentPaneOpen, onOpenSubagent, onToggleSubagentPane,
+}) {
   // Use live tps samples. Before the first turn, sparklineValues is all zeros
   // which renders as a flat baseline — honest, not fake random data.
   const sparkVals = (sparklineValues && sparklineValues.length > 0)
@@ -345,14 +317,8 @@ function AmbientRail({ ctx, activity, peer, messages, microcopy, onClose, sparkl
         </div>
       </div>
 
-      <div className="rail-card glass">
-        <div className="rail-card-head">
-          <Icon name="split" size={11} color="var(--cyan)" />
-          <span className="mono" style={{ color: "var(--fg-2)" }}>peer session</span>
-          <span className="chip" style={{ marginLeft: "auto", color: "var(--cyan)", borderColor: "color-mix(in oklab, var(--cyan) 30%, var(--line))" }}>split</span>
-        </div>
-        <PeerSession peer={peer} />
-      </div>
+      <SubagentRailCard agents={subagents} paneOpen={subagentPaneOpen}
+        onOpen={onOpenSubagent} onTogglePane={onToggleSubagentPane} />
 
       <div className="rail-card glass" style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 120 }}>
         <div className="rail-card-head">
@@ -365,4 +331,4 @@ function AmbientRail({ ctx, activity, peer, messages, microcopy, onClose, sparkl
   );
 }
 
-Object.assign(window, { WindowChrome, TabBar, StatusBar, AmbientRail, SessionMinimap, PeerSession });
+Object.assign(window, { WindowChrome, TabBar, StatusBar, AmbientRail, SessionMinimap });

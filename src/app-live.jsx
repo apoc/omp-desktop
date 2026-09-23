@@ -18,12 +18,12 @@
    ═════════════════════════════════════════════════════════════════════ */
 
 const {
-  Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar,
+  Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar, SubagentPane,
   StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
-  TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, NULL_PEER, DEFAULT_PROFILE_ID,
+  TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, DEFAULT_PROFILE_ID,
   INTENT_FRAMING, APPROVAL_PROMPT,
-  useBridgeSnapshot, useThemeEffect, timeNow,
+  useBridgeSnapshot, useThemeEffect, useSubagentManager, timeNow,
   useKeymap, useKeymapDispatch, ShortcutsModal,
 } = window;
 const { isSlashCommand } = window.OMP_SLASH;
@@ -76,6 +76,10 @@ function App() {
   // promptHistories. Never persisted; re-sourced from the bridge snapshot
   // on every update, same as any other per-session field here.
   const [promptHistory, setPromptHistory] = React.useState([]);
+  // Subagent manager (src/app/subagents.js shape) + the active tab's
+  // on-demand agent transcripts.
+  const [subagents,           setSubagents]           = React.useState(() => window.OMP_SUBAGENTS.emptySubagents());
+  const [subagentTranscripts, setSubagentTranscripts] = React.useState({});
 
   // ── Tab list — driven by bridge session registry ──────────────────────────
   // Each entry: { id, name, path, color, branch }
@@ -96,7 +100,7 @@ function App() {
     setModels, setActivity, setSparkline,
     setModelState, setThinkingLevel,
     setSessions, setActiveSessionId, setProfiles, setStartupProfileId,
-    setPromptHistory,
+    setPromptHistory, setSubagents, setSubagentTranscripts,
   });
   useThemeEffect(t);
   React.useEffect(() => {
@@ -135,6 +139,11 @@ function App() {
   // ── Keymap ────────────────────────────────────────────────────────────────
   // Placed after activeProject so useKeymap can pass the active tab's profile.
   const keymap = useKeymap(bridge, activeProject?.profile);
+
+  const subagentUi = useSubagentManager({
+    bridge, layout: t.layout, setTweak, activeSessionId, subagents, messages, setHoveredMsgIdx,
+  });
+  const subagentList = React.useMemo(() => window.OMP_SUBAGENTS.listAgents(subagents), [subagents]);
 
   // Handler map read through a ref so the dispatch effect never re-subscribes.
   const handlersRef = React.useRef({});
@@ -385,8 +394,7 @@ function App() {
   const handleSetStartupProfile = React.useCallback(id => bridge?.setStartupProfile(id), [bridge]);
 
   const showRail  = t.layout !== "focus";
-  const showSplit = t.layout === "split" && data.peer !== null;
-  const safePeer  = data.peer ?? NULL_PEER;
+  const showSplit = subagentUi.paneOpen;
   const liveCtx   = ctx ?? data.ctx;
 
   return (
@@ -396,7 +404,6 @@ function App() {
         <div className={`window scanlines ${showSplit ? "is-split" : ""}`}>
           <WindowChrome
             project={activeProject}
-            peer={safePeer}
             onCmd={() => setBridgeOpen(true)}
             profiles={profiles}
             activeProfileId={activeProfileId}
@@ -412,7 +419,6 @@ function App() {
             projects={sessions}
             activeId={activeSessionId}
             onSelect={handleSelectTab}
-            peer={safePeer}
             onNew={handleNewProject}
             onClose={handleCloseTab}
             onHistory={() => setHistoryOpen(true)}
@@ -430,6 +436,7 @@ function App() {
                 onGrantApproval={handleGrantApproval}
                 hoveredMsgIdx={hoveredMsgIdx}
                 hasProjectPath={!!activeProject?.path}
+                onInspectSubagent={subagentUi.open}
               />
               <Composer
                 onSend={handleSend}
@@ -468,13 +475,28 @@ function App() {
               />
             </main>
 
-            {showSplit && data.peer && <SplitPeer peer={data.peer} />}
+            {showSplit && (
+              <SubagentPane
+                state={subagents}
+                filter={subagentUi.filter} onFilter={subagentUi.setFilter}
+                selected={subagentUi.selected} onSelect={subagentUi.select}
+                level={subagentUi.level}
+                transcript={subagentUi.selected ? subagentTranscripts[subagentUi.selected.id] : null}
+                onLoadTranscript={id => bridge?.loadSubagentTranscript(id)}
+                onClose={subagentUi.closePane}
+                onJumpToCall={subagentUi.jumpToCall}
+                onCopy={subagentUi.copy}
+              />
+            )}
 
             {showRail && (
               <AmbientRail
                 ctx={liveCtx}
                 activity={activity}
-                peer={safePeer}
+                subagents={subagentList}
+                subagentPaneOpen={showSplit}
+                onOpenSubagent={subagentUi.open}
+                onToggleSubagentPane={subagentUi.togglePane}
                 messages={messages}
                 microcopy={data.microcopy}
                 sparklineValues={sparkline}

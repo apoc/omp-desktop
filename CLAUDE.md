@@ -18,6 +18,7 @@ Tauri 2 desktop shell for `omp` (oh-my-pi). React UI loaded from `src/` by Tauri
 | Chat scroll-pin regression | `node test-scroll-pin.mjs` (or `npm run test:scroll-pin`) |
 | Slash-command palette regression | `node test-slash-commands.mjs` (or `npm run test:slash-commands`) |
 | Prompt history regression | `node test-prompt-history.mjs` (or `npm run test:prompt-history`) |
+| Subagent manager reducer regression | `node test-subagents.mjs` (or `npm run test:subagents`) |
 
 `omp` must be on PATH (`%LOCALAPPDATA%\omp\omp.exe` on Win). CI = `cargo check` + `cargo test` on win/linux/mac.
 
@@ -47,6 +48,18 @@ Each tab also owns its **profile**: `omp --profile <id>` isolates auth/sessions/
 
 The same menu ticks one profile as the **startup default**, stored as `ProfilesFile::startup` — a *pointer*, not a reordering, since `normalize` pins the built-in entry first and ids are the join key for on-disk data. `None`/absent means the built-in profile. It governs `lib.rs::setup`'s launch session and any tab opened with no active tab to inherit from; `openSession` otherwise inherits the active tab's profile, and running tabs are never moved. The pointer is re-validated against the list on every load and inside every `mutate`, so deleting or hand-editing away the ticked profile degrades to the built-in one instead of dangling. `list_profiles` returns `{profiles, startupId}` in one payload so the menu can't render a checkmark against a stale default.
 
+## Subagent manager
+
+Replaces the old prototype-only "peer session" split/rail widgets (removed). omp streams subagent activity over RPC once subscribed: `set_subagent_subscription` (`off | progress | events`), frames `subagent_lifecycle` / `subagent_progress` / `subagent_event`, plus `get_subagents` (running agents only) and `get_subagent_messages` (tails an agent's session file by byte offset). `src/app/subagents.js` is the pure reducer over those frames (regression: `test-subagents.mjs`); `live.js` keeps its result in `state.subagents`, snapshotted per tab like the transcript.
+
+- omp's registry *deletes* an agent on its terminal status, so the desktop keeps finished agents itself until the session changes (`_resetSessionVars`). Don't replace the local copy with `get_subagents`.
+- `_initFetch` re-asserts the subscription (a respawned process starts at `off`) and calls `get_subagents` on every activation — but drops its post-negotiate batch if a tab switch started meanwhile (`_switchGen`), since it would still address the tab being left; `mergeSnapshots` marks agents that were live locally but are no longer listed as ended with `unknownOutcome` (finished outside the journal replay window).
+- A dead process (the `agent://exit` listener, or a startup error surfaced on activation) ends its live agents via `mergeSnapshots(…, [])` — nothing else ever would.
+- Receive time is not start time: journal-replayed frames arrive late, so `applyProgress` pulls `startedAt` back to `now - progress.durationMs`.
+- `events` is the expensive level: only while an agent the manager actually holds is on screen in the inspector (`useSubagentManager` derives `inspecting` from the resolved agent, not the raw id → `OMP_BRIDGE.setSubagentInspecting`). `_switchToSession` downgrades the process being left before `activeSessionId` moves, but leaves the flag to the UI.
+- The Rust bridge only forwards allowlisted command types (`ALLOWED_COMMAND_TYPES` in `src-tauri/src/agent/mod.rs`) — a new RPC command in `live.js` must be added there too, or `send_command` rejects it before it reaches omp.
+- The manager pane *is* the tweaks `layout: "split"` column (`.window.is-split`); open/close goes through `setTweak`. Transcripts (`state.subagentTranscripts`) are ephemeral — not snapshotted, dropped on tab switch, refetched on demand; a response landing after a switch is discarded.
+
 ## OS folder opens ("Open with OMP Desktop")
 
 `src-tauri/src/external_open.rs` + `src-tauri/packaging/`. Three delivery paths, one queue:
@@ -68,14 +81,16 @@ Paths are canonicalised in Rust (`canonical_folder`) before they reach the front
 Script order **is** the dependency graph:
 
 1. Vendored libs: React, ReactDOM, Babel, `marked.min.js`, `highlight.min.js` + marked-wiring inline.
-2. App constants: `app/constants.js` → `app/keymap.js` (plain, IIFE — defines `window.OMP_KEYMAP`; must load before any Babel file that calls `OMP_KEYMAP.matches`/`.keysFor`, including `composer.jsx`, `shortcuts-modal.jsx`, `use-keymap.jsx`) → `mentions.js` (plain, IIFE) → `app/image-attach.js` (plain, IIFE — defines `window.OMP_IMAGES`; `composer.jsx` destructures it at top level) → `app/slash-commands.js` (plain, IIFE — defines `window.OMP_SLASH`; `composer.jsx` and `live.js` both destructure it at top level, so this must load before either) → `app/scroll-pin.js` (plain, IIFE — defines `window.OMP_SCROLL_PIN`; `chat/chat-view.jsx` destructures it at top level, so this must load before it) → `app/prompt-history.js` (plain, IIFE — defines `window.OMP_PROMPT_HISTORY`; `composer.jsx` references it in event handlers, and `live.js` reads it at its own top-level IIFE init — not just inside a later-called function — so this must load before `live.js` too, same constraint as `slash-commands.js`). **Before** the `design/` layer *and* before `app/use-bridge-snapshot.jsx` — `profile-menu.jsx`, `chrome.jsx`, `live.js` and `use-bridge-snapshot.jsx` destructure `DEFAULT_PROFILE_ID`/`isSubmitEnter` off `window` at *top level*, so moving this after any of them silently yields `undefined` (no resolver, no error). `composer.jsx` and `chat/ask-bubble.jsx` only call `isSubmitEnter` inside handlers — late-bound global lookups, insensitive to script order.
+2. App constants: `app/constants.js` → `app/keymap.js` (plain, IIFE — defines `window.OMP_KEYMAP`; must load before any Babel file that calls `OMP_KEYMAP.matches`/`.keysFor`, including `composer.jsx`, `shortcuts-modal.jsx`, `use-keymap.jsx`) → `mentions.js` (plain, IIFE) → `app/image-attach.js` (plain, IIFE — defines `window.OMP_IMAGES`; `composer.jsx` destructures it at top level) → `app/slash-commands.js` (plain, IIFE — defines `window.OMP_SLASH`; `composer.jsx` and `live.js` both destructure it at top level, so this must load before either) → `app/scroll-pin.js` (plain, IIFE — defines `window.OMP_SCROLL_PIN`; `chat/chat-view.jsx` destructures it at top level, so this must load before it) → `app/prompt-history.js` (plain, IIFE — defines `window.OMP_PROMPT_HISTORY`; `composer.jsx` references it in event handlers, and `live.js` reads it at its own top-level IIFE init — not just inside a later-called function — so this must load before `live.js` too, same constraint as `slash-commands.js`) → `app/subagents.js` (plain, IIFE — defines `window.OMP_SUBAGENTS`; `design/subagents/*.jsx` destructure it at top level and `live.js` reads it at its top-level IIFE init, so this must load before both). **Before** the `design/` layer *and* before `app/use-bridge-snapshot.jsx` — `profile-menu.jsx`, `chrome.jsx`, `live.js` and `use-bridge-snapshot.jsx` destructure `DEFAULT_PROFILE_ID`/`isSubmitEnter` off `window` at *top level*, so moving this after any of them silently yields `undefined` (no resolver, no error). `composer.jsx` and `chat/ask-bubble.jsx` only call `isSubmitEnter` inside handlers — late-bound global lookups, insensitive to script order.
 3. Tweaks: `tweaks/style.js`, `tweaks/use-tweaks.js` (plain, IIFE) → `tweaks/panel.jsx`, `tweaks/controls.jsx` (Babel; controls depends on panel).
 4. UI primitives: `ui/icons.jsx` (defines `Icon`, `TOOL_META`) → `ui/sparks.jsx` → `ui/markdown.jsx` → `ui/plan-annotations.jsx`.
 5. Chat: `chat/user-bubble.jsx` → `chat/eval-cell.jsx` → `chat/assistant-bubble.jsx` → `chat/tool-card.jsx` → `chat/ask-bubble.jsx` → `chat/chat-view.jsx`.
+   Then subagents: `subagents/subagent-bits.jsx` → `subagent-inspector.jsx` → `subagent-pane.jsx` (destructures `SubagentInspector`) → `subagent-rail-card.jsx`, all before `chrome.jsx`, whose `AmbientRail` destructures `window.SubagentRailCard` at top level.
 6. `design/mention-menu.jsx` → `design/composer.jsx` → `design/profile-menu.jsx` (before `chrome.jsx`, which destructures `window.ProfileMenu`) → `design/chrome.jsx` → `design/panels.jsx` → the remaining panels/modals → `design/shortcuts-modal.jsx` (after `history-modal.jsx`; reads `window.OMP_KEYMAP` at top level).
 7. Live data: `model-names.js` → `adapter.js` → `live.js`.
 8. `app/use-bridge-snapshot.jsx` (after `live.js`, whose snapshot it mirrors).
 9. `app/use-keymap.jsx` (after `live.js` — calls `bridge.listKeybindings`; after `use-bridge-snapshot.jsx`; before `app-live.jsx`).
+   → `app/use-subagent-manager.jsx` (UI state for the subagent manager; before `app-live.jsx`).
 10. `app-live.jsx` last.
 
 When adding a file, insert at the correct point — there is no resolver to catch ordering bugs.

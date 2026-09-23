@@ -58,6 +58,7 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "get_state",
     "get_messages",
     "get_available_models",
+    "get_available_commands",
     "negotiate_protocol",
     "prompt",
     "abort",
@@ -71,6 +72,11 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "export_html",
     "get_login_providers",
     "login",
+    // Subagent manager (src/app/subagents.js): subscription level, the
+    // live-agent snapshot, and per-agent transcript tailing.
+    "set_subagent_subscription",
+    "get_subagents",
+    "get_subagent_messages",
 ];
 
 /// Manages one omp process per tab session.
@@ -454,6 +460,45 @@ mod tests {
                 "{ty} should be allowed"
             );
         }
+    }
+
+    /// Every command `src/live.js` sends must survive `validate_command_type`
+    /// — the allowlist silently drifted twice (`get_available_commands`, the
+    /// subagent commands), and a rejected command only logs in the webview.
+    ///
+    /// Scans whitespace-free source so a reformat (multi-line object
+    /// literals) cannot hide a call site, and fails on any `_send(` /
+    /// `_sendWithResponse(` it cannot read — a new call site must either
+    /// lead with a literal `type` or be added to the known non-literal list.
+    #[test]
+    fn every_command_live_js_sends_is_allowed() {
+        // Argument prefixes of the call sites that carry no literal type:
+        // the two helper definitions and `_sendWithResponse`'s forwarder.
+        const NON_LITERAL: &[&str] = &["cmd){", "cmd,timeout", "{...cmd,id})"];
+        let flat: String = include_str!("../../../src/live.js")
+            .split_whitespace()
+            .collect();
+        let mut checked = 0;
+        for callee in ["_send(", "_sendWithResponse("] {
+            for (idx, _) in flat.match_indices(callee) {
+                let args = &flat[idx + callee.len()..];
+                if let Some(rest) = args.strip_prefix("{type:\"") {
+                    let ty = &rest[..rest.find('"').expect("closing quote on command type")];
+                    assert!(
+                        ALLOWED_COMMAND_TYPES.contains(&ty),
+                        "live.js sends '{ty}' but ALLOWED_COMMAND_TYPES rejects it"
+                    );
+                    checked += 1;
+                } else {
+                    let snippet: String = args.chars().take(40).collect();
+                    assert!(
+                        NON_LITERAL.iter().any(|known| args.starts_with(known)),
+                        "cannot read the command type at {callee}{snippet}"
+                    );
+                }
+            }
+        }
+        assert!(checked >= 20, "found only {checked} literal call sites");
     }
 
     #[test]

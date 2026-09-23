@@ -13,6 +13,7 @@
   "use strict";
   const { timeNow } = window;
   const { LOCAL_COMMANDS, adaptAvailableCommands, mergeSlashCommands, isSlashCommand } = window.OMP_SLASH;
+  const SUB = window.OMP_SUBAGENTS;
 
   // ── Safe defaults so design components never crash on missing fields ──────
   const DEFAULT_DATA = {
@@ -24,7 +25,6 @@
     models: [],
     activity: [],
     ctx: { used: 0, total: 200000, pct: 0, label: "0 / 200k", cost: "$0.00", tokensPerSec: 0 },
-    peer: null,
     microcopy: {
       empty:        "Hand me a project. I'll set the table.",
       streamingTip: "Press ⎋ to interrupt — your cursor is in the room.",
@@ -57,6 +57,12 @@
     sessionCost:    null,
     currentTps:     0,
     exitReason:     null,   // non-empty agent://exit reason for the last run — drives runStateOf's "failed"
+    // Subagent manager (src/app/subagents.js). Terminal agents are kept here
+    // for the life of the session — omp's own registry forgets them.
+    subagents:           SUB.emptySubagents(),
+    // agentId → { status, messages, nextByte, error } from get_subagent_messages.
+    // Ephemeral: dropped on tab switch (not snapshotted) and refetched on demand.
+    subagentTranscripts: {},
   };
 
   let streamingBubble = null;
@@ -71,6 +77,12 @@
   let lastSeq         = 0;   // highest journal seq processed for the active session — see _dispatchEnvelope
   let _replayBuffer   = null; // null = live dispatch; [] = buffering during a replay (see _switchToSession)
   let _msgSeq = 0;  // monotonic counter — stable React keys for message bubbles
+  // Whether the manager is inspecting an agent — decides the RPC subagent
+  // subscription level ("events" vs "progress"). Mirrors the UI (set only by
+  // setSubagentInspecting); _switchToSession downgrades the process being
+  // left but leaves the flag alone, so _initFetch applies it to the next one.
+  let subagentInspecting = false;
+  let _transcriptReq = 0; // monotonic token: only the latest load per agent may write
 
   // ── Minimap / message-history trim ───────────────────────────────────────
   const MINIMAP_COLS = 13;
@@ -247,6 +259,8 @@
       models:          state.models,
       activity:        state.activity,
       sparkline:       state.sparkline,
+      subagents:           state.subagents,
+      subagentTranscripts: state.subagentTranscripts,
       // Tab list — derived from session registry, not per-session state.
       // runState: active tab reads live state; background tabs read their
       // cached snapshot (never activated yet = "idle" defaults).
@@ -501,6 +515,8 @@
       sessionCost:   null,
       currentTps:    0,
       exitReason:    null,
+      subagents:           SUB.emptySubagents(),
+      subagentTranscripts: {},
     });
     streamingBubble = null;
     pendingAskBubbles = [];
@@ -536,6 +552,7 @@
       sessionCost:   state.sessionCost,
       currentTps:    state.currentTps,
       exitReason:    state.exitReason,
+      subagents:     state.subagents,
       // volatile vars
       streamingBubble,
       activeToolCards: new Map(activeToolCards),
@@ -565,6 +582,8 @@
       sessionCost:   snap.sessionCost,
       currentTps:    snap.currentTps,
       exitReason:    snap.exitReason ?? null,
+      subagents:     snap.subagents ?? SUB.emptySubagents(),
+      subagentTranscripts: {},
     });
     streamingBubble = snap.streamingBubble;
     activeToolCards = snap.activeToolCards;
@@ -593,6 +612,11 @@
 
     // Snapshot current session so we can restore it when switching back
     _saveCurrentSession();
+    // The inspected agent belongs to the tab being left: drop that process
+    // back to "progress" while activeSessionId still addresses it.
+    if (subagentInspecting) {
+      _send({ type: "set_subagent_subscription", level: SUB.subscriptionLevelFor({ inspecting: false }) });
+    }
 
     // Tear down old listeners
     for (const ul of activeListeners) { try { await ul(); } catch (_) {} }
@@ -631,6 +655,9 @@
       if (reason) {
         _pushAssistantNote(_exitNote(reason, sessionRegistry.get(id)?.profile));
       }
+      // A dead process sends no terminal frames and answers no get_subagents:
+      // end its live agents here (outcome unknown) or they tick forever.
+      state.subagents = SUB.mergeSnapshots(state.subagents, []);
       notify();
     });
     if (_switchGen !== myGen) {
@@ -692,6 +719,7 @@
         _notedStartupErrors.add(id);
         console.warn(`[live] session '${id}' startup error: ${startupError}`);
         _pushAssistantNote(_exitNote(startupError, sessionRegistry.get(id)?.profile));
+        state.subagents = SUB.mergeSnapshots(state.subagents, []); // died in the background — see the exit listener
       }
     } catch (e) {
       console.warn(`[live] session_status query failed:`, e);
@@ -1224,6 +1252,12 @@
       _initFetch();
       notify();
 
+    } else if (command === "get_subagents") {
+      // Authoritative list of agents still running; reconciles anything
+      // the journal replay could not recover (see mergeSnapshots).
+      state.subagents = SUB.mergeSnapshots(state.subagents, data.subagents);
+      notify();
+
     } else if (command === "get_session_stats") {
       // SessionStats — no display action needed
     }
@@ -1255,6 +1289,14 @@
     const now  = Date.now();
     const time = timeNow();
 
+    // Subagent frames (only emitted once _initFetch subscribed this process).
+    if (type === "subagent_lifecycle" || type === "subagent_progress" || type === "subagent_event") {
+      // At "events" most frames are token deltas the manager ignores — only
+      // re-render when the reducer actually produced new state.
+      const next = SUB.applySubagentFrame(state.subagents, ev, now);
+      if (next !== state.subagents) { state.subagents = next; notify(); }
+      return;
+    }
 
     if (type === "available_commands_update") {
       _applyCommands(ev.commands);
@@ -1685,13 +1727,23 @@
     // Await the negotiate response so v2 is active before the large fetches are
     // dispatched (stdin is processed in order, but this avoids any IPC-ordering
     // race). A v1 server or a repeat negotiate simply rejects — harmless.
+    // A tab switch that starts while negotiate is in flight owns the
+    // process from then on: this batch still addresses the tab being left
+    // (activeSessionId moves only after the switch's awaits), and its
+    // subscription line would undo the switch's downgrade of that process.
+    const gen = _switchGen;
     _sendWithResponse({ type: "negotiate_protocol", protocolVersion: 2 })
       .catch(() => {})
       .finally(() => {
+        if (_switchGen !== gen) return;
         _send({ type: "get_state" });
         _send({ type: "get_messages" });
         _send({ type: "get_available_models" });
         _send({ type: "get_available_commands" });
+        // Subscription level is per process and survives tab switches, but a
+        // respawned process starts at "off" — so (re)assert it every time.
+        _send({ type: "set_subagent_subscription", level: SUB.subscriptionLevelFor({ inspecting: subagentInspecting }) });
+        _send({ type: "get_subagents" });
       });
   }
 
@@ -1919,6 +1971,41 @@
     newSession()       { _send({ type: "new_session" }); },
     exportHtml()       { _send({ type: "export_html" }); },
     refreshModels()    { _initFetch(); },
+
+    // ── Subagent manager ──────────────────────────────────────────────────────
+
+    /** Raise the active process to the "events" subscription while an agent
+     *  is inspected (its live stream), back to "progress" otherwise. */
+    setSubagentInspecting(on) {
+      const next = !!on;
+      if (next === subagentInspecting) return;
+      subagentInspecting = next;
+      _send({ type: "set_subagent_subscription", level: SUB.subscriptionLevelFor({ inspecting: next }) });
+    },
+
+    /** Fetch (or tail, from the cached byte offset) one agent's persisted
+     *  transcript into state.subagentTranscripts[agentId]. Each load carries
+     *  a token; a result only lands if its entry is still the one it
+     *  created — a tab switch, `new_session` or respawn empties the map, and
+     *  a newer load replaces the entry, so stale answers (or timeouts) drop. */
+    async loadSubagentTranscript(agentId) {
+      const prev = state.subagentTranscripts[agentId];
+      if (!activeSessionId || prev?.status === "loading") return;
+      const req  = ++_transcriptReq;
+      const keep = { messages: prev?.messages ?? [], nextByte: prev?.nextByte ?? 0 };
+      state.subagentTranscripts = { ...state.subagentTranscripts, [agentId]: { ...keep, status: "loading", error: null, req } };
+      notify();
+      let entry;
+      try {
+        const data = await _sendWithResponse({ type: "get_subagent_messages", subagentId: agentId, fromByte: keep.nextByte });
+        entry = SUB.mergeTranscript(prev ? keep : undefined, data ?? {});
+      } catch (e) {
+        entry = { ...keep, status: "error", error: String(e?.message ?? e) };
+      }
+      if (state.subagentTranscripts[agentId]?.req !== req) return;
+      state.subagentTranscripts = { ...state.subagentTranscripts, [agentId]: entry };
+      notify();
+    },
 
     // ── Login ─────────────────────────────────────────────────────────────────
 

@@ -29,7 +29,6 @@
   const DEFAULT_PROFILE_ID = "default";
 
   const EMPTY_PROJECT = { id: "", name: "OMP Desktop", path: "", color: "var(--accent)", branch: "", profile: DEFAULT_PROFILE_ID };
-  const NULL_PEER     = { project: "—", title: "no peer session", activity: "edit · idle", tps: 0, todo: { done: 0, total: 1 } };
 
   const INTENT_FRAMING = (intent) =>
     `Please draft a plan for the following task. Write it in Markdown with clear sections: overview, approach, key steps, and risks. Do not start implementing yet — draft only for my review.\n\n---\n\n${intent.trim()}`;
@@ -57,7 +56,6 @@
     NULL_MODEL,
     EMPTY_PROJECT,
     DEFAULT_PROFILE_ID,
-    NULL_PEER,
     INTENT_FRAMING,
     APPROVAL_PROMPT,
     isSubmitEnter,

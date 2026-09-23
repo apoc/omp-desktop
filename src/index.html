@@ -118,6 +118,12 @@
        before live.js too (see script order below). -->
   <script src="app/prompt-history.js"></script>
 
+  <!-- Subagent manager state: pure reducer over omp's subagent RPC frames +
+       selectors/formatters. Dependency-free IIFE; design/subagents/*.jsx
+       destructure window.OMP_SUBAGENTS at top level and live.js reads it at
+       its own top-level init, so this must load before both. -->
+  <script src="app/subagents.js"></script>
+
   <!-- Design components (unchanged — from src/design/ copy) -->
   <script src="design/tweaks/style.js"></script>
   <script src="design/tweaks/use-tweaks.js"></script>
@@ -133,6 +139,13 @@
   <script type="text/babel" src="design/chat/tool-card.jsx"></script>
   <script type="text/babel" src="design/chat/ask-bubble.jsx"></script>
   <script type="text/babel" src="design/chat/chat-view.jsx"></script>
+  <!-- Subagent manager UI. bits → inspector → pane (destructures the
+       inspector) → rail card; all before chrome.jsx, whose AmbientRail
+       destructures SubagentRailCard at top level. -->
+  <script type="text/babel" src="design/subagents/subagent-bits.jsx"></script>
+  <script type="text/babel" src="design/subagents/subagent-inspector.jsx"></script>
+  <script type="text/babel" src="design/subagents/subagent-pane.jsx"></script>
+  <script type="text/babel" src="design/subagents/subagent-rail-card.jsx"></script>
   <script type="text/babel" src="design/mention-menu.jsx"></script>
   <script type="text/babel" src="design/composer.jsx"></script>
   <!-- Per-tab profile selector — chrome.jsx destructures window.ProfileMenu
@@ -156,6 +169,7 @@
   <!-- Cross-cutting hooks (must load before app-live.jsx) -->
   <script type="text/babel" src="app/use-bridge-snapshot.jsx"></script>
   <script type="text/babel" src="app/use-keymap.jsx"></script>
+  <script type="text/babel" src="app/use-subagent-manager.jsx"></script>
 
   <script type="text/babel" src="app-live.jsx"></script>
 </body>
