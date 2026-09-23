@@ -336,6 +336,19 @@
     return { ...card, ...extra };
   }
 
+  // ── User-turn content → { text, images } ───────────────────────────────────
+  // Shared by adaptAgentMessages (get_messages replay) and live.js's
+  // message_start handler (live event echo) so both paths always agree on
+  // which turns are pure-tool-result (dropped) vs. keep-worthy — the
+  // get_messages merge in live.js swaps entries into place by position, so
+  // any drift between the two would misalign it.
+  function adaptUserContent(blocks) {
+    const textBlocks = blocks.filter(b => b.type === "text");
+    const images = blocks.filter(b => b.type === "image" && typeof b.data === "string" && typeof b.mimeType === "string");
+    const text = textBlocks.map(b => b.text).join("\n").trim();
+    return { text, images };
+  }
+
   // ── AgentMessage[] (from get_messages) → design message array ─────────────
   // Skips pure tool-result turns; maps thinking blocks to thought field.
   function adaptAgentMessages(apiMessages) {
@@ -347,11 +360,9 @@
       const blocks = Array.isArray(content) ? content : [{ type: "text", text: String(content ?? "") }];
 
       if (role === "user") {
-        const textBlocks = blocks.filter(b => b.type === "text");
-        if (textBlocks.length === 0) continue;  // skip pure tool-result turns
-        const text = textBlocks.map(b => b.text).join("\n").trim();
-        if (!text) continue;
-        result.push({ kind: "user", time, text });
+        const { text, images } = adaptUserContent(blocks);
+        if (!text && images.length === 0) continue;  // skip pure tool-result turns
+        result.push({ kind: "user", time, text, images });
 
       } else if (role === "assistant") {
         let thought = null;
@@ -445,6 +456,7 @@
     finalizeToolCard,
     updateToolCard,
     adaptAgentMessages,
+    adaptUserContent,
     timeNow,
   });
 })();

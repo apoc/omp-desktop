@@ -4,6 +4,7 @@
 
 const { Icon } = window;
 const { parseMentionQuery, applyMention } = window.OMP_MENTIONS;
+const { prepareImage, imageFilesFromTransfer, toDataUrl, MAX_ATTACHMENTS } = window.OMP_IMAGES;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` (display
 // logic lives there so chrome.jsx's ⌘K/history hints can reuse it too,
@@ -29,6 +30,16 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
   // paste blocks: id → raw content; collapsed in textarea as [paste #N +K lines]
   const pasteBlocksRef   = React.useRef(new Map());
   const pasteCounterRef  = React.useRef(0);
+  // Pending image attachments (icon-picked or pasted), sent alongside the
+  // next message. Cleared on send. { id, name, image: ImageContent, src }[]
+  const [attachments, setAttachments] = React.useState([]);
+  // Count of prepareImage() calls still in flight — sendWith blocks while
+  // this is nonzero so a fast Enter/click can't race ahead of an
+  // in-progress paste/pick and send the text without its image (the image
+  // would then land, orphaned, on the *next* message instead).
+  const [pendingImages, setPendingImages] = React.useState(0);
+  const attachCounterRef = React.useRef(0);
+  const fileInputRef     = React.useRef(null);
 
   const cmds = window.OMP_DATA?.commands || [];
 
@@ -168,26 +179,72 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
   // highlighted palette command instead.
   const sendWith = (dispatcher, { followUp = false } = {}) => {
     if (showSlash && !followUp) { execCmd(filtered[clampedIdx]); return; }
+    if (pendingImages > 0) return; // a paste/pick is still preparing — its image would ship on the *next* message instead
     // follow-up (`onFollowUp` dispatcher) requires non-empty text — annotations
     // are a send-only affordance (app-live.jsx merges them into the message).
-    // Plain send can proceed with annotations alone (annotationCount > 0).
+    // Plain send can proceed with annotations or attached images alone.
     const canSend = followUp
       ? !!text.trim()
-      : (text.trim() || (planMode && annotationCount > 0));
+      : (text.trim() || attachments.length > 0 || (planMode && annotationCount > 0));
     if (!canSend) return;
-    dispatcher(expandPastes(text.trim()));
+    const images = attachments.map(a => a.image);
+    dispatcher(expandPastes(text.trim()), images);
     setText("");
     setMentionDismissedKey(null);
     pasteBlocksRef.current.clear();
     pasteCounterRef.current = 0;
+    setAttachments([]);
     requestAnimationFrame(() => taRef.current?.focus());
   };
   const send = () => sendWith(onSend);
 
+  // Pick, downscale/re-encode and queue image files as pending attachments.
+  // Silently drops files that fail to decode, and drops any that would push
+  // the batch over MAX_ATTACHMENTS or MAX_TOTAL_ATTACH_BYTES, rather than
+  // blocking the rest — same policy either way: keep what fits, drop the
+  // rest of this paste/pick silently (the user can always attach the
+  // dropped ones separately).
+  const addFiles = async (fileList) => {
+    const files = Array.from(fileList || []).filter(f => f.type.startsWith("image/"));
+    const room  = MAX_ATTACHMENTS - attachments.length;
+    if (files.length === 0 || room <= 0) return;
+    const slice = files.slice(0, room);
+    setPendingImages(n => n + slice.length);
+    try {
+      const prepared = await Promise.all(slice.map(async (file) => {
+        try {
+          const image = await prepareImage(file);
+          return { id: `att-${++attachCounterRef.current}`, name: file.name, image, src: toDataUrl(image) };
+        } catch {
+          return null; // undecodable file — drop, don't block the rest of the batch
+        }
+      }));
+      const ok = prepared.filter(Boolean);
+      // Cap against the latest `prev`, not the `attachments` this call closed
+      // over — a concurrent addFiles (fast double-paste) may have already
+      // appended by the time this resolves.
+      if (ok.length > 0) setAttachments(prev => [...prev, ...ok].slice(0, MAX_ATTACHMENTS));
+    } finally {
+      setPendingImages(n => n - slice.length);
+    }
+  };
+  const removeAttachment = (id) => setAttachments(prev => prev.filter(a => a.id !== id));
+
   // Collapse long pastes into a token so the textarea stays navigable.
-  // Threshold: more than 5 lines OR more than 500 characters.
+  // Threshold: more than 5 lines OR more than 500 characters. An image on
+  // the clipboard is attached in every case; it only short-circuits the
+  // text handling below when there's no accompanying text to preserve.
   const onPaste = (e) => {
+    const imageFiles = imageFilesFromTransfer(e.clipboardData);
     const raw = e.clipboardData?.getData("text/plain") ?? "";
+    if (imageFiles.length > 0) {
+      addFiles(imageFiles);
+      // Some sources (spreadsheet cells, rich-text apps) put a rendered
+      // bitmap on the clipboard *alongside* real text — attach the image
+      // but keep going into the text handling below instead of discarding
+      // it. Only an image with no accompanying text short-circuits here.
+      if (!raw) { e.preventDefault(); return; }
+    }
     const lines = raw.split("\n");
     if (lines.length <= 5 && raw.length <= 500) return; // short — let browser handle normally
     e.preventDefault();
@@ -275,10 +332,31 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
         />
       )}
 
+      {attachments.length > 0 && (
+        <div className="attach-strip">
+          {attachments.map(a => (
+            <div className="attach-chip" key={a.id}>
+              <img className="attach-thumb" src={a.src} alt={a.name || "attached image"} />
+              <button className="attach-remove" title="remove" onClick={() => removeAttachment(a.id)}>
+                <Icon name="close" size={9} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="composer-row">
-        <button className="btn icon ghost" title="attach image">
+        <button className="btn icon ghost" title="attach image" onClick={() => fileInputRef.current?.click()}>
           <Icon name="image" size={13} />
         </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          style={{ display: "none" }}
+          onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
+        />
         <button className="btn icon ghost" title="dictate">
           <Icon name="voice" size={13} />
         </button>
@@ -311,8 +389,8 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
         </button>
         {isStreaming ? (
           <>
-            {text.trim() && (
-              <button className="btn outlined" onClick={send}
+            {(text.trim() || attachments.length > 0) && (
+              <button className="btn outlined" onClick={send} disabled={pendingImages > 0}
                 style={{ color: "var(--amber)", borderColor: "color-mix(in oklab, var(--amber) 40%, var(--line))" }}>
                 <Icon name="arrow" size={10} color="var(--amber)" /> steer
               </button>
@@ -330,7 +408,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
               </button>
             )}
             <button className="btn primary" onClick={send}
-              disabled={!(text.trim() || (planMode && annotationCount > 0))}>
+              disabled={!(text.trim() || attachments.length > 0 || (planMode && annotationCount > 0)) || pendingImages > 0}>
               {planMode
                 ? `send feedback${annotationCount > 0 ? ` · ${annotationCount} comment${annotationCount !== 1 ? "s" : ""}` : ""}`
                 : "send"}
@@ -357,7 +435,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
         <div style={{ flex: 1 }} />
         <span className="mono" style={{ color: "var(--fg-4)", fontSize: "var(--d-text-xs)" }}>
           {[
-            ...(isStreaming && text.trim() ? ["↵ steer"] : ["↵ send", "⇧↵ newline"]),
+            ...(isStreaming && (text.trim() || attachments.length > 0) ? ["↵ steer"] : ["↵ send", "⇧↵ newline"]),
             // Dropped entirely when unbound rather than showing a keyless
             // "abort" segment that advertises a shortcut that isn't there.
             ...(abortHint ? [`${abortHint} abort`] : []),
