@@ -49,11 +49,16 @@ function UsageStatsPanel({ onClose }) {
     setError(null);
     const res = await bridge.usageStats();
     if (!res.ok) {
-      // Backend rejection (omp not found, `stats` module not installed on
-      // this omp build, sync failure, ...) — see stats.rs::exit_failure_message
-      // for why this is distinct from "zero sessions synced".
+      // Backend rejection (omp not on PATH, an omp build old enough to
+      // predate the `stats` subcommand, a sync failure, ...) — see
+      // stats.rs::exit_failure_message for why this is distinct from
+      // "zero sessions synced" below.
       setError(res.error);
-    } else if (res.value?.overall) {
+    } else if (res.value.overall.totalRequests > 0) {
+      // `overall` is always a populated struct on a successful call (see
+      // stats.rs::AggregatedStats — not optional), so a zero-request
+      // count, not `overall`'s presence, is what actually distinguishes
+      // "genuinely no usage yet" from a real dashboard.
       setData(res.value);
     } else {
       setError("no usage data yet — omp stats hasn't synced any sessions");

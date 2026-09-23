@@ -15,7 +15,7 @@
 //! `serde` drops unknown fields by default, so no `deny_unknown_fields`
 //! here).
 
-use std::process::Command;
+use std::process::Stdio;
 
 /// Aggregate request/token/cost totals shared by the overall summary and
 /// each per-model/per-folder breakdown row.
@@ -104,41 +104,65 @@ pub struct DashboardStats {
 /// long gap — callers MUST run this off the main thread (see
 /// `usage_stats` in `lib.rs`).
 pub fn fetch() -> Result<DashboardStats, String> {
-    let output = Command::new("omp")
-        .args(["stats", "--json"])
-        .output()
-        .map_err(|e| format!("failed to run omp stats: {e}"))?;
-    if !output.status.success() {
-        return Err(exit_failure_message(output.status, &output.stderr));
+    let mut last_spawn_err = None;
+    for name in crate::agent::spawn::CANDIDATES {
+        let mut cmd = crate::agent::spawn::omp_command(name);
+        cmd.args(["stats", "--json"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = match cmd.output() {
+            Ok(output) => output,
+            Err(e) => {
+                last_spawn_err = Some(format!("failed to run omp stats: {e}"));
+                continue;
+            }
+        };
+        if !output.status.success() {
+            return Err(exit_failure_message(
+                output.status,
+                &output.stderr,
+                &output.stdout,
+            ));
+        }
+        return parse_stats_json(&output.stdout);
     }
-    parse_stats_json(&output.stdout)
+    Err(last_spawn_err.unwrap_or_else(|| "omp not found on PATH".to_string()))
 }
+
+/// How much of a failing `omp stats --json`'s stdout is retained in the
+/// error message when stderr was empty. A handful of lines of usage/error
+/// text is ample; this exists only to bound a pathological case (an old
+/// omp printing something unexpectedly large to stdout before failing).
+const STDOUT_TAIL_MAX_BYTES: usize = 4 * 1024;
 
 /// Build the error string for a non-zero `omp stats --json` exit.
 ///
-/// `stats` is an optional omp module — an install without it (or an omp
-/// build old enough to predate the subcommand) exits non-zero here with
-/// empty stderr rather than a descriptive message (observed: exit 129, no
-/// stderr, for an unrecognized subcommand on this CLI's argument parser),
-/// so a bare `"omp stats failed: "` would leave the panel showing nothing
-/// useful. Naming that specific, empirically-observed case explicitly
-/// gives the frontend something actionable to display instead of a blank
-/// tail.
+/// Confirmed failure modes that reach here (`omp` not being on PATH at
+/// all is a separate, earlier branch in [`fetch`]): running the CLI's own
+/// argument parser against an unrecognized subcommand — the shape an omp
+/// build old enough to predate `stats` would produce — exits non-zero
+/// with *empty* stderr (observed directly: exit 129, no stderr, no
+/// stdout, on a real build). A bare `"omp stats failed: "` would leave
+/// the panel showing nothing useful for that case, so this falls back to
+/// a capped stdout tail, and only if that's also empty names the concrete
+/// symptom (exit status, no output) rather than guessing at a cause.
 ///
 /// Takes `status` by `impl Display` (rather than the whole
 /// `std::process::Output`) so it can be unit-tested without constructing
 /// a platform-specific `ExitStatus` (`std::os::unix::process::ExitStatusExt`
 /// and its Windows equivalent have incompatible signatures).
-fn exit_failure_message(status: impl std::fmt::Display, stderr: &[u8]) -> String {
+fn exit_failure_message(status: impl std::fmt::Display, stderr: &[u8], stdout: &[u8]) -> String {
     let stderr = String::from_utf8_lossy(stderr);
     let stderr = stderr.trim();
-    if stderr.is_empty() {
-        format!(
-            "omp stats exited with {status} and no output — the `stats` module may not be installed for this omp build"
-        )
-    } else {
-        format!("omp stats failed: {stderr}")
+    if !stderr.is_empty() {
+        return format!("omp stats failed: {stderr}");
     }
+    let stdout = String::from_utf8_lossy(&stdout[..stdout.len().min(STDOUT_TAIL_MAX_BYTES)]);
+    let stdout = stdout.trim();
+    if !stdout.is_empty() {
+        return format!("omp stats failed (exit {status}): {stdout}");
+    }
+    format!("omp stats exited with {status} and produced no output")
 }
 
 /// Parse `omp stats --json`'s stdout into [`DashboardStats`].
@@ -228,17 +252,43 @@ mod tests {
     }
 
     #[test]
-    fn exit_failure_with_empty_stderr_names_the_optional_module() {
+    fn exit_failure_with_empty_stderr_and_stdout_names_the_status() {
         // The case actually observed running a real omp build: an
-        // unrecognized subcommand exits non-zero with nothing on stderr.
-        let msg = exit_failure_message("exit status: 129", &[]);
-        assert!(msg.contains("stats` module may not be installed"));
-        assert!(msg.contains("exit status: 129"));
+        // unrecognized subcommand exits non-zero with nothing on either
+        // stream.
+        let msg = exit_failure_message("exit status: 129", &[], &[]);
+        assert_eq!(
+            msg,
+            "omp stats exited with exit status: 129 and produced no output"
+        );
     }
 
     #[test]
     fn exit_failure_with_stderr_surfaces_it_verbatim() {
-        let msg = exit_failure_message("exit status: 1", b"  permission denied  \n");
+        let msg = exit_failure_message("exit status: 1", b"  permission denied  \n", b"");
         assert_eq!(msg, "omp stats failed: permission denied");
+    }
+
+    #[test]
+    fn exit_failure_falls_back_to_stdout_when_stderr_is_empty() {
+        let msg = exit_failure_message("exit status: 2", b"", b"  usage: omp [command]  \n");
+        assert_eq!(
+            msg,
+            "omp stats failed (exit exit status: 2): usage: omp [command]"
+        );
+    }
+
+    #[test]
+    #[ignore = "spawns the real `omp` binary; requires omp on PATH (run with `cargo test -- --ignored`)"]
+    fn fetch_returns_real_dashboard_stats() {
+        // Not run by default (no CI machine is guaranteed to have `omp`
+        // installed), but exercises the actual `omp_command`-built
+        // subprocess path end to end against whatever `omp` is on this
+        // machine's PATH — the unit tests above only cover the pure
+        // parsing/formatting helpers.
+        let stats = fetch().expect("omp stats --json should succeed with omp on PATH");
+        // This machine's real session history is non-empty; a fresh
+        // machine with genuinely zero sessions would need this relaxed.
+        assert!(stats.overall.total_requests > 0);
     }
 }

@@ -2054,11 +2054,11 @@
     /** Cross-session usage statistics (all projects/profiles) — see
      *  usage_stats in lib.rs / stats.rs::fetch. Unlike the workspace
      *  methods above, this is not scoped to the active tab's project.
-     *  Uses `_invokeResult` (not `_invokeSafe`) because "no usage data"
-     *  and "the `omp stats` module isn't installed/available" need
-     *  distinct panel messages — `omp stats` is an optional module some
-     *  omp installs won't have, and a swallowed rejection would look
-     *  identical to a fresh install with zero synced sessions. */
+     *  Uses `_invokeResult` (not `_invokeSafe`) because "no usage data
+     *  synced yet" and "the backend call failed" (omp not on PATH, an
+     *  omp build old enough to predate the `stats` subcommand, a sync
+     *  error) need distinct panel messages — a swallowed rejection would
+     *  look identical to a fresh install with zero synced sessions. */
     async usageStats() {
       return _invokeResult("usage_stats", {});
     },

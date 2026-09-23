@@ -11,12 +11,37 @@ use std::sync::LazyLock;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Candidate binary names tried in order. Explicit `.exe` first on Windows
-/// because some systems have unusual PATHEXT handling.
-const CANDIDATES: &[&str] = if cfg!(windows) {
+/// because some systems have unusual PATHEXT handling. `pub`: also
+/// iterated by `stats::fetch`, which spawns `omp stats` outside any
+/// session — see [`omp_command`].
+pub const CANDIDATES: &[&str] = if cfg!(windows) {
     &["omp.exe", "omp"]
 } else {
     &["omp"]
 };
+
+/// Build a `Command` for candidate binary `name` with every cross-cutting
+/// concern any bare invocation of omp needs applied uniformly: the
+/// GUI-launcher PATH augmentation ([`apply_omp_path`]), the
+/// profile-env-var strip ([`sanitize_child_env`] — without it an
+/// inherited `OMP_PROFILE`/`PI_PROFILE` silently redirects the child to
+/// one named profile's tree instead of whatever this call intends), a
+/// closed stdin (omp never needs to read from it for a one-shot probe or
+/// report, and an inherited stdin can otherwise hang a child waiting on
+/// input that will never arrive), and (Windows) [`CREATE_NO_WINDOW`] so a
+/// GUI-subsystem parent spawning a console-subsystem binary doesn't flash
+/// a console window. Shared by [`fetch_help_text`] and `stats::fetch`
+/// (the latter is outside this module, hence `pub`) so neither
+/// duplicates — and neither can silently drift from — this list.
+pub fn omp_command(name: &str) -> Command {
+    let mut cmd = Command::new(name);
+    cmd.stdin(Stdio::null());
+    apply_omp_path(&mut cmd);
+    sanitize_child_env(&mut cmd);
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
 
 // ── PATH resolution ────────────────────────────────────────────────────────
 
@@ -170,22 +195,18 @@ fn profile_refusal(profile: Option<&str>, help_text: &str, supported: bool) -> O
 /// given feature simply won't mention it in their help output.
 fn fetch_help_text() -> String {
     for name in CANDIDATES {
-        let mut cmd = Command::new(name);
-        cmd.arg("--help")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        apply_omp_path(&mut cmd);
         // The probe must see the same environment the real spawn does. An
         // inherited `OMP_PROFILE` or `PI_PROFILE` that omp rejects (its ids
         // are lowercase, so a plain `export OMP_PROFILE=Work` qualifies)
         // makes `--help` print only a validation error - flipping *every*
         // feature probe false and, with the refusal below, breaking
         // named-profile tabs that would in fact have spawned fine, since
-        // `spawn_omp` strips both aliases (see `sanitize_child_env`).
-        sanitize_child_env(&mut cmd);
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        // `spawn_omp` strips both aliases (see `sanitize_child_env`,
+        // applied by `omp_command` along with everything else below).
+        let mut cmd = omp_command(name);
+        cmd.arg("--help")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         let Ok(output) = cmd.output() else { continue };
 
