@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Removed the "peer session" rail card, split pane and `split` tab chip — prototype leftovers that never had live data behind them. The Tweaks `split` layout now opens the subagent manager instead.
 
+### Fixed
+
+- The `/` palette and ⌘K bridge never received omp's slash-command list on connect: the backend's command allowlist was missing `get_available_commands`, so the request introduced for #8 was rejected before reaching omp and the list only filled in if omp happened to push an `available_commands_update`. It is now allowlisted, and a Rust test checks every `_send`/`_sendWithResponse` call site in `live.js` against the allowlist (failing on any call site whose command type it cannot read).
+
 ## [0.2.2] - 2026-09-23
 
 ### Fixed
