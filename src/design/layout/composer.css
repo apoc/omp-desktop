@@ -76,7 +76,12 @@
   border: 1px solid var(--line-bright);
   border-radius: 10px;
   box-shadow: var(--shadow-pop);
-  overflow: hidden;
+  /* RPC-sourced entries (builtin commands, skills) can push this past a
+     couple dozen rows — cap the height and let it scroll instead of
+     spilling over the composer. overflow-x stays hidden so the border-
+     radius keeps clipping the rounded corners. */
+  max-height: min(360px, 50vh);
+  overflow: hidden auto;
   z-index: 20;
   animation: slideIn 180ms var(--ease-out);
 }
@@ -94,6 +99,19 @@
 .slash-row.active { background: var(--bg-hover); }
 .slash-row:last-child { border-bottom: 0; }
 .slash-glyph { width: 18px; color: var(--fg-3); font-family: var(--font-mono); }
+/* RPC-sourced entries carry real (sometimes multi-sentence, e.g. skill)
+   descriptions — clamp both to one line so a long one grows the row
+   width, not its height; slash-hint gets the ellipsis since the name is
+   the part someone's actually scanning for. Full text stays in `title`.
+   `pre` (not `nowrap`) so the two-space separator adaptAvailableCommands
+   puts between an omp argument-syntax hint and its description survives —
+   `nowrap` collapses runs of whitespace same as normal flow, `pre` doesn't;
+   both still block wrapping, so the ellipsis clamp still applies. */
+.slash-name { white-space: nowrap; flex: none; }
+.slash-hint {
+  flex: 1; min-width: 0;
+  white-space: pre; overflow: hidden; text-overflow: ellipsis;
+}
 
 /* @-mention file-path autocomplete pop */
 .mention-pop {

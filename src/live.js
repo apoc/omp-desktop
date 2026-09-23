@@ -12,6 +12,7 @@
 (function () {
   "use strict";
   const { timeNow } = window;
+  const { LOCAL_COMMANDS, adaptAvailableCommands, mergeSlashCommands, isSlashCommand } = window.OMP_SLASH;
 
   // ── Safe defaults so design components never crash on missing fields ──────
   const DEFAULT_DATA = {
@@ -19,20 +20,7 @@
     messages: [],
     kanban: [],
     planMeta: { ask: "", strategy: "", touches: [], branch: "main", risks: [], estimate: { tokens: "—", cost: "—", wall: "—" } },
-    commands: [
-      { name: "plan",     hint: "draft a plan before writing code",   icon: "◇", group: "Mode"    },
-      { name: "steer",    hint: "interrupt and redirect mid-tool",    icon: "↺", group: "Mode"    },
-      { name: "compact",  hint: "compact context window",             icon: "▤", group: "Session" },
-      { name: "new",      hint: "start a fresh session (history kept on disk)", icon: "↺", group: "Session" },
-      { name: "history",  hint: "browse and resume saved sessions",   icon: "◷", group: "Session" },
-      { name: "branch",   hint: "fork the session from current head", icon: "⑂", group: "Session" },
-      { name: "model",    hint: "switch model",                       icon: "◉", group: "Agent"   },
-      { name: "thinking", hint: "cycle thinking level",               icon: "✶", group: "Agent"   },
-      { name: "login",    hint: "authenticate with a model provider",   icon: "⊙", group: "Agent"   },
-      { name: "todo",     hint: "open the kanban surface",            icon: "▦", group: "View"    },
-      { name: "export",   hint: "export this session to HTML",        icon: "⇪", group: "View"    },
-      { name: "shortcuts", hint: "view and rebind keyboard shortcuts", icon: "⌘", group: "View"    },
-    ],
+    commands: LOCAL_COMMANDS,
     models: [],
     activity: [],
     ctx: { used: 0, total: 200000, pct: 0, label: "0 / 200k", cost: "$0.00", tokensPerSec: 0 },
@@ -61,6 +49,7 @@
     kanban:         [],
     planMeta:       { ...DEFAULT_DATA.planMeta },
     models:         [],
+    commands:       LOCAL_COMMANDS,
     activity:       [],
     sparkline:      Array(30).fill(0),
     projects:       [],
@@ -397,13 +386,18 @@
   // Any future note site calls this rather than re-deriving the shape.
   // Proven with an eval-kernel cell (3/3 cases: array identity changes,
   // body lands in `blocks` with no `text` field, note is completed).
-  function _pushAssistantNote(text) {
+  // `localOnly` (opt-in, existing call sites unaffected): the note has no
+  // corresponding persisted turn on omp's side — get_messages's merge below
+  // would otherwise treat it as an ordinary assistant entry and either drop
+  // it or let a later real turn overwrite its slot on the next tab switch.
+  function _pushAssistantNote(text, localOnly) {
     state.messages = [...state.messages, {
       kind: "assistant",
       time: timeNow(),
       model: state.model?.name ?? null,
       blocks: [{ type: "text", text }],
       thought: null, lead: null, streaming: false, completed: true,
+      ...(localOnly ? { localOnly: true } : {}),
     }];
   }
 
@@ -464,6 +458,7 @@
     // Keep OMP_DATA in sync for design components that read it directly
     window.OMP_DATA.messages  = state.messages;
     window.OMP_DATA.models    = state.models;
+    window.OMP_DATA.commands  = state.commands;
     window.OMP_DATA.kanban    = state.kanban;
     window.OMP_DATA.planMeta  = state.planMeta;
     window.OMP_DATA.ctx       = state.ctx;
@@ -481,6 +476,7 @@
       kanban:        [],
       planMeta:      { ...DEFAULT_DATA.planMeta },
       models:        [],
+      commands:      LOCAL_COMMANDS,
       activity:      [],
       sparkline:     Array(30).fill(0),
       projects:      [],
@@ -516,6 +512,7 @@
       kanban:        state.kanban,
       planMeta:      state.planMeta,
       models:        state.models,
+      commands:      state.commands,
       activity:      state.activity,
       sparkline:     [...state.sparkline],
       rpcState:      state.rpcState,
@@ -544,6 +541,7 @@
       kanban:        snap.kanban,
       planMeta:      snap.planMeta,
       models:        snap.models,
+      commands:      snap.commands ?? LOCAL_COMMANDS,
       activity:      snap.activity,
       sparkline:     snap.sparkline,
       rpcState:      snap.rpcState,
@@ -1129,12 +1127,14 @@
       // `completed` doesn't contain it; treating it as an ordinary text
       // entry here would misalign every slot after it (the next persisted
       // turn would be substituted into its place, and the last real turn
-      // would then find nothing left and be dropped).
+      // would then find nothing left and be dropped). Same reasoning for
+      // `localOnly` (see _pushAssistantNote) — a command_output note has
+      // no persisted turn either, ever, not just "not yet".
       const pending = [...completed];
       const merged = [];
       for (const m of state.messages) {
         if (m.streaming) continue; // streaming bubble handled separately below
-        if (m.kind === "tool" || m.kind === "ask" || m.kind === "compact" || m.pendingEcho) {
+        if (m.kind === "tool" || m.kind === "ask" || m.kind === "compact" || m.pendingEcho || m.localOnly) {
           merged.push(m);
         } else if (pending.length > 0) {
           merged.push(pending.shift());
@@ -1163,6 +1163,10 @@
       }));
       notify();
       console.log(`[live] models loaded (${state.models.length}) for session '${activeSessionId}'`);
+
+    } else if (command === "get_available_commands") {
+      _applyCommands(data.commands);
+      console.log(`[live] commands loaded (${state.commands.length}) for session '${activeSessionId}'`);
 
     } else if (command === "set_model") {
       if (data) {
@@ -1209,12 +1213,47 @@
     };
   }
 
+  // Local desktop entries always win; RPC entries (builtin/skill/extension/
+  // custom/file) fill in around them, deduped by name+alias. Shared by the
+  // get_available_commands response and the available_commands_update
+  // push — same shape, same merge.
+  function _applyCommands(raw) {
+    state.commands = mergeSlashCommands(LOCAL_COMMANDS, adaptAvailableCommands(raw));
+    notify();
+  }
+
   // ── AgentSessionEvent handler ─────────────────────────────────────────────
   function _handleEvent(ev) {
     const { type } = ev;
     const now  = Date.now();
     const time = timeNow();
 
+
+    if (type === "available_commands_update") {
+      _applyCommands(ev.commands);
+      return;
+    }
+
+    // A builtin slash command sent as a plain prompt (e.g. picking `/jobs`
+    // from the merged palette) runs locally inside omp — no turn, no
+    // agent_end, and the `prompt` response itself carries nothing. Its only
+    // output channel is this frame; without handling it, the command looks
+    // like it did nothing.
+    if (type === "command_output") {
+      _pushAssistantNote(ev.text, true);
+      notify();
+      return;
+    }
+
+    // Same local-only-command path: a config-changing builtin (/model,
+    // /thinking) or a title-changing one (/rename) mutates session state
+    // outside the normal turn lifecycle, with no set_model/cycle_model
+    // response to key off. Re-fetch rather than duplicate _applyRpcState's
+    // model/thinkingLevel/sessionName derivation here.
+    if (type === "config_update" || type === "session_info_update") {
+      _send({ type: "get_state" });
+      return;
+    }
 
     if (type === "extension_ui_request") {
       // URL to open in the system browser (e.g. OAuth auth page).
@@ -1625,6 +1664,7 @@
         _send({ type: "get_state" });
         _send({ type: "get_messages" });
         _send({ type: "get_available_models" });
+        _send({ type: "get_available_commands" });
       });
   }
 
@@ -1761,11 +1801,30 @@
     get isConnected() { return !!window.__TAURI__ && !!activeSessionId; },
 
     // ── Messaging ────────────────────────────────────────────────────────────
+    // A recognized command may resolve as `agentInvoked: false` — omp ran
+    // it locally (its command_output note is already tagged `localOnly`,
+    // see _pushAssistantNote) with no persisted turn of its own. This
+    // bubble needs the same tag, or the next get_messages merge (tab
+    // switch) gives its slot to a later, unrelated turn instead of keeping
+    // it in place. Only tracked via the extra id-correlated round trip for
+    // a recognized command — an ordinary prompt is the overwhelmingly
+    // common case and stays a plain fire-and-forget send.
     send(text, images) {
       const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [] };
       state.messages = [...state.messages, userMsg];
       notify();
-      _send({ type: "prompt", message: text, images: images ?? [] });
+      if (isSlashCommand(state.commands, text)) {
+        _sendWithResponse({ type: "prompt", message: text, images: images ?? [] })
+          .then((data) => {
+            if (data?.agentInvoked === false) {
+              userMsg.localOnly = true;
+              notify();
+            }
+          })
+          .catch(() => {}); // a real failure is already surfaced via the normal response/error path
+      } else {
+        _send({ type: "prompt", message: text, images: images ?? [] });
+      }
     },
     abort()            { _send({ type: "abort" }); },
     // Both tagged `pendingEcho`: omp doesn't inject a follow-up until the
@@ -1773,17 +1832,33 @@
     // turn's tool batch finishes — so either bubble is usually no longer
     // the tail by the time its message_start echo arrives. The echo
     // handler reconciles by content match instead of assuming it's last.
+    //
+    // Both also route a real slash command through `prompt` with the
+    // matching `streamingBehavior` instead of their own dedicated RPC
+    // command: omp's `steer`/`follow_up` frames skip command dispatch
+    // entirely (only `prompt` runs it), so a command sent mid-stream
+    // through the dedicated frame would just reach the model as literal
+    // text — this is the transport's problem, not something callers
+    // (app-live.jsx) should each have to know and check for themselves.
     followUp(text, images) {
       const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [], pendingEcho: true };
       state.messages = [...state.messages, userMsg];
       notify();
-      _send({ type: "follow_up", message: text, images: images ?? [] });
+      if (isSlashCommand(state.commands, text)) {
+        _send({ type: "prompt", message: text, images: images ?? [], streamingBehavior: "followUp" });
+      } else {
+        _send({ type: "follow_up", message: text, images: images ?? [] });
+      }
     },
     steer(text, images) {
       const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [], pendingEcho: true };
       state.messages = [...state.messages, userMsg];
       notify();
-      _send({ type: "steer", message: text, images: images ?? [] });
+      if (isSlashCommand(state.commands, text)) {
+        _send({ type: "prompt", message: text, images: images ?? [], streamingBehavior: "steer" });
+      } else {
+        _send({ type: "steer", message: text, images: images ?? [] });
+      }
     },
     setModel(model)    { _send({ type: "set_model", provider: model.provider, modelId: model.id }); },
     cycleModel()       { _send({ type: "cycle_model" }); },
