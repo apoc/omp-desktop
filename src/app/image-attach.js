@@ -70,6 +70,37 @@
     return Array.from(dt.files ?? []).filter((f) => f.type.startsWith("image/"));
   }
 
+  // WebKitGTK (this app's Linux Tauri target) never populates image/*
+  // entries in the synchronous `paste` event's DataTransfer — `items`
+  // and `files` both come back carrying only text/* even though
+  // `javascript-can-access-clipboard` is enabled and the key event is a
+  // genuine compositor-level Ctrl+V (verified live against WebKitGTK
+  // 2.52). The async Clipboard API does see it there, so this is a
+  // fallback for when the synchronous extraction above finds nothing —
+  // Chromium/WebKit(macOS)/WebView2 already populate the synchronous
+  // path and never need it.
+  async function imageFilesFromClipboardAsync() {
+    if (!navigator.clipboard?.read) return [];
+    let items;
+    try {
+      items = await navigator.clipboard.read();
+    } catch {
+      return []; // no permission, or nothing readable — not an error the caller should surface
+    }
+    const out = [];
+    for (const item of items) {
+      const type = item.types.find((t) => t.startsWith("image/"));
+      if (!type) continue;
+      try {
+        const blob = await item.getType(type);
+        out.push(new File([blob], `clipboard.${type.split("/")[1] || "png"}`, { type }));
+      } catch {
+        // unreadable item — skip, don't drop the rest of the clipboard
+      }
+    }
+    return out;
+  }
+
   function readAsDataUrl(file) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -125,6 +156,7 @@
     fitWithin,
     needsReencode,
     imageFilesFromTransfer,
+    imageFilesFromClipboardAsync,
     prepareImage,
   };
 })();
