@@ -279,7 +279,23 @@ fn fetch_help_text() -> String {
     text
 }
 
+/// Build the `--profile=<id>` flag from a resolved profile id, or `None`
+/// for the built-in profile — `Some(id)` becomes `--profile=<id>`; a
+/// blank id (defence-in-depth: `ProfileStore::resolve` already maps
+/// blank/`"default"` to `None`) is treated the same as `None` rather than
+/// producing a bare `--profile=`. Shared by [`omp_args`] and
+/// `stats::fetch`'s own argv builder (the latter outside this module,
+/// hence `pub`) so the flag's spelling and empty-id guard live in
+/// exactly one place.
+pub fn profile_flag(profile: Option<&str>) -> Option<String> {
+    profile
+        .filter(|p| !p.is_empty())
+        .map(|p| format!("--profile={p}"))
+}
+
 /// Build the argv suffix (after the binary name) for spawning omp.
+/// Extracted as a pure function so this is unit-testable without
+/// spawning a process.
 ///
 /// `--resume` is passed as a single `--resume=<value>` token rather than
 /// two separate argv entries (`--resume`, `<value>`). omp's `--resume`
@@ -317,23 +333,6 @@ fn fetch_help_text() -> String {
 /// tab against the shared `~/.omp/agent` tree - writing a named profile's
 /// conversation into the default profile's history - which is strictly worse
 /// than the tab failing loudly.
-///
-/// Build the `--profile=<id>` flag from a resolved profile id, or `None`
-/// for the built-in profile — `Some(id)` becomes `--profile=<id>`; a
-/// blank id (defence-in-depth: `ProfileStore::resolve` already maps
-/// blank/`"default"` to `None`) is treated the same as `None` rather than
-/// producing a bare `--profile=`. Shared by [`omp_args`] and
-/// `stats::fetch`'s own argv builder (the latter outside this module,
-/// hence `pub`) so the flag's spelling and empty-id guard live in
-/// exactly one place.
-pub fn profile_flag(profile: Option<&str>) -> Option<String> {
-    profile
-        .filter(|p| !p.is_empty())
-        .map(|p| format!("--profile={p}"))
-}
-
-/// Extracted as a pure function so this is unit-testable without spawning
-/// a process.
 fn omp_args(
     mode: &str,
     profile: Option<&str>,
