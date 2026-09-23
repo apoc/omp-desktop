@@ -26,8 +26,15 @@
   <script src="marked.min.js"></script>
   <script src="highlight.min.js"></script>
   <script>
-    // Wire marked v12 to use highlight.js for code blocks.
-    // Runs after DOMContentLoaded so both libs are parsed.
+    // Wire marked v12 to use highlight.js for code blocks, and to close a
+    // link-rendering gap `on_navigation` (src-tauri/src/navigation_guard.rs)
+    // cannot reach: a `javascript:` (or `data:`/`vbscript:`) href never
+    // fires the webview's navigation-policy hook at all - WebKit executes
+    // it inline while resolving the click, before a navigation is even
+    // attempted (chromium and WebView2 do the same) - so it would run in
+    // the app's own privileged origin, which exposes `window.__TAURI__`.
+    // marked's own `cleanUrl` only `encodeURI`s the href; it never checks
+    // the scheme. Runs after DOMContentLoaded so both libs are parsed.
     (function () {
       if (!window.marked || !window.hljs) return;
       window.marked.use({
@@ -49,6 +56,25 @@
             const cls = language ? ' language-' + language : '';
             return '<pre class="code-block"><code class="hljs' + cls + '">' +
                    highlighted + '</code></pre>';
+          },
+          link(href, title, text) {
+            // Only these schemes can ever be a legitimate chat/diff/plan
+            // link; anything else (a script scheme, or an href `new URL`
+            // can't even parse) renders as plain text - `text` is already
+            // the rendered-safe inner HTML, so no anchor, no navigation
+            // attempt, no policy hook to bypass.
+            let scheme = null;
+            try { scheme = new URL(href, 'https://omp-desktop.invalid/').protocol; }
+            catch (_) { /* leave scheme null - falls through to plain text */ }
+            if (scheme !== 'http:' && scheme !== 'https:' && scheme !== 'mailto:') {
+              return text;
+            }
+            let safeHref;
+            try { safeHref = encodeURI(href).replace(/%25/g, '%'); }
+            catch (_) { return text; }
+            let out = '<a href="' + safeHref + '"';
+            if (title) out += ' title="' + title + '"';
+            return out + '>' + text + '</a>';
           }
         }
       });

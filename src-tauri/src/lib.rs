@@ -12,6 +12,7 @@ mod git;
 mod git_watcher;
 mod json_store;
 mod keybindings;
+mod navigation_guard;
 mod profiles;
 mod saved_sessions;
 mod workspace;
@@ -23,7 +24,7 @@ use git_watcher::GitWatcherState;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, Url};
 
 /// Write a JSON command to a specific session's omp stdin.
 #[tauri::command]
@@ -468,12 +469,19 @@ fn stop_git_watch(session_id: String, watcher: State<'_, GitWatcherState>) {
 }
 
 /// Open a URL in the system default browser.
-/// Uses the `open` crate (`ShellExecute` on Windows, `xdg-open` on Linux, `open` on macOS).
-/// `window.open(url, "_blank")` creates a Tauri webview instead — this is the correct
-/// path for OAuth flows and any external URL that must open in the user's real browser.
+///
+/// Delegates to [`navigation_guard::open_external`], so this command shares
+/// the exact same allow-list as the webview's own navigation guard — it
+/// cannot be used to launch a local file or any non-web/mail URL, only to
+/// hand a `http(s)`/`mailto` URL to the OS (`ShellExecuteExW` on Windows,
+/// `xdg-open` on Linux, `open` on macOS). `window.open(url, "_blank")` is a
+/// no-op here instead (no `on_new_window` handler is registered, so wry
+/// denies it) — this command is the correct path for OAuth flows and any
+/// external URL that must open in the user's real browser.
 #[tauri::command]
 fn open_url_external(url: String) -> Result<(), String> {
-    open::that(&url).map_err(|e| e.to_string())
+    let url = Url::parse(&url).map_err(|e| e.to_string())?;
+    navigation_guard::open_external(&url)
 }
 
 /// Bounded `git status` for the Changes panel — see `workspace::status`.
@@ -657,6 +665,7 @@ pub fn run() {
         }
     }));
     let app = builder
+        .plugin(navigation_guard::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AgentBridge::new())
         .manage(GitWatcherState::new())

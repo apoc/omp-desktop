@@ -1211,9 +1211,11 @@
     if (type === "extension_ui_request") {
       // URL to open in the system browser (e.g. OAuth auth page).
       if (ev.method === "open_url") {
-        // In Tauri, window.open() creates a webview rather than opening the system
-        // browser. Use the open_url_external Rust command (open crate → ShellExecute
-        // on Windows) so OAuth URLs open in the user's actual browser.
+        // window.open() is a no-op here (no on_new_window handler is
+        // registered, so wry denies it) rather than opening the system
+        // browser. Use the open_url_external Rust command (open crate →
+        // ShellExecuteExW on Windows) so OAuth URLs open in the user's
+        // actual browser.
         if (window.__TAURI__) {
           window.__TAURI__.core.invoke("open_url_external", { url: ev.url }).catch(e => {
             console.error("[live] open_url_external failed:", e);
