@@ -70,6 +70,8 @@
     var(--bg-elevated));
   border: 1px solid color-mix(in oklab, var(--accent) 25%, var(--line-bright));
 }
+.user-images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.user-image { max-width: 220px; max-height: 220px; border-radius: 8px; border: 1px solid var(--line-bright); display: block; }
 .user-meta { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; font-size: var(--d-text-xs); }
 .user-text {
   font-size: var(--d-text);

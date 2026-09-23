@@ -123,9 +123,9 @@ function App() {
   useKeymapDispatch(handlersRef);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
-  const handleSend = text => {
+  const handleSend = (text, images) => {
     const hasAnnotations = Object.keys(planAnnotations).length > 0;
-    if (!text.trim() && !hasAnnotations) return;
+    if (!text.trim() && !hasAnnotations && !(images && images.length > 0)) return;
     let msg = text.trim();
     if (planMode) {
       if (hasAnnotations) {
@@ -141,17 +141,22 @@ function App() {
         setPlanAnnotations({});
         planStartedRef.current = true; // annotations imply plan is already in progress
       } else if (!planStartedRef.current) {
-        // First clean send — wrap in intent framing
+        // First clean send — wrap in intent framing. trimEnd() matters for an
+        // image-only send (empty text): INTENT_FRAMING's template ends in a
+        // literal "\n\n" that .trim() on the intent argument never touches,
+        // and the server's message_start echo arrives already .trim()med
+        // (live.js) — an untrimmed local echo would fail that dedup compare
+        // and double-render the bubble.
         planStartedRef.current = true;
-        msg = INTENT_FRAMING(text.trim());
+        msg = INTENT_FRAMING(text.trim()).trimEnd();
       }
     }
     if (streaming) {
-      bridge?.steer(msg);
+      bridge?.steer(msg, images);
     } else if (bridge?.isConnected) {
-      bridge.send(msg);
+      bridge.send(msg, images);
     } else {
-      setMessages(prev => [...prev, { kind: "user", time: timeNow(), text: msg }]);
+      setMessages(prev => [...prev, { kind: "user", time: timeNow(), text: msg, images }]);
     }
   };
 
@@ -187,7 +192,7 @@ function App() {
   };
 
   // Composer-scoped follow-up: the composer owns the draft text.
-  const handleFollowUp = text => { bridge?.followUp(text); };
+  const handleFollowUp = (text, images) => { bridge?.followUp(text, images); };
 
   const handleCommand = c => {
     if      (c.name === "plan")      { setPlanMode(true); planStartedRef.current = false; }

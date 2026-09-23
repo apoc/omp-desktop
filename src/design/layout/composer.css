@@ -16,6 +16,19 @@
   margin-bottom: 6px;
 }
 
+.attach-strip { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px 8px; }
+.attach-chip { position: relative; width: 48px; height: 48px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line-bright); flex: none; }
+.attach-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attach-remove {
+  position: absolute; top: 2px; right: 2px;
+  width: 16px; height: 16px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: none;
+  background: color-mix(in oklab, var(--bg-elevated) 70%, black);
+  color: var(--fg-2); cursor: pointer;
+}
+.attach-remove:hover { color: var(--rose); background: color-mix(in oklab, var(--rose) 15%, color-mix(in oklab, var(--bg-elevated) 70%, black)); }
+
 .composer-row {
   display: flex; align-items: flex-end; gap: 6px;
   background: var(--bg-input);

@@ -1344,12 +1344,12 @@
       const role = msg?.role;
 
       if (role === "user") {
-        const blocks = Array.isArray(msg.content) ? msg.content : [];
-        const text = blocks.filter(b => b.type === "text").map(b => b.text ?? "").join("\n").trim();
-        if (text) {
+        const blocks = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: String(msg.content ?? "") }];
+        const { text, images } = window.adaptUserContent(blocks);
+        if (text || images.length > 0) {
           const last = state.messages[state.messages.length - 1];
           if (!(last?.kind === "user" && last.text === text)) {
-            state.messages = [...state.messages, { kind: "user", time, text }];
+            state.messages = [...state.messages, { kind: "user", time, text, images }];
           }
           notify();
         }
@@ -1737,18 +1737,18 @@
 
     // ── Messaging ────────────────────────────────────────────────────────────
     send(text, images) {
-      const userMsg = { kind: "user", time: timeNow(), text };
+      const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [] };
       state.messages = [...state.messages, userMsg];
       notify();
       _send({ type: "prompt", message: text, images: images ?? [] });
     },
     abort()            { _send({ type: "abort" }); },
-    followUp(text)     { _send({ type: "follow_up", message: text }); },
-    steer(text) {
-      const userMsg = { kind: "user", time: timeNow(), text };
+    followUp(text, images) { _send({ type: "follow_up", message: text, images: images ?? [] }); },
+    steer(text, images) {
+      const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [] };
       state.messages = [...state.messages, userMsg];
       notify();
-      _send({ type: "steer", message: text, images: [] });
+      _send({ type: "steer", message: text, images: images ?? [] });
     },
     setModel(model)    { _send({ type: "set_model", provider: model.provider, modelId: model.id }); },
     cycleModel()       { _send({ type: "cycle_model" }); },
