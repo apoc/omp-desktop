@@ -138,9 +138,8 @@ pub struct DashboardStats {
 /// thread (see `usage_stats` in `lib.rs`).
 pub fn fetch(profile: Option<&str>) -> Result<DashboardStats, String> {
     let args = stats_args(profile);
-    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-    let output = crate::agent::spawn::spawn_candidate_output(&arg_refs)?;
+    let output = crate::agent::spawn::spawn_candidate_output(&args)?;
     if !output.status.success() {
         return Err(exit_failure_message(
             output.status,
@@ -151,17 +150,18 @@ pub fn fetch(profile: Option<&str>) -> Result<DashboardStats, String> {
     parse_stats_json(&output.stdout)
 }
 
-/// Build the argv for [`fetch`]: `--profile=<id>` (only for a non-empty
-/// `profile`, matching `agent::spawn::omp_args`' own filter — a blank id
-/// would otherwise become a bare `--profile=`) *before* `stats --json`,
-/// never after (see [`fetch`]'s doc for why the order is load-bearing).
-/// Extracted as a pure function, mirroring why `omp_args` in `spawn.rs`
-/// is pulled out the same way, so the one behavior this whole module
-/// exists to get right is unit-testable without spawning a process.
+/// Build the argv for [`fetch`]: `--profile=<id>` (via
+/// `agent::spawn::profile_flag`, so the flag's spelling and empty-id
+/// guard live in one place shared with `omp_args`) *before* `stats
+/// --json`, never after (see [`fetch`]'s doc for why the order is
+/// load-bearing). Extracted as a pure function, mirroring why `omp_args`
+/// in `spawn.rs` is pulled out the same way, so the one behavior this
+/// whole module exists to get right is unit-testable without spawning a
+/// process.
 fn stats_args(profile: Option<&str>) -> Vec<String> {
     let mut args = Vec::with_capacity(3);
-    if let Some(id) = profile.filter(|id| !id.is_empty()) {
-        args.push(format!("--profile={id}"));
+    if let Some(flag) = crate::agent::spawn::profile_flag(profile) {
+        args.push(flag);
     }
     args.push("stats".to_string());
     args.push("--json".to_string());
@@ -381,12 +381,15 @@ mod tests {
         let msg = exit_failure_message("exit status: 2", b"", stdout.as_bytes());
         assert!(msg.contains("TRAILING_MARKER"), "message was: {msg}");
         assert!(!msg.contains("HEAD_MARKER"), "message was: {msg}");
-        // `assert_eq!`, not a `<=` bound: an off-by-one or halved/doubled
-        // cap would still drop HEAD_MARKER and keep TRAILING_MARKER,
-        // passing both marker checks above, so only pinning the exact
-        // byte count catches a regression in the cap's magnitude itself
-        // (mutation-tested by hand: `STDOUT_TAIL_MAX_BYTES / 2` and `- 1`
-        // both fail this assertion while passing the two above it).
+        // `assert_eq!`, not a `<=` bound. The bound is expressed in
+        // `STDOUT_TAIL_MAX_BYTES` itself, so it can't catch a change to
+        // that constant's *value* (slice and bound move together either
+        // way) - what it pins is the *slice* actually honouring
+        // whatever the constant says: an implementation that kept, say,
+        // `STDOUT_TAIL_MAX_BYTES / 2` or `STDOUT_TAIL_MAX_BYTES - 1`
+        // bytes instead of the full amount would still drop HEAD_MARKER
+        // and keep TRAILING_MARKER (passing both checks above) but fail
+        // this one.
         let prefix_len = "omp stats failed (exit status: 2): ".len();
         assert_eq!(
             msg.len(),

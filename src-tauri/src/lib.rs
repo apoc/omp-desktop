@@ -191,7 +191,7 @@ async fn clear_profile_bootstrap(
 ) -> Result<(), String> {
     // Resolved, so a blank/"default" id can't aim this at the built-in tree
     // (which has no seed) and an unlisted id can't reach the disk at all.
-    let Some(id) = store.resolve(Some(&id))?.map(ToString::to_string) else {
+    let Some(id) = store.resolve_owned(Some(id))? else {
         return Ok(());
     };
     let home = app.path().home_dir().map_err(|e| e.to_string())?;

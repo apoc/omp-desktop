@@ -61,25 +61,37 @@ fn omp_command(name: &str) -> Command {
 /// can actually be spawned, returning its captured output regardless of
 /// exit status — each caller decides how to interpret a non-zero exit;
 /// this only decides *which binary* answered. Moves on to the next
-/// [`CANDIDATES`] entry when `.output()` errors — most often because the
-/// binary itself couldn't be spawned (not found, permission denied, ...),
-/// though `Command::output()`'s own docs also report a post-spawn
-/// pipe-read or `wait()` failure the same way, which would re-run a
-/// binary that did already execute against the next candidate name; a
-/// found binary's non-zero *exit status* is not one of these cases and
-/// is still returned as `Ok` rather than triggering a retry.
+/// [`CANDIDATES`] entry only for an error kind that actually means the
+/// binary couldn't be launched (`NotFound`, `PermissionDenied`) — not on
+/// every error `.output()` can return: its own docs also report a
+/// post-spawn pipe-read or `wait()` failure the same way, and retrying
+/// *that* against the next candidate name would re-run a binary that did
+/// already execute (on Windows, re-syncing `omp stats`' warehouse a
+/// second time). A found binary's non-zero *exit status* is a separate,
+/// successful `Ok(Output)` from `.output()`'s own perspective and is
+/// always returned as-is, never retried.
 ///
 /// Shared by [`fetch_help_text`] and `stats::fetch` (the latter outside
 /// this module, hence `pub`) — both used to run their own copy of this
 /// exact loop.
-pub fn spawn_candidate_output(args: &[&str]) -> Result<std::process::Output, String> {
+pub fn spawn_candidate_output<S: AsRef<std::ffi::OsStr>>(
+    args: &[S],
+) -> Result<std::process::Output, String> {
     let mut last_err = None;
     for name in CANDIDATES {
         let mut cmd = omp_command(name);
         cmd.args(args);
         match cmd.output() {
             Ok(output) => return Ok(output),
-            Err(e) => last_err = Some(format!("failed to run {name}: {e}")),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                last_err = Some(format!("failed to run {name}: {e}"));
+            }
+            Err(e) => return Err(format!("failed to run {name}: {e}")),
         }
     }
     Err(last_err.unwrap_or_else(|| "no omp candidates configured".to_string()))
@@ -295,9 +307,8 @@ fn fetch_help_text() -> String {
 /// omp's own default approval tier auto-approves exec-tier tools, which a
 /// desktop product should never inherit silently.
 ///
-/// `profile` is already resolved (see `profiles::ProfileStore::resolve`):
-/// `Some(id)` becomes `--profile=<id>`, `None` is the built-in profile and
-/// spawns without the flag so it keeps using omp's shared `~/.omp/agent`.
+/// `profile` is already resolved (see `profiles::ProfileStore::resolve`)
+/// and turned into its flag via [`profile_flag`].
 ///
 /// Unlike `approval_mode`, `--profile` is *not* gated on the help probe, and
 /// deliberately so: the probe exists to keep an older omp startable when the
@@ -307,6 +318,20 @@ fn fetch_help_text() -> String {
 /// conversation into the default profile's history - which is strictly worse
 /// than the tab failing loudly.
 ///
+/// Build the `--profile=<id>` flag from a resolved profile id, or `None`
+/// for the built-in profile — `Some(id)` becomes `--profile=<id>`; a
+/// blank id (defence-in-depth: `ProfileStore::resolve` already maps
+/// blank/`"default"` to `None`) is treated the same as `None` rather than
+/// producing a bare `--profile=`. Shared by [`omp_args`] and
+/// `stats::fetch`'s own argv builder (the latter outside this module,
+/// hence `pub`) so the flag's spelling and empty-id guard live in
+/// exactly one place.
+pub fn profile_flag(profile: Option<&str>) -> Option<String> {
+    profile
+        .filter(|p| !p.is_empty())
+        .map(|p| format!("--profile={p}"))
+}
+
 /// Extracted as a pure function so this is unit-testable without spawning
 /// a process.
 fn omp_args(
@@ -317,8 +342,8 @@ fn omp_args(
     approval_mode: Option<&str>,
 ) -> Vec<String> {
     let mut args = vec!["--mode".to_string(), mode.to_string()];
-    if let Some(p) = profile.filter(|p| !p.is_empty()) {
-        args.push(format!("--profile={p}"));
+    if let Some(flag) = profile_flag(profile) {
+        args.push(flag);
     }
     if let Some(r) = resume {
         if !r.is_empty() {
