@@ -99,6 +99,11 @@
        before it. -->
   <script src="app/image-attach.js"></script>
 
+  <!-- Chat "stick to bottom" pin state machine. Dependency-free IIFE;
+       design/chat/chat-view.jsx destructures window.OMP_SCROLL_PIN at
+       top level, so this must load before it. -->
+  <script src="app/scroll-pin.js"></script>
+
   <!-- Design components (unchanged — from src/design/ copy) -->
   <script src="design/tweaks/style.js"></script>
   <script src="design/tweaks/use-tweaks.js"></script>
