@@ -4,7 +4,7 @@
 
 const { Icon } = window;
 const { parseMentionQuery, applyMention } = window.OMP_MENTIONS;
-const { prepareImage, imageFilesFromTransfer, toDataUrl, MAX_ATTACHMENTS } = window.OMP_IMAGES;
+const { prepareImage, imageFilesFromTransfer, imageFilesFromClipboardAsync, toDataUrl, MAX_ATTACHMENTS } = window.OMP_IMAGES;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` (display
 // logic lives there so chrome.jsx's ⌘K/history hints can reuse it too,
@@ -244,6 +244,15 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
       // but keep going into the text handling below instead of discarding
       // it. Only an image with no accompanying text short-circuits here.
       if (!raw) { e.preventDefault(); return; }
+    } else {
+      // WebKitGTK never puts image/* into the synchronous paste event's
+      // DataTransfer (only text/*), so the extraction above always comes
+      // back empty there for an image paste — fall back to the async
+      // Clipboard API, which does see it. Fire-and-forget: there is no
+      // synchronous default action to block when the sync DataTransfer
+      // carried no image, and on engines where the sync path already
+      // works this resolves to zero files and is a no-op.
+      imageFilesFromClipboardAsync().then((files) => { if (files.length > 0) addFiles(files); });
     }
     const lines = raw.split("\n");
     if (lines.length <= 5 && raw.length <= 500) return; // short — let browser handle normally
