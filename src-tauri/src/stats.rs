@@ -346,9 +346,13 @@ mod tests {
         let msg = exit_failure_message("exit status: 2", b"", stdout.as_bytes());
         assert!(msg.contains("TRAILING_MARKER"), "message was: {msg}");
         assert!(!msg.contains("HEAD_MARKER"), "message was: {msg}");
-        // Pins the cap itself, not just the slice direction: removing
-        // `STDOUT_TAIL_MAX_BYTES` entirely (returning the whole stdout)
-        // would still pass both assertions above.
+        // The two marker assertions above already prove *some* cap
+        // exists (an uncapped, full-stdout mutation would still contain
+        // HEAD_MARKER and fail the second one) — this pins the cap's
+        // *exact* size: a mutation that doubled or halved
+        // `STDOUT_TAIL_MAX_BYTES` would still drop HEAD_MARKER and keep
+        // TRAILING_MARKER, passing both marker checks, but only the
+        // correct size satisfies this bound.
         let prefix_len = "omp stats failed (exit exit status: 2): ".len();
         assert!(
             msg.len() <= prefix_len + STDOUT_TAIL_MAX_BYTES,

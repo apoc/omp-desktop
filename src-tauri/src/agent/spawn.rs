@@ -32,8 +32,8 @@ const CANDIDATES: &[&str] = if cfg!(windows) {
 /// caller: `Command::spawn()`/`.status()` default to *inheriting* the
 /// parent's stdin, where a child that tries to read from it would hang.
 /// [`spawn_candidate_output`]'s `.output()` call needs no such default —
-/// per `Command::output()`'s own documented behavior, it never inherits
-/// stdin regardless of prior `.stdin()` configuration, closing the
+/// per `Command::output()`'s own documented behavior, it doesn't inherit
+/// stdin *by default* (i.e. with no `.stdin()` set at all), closing the
 /// stream immediately if the child attempts to read it. Set uniformly
 /// here anyway, both because [`spawn_omp`] uses `.spawn()` and overrides
 /// it to `Stdio::piped()` for the RPC session's own use (this default

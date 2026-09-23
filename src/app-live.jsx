@@ -107,10 +107,9 @@ function App() {
 
   // ── Derived values ────────────────────────────────────────────────────────
   const activeProject = sessions.find(s => s.id === activeSessionId) ?? sessions[0] ?? EMPTY_PROJECT;
-  // Same id resolution as ProfileMenu's own `activeId` prop (chrome.jsx:385)
-  // — no tab open falls back to the ticked startup default. Used to label
-  // the usage-stats panel, since its numbers differ sharply per profile
-  // and nothing else in that panel says which one it's showing.
+  // `activeProfileId`'s fallback rationale lives at its `WindowChrome`
+  // usage site below. Hoisted so the usage-stats panel's profile label
+  // can share the exact same resolution instead of a second inline copy.
   const activeProfileId    = activeProject.id ? activeProject.profile : startupProfileId;
   const activeProfileLabel =
     (profiles.find(p => p.id === activeProfileId) ?? { name: activeProfileId }).name;
@@ -388,8 +387,7 @@ function App() {
             project={activeProject}
             peer={safePeer}
             onCmd={() => setBridgeOpen(true)}
-            profiles={profiles}
-            activeProfileId={activeProject.id ? activeProject.profile : startupProfileId}
+            activeProfileId={activeProfileId}
             startupProfileId={startupProfileId}
             onSelectProfile={handleSelectProfile}
             onCreateProfile={handleCreateProfile}
