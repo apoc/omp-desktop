@@ -47,18 +47,18 @@ function UsageStatsPanel({ onClose }) {
     if (!bridge) return;
     setLoading(true);
     setError(null);
-    try {
-      const res = await bridge.usageStats();
-      if (res?.overall) {
-        setData(res);
-      } else {
-        setError("no usage data yet — omp stats hasn't synced any sessions");
-      }
-    } catch (e) {
-      setError(String(e?.message ?? e));
-    } finally {
-      setLoading(false);
+    const res = await bridge.usageStats();
+    if (!res.ok) {
+      // Backend rejection (omp not found, `stats` module not installed on
+      // this omp build, sync failure, ...) — see stats.rs::exit_failure_message
+      // for why this is distinct from "zero sessions synced".
+      setError(res.error);
+    } else if (res.value?.overall) {
+      setData(res.value);
+    } else {
+      setError("no usage data yet — omp stats hasn't synced any sessions");
     }
+    setLoading(false);
   }, [bridge]);
 
   React.useEffect(() => { refresh(); }, [refresh]);

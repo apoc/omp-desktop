@@ -2053,10 +2053,14 @@
 
     /** Cross-session usage statistics (all projects/profiles) — see
      *  usage_stats in lib.rs / stats.rs::fetch. Unlike the workspace
-     *  methods above, this is not scoped to the active tab's project. */
+     *  methods above, this is not scoped to the active tab's project.
+     *  Uses `_invokeResult` (not `_invokeSafe`) because "no usage data"
+     *  and "the `omp stats` module isn't installed/available" need
+     *  distinct panel messages — `omp stats` is an optional module some
+     *  omp installs won't have, and a swallowed rejection would look
+     *  identical to a fresh install with zero synced sessions. */
     async usageStats() {
-      const empty = { overall: null, byModel: [], byFolder: [], byAgentType: [] };
-      return _invokeSafe("usage_stats", {}, empty);
+      return _invokeResult("usage_stats", {});
     },
 
     // ── Session management ───────────────────────────────────────────────────

@@ -109,12 +109,36 @@ pub fn fetch() -> Result<DashboardStats, String> {
         .output()
         .map_err(|e| format!("failed to run omp stats: {e}"))?;
     if !output.status.success() {
-        return Err(format!(
-            "omp stats failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+        return Err(exit_failure_message(output.status, &output.stderr));
     }
     parse_stats_json(&output.stdout)
+}
+
+/// Build the error string for a non-zero `omp stats --json` exit.
+///
+/// `stats` is an optional omp module — an install without it (or an omp
+/// build old enough to predate the subcommand) exits non-zero here with
+/// empty stderr rather than a descriptive message (observed: exit 129, no
+/// stderr, for an unrecognized subcommand on this CLI's argument parser),
+/// so a bare `"omp stats failed: "` would leave the panel showing nothing
+/// useful. Naming that specific, empirically-observed case explicitly
+/// gives the frontend something actionable to display instead of a blank
+/// tail.
+///
+/// Takes `status` by `impl Display` (rather than the whole
+/// `std::process::Output`) so it can be unit-tested without constructing
+/// a platform-specific `ExitStatus` (`std::os::unix::process::ExitStatusExt`
+/// and its Windows equivalent have incompatible signatures).
+fn exit_failure_message(status: impl std::fmt::Display, stderr: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr);
+    let stderr = stderr.trim();
+    if stderr.is_empty() {
+        format!(
+            "omp stats exited with {status} and no output — the `stats` module may not be installed for this omp build"
+        )
+    } else {
+        format!("omp stats failed: {stderr}")
+    }
 }
 
 /// Parse `omp stats --json`'s stdout into [`DashboardStats`].
@@ -201,5 +225,20 @@ mod tests {
     #[test]
     fn rejects_payload_missing_required_overall() {
         assert!(parse_stats_json(b"{}").is_err());
+    }
+
+    #[test]
+    fn exit_failure_with_empty_stderr_names_the_optional_module() {
+        // The case actually observed running a real omp build: an
+        // unrecognized subcommand exits non-zero with nothing on stderr.
+        let msg = exit_failure_message("exit status: 129", &[]);
+        assert!(msg.contains("stats` module may not be installed"));
+        assert!(msg.contains("exit status: 129"));
+    }
+
+    #[test]
+    fn exit_failure_with_stderr_surfaces_it_verbatim() {
+        let msg = exit_failure_message("exit status: 1", b"  permission denied  \n");
+        assert_eq!(msg, "omp stats failed: permission denied");
     }
 }
