@@ -88,6 +88,21 @@
   const sessionRegistry = new Map();
   const sessionSnapshots = new Map(); // id -> saved state + volatile vars
   const gitListeners = new Map();  // session_id → Tauri unlisten fn for git://branch/{id}
+  // Prompt history — one list per tab, newest-first, in memory only. Never
+  // persisted to disk/localStorage: filled as the user sends (_recordPrompt)
+  // and backfilled from the transcript whenever get_messages arrives (tab
+  // switch, resume from history) — see the get_messages handler below.
+  const promptHistories = new Map(); // session id → string[]
+  let promptHistoryLimit = window.OMP_PROMPT_HISTORY.DEFAULT_LIMIT;
+  // Static prefix INTENT_FRAMING (app/constants.js) wraps plan-mode intents
+  // in — recovers the as-typed prompt from a framed transcript entry so
+  // recall shows what the user actually typed, not the wrapper.
+  const FRAMING_PREFIX = window.INTENT_FRAMING("");
+  // Shared by both prompt-history normalization sites (the transcript
+  // backfill below and _recordPrompt further down) — hoisted into one
+  // object so they can't drift apart the way _recordPrompt's own missing
+  // normalization once did.
+  const PROMPT_NORMALIZE = { framingPrefix: FRAMING_PREFIX, skip: [window.APPROVAL_PROMPT] };
   const _profileSwitching = new Set(); // session ids with a profile respawn in flight
   // Session ids whose cached `session_status` startup error has already been
   // filed into the transcript. The backend keeps that entry until the id's
@@ -244,6 +259,8 @@
         ),
       })),
       activeSessionId,
+      // Active tab's prompt history only — never persisted, see promptHistories above.
+      promptHistory:   promptHistories.get(activeSessionId) ?? [],
       profiles,
       startupProfileId,
     };
@@ -1150,6 +1167,16 @@
         }
       }
       state.messages = streamingBubble ? [...merged, streamingBubble] : merged;
+      // Backfill prompt history from the persisted transcript — runs on
+      // every arrival (plain tab switch, or a resumed/restored session),
+      // not just once: mergeOlder is a no-op for prompts already known, so
+      // this only ever adds prompts this in-memory list hasn't seen yet.
+      if (activeSessionId) {
+        const prior = window.OMP_PROMPT_HISTORY.promptsFromMessages(merged, PROMPT_NORMALIZE);
+        promptHistories.set(activeSessionId, window.OMP_PROMPT_HISTORY.mergeOlder(
+          promptHistories.get(activeSessionId) ?? [], prior, promptHistoryLimit,
+        ));
+      }
       notify();
 
     } else if (command === "get_available_models") {
@@ -1796,6 +1823,23 @@
     }
   }
 
+  // Record a sent prompt into the active tab's in-memory history (issue
+  // #16). Not slash-command-filtered — a `/plan …` or `/compact` the user
+  // typed by hand is just as recallable as any other prompt. Normalized
+  // with the same framingPrefix/skip the transcript backfill uses below
+  // (get_messages handler) — without this, a plan-mode send would record
+  // the whole INTENT_FRAMING wrapper instead of the typed intent, and
+  // approve-plan's canned APPROVAL_PROMPT followUp would show up in
+  // recall too; both would then also get backfilled a second time, in
+  // their *stripped* form, the next time get_messages arrives.
+  function _recordPrompt(text) {
+    if (!activeSessionId) return;
+    promptHistories.set(activeSessionId, window.OMP_PROMPT_HISTORY.record(
+      promptHistories.get(activeSessionId) ?? [], text, promptHistoryLimit,
+      PROMPT_NORMALIZE,
+    ));
+  }
+
   // ── OMP_BRIDGE public API ─────────────────────────────────────────────────
   window.OMP_BRIDGE = {
     get isConnected() { return !!window.__TAURI__ && !!activeSessionId; },
@@ -1812,6 +1856,7 @@
     send(text, images) {
       const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [] };
       state.messages = [...state.messages, userMsg];
+      _recordPrompt(text);
       notify();
       if (isSlashCommand(state.commands, text)) {
         _sendWithResponse({ type: "prompt", message: text, images: images ?? [] })
@@ -1843,6 +1888,7 @@
     followUp(text, images) {
       const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [], pendingEcho: true };
       state.messages = [...state.messages, userMsg];
+      _recordPrompt(text);
       notify();
       if (isSlashCommand(state.commands, text)) {
         _send({ type: "prompt", message: text, images: images ?? [], streamingBehavior: "followUp" });
@@ -1853,6 +1899,7 @@
     steer(text, images) {
       const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [], pendingEcho: true };
       state.messages = [...state.messages, userMsg];
+      _recordPrompt(text);
       notify();
       if (isSlashCommand(state.commands, text)) {
         _send({ type: "prompt", message: text, images: images ?? [], streamingBehavior: "steer" });
@@ -2351,6 +2398,7 @@
     async closeSession(id) {
       _killSessionProcess(id);
       sessionRegistry.delete(id);
+      promptHistories.delete(id);
       if (id === activeSessionId) {
         const remaining = [...sessionRegistry.keys()];
         if (remaining.length > 0) {
@@ -2379,6 +2427,22 @@
       const cwd = _activeProjectPath();
       if (!cwd) return [];
       return _invokeSafe("list_project_files", { cwd, query, limit }, []);
+    },
+
+    /** Update the in-memory prompt-history cap (tweaks panel setting,
+     *  default OMP_PROMPT_HISTORY.DEFAULT_LIMIT). Trims every tab's list
+     *  eagerly, not just on the next record/backfill — otherwise lowering
+     *  the slider wouldn't affect the picker (open via Ctrl+Up) until the
+     *  next prompt is sent, and a startup call landing before the first
+     *  transcript backfill would silently miss trimming it too.
+     *
+     *  The trim decision itself has no Tauri dependency (it's plain Map
+     *  iteration) and is covered directly by test-prompt-history.mjs via
+     *  `OMP_PROMPT_HISTORY.trimAll` — only `notify()`'s side effect stays
+     *  here, which this file has no harness to assert on. */
+    setPromptHistoryLimit(n) {
+      promptHistoryLimit = window.OMP_PROMPT_HISTORY.clampLimit(n);
+      if (window.OMP_PROMPT_HISTORY.trimAll(promptHistories, promptHistoryLimit)) notify();
     },
 
     /** Subscribe to state snapshots. Returns an unsubscribe function. */

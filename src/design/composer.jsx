@@ -23,10 +23,21 @@ function hintKeyFor(actionId, fallback) {
 }
 
 // ── The composer (input + plan/steer modes + send) ────────────────────
-function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert }) {
+function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert }) {
   const [text, setText]       = React.useState("");
   const [activeIdx, setActiveIdx] = React.useState(0);
   const taRef   = React.useRef(null);
+  // Prompt-history recall (issue #16, Arrow Up/Down) — position kept in a
+  // ref (not state) since it never drives a render on its own, only via
+  // the setText calls that already re-render. Invalidated at the call
+  // site in onKey below (not here) whenever `text` no longer equals the
+  // entry it last recalled — covers every way the draft can change out
+  // from under it: a tab switch (promptHistory itself changes), the
+  // history list shrinking under an active limit change, or any
+  // programmatic edit that bypasses onChange (paste-token collapse,
+  // @-mention pick, ⌘K draft insert). A dedicated per-tab reset effect
+  // would only cover the first case.
+  const historyNavRef = React.useRef(window.OMP_PROMPT_HISTORY.IDLE);
   const listRef = React.useRef(null);
   // paste blocks: id → raw content; collapsed in textarea as [paste #N +K lines]
   const pasteBlocksRef   = React.useRef(new Map());
@@ -154,6 +165,17 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     replaceDraft(next);
   }, [draftInsert?.nonce]);
 
+  // Prompt-history picker (Ctrl+Up modal) hands a pick here the same way
+  // ⌘K's draftInsert does — keyed on `nonce` so picking the same prompt
+  // twice in a row still re-fires. Unlike draftInsert, this always
+  // *replaces* the draft (the modal's contract is "put this message
+  // directly in the prompt box"), never appends an existing one.
+  React.useEffect(() => {
+    if (!promptInsert) return;
+    replaceDraft(promptInsert.text);
+    historyNavRef.current = window.OMP_PROMPT_HISTORY.IDLE;
+  }, [promptInsert?.nonce]);
+
   const execCmd = (cmd) => {
     // A non-desktop (RPC) command has no handler in app-live.jsx's
     // handleCommand — it runs inside omp. Insert `/name ` and leave focus
@@ -232,6 +254,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     const images = attachments.map(a => a.image);
     dispatcher(expandPastes(text.trim()), images);
     setText("");
+    historyNavRef.current = window.OMP_PROMPT_HISTORY.IDLE;
     setMentionDismissedKey(null);
     pasteBlocksRef.current.clear();
     pasteCounterRef.current = 0;
@@ -329,6 +352,47 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
       if (e.key === "Escape")     { e.preventDefault(); setText(""); return; }
       if (e.key === "Tab")        { e.preventDefault(); setActiveIdx(i => (i + 1) % filtered.length); return; }
     }
+    // Prompt-history recall (issue #16) — only when neither popup owns the
+    // arrows, no modifier is held (a modified arrow is a different chord,
+    // e.g. the Ctrl+Up picker handled globally by use-keymap.jsx, and
+    // Shift+Up/Down is the native select-to-start/end gesture), and the
+    // caret sits on the first/last line respectively — mirrors a shell's
+    // "only recall when there's nothing to navigate past" behavior so a
+    // multi-line draft's internal Up/Down still moves the caret normally.
+    if (!showMention && !showSlash && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey &&
+        (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      const dir = e.key === "ArrowUp" ? -1 : 1;
+      const ta = taRef.current;
+      const start = ta ? ta.selectionStart : text.length;
+      const end   = ta ? ta.selectionEnd   : text.length;
+      const H = window.OMP_PROMPT_HISTORY;
+      // A recall position is only meaningful while the draft still equals
+      // what it last set — invalidate rather than trust a stale index:
+      // covers the history list shrinking under an in-progress recall (a
+      // lowered tweaks-panel limit, which would otherwise hand `step` an
+      // out-of-range index and read `undefined`), a tab switch (a fresh
+      // `promptHistory` swapped in under an unrelated index), and any
+      // programmatic edit that bypasses onChange's own reset (paste-token
+      // collapse, @-mention pick, ⌘K draft insert).
+      if (historyNavRef.current.index >= 0 && promptHistory[historyNavRef.current.index] !== text) {
+        historyNavRef.current = H.IDLE;
+      }
+      const eligible = dir < 0 ? H.caretOnFirstLine(text, start, end) : H.caretOnLastLine(text, start, end);
+      if (eligible) {
+        const result = H.step(historyNavRef.current, promptHistory, dir, text);
+        if (result) {
+          e.preventDefault();
+          historyNavRef.current = result.nav;
+          setText(result.text);
+          requestAnimationFrame(() => {
+            const el = taRef.current;
+            if (!el) return;
+            el.selectionStart = el.selectionEnd = result.text.length;
+          });
+          return;
+        }
+      }
+    }
     // followUp must be checked before the plain-Enter branch: `ctrl+enter` is
     // a default followUp chord and `isSubmitEnter` would match it first.
     if (window.OMP_KEYMAP?.matches(e.nativeEvent ?? e, "app.message.followUp")) {
@@ -423,7 +487,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
                   : (microcopy?.paletteTip ?? `what should we ship?  ·  / for commands${bridgeHint ? `  ·  ${bridgeHint} for the bridge` : ""}`)
             }
             value={text}
-            onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart); }}
+            onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart); historyNavRef.current = window.OMP_PROMPT_HISTORY.IDLE; }}
             onSelect={(e) => setCaret(e.target.selectionStart)}
             onKeyDown={onKey}
             onPaste={onPaste}

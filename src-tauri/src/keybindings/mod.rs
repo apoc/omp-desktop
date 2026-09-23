@@ -74,6 +74,7 @@ pub const ACTION_IDS: &[&str] = &[
     "desktop.panel.changes",
     "desktop.panel.rules",
     "desktop.panel.stats",
+    "desktop.composer.promptHistory",
     "desktop.session.compact",
     "desktop.session.export",
 ];

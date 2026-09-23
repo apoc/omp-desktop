@@ -19,7 +19,8 @@
     "scanlines": true,
     "showRadar": true,
     "fontSize":  100,
-    "autosave":  true
+    "autosave":  true,
+    "promptHistoryLimit": 100
   }/*EDITMODE-END*/;
 
   const NULL_MODEL    = { id: "", name: "–", provider: "", note: "", latency: 0, current: false };
