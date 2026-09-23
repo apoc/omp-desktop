@@ -11,10 +11,8 @@ use std::sync::LazyLock;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Candidate binary names tried in order. Explicit `.exe` first on Windows
-/// because some systems have unusual PATHEXT handling. `pub`: also
-/// iterated by `stats::fetch`, which spawns `omp stats` outside any
-/// session — see [`omp_command`].
-pub const CANDIDATES: &[&str] = if cfg!(windows) {
+/// because some systems have unusual PATHEXT handling.
+const CANDIDATES: &[&str] = if cfg!(windows) {
     &["omp.exe", "omp"]
 } else {
     &["omp"]
@@ -25,15 +23,28 @@ pub const CANDIDATES: &[&str] = if cfg!(windows) {
 /// GUI-launcher PATH augmentation ([`apply_omp_path`]), the
 /// profile-env-var strip ([`sanitize_child_env`] — without it an
 /// inherited `OMP_PROFILE`/`PI_PROFILE` silently redirects the child to
-/// one named profile's tree instead of whatever this call intends), a
-/// closed stdin (omp never needs to read from it for a one-shot probe or
-/// report, and an inherited stdin can otherwise hang a child waiting on
-/// input that will never arrive), and (Windows) [`CREATE_NO_WINDOW`] so a
+/// one named profile's tree instead of whatever this call intends), an
+/// explicit closed-stdin default, and (Windows) [`CREATE_NO_WINDOW`] so a
 /// GUI-subsystem parent spawning a console-subsystem binary doesn't flash
-/// a console window. Shared by [`fetch_help_text`] and `stats::fetch`
-/// (the latter is outside this module, hence `pub`) so neither
-/// duplicates — and neither can silently drift from — this list.
-pub fn omp_command(name: &str) -> Command {
+/// a console window.
+///
+/// The `.stdin(Stdio::null())` default only matters for a `.spawn()`-based
+/// caller: `Command::spawn()`/`.status()` default to *inheriting* the
+/// parent's stdin, where a child that tries to read from it would hang.
+/// [`spawn_candidate_output`]'s `.output()` call needs no such default —
+/// per `Command::output()`'s own documented behavior, it never inherits
+/// stdin regardless of prior `.stdin()` configuration, closing the
+/// stream immediately if the child attempts to read it. Set uniformly
+/// here anyway, both because [`spawn_omp`] uses `.spawn()` and overrides
+/// it to `Stdio::piped()` for the RPC session's own use (this default
+/// just gets replaced, not fought), and so no future `.spawn()`-based
+/// caller can forget it.
+///
+/// Shared by [`spawn_omp`] and [`spawn_candidate_output`] (the latter,
+/// in turn, by [`fetch_help_text`] and `stats::fetch` — the last is
+/// outside this module, which is why `spawn_candidate_output` is `pub`)
+/// so none of them can duplicate — or silently drift from — this list.
+fn omp_command(name: &str) -> Command {
     let mut cmd = Command::new(name);
     cmd.stdin(Stdio::null());
     apply_omp_path(&mut cmd);

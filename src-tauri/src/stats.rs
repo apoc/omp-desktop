@@ -335,17 +335,20 @@ mod tests {
     fn exit_failure_stdout_fallback_keeps_the_tail_not_the_head() {
         // A stdout longer than STDOUT_TAIL_MAX_BYTES must keep the
         // *trailing* bytes, where a final error line is most likely to
-        // land after some earlier, less useful output. Filler is large
-        // enough that a head-slice (the pre-fix behaviour) would drop the
-        // marker entirely, so this fails if the slicing direction ever
-        // regresses.
+        // land after some earlier, less useful output. A distinct marker
+        // at the very front (rather than reasoning about how much filler
+        // survives a partial trim) makes "not the head" a direct,
+        // unambiguous check: if the slicing direction ever regresses to
+        // a head-slice, HEAD_MARKER would appear and TRAILING_MARKER
+        // would not.
         let filler = "x".repeat(STDOUT_TAIL_MAX_BYTES * 2);
-        let stdout = format!("{filler}TRAILING_ERROR_MARKER");
+        let stdout = format!("HEAD_MARKER{filler}TRAILING_MARKER");
         let msg = exit_failure_message("exit status: 2", b"", stdout.as_bytes());
-        assert!(msg.contains("TRAILING_ERROR_MARKER"), "message was: {msg}");
+        assert!(msg.contains("TRAILING_MARKER"), "message was: {msg}");
+        assert!(!msg.contains("HEAD_MARKER"), "message was: {msg}");
         // Pins the cap itself, not just the slice direction: removing
         // `STDOUT_TAIL_MAX_BYTES` entirely (returning the whole stdout)
-        // would still contain the marker and pass the assertion above.
+        // would still pass both assertions above.
         let prefix_len = "omp stats failed (exit exit status: 2): ".len();
         assert!(
             msg.len() <= prefix_len + STDOUT_TAIL_MAX_BYTES,

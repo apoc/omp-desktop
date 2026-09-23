@@ -107,6 +107,13 @@ function App() {
 
   // ── Derived values ────────────────────────────────────────────────────────
   const activeProject = sessions.find(s => s.id === activeSessionId) ?? sessions[0] ?? EMPTY_PROJECT;
+  // Same id resolution as ProfileMenu's own `activeId` prop (chrome.jsx:385)
+  // — no tab open falls back to the ticked startup default. Used to label
+  // the usage-stats panel, since its numbers differ sharply per profile
+  // and nothing else in that panel says which one it's showing.
+  const activeProfileId    = activeProject.id ? activeProject.profile : startupProfileId;
+  const activeProfileLabel =
+    (profiles.find(p => p.id === activeProfileId) ?? { name: activeProfileId }).name;
   const todoCounts    = kanban.reduce(
     (acc, col) => {
       acc.total += col.tasks.length;
@@ -508,7 +515,7 @@ function App() {
       )}
 
       {statsOpen && (
-        <UsageStatsPanel onClose={() => setStatsOpen(false)} />
+        <UsageStatsPanel onClose={() => setStatsOpen(false)} profileLabel={activeProfileLabel} />
       )}
 
       {shortcutsOpen && (

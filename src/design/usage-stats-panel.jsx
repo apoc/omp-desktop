@@ -57,7 +57,7 @@ const EMPTY = { overall: null, byModel: [], byFolder: [], byAgentType: [] };
 // Mounted only while open (app-live.jsx gates on `statsOpen`), so there
 // is no `open` prop and no early return for it — see the matching note
 // in changes-panel.jsx.
-function UsageStatsPanel({ onClose }) {
+function UsageStatsPanel({ onClose, profileLabel }) {
   const bridge = window.OMP_BRIDGE;
   const [data, setData]       = React.useState(EMPTY);
   const [loading, setLoading] = React.useState(false);
@@ -95,7 +95,7 @@ function UsageStatsPanel({ onClose }) {
       <div className="stats-panel" onClick={e => e.stopPropagation()}>
         <div className="stats-head">
           <_StatsIcon name="cost" size={13} color="var(--accent)" />
-          <span className="mono" style={{ color: "var(--fg-2)" }}>usage · last 24h</span>
+          <span className="mono" style={{ color: "var(--fg-2)" }}>usage · {profileLabel} · last 24h</span>
           <button className="btn icon ghost" style={{ marginLeft: "auto" }} onClick={refresh} title="refresh">
             <_StatsIcon name="refresh" size={11} />
           </button>
