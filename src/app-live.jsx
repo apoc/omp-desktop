@@ -19,7 +19,7 @@
 
 const {
   Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar,
-  StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, useTweaks,
+  StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, UsageStatsPanel, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, NULL_PEER, DEFAULT_PROFILE_ID,
   INTENT_FRAMING, APPROVAL_PROMPT,
@@ -39,6 +39,7 @@ function App() {
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [changesOpen, setChangesOpen] = React.useState(false);
   const [rulesOpen,   setRulesOpen]   = React.useState(false);
+  const [statsOpen,   setStatsOpen]   = React.useState(false);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [planOpen,    setPlanOpen]    = React.useState(false);
   const [planMode,    setPlanMode]    = React.useState(false);
@@ -287,7 +288,7 @@ function App() {
   handlersRef.current = {
     "app.interrupt":           () => {
       // Only abort when no overlay is open (overlays handle Escape themselves).
-      if (bridgeOpen || historyOpen || changesOpen || rulesOpen || planOpen || shortcutsOpen) return;
+      if (bridgeOpen || historyOpen || changesOpen || rulesOpen || statsOpen || planOpen || shortcutsOpen) return;
       if (streaming) handleAbort();
     },
     "app.thinking.cycle":      cycleThinking,
@@ -326,6 +327,7 @@ function App() {
     "desktop.panel.todo":      () => setPlanOpen(v => !v),
     "desktop.panel.changes":   () => setChangesOpen(v => !v),
     "desktop.panel.rules":     () => setRulesOpen(v => !v),
+    "desktop.panel.stats":     () => setStatsOpen(v => !v),
     "desktop.session.compact": () => bridge?.compact(),
     "desktop.session.export":  () => bridge?.exportHtml(),
   };
@@ -440,6 +442,7 @@ function App() {
                 onModel={() => openBridge("models")}
                 onChanges={() => setChangesOpen(true)}
                 onRules={() => setRulesOpen(true)}
+                onStats={() => setStatsOpen(true)}
                 onTweaks={() => window.postMessage({ type: '__activate_edit_mode' }, '*')}
                 autosave={t.autosave ?? true}
                 onAutosave={v => setTweak("autosave", v)}
@@ -502,6 +505,10 @@ function App() {
 
       {rulesOpen && (
         <ApprovalRulesPanel onClose={() => setRulesOpen(false)} />
+      )}
+
+      {statsOpen && (
+        <UsageStatsPanel onClose={() => setStatsOpen(false)} />
       )}
 
       {shortcutsOpen && (

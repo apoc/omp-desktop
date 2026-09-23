@@ -4,11 +4,12 @@
    kanban / plan annotations) well past the ~150-line-per-layer guideline. */
 
 /* ── Shared panel shell ───────────────────────────────────────────────── */
-/* Both panels are the same card; only their dimensions differ. Grouped
-   rather than restated per panel so a change to the card's border, radius
-   or shadow can't apply to one panel and miss the other. */
+/* All three panels are the same card; only their dimensions differ.
+   Grouped rather than restated per panel so a change to the card's
+   border, radius or shadow can't apply to some panels and miss others. */
 .changes-panel,
-.rules-panel {
+.rules-panel,
+.stats-panel {
   background: var(--bg-elevated);
   border: 1px solid var(--line-bright);
   border-radius: 14px;
@@ -17,7 +18,8 @@
   display: flex; flex-direction: column;
 }
 .changes-head,
-.rules-head {
+.rules-head,
+.stats-head {
   display: flex; align-items: center; gap: 8px;
   height: 40px; padding: 0 14px;
   border-bottom: 1px solid var(--line);
@@ -90,4 +92,72 @@
 .rules-tool {
   font-size: var(--d-text-sm);
   color: var(--fg-2);
+}
+
+/* ── Usage stats panel ────────────────────────────────────────────────── */
+.stats-panel {
+  width: min(680px, calc(100vw - 40px));
+  max-height: min(600px, calc(100vh - 140px));
+}
+.stats-body {
+  flex: 1; min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+}
+.stats-cards {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.stats-card {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-surface);
+}
+.stats-card-label {
+  font-size: var(--d-text-xs);
+  color: var(--fg-4);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.stats-card-value {
+  font-size: var(--d-text-lg);
+  color: var(--fg-1);
+  font-family: var(--font-mono);
+}
+.stats-card-sub {
+  font-size: var(--d-text-xs);
+  color: var(--fg-4);
+}
+.stats-section-label {
+  font-size: var(--d-text-xs);
+  color: var(--fg-4);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 14px 0 6px;
+}
+.stats-table { display: flex; flex-direction: column; }
+.stats-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--d-text-sm);
+}
+.stats-row:last-child { border-bottom: none; }
+.stats-row-name {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--fg-2);
+}
+.stats-row-metric {
+  flex: none;
+  color: var(--fg-3);
+  min-width: 64px;
+  text-align: right;
+}
+.stats-chips {
+  display: flex; flex-wrap: wrap; gap: 6px;
 }

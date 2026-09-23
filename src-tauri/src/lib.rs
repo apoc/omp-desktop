@@ -15,6 +15,7 @@ mod keybindings;
 mod navigation_guard;
 mod profiles;
 mod saved_sessions;
+mod stats;
 mod workspace;
 
 use agent::AgentBridge;
@@ -531,6 +532,23 @@ async fn workspace_reject(path: String, rel_path: String) -> Result<(), String> 
         .map_err(|e| format!("join error: {e}"))?
 }
 
+/// Cross-session usage statistics for the "Usage" panel — see
+/// `stats::fetch`. Unscoped by session or project: aggregates every
+/// `~/.omp/agent/sessions/*.jsonl` log on disk, across all tabs and
+/// profiles.
+///
+/// Runs `async` + `spawn_blocking`: `stats::fetch` shells out to
+/// `omp stats --json`, which first syncs every on-disk session log into
+/// its SQLite warehouse — on a large history or a first run this can take
+/// several seconds, long enough to freeze the webview if run on Tauri's
+/// main command thread.
+#[tauri::command]
+async fn usage_stats() -> Result<stats::DashboardStats, String> {
+    tauri::async_runtime::spawn_blocking(stats::fetch)
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+}
+
 /// Shared profile-resolution and home-dir setup for the three keybindings
 /// commands. Returns `(home, resolved_profile, env_dir)` ready to pass to
 /// `keybindings::payload` / `keybindings::payload_with_overlay`.
@@ -689,6 +707,7 @@ pub fn run() {
             workspace_diff,
             workspace_accept,
             workspace_reject,
+            usage_stats,
             list_project_files,
             list_profiles,
             create_profile,

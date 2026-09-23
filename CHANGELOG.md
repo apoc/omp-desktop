@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Usage statistics panel (#22) — a status-bar button surfaces cross-session cost/token telemetry sourced from `omp stats --json` (total requests, error rate, cost, cache rate, tokens in/out, avg throughput/TTFT), broken down by model, by project folder, and by agent type (main/subagent/advisor). Unlike the Changes/Rules panels this is not scoped to the active tab — it aggregates every session log on disk across all projects and profiles.
+
 ## [0.2.2] - 2026-09-23
 
 ### Fixed

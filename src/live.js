@@ -2051,6 +2051,14 @@
       await _invokeSafe("workspace_reject", { path, relPath });
     },
 
+    /** Cross-session usage statistics (all projects/profiles) — see
+     *  usage_stats in lib.rs / stats.rs::fetch. Unlike the workspace
+     *  methods above, this is not scoped to the active tab's project. */
+    async usageStats() {
+      const empty = { overall: null, byModel: [], byFolder: [], byAgentType: [] };
+      return _invokeSafe("usage_stats", {}, empty);
+    },
+
     // ── Session management ───────────────────────────────────────────────────
 
     /** Open a new tab for the given project folder, under the *active tab's*
