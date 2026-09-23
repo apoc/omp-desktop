@@ -9,7 +9,8 @@
     "test:keymap": "node test-keymap.mjs",
     "test:prompt-history": "node test-prompt-history.mjs",
     "test:scroll-pin": "node test-scroll-pin.mjs",
-    "test:slash-commands": "node test-slash-commands.mjs"
+    "test:slash-commands": "node test-slash-commands.mjs",
+    "test:subagents": "node test-subagents.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

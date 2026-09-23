@@ -339,6 +339,11 @@
 .task-panel { border-top: 1px solid var(--line); }
 .ta-row { border-bottom: 1px solid var(--line); }
 .ta-row:last-child { border-bottom: 0; }
+.ta-top { display: flex; align-items: center; }
+.ta-top .ta-hd { flex: 1; min-width: 0; }
+.btn.ta-inspect { width: 22px; height: 22px; margin-right: 4px; flex: none; opacity: 0.55; }
+.ta-row:hover .ta-inspect { opacity: 1; }
+.ta-inspect:hover { color: var(--accent); }
 .ta-hd {
   appearance: none; border: 0; background: transparent;
   display: flex; align-items: center; gap: 6px;

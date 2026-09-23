@@ -1,7 +1,7 @@
-/* Overlays — split pane, ⌘K bridge, kanban, plan annotations ─────── */
+/* Overlays — split column, ⌘K bridge, kanban, plan annotations ───── */
 
 
-/* ── Split pane (peer session full pane) ───────────────────────────── */
+/* ── Split column (hosts the subagent manager, subagents.css) ──────── */
 .split {
   display: flex; flex-direction: column;
   background: var(--bg-window);
@@ -13,28 +13,6 @@
   height: 32px; padding: 0 12px;
   border-bottom: 1px solid var(--line);
   font-size: var(--d-text-sm);
-}
-.split-body { flex: 1; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
-.split-stream { display: flex; flex-direction: column; gap: 6px; }
-.split-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--bg-surface);
-  font-size: var(--d-text-sm);
-}
-.split-thought {
-  background: transparent; border: 0; padding: 4px 8px;
-  font-size: var(--d-text-sm);
-}
-.split-foot {
-  display: flex; align-items: center; gap: 6px;
-  padding: 6px 8px;
-  border-top: 1px dashed var(--line);
-  font-size: var(--d-text-xs);
-  color: var(--fg-3);
-  margin-top: auto;
 }
 
 /* ── Command bridge (⌘K) ───────────────────────────────────────────── */

@@ -85,8 +85,9 @@ const _TA_CLR = {
   aborted:   "var(--amber)",
 };
 
-// Each subagent row manages its own open/scroll state.
-function TaskAgentRow({ sa }) {
+// Each subagent row manages its own open/scroll state. `onInspect` opens
+// the agent in the subagent manager (keyed by the AgentProgress id).
+function TaskAgentRow({ sa, onInspect }) {
   const [isOpen, setIsOpen] = React.useState(false);
   const bodyRef   = React.useRef(null);
   const isRunning = sa.status === "running";
@@ -107,20 +108,27 @@ function TaskAgentRow({ sa }) {
 
   return (
     <div className={`ta-row ta-${sa.status}`}>
-      <button className="ta-hd" onClick={() => hasBody && setIsOpen(o => !o)}
-        style={{ cursor: hasBody ? "pointer" : "default" }}>
-        <span className="dot" style={{
-          background: clr, flexShrink: 0,
-          ...(isRunning ? { animation: "pulseDot 1.4s ease-in-out infinite" } : {}),
-        }} />
-        <span className="ta-agent">{sa.agent}</span>
-        {hint && <span className="ta-hint">· {hint}</span>}
-        <div style={{ flex: 1 }} />
-        {sa.toolCount  > 0 && <span className="chip muted mono ta-chip">{sa.toolCount}×</span>}
-        {sa.tokens     > 0 && <span className="chip muted mono ta-chip">{sa.tokens >= 1000 ? `${(sa.tokens/1000).toFixed(1)}k` : sa.tokens}t</span>}
-        {sa.durationMs > 0 && <span className="chip muted mono ta-chip">{sa.durationMs >= 1000 ? `${(sa.durationMs/1000).toFixed(1)}s` : `${sa.durationMs}ms`}</span>}
-        {hasBody && <_TC_Icon name={isOpen ? "chev" : "chevR"} size={10} color="var(--fg-4)" />}
-      </button>
+      <div className="ta-top">
+        <button className="ta-hd" onClick={() => hasBody && setIsOpen(o => !o)}
+          style={{ cursor: hasBody ? "pointer" : "default" }}>
+          <span className="dot" style={{
+            background: clr, flexShrink: 0,
+            ...(isRunning ? { animation: "pulseDot 1.4s ease-in-out infinite" } : {}),
+          }} />
+          <span className="ta-agent">{sa.agent}</span>
+          {hint && <span className="ta-hint">· {hint}</span>}
+          <div style={{ flex: 1 }} />
+          {sa.toolCount  > 0 && <span className="chip muted mono ta-chip">{sa.toolCount}×</span>}
+          {sa.tokens     > 0 && <span className="chip muted mono ta-chip">{sa.tokens >= 1000 ? `${(sa.tokens/1000).toFixed(1)}k` : sa.tokens}t</span>}
+          {sa.durationMs > 0 && <span className="chip muted mono ta-chip">{sa.durationMs >= 1000 ? `${(sa.durationMs/1000).toFixed(1)}s` : `${sa.durationMs}ms`}</span>}
+          {hasBody && <_TC_Icon name={isOpen ? "chev" : "chevR"} size={10} color="var(--fg-4)" />}
+        </button>
+        {onInspect && sa.id && (
+          <button className="btn icon ghost ta-inspect" title="inspect in subagent manager" onClick={() => onInspect(sa.id)}>
+            <_TC_Icon name="focus" size={11} />
+          </button>
+        )}
+      </div>
       {isOpen && hasBody && (
         <div className="ta-body selectable" ref={bodyRef}>
           {lines.map((l, i) => <div key={i} className="ta-stream-line">{l || "\u00a0"}</div>)}
@@ -130,15 +138,15 @@ function TaskAgentRow({ sa }) {
   );
 }
 
-function TaskPanel({ subagents }) {
+function TaskPanel({ subagents, onInspect }) {
   return (
     <div className="task-panel">
-      {subagents.map(sa => <TaskAgentRow key={sa.index} sa={sa} />)}
+      {subagents.map(sa => <TaskAgentRow key={sa.index} sa={sa} onInspect={onInspect} />)}
     </div>
   );
 }
 
-function ToolCard({ msg, idx, highlighted }) {
+function ToolCard({ msg, idx, highlighted, onInspectSubagent }) {
   const meta    = _TC_TOOL_META[msg.tool] || { color: "var(--fg-3)", icon: "circle", label: msg.tool };
   const running = msg.status === "running";
   return (
@@ -213,7 +221,7 @@ function ToolCard({ msg, idx, highlighted }) {
           </div>
         )}
         {msg.tool === "task" && msg.subagents?.length > 0 && (
-          <TaskPanel subagents={msg.subagents} />
+          <TaskPanel subagents={msg.subagents} onInspect={onInspectSubagent} />
         )}
       </div>
     </div>

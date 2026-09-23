@@ -71,6 +71,11 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "export_html",
     "get_login_providers",
     "login",
+    // Subagent manager (src/app/subagents.js): subscription level, the
+    // live-agent snapshot, and per-agent transcript tailing.
+    "set_subagent_subscription",
+    "get_subagents",
+    "get_subagent_messages",
 ];
 
 /// Manages one omp process per tab session.

@@ -24,6 +24,8 @@ function useBridgeSnapshot(bridge, setters) {
       if (snap.thinkingLevel) setters.setThinkingLevel(snap.thinkingLevel);
       setters.setSessions(snap.sessions ?? []);
       setters.setPromptHistory(snap.promptHistory ?? []);
+      setters.setSubagents(snap.subagents);
+      setters.setSubagentTranscripts(snap.subagentTranscripts ?? {});
       setters.setProfiles(snap.profiles ?? []);
       setters.setStartupProfileId(snap.startupProfileId ?? _UB_DEFAULT_PROFILE_ID);
       if (snap.activeSessionId) setters.setActiveSessionId(snap.activeSessionId);
