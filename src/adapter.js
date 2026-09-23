@@ -106,11 +106,15 @@
   // M/B tiers matter here, not just for the usage-stats panel's aggregate
   // totals (which run into the tens of millions): a 1M-token context
   // window rendered without them read as the misleadingly precise-looking
-  // "1000.0k" instead of "1.0M".
+  // "1000.0k" instead of "1.00M". Thresholds are chosen on the ROUNDED
+  // value, not the raw one: a value like 999,996,000 divided by 1e6 and
+  // rounded to 2 places is "1000.00", so branching on `n >= 1_000_000`
+  // alone would print "1000.00M" instead of promoting to "1.00B" — same
+  // failure mode one tier down (k→M) for a value just under 1,000,000.
   function formatTokens(n) {
     if (n === null || n === undefined) return "—";
-    if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+    if (n >= 999_995_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
+    if (n >= 999_950) return `${(n / 1_000_000).toFixed(2)}M`;
     return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
   }
 

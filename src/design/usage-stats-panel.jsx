@@ -7,9 +7,12 @@
    invocation), and to the installed omp CLI's rolling last-24-hours
    window (the `--json` path has no flag to request more). Unlike
    changes-panel.jsx/approval-rules-panel.jsx it is not scoped to the
-   active tab's *project* — there is no per-tab refetch on tab switch,
-   only the panel's own refresh button (which does re-run against
-   whichever tab's profile is active when clicked).
+   active tab's *project* — a tab switch that stays on the same profile
+   does not refetch, only the panel's own refresh button does. A tab
+   switch that changes profile DOES refetch: app-live.jsx keys this
+   component on the active profile id specifically so the header's
+   profileLabel prop can never show a different profile than the data
+   underneath it actually came from.
    ═════════════════════════════════════════════════════════════════════ */
 
 const { Icon: _StatsIcon } = window;
@@ -72,7 +75,11 @@ function UsageStatsPanel({ onClose, profileLabel }) {
       // Backend rejection (omp not on PATH, an omp build old enough to
       // predate the `stats` subcommand, a sync failure, ...) — see
       // stats.rs::exit_failure_message for why this is distinct from
-      // "zero sessions synced" below.
+      // "zero sessions synced" below. Clears `data` too, not just
+      // `error`: without this, a refresh clicked after the panel already
+      // showed a dashboard would render the error/empty message directly
+      // above the previous, now-stale figures instead of replacing them.
+      setData(EMPTY);
       setError(res.error);
     } else if (res.value.overall.totalRequests > 0) {
       // `overall` is always a populated struct on a successful call (see
@@ -81,6 +88,7 @@ function UsageStatsPanel({ onClose, profileLabel }) {
       // "genuinely no usage yet" from a real dashboard.
       setData(res.value);
     } else {
+      setData(EMPTY);
       setError("no usage in the last 24 hours");
     }
     setLoading(false);
@@ -128,7 +136,9 @@ function UsageStatsPanel({ onClose, profileLabel }) {
                 </div>
                 <div className="stats-card">
                   <span className="stats-card-label">performance</span>
-                  <span className="stats-card-value">{Math.round(overall.avgTokensPerSecond ?? 0)} t/s</span>
+                  <span className="stats-card-value">
+                    {overall.avgTokensPerSecond == null ? "—" : `${Math.round(overall.avgTokensPerSecond)} t/s`}
+                  </span>
                   <span className="stats-card-sub">
                     {formatMs(overall.avgTtft)} ttft · {formatMs(overall.avgDuration)} avg
                   </span>

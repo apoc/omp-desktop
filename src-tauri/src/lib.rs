@@ -235,15 +235,7 @@ async fn list_saved_sessions(
     store: State<'_, Arc<profiles::ProfileStore>>,
     app: tauri::AppHandle,
 ) -> Result<Vec<saved_sessions::SavedSession>, String> {
-    // `resolve` returns `Option<&str>` borrowed from `profile`, which this
-    // command already owns and is about to move into the spawned closure
-    // below — so validate through the borrow, then move the original
-    // instead of allocating a second `String` via `.map(str::to_owned)`.
-    let profile = if store.resolve(profile.as_deref())?.is_some() {
-        profile
-    } else {
-        None
-    };
+    let profile = store.resolve_owned(profile)?;
     tauri::async_runtime::spawn_blocking(move || {
         saved_sessions::scan_saved_sessions(&app, cwd.as_deref(), profile.as_deref())
     })
@@ -551,11 +543,7 @@ async fn usage_stats(
     profile: Option<String>,
     store: State<'_, Arc<profiles::ProfileStore>>,
 ) -> Result<stats::DashboardStats, String> {
-    let profile = if store.resolve(profile.as_deref())?.is_some() {
-        profile
-    } else {
-        None
-    };
+    let profile = store.resolve_owned(profile)?;
     tauri::async_runtime::spawn_blocking(move || stats::fetch(profile.as_deref()))
         .await
         .map_err(|e| format!("join error: {e}"))?
@@ -569,14 +557,7 @@ fn kb_resolve(
     store: &profiles::ProfileStore,
     app: &AppHandle,
 ) -> Result<(PathBuf, Option<String>, Option<OsString>), String> {
-    // Validate through the borrow, then move the original — same pattern as
-    // `list_saved_sessions` (lib.rs). Avoids a `str::to_owned` re-allocation on
-    // the happy path when the id is already an owned `String`.
-    let profile = if store.resolve(profile.as_deref())?.is_some() {
-        profile
-    } else {
-        None
-    };
+    let profile = store.resolve_owned(profile)?;
     let home = app.path().home_dir().map_err(|e| e.to_string())?;
     let env_dir = std::env::var_os("PI_CODING_AGENT_DIR");
     Ok((home, profile, env_dir))

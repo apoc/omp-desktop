@@ -30,7 +30,10 @@ const CANDIDATES: &[&str] = if cfg!(windows) {
 ///
 /// The `.stdin(Stdio::null())` default only matters for a `.spawn()`-based
 /// caller: `Command::spawn()`/`.status()` default to *inheriting* the
-/// parent's stdin, where a child that tries to read from it would hang.
+/// parent's stdin, where a child that tries to read from it could block —
+/// concretely reachable under `tauri dev`, where the parent's stdin is
+/// the terminal, though a Finder/launchd/`.desktop`-launched release
+/// build's stdin is typically already closed or `/dev/null`.
 /// [`spawn_candidate_output`]'s `.output()` call needs no such default —
 /// per `Command::output()`'s own documented behavior, it doesn't inherit
 /// stdin *by default* (i.e. with no `.stdin()` set at all), closing the
@@ -58,10 +61,13 @@ fn omp_command(name: &str) -> Command {
 /// can actually be spawned, returning its captured output regardless of
 /// exit status — each caller decides how to interpret a non-zero exit;
 /// this only decides *which binary* answered. Moves on to the next
-/// [`CANDIDATES`] entry solely when the binary itself couldn't be spawned
-/// (not found, permission denied, ...); a found binary's non-zero exit is
-/// still returned as `Ok` rather than triggering a retry against a
-/// different candidate name.
+/// [`CANDIDATES`] entry when `.output()` errors — most often because the
+/// binary itself couldn't be spawned (not found, permission denied, ...),
+/// though `Command::output()`'s own docs also report a post-spawn
+/// pipe-read or `wait()` failure the same way, which would re-run a
+/// binary that did already execute against the next candidate name; a
+/// found binary's non-zero *exit status* is not one of these cases and
+/// is still returned as `Ok` rather than triggering a retry.
 ///
 /// Shared by [`fetch_help_text`] and `stats::fetch` (the latter outside
 /// this module, hence `pub`) — both used to run their own copy of this

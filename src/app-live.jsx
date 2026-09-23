@@ -107,12 +107,13 @@ function App() {
 
   // ── Derived values ────────────────────────────────────────────────────────
   const activeProject = sessions.find(s => s.id === activeSessionId) ?? sessions[0] ?? EMPTY_PROJECT;
-  // `activeProfileId`'s fallback rationale lives at its `WindowChrome`
-  // usage site below. Hoisted so the usage-stats panel's profile label
-  // can share the exact same resolution instead of a second inline copy.
+  // No tab open → `activeProject` is EMPTY_PROJECT (built-in profile), but
+  // the bridge spawns the next tab into the ticked startup profile (nothing
+  // to inherit from) — so showing the built-in would tick a profile that
+  // isn't where the next tab actually goes. Shared by WindowChrome's menu
+  // and the usage-stats panel's header label, instead of a second copy.
   const activeProfileId    = activeProject.id ? activeProject.profile : startupProfileId;
-  const activeProfileLabel =
-    (profiles.find(p => p.id === activeProfileId) ?? { name: activeProfileId }).name;
+  const activeProfileLabel = profiles.find(p => p.id === activeProfileId)?.name ?? activeProfileId;
   const todoCounts    = kanban.reduce(
     (acc, col) => {
       acc.total += col.tasks.length;
@@ -377,16 +378,11 @@ function App() {
       <div className="app-backdrop" />
       <div className="app">
         <div className={`window scanlines ${showSplit ? "is-split" : ""}`}>
-          {/* activeProfileId falls back to the ticked startup profile when no
-              tab is open: `activeProject` is then EMPTY_PROJECT, whose
-              `profile` is the built-in id, but the bridge spawns the next tab
-              into the ticked one (nothing to inherit from) — so showing the
-              built-in would tick a profile that is not where the next tab
-              actually goes. */}
           <WindowChrome
             project={activeProject}
             peer={safePeer}
             onCmd={() => setBridgeOpen(true)}
+            profiles={profiles}
             activeProfileId={activeProfileId}
             startupProfileId={startupProfileId}
             onSelectProfile={handleSelectProfile}
@@ -513,7 +509,12 @@ function App() {
       )}
 
       {statsOpen && (
-        <UsageStatsPanel onClose={() => setStatsOpen(false)} profileLabel={activeProfileLabel} />
+        // Keyed on the profile, not just mounted once: `refresh` only runs
+        // on mount/refresh-click (deps [bridge]), so without this a tab
+        // switch to a different profile while the panel is open would
+        // update the header's profileLabel but leave the previous
+        // profile's numbers showing underneath it.
+        <UsageStatsPanel key={activeProfileId} onClose={() => setStatsOpen(false)} profileLabel={activeProfileLabel} />
       )}
 
       {shortcutsOpen && (

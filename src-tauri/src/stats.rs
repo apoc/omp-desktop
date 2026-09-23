@@ -137,15 +137,10 @@ pub struct DashboardStats {
 /// first run or after a long gap — callers MUST run this off the main
 /// thread (see `usage_stats` in `lib.rs`).
 pub fn fetch(profile: Option<&str>) -> Result<DashboardStats, String> {
-    let profile_flag = profile.map(|id| format!("--profile={id}"));
-    let mut args: Vec<&str> = Vec::with_capacity(3);
-    if let Some(flag) = &profile_flag {
-        args.push(flag);
-    }
-    args.push("stats");
-    args.push("--json");
+    let args = stats_args(profile);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-    let output = crate::agent::spawn::spawn_candidate_output(&args)?;
+    let output = crate::agent::spawn::spawn_candidate_output(&arg_refs)?;
     if !output.status.success() {
         return Err(exit_failure_message(
             output.status,
@@ -154,6 +149,23 @@ pub fn fetch(profile: Option<&str>) -> Result<DashboardStats, String> {
         ));
     }
     parse_stats_json(&output.stdout)
+}
+
+/// Build the argv for [`fetch`]: `--profile=<id>` (only for a non-empty
+/// `profile`, matching `agent::spawn::omp_args`' own filter — a blank id
+/// would otherwise become a bare `--profile=`) *before* `stats --json`,
+/// never after (see [`fetch`]'s doc for why the order is load-bearing).
+/// Extracted as a pure function, mirroring why `omp_args` in `spawn.rs`
+/// is pulled out the same way, so the one behavior this whole module
+/// exists to get right is unit-testable without spawning a process.
+fn stats_args(profile: Option<&str>) -> Vec<String> {
+    let mut args = Vec::with_capacity(3);
+    if let Some(id) = profile.filter(|id| !id.is_empty()) {
+        args.push(format!("--profile={id}"));
+    }
+    args.push("stats".to_string());
+    args.push("--json".to_string());
+    args
 }
 
 /// How much of a failing `omp stats --json`'s stdout is retained in the
@@ -196,7 +208,7 @@ fn exit_failure_message(status: impl std::fmt::Display, stderr: &[u8], stdout: &
     let stdout = String::from_utf8_lossy(&stdout[tail_start..]);
     let stdout = stdout.trim();
     if !stdout.is_empty() {
-        return format!("omp stats failed (exit {status}): {stdout}");
+        return format!("omp stats failed ({status}): {stdout}");
     }
     format!("omp stats exited with {status} and produced no output")
 }
@@ -274,6 +286,29 @@ mod tests {
     }
 
     #[test]
+    fn stats_args_puts_profile_flag_before_subcommand() {
+        // Load-bearing order: verified against a real omp build that
+        // `--profile=<id>` after `stats` is rejected as an unknown
+        // option, while before it succeeds (see `fetch`'s doc).
+        assert_eq!(
+            stats_args(Some("work")),
+            vec!["--profile=work", "stats", "--json"]
+        );
+    }
+
+    #[test]
+    fn stats_args_omits_flag_for_no_profile() {
+        assert_eq!(stats_args(None), vec!["stats", "--json"]);
+    }
+
+    #[test]
+    fn stats_args_omits_flag_for_empty_profile() {
+        // Matches `agent::spawn::omp_args`' own `!p.is_empty()` filter —
+        // a blank id must never become a bare `--profile=`.
+        assert_eq!(stats_args(Some("")), vec!["stats", "--json"]);
+    }
+
+    #[test]
     fn missing_optional_breakdown_arrays_default_empty() {
         let json = format!(r#"{{"overall": {{{AGGREGATED_FIELDS}}}}}"#);
         let parsed = parse_stats_json(json.as_bytes()).expect("overall-only payload parses");
@@ -327,7 +362,7 @@ mod tests {
         let msg = exit_failure_message("exit status: 2", b"", b"  usage: omp [command]  \n");
         assert_eq!(
             msg,
-            "omp stats failed (exit exit status: 2): usage: omp [command]"
+            "omp stats failed (exit status: 2): usage: omp [command]"
         );
     }
 
@@ -346,18 +381,17 @@ mod tests {
         let msg = exit_failure_message("exit status: 2", b"", stdout.as_bytes());
         assert!(msg.contains("TRAILING_MARKER"), "message was: {msg}");
         assert!(!msg.contains("HEAD_MARKER"), "message was: {msg}");
-        // The two marker assertions above already prove *some* cap
-        // exists (an uncapped, full-stdout mutation would still contain
-        // HEAD_MARKER and fail the second one) — this pins the cap's
-        // *exact* size: a mutation that doubled or halved
-        // `STDOUT_TAIL_MAX_BYTES` would still drop HEAD_MARKER and keep
-        // TRAILING_MARKER, passing both marker checks, but only the
-        // correct size satisfies this bound.
-        let prefix_len = "omp stats failed (exit exit status: 2): ".len();
-        assert!(
-            msg.len() <= prefix_len + STDOUT_TAIL_MAX_BYTES,
-            "message length {} exceeds the cap; message was: {msg}",
-            msg.len()
+        // `assert_eq!`, not a `<=` bound: an off-by-one or halved/doubled
+        // cap would still drop HEAD_MARKER and keep TRAILING_MARKER,
+        // passing both marker checks above, so only pinning the exact
+        // byte count catches a regression in the cap's magnitude itself
+        // (mutation-tested by hand: `STDOUT_TAIL_MAX_BYTES / 2` and `- 1`
+        // both fail this assertion while passing the two above it).
+        let prefix_len = "omp stats failed (exit status: 2): ".len();
+        assert_eq!(
+            msg.len(),
+            prefix_len + STDOUT_TAIL_MAX_BYTES,
+            "message was: {msg}"
         );
     }
 }
