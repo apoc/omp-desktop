@@ -109,7 +109,7 @@ function TabBar({ projects, activeId, onSelect, onClose, peer, onNew, onHistory,
                 }
               />
             )}
-            <span className="tab-name">{p.name}</span>
+            <span className="tab-name" title={p.name}>{p.name}</span>
             {profile && (
               <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
             )}

@@ -201,7 +201,16 @@
   position: absolute; top: 0; left: 0; right: 0; height: 2px;
   transition: background 200ms var(--ease-out);
 }
-.tab-name { font-family: var(--font-mono); font-size: var(--d-text-sm); }
+.tab-name {
+  font-family: var(--font-mono); font-size: var(--d-text-sm);
+  /* Flex child: needs min-width:0 to shrink below its content size, or
+     text-overflow is inert (same trap as .tab-profile below). An
+     auto-generated history title can run to a full sentence otherwise -
+     capped here so one tab can't squeeze every other tab off the bar. */
+  min-width: 0;
+  max-width: 200px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .tab-profile {
   /* `.chip` is inline-flex, on which `text-overflow` is inert - the label
      would hard-clip mid-glyph at max-width instead of ellipsizing. Single
