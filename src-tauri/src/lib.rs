@@ -532,19 +532,31 @@ async fn workspace_reject(path: String, rel_path: String) -> Result<(), String> 
         .map_err(|e| format!("join error: {e}"))?
 }
 
-/// Cross-session usage statistics for the "Usage" panel — see
-/// `stats::fetch`. Unscoped by session or project: aggregates every
-/// `~/.omp/agent/sessions/*.jsonl` log on disk, across all tabs and
-/// profiles.
+/// Usage statistics for the "Usage" panel — see `stats::fetch`. Scoped to
+/// `profile` (the active tab's profile — resolved the same way as
+/// `list_saved_sessions`), *not* every profile at once: `omp stats`
+/// itself resolves its session directory and SQLite warehouse against
+/// one profile per invocation, the same as every other per-tab omp
+/// spawn in this app. Also not all-time — the installed omp CLI's
+/// `--json` path has no way to request more than a rolling last-24-hours
+/// window (see `stats.rs`'s module doc for how this was confirmed).
 ///
 /// Runs `async` + `spawn_blocking`: `stats::fetch` shells out to
-/// `omp stats --json`, which first syncs every on-disk session log into
-/// its SQLite warehouse — on a large history or a first run this can take
-/// several seconds, long enough to freeze the webview if run on Tauri's
-/// main command thread.
+/// `omp stats --json`, which first syncs every on-disk session log for
+/// that profile into its SQLite warehouse — on a large history or a
+/// first run this can take several seconds, long enough to freeze the
+/// webview if run on Tauri's main command thread.
 #[tauri::command]
-async fn usage_stats() -> Result<stats::DashboardStats, String> {
-    tauri::async_runtime::spawn_blocking(stats::fetch)
+async fn usage_stats(
+    profile: Option<String>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+) -> Result<stats::DashboardStats, String> {
+    let profile = if store.resolve(profile.as_deref())?.is_some() {
+        profile
+    } else {
+        None
+    };
+    tauri::async_runtime::spawn_blocking(move || stats::fetch(profile.as_deref()))
         .await
         .map_err(|e| format!("join error: {e}"))?
 }

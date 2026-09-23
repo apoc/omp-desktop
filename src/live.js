@@ -2051,16 +2051,22 @@
       await _invokeSafe("workspace_reject", { path, relPath });
     },
 
-    /** Cross-session usage statistics (all projects/profiles) — see
-     *  usage_stats in lib.rs / stats.rs::fetch. Unlike the workspace
-     *  methods above, this is not scoped to the active tab's project.
-     *  Uses `_invokeResult` (not `_invokeSafe`) because "no usage data
-     *  synced yet" and "the backend call failed" (omp not on PATH, an
+    /** Usage statistics for the active tab's profile — see usage_stats in
+     *  lib.rs / stats.rs::fetch. Unlike the workspace methods above, this
+     *  is not scoped to the active tab's *project*, but it IS scoped to
+     *  its *profile*: `omp stats` itself resolves against one profile
+     *  per invocation (same as every other per-tab omp spawn), so a tab
+     *  running under a named profile sees that profile's own usage, not
+     *  a merge across every profile. Also not all-time — the installed
+     *  omp CLI's `--json` path has no way to request more than a rolling
+     *  last-24-hours window (see stats.rs's module doc).
+     *  Uses `_invokeResult` (not `_invokeSafe`) because "no usage in the
+     *  window yet" and "the backend call failed" (omp not on PATH, an
      *  omp build old enough to predate the `stats` subcommand, a sync
      *  error) need distinct panel messages — a swallowed rejection would
-     *  look identical to a fresh install with zero synced sessions. */
+     *  look identical to a profile with genuinely zero recent usage. */
     async usageStats() {
-      return _invokeResult("usage_stats", {});
+      return _invokeResult("usage_stats", { profile: _activeProfileId() });
     },
 
     // ── Session management ───────────────────────────────────────────────────

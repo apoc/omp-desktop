@@ -1,21 +1,37 @@
-//! Cross-session usage-statistics data for the "Usage" panel.
+//! Usage-statistics data for the "Usage" panel.
 //!
 //! Unlike `workspace.rs` (scoped to one repository) or the per-tab
 //! `omp --mode rpc` bridge (scoped to one running session), this module's
-//! data spans every session log on disk, across every project and profile.
-//! It is sourced from the standalone `omp stats` subcommand — not the RPC
-//! protocol at all — which syncs `~/.omp/agent/sessions/*.jsonl` into a
-//! SQLite warehouse and can print the aggregated result as JSON via
-//! `omp stats --json` (sync then `JSON.stringify(dashboardStats)` to
-//! stdout, no server started). That one-shot invocation is what [`fetch`]
-//! shells out to; the field shapes below mirror `@oh-my-pi/omp-stats`'s
-//! `DashboardStats`/`AggregatedStats`/`ModelStats`/`FolderStats`/
-//! `AgentTypeStats` TypeScript types, keeping only the breakdowns this
-//! panel renders (the upstream payload's time-series arrays are ignored —
-//! `serde` drops unknown fields by default, so no `deny_unknown_fields`
-//! here).
-
-use std::process::Stdio;
+//! data spans every session log on disk *for one profile* — not the
+//! active tab's live conversation, but still not "every profile at
+//! once": `omp stats` resolves its session directory and SQLite warehouse
+//! against whichever profile it's told (`--profile=<id>` before the
+//! subcommand, or the built-in profile with no flag), the same way every
+//! other per-tab omp invocation in this app is profile-scoped. It is
+//! sourced from the standalone `omp stats` subcommand — not the RPC
+//! protocol at all — which syncs `~/.omp/agent/sessions/*.jsonl` (or the
+//! named profile's equivalent tree) into a SQLite warehouse and can print
+//! the aggregated result as JSON via `omp stats --json` (sync then
+//! `JSON.stringify(dashboardStats)` to stdout, no server started).
+//!
+//! **Also not all-time**: the installed CLI's `--json` path calls
+//! `getDashboardStats()` with no range argument, and the upstream
+//! aggregator's `DEFAULT_TIME_RANGE` is `"24h"` — confirmed by reading
+//! `@oh-my-pi/omp-stats`' `stats-cli.ts`/`aggregator.ts` source and cross
+//! -checked against this machine's own `~/.omp/stats.db` (all-time vs.
+//! last-24h totals differ by roughly 6x). The underlying package accepts
+//! a `range: "all"` value, but no currently-installed CLI flag reaches
+//! it — `omp stats --json` offers no `--range`/`--days` flag at all. Every
+//! number [`fetch`] returns is therefore a rolling last-24-hours window,
+//! not a lifetime total; the panel and every doc comment downstream of
+//! this module must say so rather than imply "everything".
+//!
+//! [`fetch`] is what shells out to `omp stats --json`; the field shapes
+//! below mirror `@oh-my-pi/omp-stats`'s `DashboardStats`/
+//! `AggregatedStats`/`ModelStats`/`FolderStats`/`AgentTypeStats`
+//! TypeScript types, keeping only the breakdowns this panel renders (the
+//! upstream payload's time-series arrays are ignored — `serde` drops
+//! unknown fields by default, so no `deny_unknown_fields` here).
 
 /// Aggregate request/token/cost totals shared by the overall summary and
 /// each per-model/per-folder breakdown row.
@@ -33,12 +49,20 @@ pub struct AggregatedStats {
     pub total_cache_write_tokens: u64,
     /// Fraction of prompt input served from cache, `0.0..=1.0`.
     pub cache_rate: f64,
-    /// Fraction of cost saved versus uncached billing, `0.0..=1.0`.
+    /// Fraction of cost saved versus uncached billing. Usually
+    /// `0.0..=1.0` but not clamped upstream — a cache-write-heavy period
+    /// (cache writes cost more than a plain input token) can make this
+    /// negative.
     pub cache_savings: f64,
     /// API-equivalent dollar cost estimate.
     pub total_cost: f64,
     pub unpriced_requests: u64,
-    pub total_premium_requests: u64,
+    /// Not a plain count: upstream is `SUM(premium_requests)` over a SQL
+    /// `REAL` column, and provider premium multipliers include fractional
+    /// values (e.g. `0.33`, `0.25`), so this is frequently non-integer.
+    /// `u64` here would reject the very first request against such a
+    /// model with a hard parse failure for the whole payload.
+    pub total_premium_requests: f64,
     pub avg_duration: Option<f64>,
     pub avg_ttft: Option<f64>,
     pub avg_tokens_per_second: Option<f64>,
@@ -94,39 +118,42 @@ pub struct DashboardStats {
     pub by_agent_type: Vec<AgentTypeStats>,
 }
 
-/// Run `omp stats --json` and parse its stdout.
+/// Run `omp stats --json` for `profile` and parse its stdout.
+///
+/// `profile` is `None` for the built-in profile (no flag — matches every
+/// other per-tab omp invocation in this app) or `Some(id)` for a named
+/// profile. omp requires a global `--profile=<id>` to *precede* the
+/// subcommand — verified against a real build: `omp stats --json
+/// --profile=<id>` is rejected with `"Unknown option '--profile'"`, while
+/// `omp --profile=<id> stats --json` succeeds and syncs that profile's
+/// own `~/.omp/profiles/<id>/agent/sessions` tree (confirmed distinct,
+/// smaller totals than the built-in profile's on this machine).
 ///
 /// Unlike `workspace.rs`'s `git` calls, no explicit output cap is applied:
 /// the payload's size is bounded by the number of distinct models/folders
 /// seen, not by session transcript size, so it stays small even for a
 /// large history. The sync step this performs (walking every on-disk
-/// session log) can still take several seconds on a first run or after a
-/// long gap — callers MUST run this off the main thread (see
-/// `usage_stats` in `lib.rs`).
-pub fn fetch() -> Result<DashboardStats, String> {
-    let mut last_spawn_err = None;
-    for name in crate::agent::spawn::CANDIDATES {
-        let mut cmd = crate::agent::spawn::omp_command(name);
-        cmd.args(["stats", "--json"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = match cmd.output() {
-            Ok(output) => output,
-            Err(e) => {
-                last_spawn_err = Some(format!("failed to run omp stats: {e}"));
-                continue;
-            }
-        };
-        if !output.status.success() {
-            return Err(exit_failure_message(
-                output.status,
-                &output.stderr,
-                &output.stdout,
-            ));
-        }
-        return parse_stats_json(&output.stdout);
+/// session log for this one profile) can still take several seconds on a
+/// first run or after a long gap — callers MUST run this off the main
+/// thread (see `usage_stats` in `lib.rs`).
+pub fn fetch(profile: Option<&str>) -> Result<DashboardStats, String> {
+    let profile_flag = profile.map(|id| format!("--profile={id}"));
+    let mut args: Vec<&str> = Vec::with_capacity(3);
+    if let Some(flag) = &profile_flag {
+        args.push(flag);
     }
-    Err(last_spawn_err.unwrap_or_else(|| "omp not found on PATH".to_string()))
+    args.push("stats");
+    args.push("--json");
+
+    let output = crate::agent::spawn::spawn_candidate_output(&args)?;
+    if !output.status.success() {
+        return Err(exit_failure_message(
+            output.status,
+            &output.stderr,
+            &output.stdout,
+        ));
+    }
+    parse_stats_json(&output.stdout)
 }
 
 /// How much of a failing `omp stats --json`'s stdout is retained in the
@@ -230,6 +257,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_fractional_premium_requests() {
+        // Provider premium multipliers include fractional values (e.g.
+        // Copilot's 0.33x/0.25x tiers), so `SUM(premium_requests)`
+        // upstream is frequently non-integer. A `u64` field would reject
+        // the whole payload with `invalid type: floating point` the first
+        // time a user made even one request against such a model.
+        let json = r#"{"overall":{"totalRequests":3,"successfulRequests":3,
+            "failedRequests":0,"errorRate":0,"totalInputTokens":10,"totalOutputTokens":10,
+            "totalCacheReadTokens":0,"totalCacheWriteTokens":0,"cacheRate":0,"cacheSavings":0,
+            "totalCost":0.01,"unpricedRequests":0,"totalPremiumRequests":0.33,
+            "avgDuration":null,"avgTtft":null,"avgTokensPerSecond":null,
+            "firstTimestamp":0,"lastTimestamp":0}}"#;
+        let parsed = parse_stats_json(json.as_bytes()).expect("fractional premium requests parses");
+        assert!((parsed.overall.total_premium_requests - 0.33).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn missing_optional_breakdown_arrays_default_empty() {
         let json = format!(r#"{{"overall": {{{AGGREGATED_FIELDS}}}}}"#);
         let parsed = parse_stats_json(json.as_bytes()).expect("overall-only payload parses");
@@ -299,5 +343,14 @@ mod tests {
         let stdout = format!("{filler}TRAILING_ERROR_MARKER");
         let msg = exit_failure_message("exit status: 2", b"", stdout.as_bytes());
         assert!(msg.contains("TRAILING_ERROR_MARKER"), "message was: {msg}");
+        // Pins the cap itself, not just the slice direction: removing
+        // `STDOUT_TAIL_MAX_BYTES` entirely (returning the whole stdout)
+        // would still contain the marker and pass the assertion above.
+        let prefix_len = "omp stats failed (exit exit status: 2): ".len();
+        assert!(
+            msg.len() <= prefix_len + STDOUT_TAIL_MAX_BYTES,
+            "message length {} exceeds the cap; message was: {msg}",
+            msg.len()
+        );
     }
 }

@@ -1,14 +1,18 @@
 /* ═════════════════════════════════════════════════════════════════════
-   usage-stats-panel.jsx — cross-session usage/cost dashboard, sourced
-   from `omp stats --json` (src-tauri/src/stats.rs::fetch). Unlike
-   changes-panel.jsx/approval-rules-panel.jsx, this data is NOT scoped to
-   the active tab's project — it aggregates every session log on disk,
-   across every project and profile — so there is no per-tab refetch on
-   tab switch, only the panel's own refresh button.
+   usage-stats-panel.jsx — usage/cost dashboard for the active tab's
+   profile, sourced from `omp stats --json` (src-tauri/src/stats.rs::fetch).
+   Two scope limits the panel makes explicit in its copy rather than
+   implying "everything": it is scoped to the active tab's *profile* (not
+   merged across every profile — omp itself resolves one profile per
+   invocation), and to the installed omp CLI's rolling last-24-hours
+   window (the `--json` path has no flag to request more). Unlike
+   changes-panel.jsx/approval-rules-panel.jsx it is not scoped to the
+   active tab's *project* — there is no per-tab refetch on tab switch,
+   only the panel's own refresh button (which does re-run against
+   whichever tab's profile is active when clicked).
    ═════════════════════════════════════════════════════════════════════ */
 
 const { Icon: _StatsIcon } = window;
-const { formatTokens: _formatTokens } = window;
 
 function formatCost(n) {
   return n === null || n === undefined ? "—" : `$${n.toFixed(2)}`;
@@ -23,13 +27,29 @@ function formatMs(n) {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}s` : `${Math.round(n)}ms`;
 }
 
-// `omp stats`'s own `folder` field is already a flattened project key —
-// `/` replaced with `-` (e.g. `/home/user/my-project` becomes
-// `-home-user-my-project`), not a real filesystem path — so there is no
-// separator left to split on here. Only cosmetic cleanup: drop the
-// leading `-` every value has (from the path's leading `/`).
+function formatCount(n) {
+  // `total_premium_requests` (and nothing else this panel renders) is a
+  // SQL SUM of a fractional REAL column (provider premium multipliers
+  // include values like 0.33/0.25), so it needs its own formatter rather
+  // than the integer-assuming `.toLocaleString()` used elsewhere —
+  // rounds to 2 places, matching upstream's own `normalizePremiumRequests`.
+  return n === null || n === undefined
+    ? "—"
+    : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+// `omp stats`'s own `folder` field observed in practice: a cwd under
+// $HOME is stored home-relative with `/` replaced by `-` (e.g.
+// `/home/user/my-project` → `-my-project`, NOT the full absolute path
+// with every segment flattened), and a cwd equal to `$HOME` itself
+// encodes to the bare string `-`. A cwd outside $HOME/tmp instead keeps
+// a real absolute-path shape (`/opt-foo/` style). Stripping the leading
+// `-` therefore isn't guaranteed to leave a non-empty, meaningful name —
+// a home-directory session strips down to "", which without the
+// fallback below would render as a blank row (the real key is still
+// available via the `title` tooltip either way).
 function displayFolder(folder) {
-  return folder.replace(/^-/, "");
+  return folder.replace(/^-/, "") || "~";
 }
 
 const EMPTY = { overall: null, byModel: [], byFolder: [], byAgentType: [] };
@@ -61,7 +81,7 @@ function UsageStatsPanel({ onClose }) {
       // "genuinely no usage yet" from a real dashboard.
       setData(res.value);
     } else {
-      setError("no usage data yet — omp stats hasn't synced any sessions");
+      setError("no usage in the last 24 hours");
     }
     setLoading(false);
   }, [bridge]);
@@ -75,7 +95,7 @@ function UsageStatsPanel({ onClose }) {
       <div className="stats-panel" onClick={e => e.stopPropagation()}>
         <div className="stats-head">
           <_StatsIcon name="cost" size={13} color="var(--accent)" />
-          <span className="mono" style={{ color: "var(--fg-2)" }}>usage</span>
+          <span className="mono" style={{ color: "var(--fg-2)" }}>usage · last 24h</span>
           <button className="btn icon ghost" style={{ marginLeft: "auto" }} onClick={refresh} title="refresh">
             <_StatsIcon name="refresh" size={11} />
           </button>
@@ -97,12 +117,12 @@ function UsageStatsPanel({ onClose }) {
                 <div className="stats-card">
                   <span className="stats-card-label">cost</span>
                   <span className="stats-card-value">{formatCost(overall.totalCost)}</span>
-                  <span className="stats-card-sub">{overall.totalPremiumRequests.toLocaleString()} premium</span>
+                  <span className="stats-card-sub">{formatCount(overall.totalPremiumRequests)} premium</span>
                 </div>
                 <div className="stats-card">
                   <span className="stats-card-label">tokens</span>
                   <span className="stats-card-value">
-                    {_formatTokens(overall.totalInputTokens)} in / {_formatTokens(overall.totalOutputTokens)} out
+                    {window.formatTokens(overall.totalInputTokens)} in / {window.formatTokens(overall.totalOutputTokens)} out
                   </span>
                   <span className="stats-card-sub">{formatPct(overall.cacheRate)} cached</span>
                 </div>
@@ -123,7 +143,7 @@ function UsageStatsPanel({ onClose }) {
                     <span className="stats-row-name mono" title={`${m.provider}/${m.model}`}>{m.model}</span>
                     <span className="stats-row-metric mono">{m.totalRequests.toLocaleString()} req</span>
                     <span className="stats-row-metric mono">
-                      {_formatTokens(m.totalInputTokens)}/{_formatTokens(m.totalOutputTokens)}
+                      {window.formatTokens(m.totalInputTokens)}/{window.formatTokens(m.totalOutputTokens)}
                     </span>
                     <span className="stats-row-metric mono">{formatCost(m.totalCost)}</span>
                   </div>

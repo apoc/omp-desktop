@@ -103,8 +103,14 @@
   }
 
   // ── Token count formatting ────────────────────────────────────────────────
+  // M/B tiers matter here, not just for the usage-stats panel's aggregate
+  // totals (which run into the tens of millions): a 1M-token context
+  // window rendered without them read as the misleadingly precise-looking
+  // "1000.0k" instead of "1.0M".
   function formatTokens(n) {
     if (n === null || n === undefined) return "—";
+    if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
     return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
   }
 

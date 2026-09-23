@@ -43,6 +43,31 @@ pub fn omp_command(name: &str) -> Command {
     cmd
 }
 
+/// Run `omp <args>` to completion via the first candidate binary name that
+/// can actually be spawned, returning its captured output regardless of
+/// exit status — each caller decides how to interpret a non-zero exit;
+/// this only decides *which binary* answered. Moves on to the next
+/// [`CANDIDATES`] entry solely when the binary itself couldn't be spawned
+/// (not found, permission denied, ...); a found binary's non-zero exit is
+/// still returned as `Ok` rather than triggering a retry against a
+/// different candidate name.
+///
+/// Shared by [`fetch_help_text`] and `stats::fetch` (the latter outside
+/// this module, hence `pub`) — both used to run their own copy of this
+/// exact loop.
+pub fn spawn_candidate_output(args: &[&str]) -> Result<std::process::Output, String> {
+    let mut last_err = None;
+    for name in CANDIDATES {
+        let mut cmd = omp_command(name);
+        cmd.args(args);
+        match cmd.output() {
+            Ok(output) => return Ok(output),
+            Err(e) => last_err = Some(format!("failed to run {name}: {e}")),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| "no omp candidates configured".to_string()))
+}
+
 // ── PATH resolution ────────────────────────────────────────────────────────
 
 /// Directories where `omp` is commonly installed but which GUI launchers
@@ -194,38 +219,35 @@ fn profile_refusal(profile: Option<&str>, help_text: &str, supported: bool) -> O
 /// present in the environment. Old omp binaries that don't know about a
 /// given feature simply won't mention it in their help output.
 fn fetch_help_text() -> String {
-    for name in CANDIDATES {
-        // The probe must see the same environment the real spawn does. An
-        // inherited `OMP_PROFILE` or `PI_PROFILE` that omp rejects (its ids
-        // are lowercase, so a plain `export OMP_PROFILE=Work` qualifies)
-        // makes `--help` print only a validation error - flipping *every*
-        // feature probe false and, with the refusal below, breaking
-        // named-profile tabs that would in fact have spawned fine, since
-        // `spawn_omp` strips both aliases (see `sanitize_child_env`,
-        // applied by `omp_command` along with everything else below).
-        let mut cmd = omp_command(name);
-        cmd.arg("--help")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let Ok(output) = cmd.output() else { continue };
-
-        let text = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
+    // The probe must see the same environment the real spawn does. An
+    // inherited `OMP_PROFILE` or `PI_PROFILE` that omp rejects (its ids
+    // are lowercase, so a plain `export OMP_PROFILE=Work` qualifies)
+    // makes `--help` print only a validation error - flipping *every*
+    // feature probe false and, with the refusal below, breaking
+    // named-profile tabs that would in fact have spawned fine, since
+    // `spawn_omp` strips both aliases (see `sanitize_child_env`, applied
+    // by `omp_command`/`spawn_candidate_output` along with everything
+    // else this needs).
+    let Ok(output) = spawn_candidate_output(&["--help"]) else {
+        // omp not found on PATH — spawn_omp will surface the real error.
         eprintln!(
-            "[omp-desktop] help probe: rpc-ui={} approval-mode={} profile={}",
-            help_text_supports_rpc_ui(&text),
-            help_text_supports_approval_mode(&text),
-            help_text_supports_profile(&text)
+            "[omp-desktop] help probe: omp not found, all feature probes default to unsupported"
         );
-        return text;
-    }
-    // omp not found on PATH — spawn_omp will surface the real error.
-    eprintln!("[omp-desktop] help probe: omp not found, all feature probes default to unsupported");
-    String::new()
+        return String::new();
+    };
+
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    eprintln!(
+        "[omp-desktop] help probe: rpc-ui={} approval-mode={} profile={}",
+        help_text_supports_rpc_ui(&text),
+        help_text_supports_approval_mode(&text),
+        help_text_supports_profile(&text)
+    );
+    text
 }
 
 /// Build the argv suffix (after the binary name) for spawning omp.
@@ -408,17 +430,15 @@ pub(super) fn spawn_omp(
     );
     let mut last_err = String::from("no candidates tried");
     for name in CANDIDATES {
-        let mut cmd = Command::new(name);
-        cmd.args(&args);
-        cmd.stdin(Stdio::piped())
+        // `omp_command` defaults stdin to closed (right for a one-shot
+        // probe/report); a live RPC session needs a piped stdin instead,
+        // so this overrides it — `Command::stdin` just replaces the prior
+        // setting, it does not require `omp_command` to leave it unset.
+        let mut cmd = omp_command(name);
+        cmd.args(&args)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        apply_omp_path(&mut cmd);
-        sanitize_child_env(&mut cmd);
-        // Suppress the transient console window that Windows would
-        // otherwise attach to a console-subsystem child of a GUI parent.
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
         if let Some(dir) = resolved_cwd.as_deref() {
             cmd.current_dir(dir);
         }

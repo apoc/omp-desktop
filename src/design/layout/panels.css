@@ -1,7 +1,8 @@
-/* Changes panel + approval-rules panel — bordered card overlays sharing
-   .bridge-scrim's backdrop, split into their own file since overlays.css
-   already covers four unrelated concerns (split pane / command bridge /
-   kanban / plan annotations) well past the ~150-line-per-layer guideline. */
+/* Changes panel + approval-rules panel + usage-stats panel — bordered
+   card overlays sharing .bridge-scrim's backdrop, split into their own
+   file since overlays.css already covers four unrelated concerns (split
+   pane / command bridge / kanban / plan annotations) well past the
+   ~150-line-per-layer guideline. */
 
 /* ── Shared panel shell ───────────────────────────────────────────────── */
 /* All three panels are the same card; only their dimensions differ.
@@ -25,11 +26,21 @@
   border-bottom: 1px solid var(--line);
   background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 8%, transparent), transparent);
 }
-/* Used by both panels for their loading/empty states. */
+/* Used by all three panels for their loading/empty states. */
 .panel-empty {
   color: var(--fg-4);
   padding: 16px;
   font-size: var(--d-text-sm);
+}
+/* Rules panel and stats panel are both a single scrolling list/section
+   column (unlike changes-body's two-pane split); grouped here so the
+   scroll-container shape can't drift between them. Padding differs per
+   panel (rules rows already have their own padding; stats needs room
+   around the summary cards), so it stays at each panel's own section. */
+.rules-body,
+.stats-body {
+  flex: 1; min-height: 0;
+  overflow-y: auto;
 }
 
 /* ── Changes panel (git status/diff) ──────────────────────────────────── */
@@ -62,7 +73,8 @@
   font-weight: 600;
   text-align: center;
 }
-.changes-path {
+.changes-path,
+.stats-row-name {
   flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--fg-2);
@@ -79,8 +91,6 @@
   max-height: min(520px, calc(100vh - 160px));
 }
 .rules-body {
-  flex: 1; min-height: 0;
-  overflow-y: auto;
   padding: 6px;
 }
 .rules-row {
@@ -100,8 +110,6 @@
   max-height: min(600px, calc(100vh - 140px));
 }
 .stats-body {
-  flex: 1; min-height: 0;
-  overflow-y: auto;
   padding: 14px;
 }
 .stats-cards {
@@ -117,7 +125,8 @@
   border-radius: 10px;
   background: var(--bg-surface);
 }
-.stats-card-label {
+.stats-card-label,
+.stats-section-label {
   font-size: var(--d-text-xs);
   color: var(--fg-4);
   text-transform: uppercase;
@@ -125,7 +134,7 @@
 }
 .stats-card-value {
   font-size: var(--d-text-lg);
-  color: var(--fg-1);
+  color: var(--fg);
   font-family: var(--font-mono);
 }
 .stats-card-sub {
@@ -133,10 +142,6 @@
   color: var(--fg-4);
 }
 .stats-section-label {
-  font-size: var(--d-text-xs);
-  color: var(--fg-4);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
   margin: 14px 0 6px;
 }
 .stats-table { display: flex; flex-direction: column; }
@@ -147,11 +152,6 @@
   font-size: var(--d-text-sm);
 }
 .stats-row:last-child { border-bottom: none; }
-.stats-row-name {
-  flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--fg-2);
-}
 .stats-row-metric {
   flex: none;
   color: var(--fg-3);
