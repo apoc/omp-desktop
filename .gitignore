@@ -11,6 +11,9 @@ node_modules/
 .env.*
 !.env.example
 
+# Local-only issue triage tracking — internal, never committed
+/ISSUES.md
+
 # ── Dev artefacts ─────────────────────────────────────────────────────────────
 dev.log
 *.log
