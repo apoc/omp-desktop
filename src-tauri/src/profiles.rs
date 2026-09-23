@@ -523,6 +523,29 @@ impl ProfileStore {
         }
     }
 
+    /// [`Self::resolve`], but for an owned `profile` a caller is about to move
+    /// into a `spawn_blocking` closure — the borrow-then-move dance
+    /// `resolve` alone would force at every such call site (validate
+    /// through the borrow, then move the original instead of allocating a
+    /// second `String` via `.map(str::to_owned)`). Four call sites
+    /// (`list_saved_sessions`, `kb_resolve`, `usage_stats`,
+    /// `clear_profile_bootstrap`) each carried their own copy of this
+    /// pattern before this existed — the first three as
+    /// `if store.resolve(...).is_some() { profile } else { None }`, the
+    /// fourth as `store.resolve(Some(&id))?.map(ToString::to_string)`,
+    /// which reallocated a fresh `String` from the already-owned `id`
+    /// purely to get past the borrow.
+    ///
+    /// # Errors
+    /// Same as [`Self::resolve`]: an `Err` when `profile` names no listed profile.
+    pub fn resolve_owned(&self, profile: Option<String>) -> Result<Option<String>, String> {
+        Ok(if self.resolve(profile.as_deref())?.is_some() {
+            profile
+        } else {
+            None
+        })
+    }
+
     /// `true` when `id` is selectable: the built-in profile, or a persisted
     /// one.
     pub fn contains(&self, id: &str) -> bool {

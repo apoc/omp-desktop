@@ -18,7 +18,7 @@
 mod inner;
 pub mod journal;
 mod reader;
-mod spawn;
+pub mod spawn;
 mod supervisor;
 
 use std::collections::HashMap;

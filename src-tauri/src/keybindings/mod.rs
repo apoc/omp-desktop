@@ -73,6 +73,7 @@ pub const ACTION_IDS: &[&str] = &[
     "desktop.panel.todo",
     "desktop.panel.changes",
     "desktop.panel.rules",
+    "desktop.panel.stats",
     "desktop.session.compact",
     "desktop.session.export",
 ];

@@ -15,6 +15,7 @@ mod keybindings;
 mod navigation_guard;
 mod profiles;
 mod saved_sessions;
+mod stats;
 mod workspace;
 
 use agent::AgentBridge;
@@ -190,7 +191,7 @@ async fn clear_profile_bootstrap(
 ) -> Result<(), String> {
     // Resolved, so a blank/"default" id can't aim this at the built-in tree
     // (which has no seed) and an unlisted id can't reach the disk at all.
-    let Some(id) = store.resolve(Some(&id))?.map(ToString::to_string) else {
+    let Some(id) = store.resolve_owned(Some(id))? else {
         return Ok(());
     };
     let home = app.path().home_dir().map_err(|e| e.to_string())?;
@@ -234,15 +235,7 @@ async fn list_saved_sessions(
     store: State<'_, Arc<profiles::ProfileStore>>,
     app: tauri::AppHandle,
 ) -> Result<Vec<saved_sessions::SavedSession>, String> {
-    // `resolve` returns `Option<&str>` borrowed from `profile`, which this
-    // command already owns and is about to move into the spawned closure
-    // below — so validate through the borrow, then move the original
-    // instead of allocating a second `String` via `.map(str::to_owned)`.
-    let profile = if store.resolve(profile.as_deref())?.is_some() {
-        profile
-    } else {
-        None
-    };
+    let profile = store.resolve_owned(profile)?;
     tauri::async_runtime::spawn_blocking(move || {
         saved_sessions::scan_saved_sessions(&app, cwd.as_deref(), profile.as_deref())
     })
@@ -531,6 +524,31 @@ async fn workspace_reject(path: String, rel_path: String) -> Result<(), String> 
         .map_err(|e| format!("join error: {e}"))?
 }
 
+/// Usage statistics for the "Usage" panel — see `stats::fetch`. Scoped to
+/// `profile` (the active tab's profile — resolved the same way as
+/// `list_saved_sessions`), *not* every profile at once: `omp stats`
+/// itself resolves its session directory and SQLite warehouse against
+/// one profile per invocation, the same as every other per-tab omp
+/// spawn in this app. Also not all-time — the installed omp CLI's
+/// `--json` path has no way to request more than a rolling last-24-hours
+/// window (see `stats.rs`'s module doc for how this was confirmed).
+///
+/// Runs `async` + `spawn_blocking`: `stats::fetch` shells out to
+/// `omp stats --json`, which first syncs every on-disk session log for
+/// that profile into its SQLite warehouse — on a large history or a
+/// first run this can take several seconds, long enough to freeze the
+/// webview if run on Tauri's main command thread.
+#[tauri::command]
+async fn usage_stats(
+    profile: Option<String>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+) -> Result<stats::DashboardStats, String> {
+    let profile = store.resolve_owned(profile)?;
+    tauri::async_runtime::spawn_blocking(move || stats::fetch(profile.as_deref()))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+}
+
 /// Shared profile-resolution and home-dir setup for the three keybindings
 /// commands. Returns `(home, resolved_profile, env_dir)` ready to pass to
 /// `keybindings::payload` / `keybindings::payload_with_overlay`.
@@ -539,14 +557,7 @@ fn kb_resolve(
     store: &profiles::ProfileStore,
     app: &AppHandle,
 ) -> Result<(PathBuf, Option<String>, Option<OsString>), String> {
-    // Validate through the borrow, then move the original — same pattern as
-    // `list_saved_sessions` (lib.rs). Avoids a `str::to_owned` re-allocation on
-    // the happy path when the id is already an owned `String`.
-    let profile = if store.resolve(profile.as_deref())?.is_some() {
-        profile
-    } else {
-        None
-    };
+    let profile = store.resolve_owned(profile)?;
     let home = app.path().home_dir().map_err(|e| e.to_string())?;
     let env_dir = std::env::var_os("PI_CODING_AGENT_DIR");
     Ok((home, profile, env_dir))
@@ -689,6 +700,7 @@ pub fn run() {
             workspace_diff,
             workspace_accept,
             workspace_reject,
+            usage_stats,
             list_project_files,
             list_profiles,
             create_profile,

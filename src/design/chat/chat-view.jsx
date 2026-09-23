@@ -23,11 +23,11 @@ const CompactRow = React.memo(function CompactRow({ msg }) {
   const pending  = msg.status === "pending";
   const error    = msg.status === "error";
   const COLOR    = error ? "var(--rose)" : "var(--lilac)";
-  const fmtTok   = n => n == null ? null
-    : n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}M`
-    : n >= 1_000     ? `${(n / 1_000).toFixed(1)}k`
-    : String(n);
-  const tok      = fmtTok(msg.tokensBefore);
+  // Shared with the status bar / usage-stats panel (adapter.js). Gate on
+  // the *source* value being non-null, not the formatted string —
+  // `formatTokens(null)` returns the truthy "—" placeholder, which would
+  // render an empty "— before" chip instead of hiding it.
+  const tok      = window.formatTokens(msg.tokensBefore);
   const hasBody  = !!msg.summary && !pending && !error;
 
   return (
@@ -59,7 +59,7 @@ const CompactRow = React.memo(function CompactRow({ msg }) {
               <span className="dot live" />{" "}running
             </span>
           )}
-          {!pending && !error && tok && (
+          {!pending && !error && msg.tokensBefore != null && (
             <span className="chip muted mono">{tok} before</span>
           )}
           {error && <span className="chip" style={{ color: "var(--rose)" }}>failed</span>}

@@ -19,7 +19,7 @@
 
 const {
   Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar,
-  StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, useTweaks,
+  StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, UsageStatsPanel, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, NULL_PEER, DEFAULT_PROFILE_ID,
   INTENT_FRAMING, APPROVAL_PROMPT,
@@ -39,6 +39,7 @@ function App() {
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [changesOpen, setChangesOpen] = React.useState(false);
   const [rulesOpen,   setRulesOpen]   = React.useState(false);
+  const [statsOpen,   setStatsOpen]   = React.useState(false);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [planOpen,    setPlanOpen]    = React.useState(false);
   const [planMode,    setPlanMode]    = React.useState(false);
@@ -106,6 +107,13 @@ function App() {
 
   // ── Derived values ────────────────────────────────────────────────────────
   const activeProject = sessions.find(s => s.id === activeSessionId) ?? sessions[0] ?? EMPTY_PROJECT;
+  // No tab open → `activeProject` is EMPTY_PROJECT (built-in profile), but
+  // the bridge spawns the next tab into the ticked startup profile (nothing
+  // to inherit from) — so showing the built-in would tick a profile that
+  // isn't where the next tab actually goes. Shared by WindowChrome's menu
+  // and the usage-stats panel's header label, instead of a second copy.
+  const activeProfileId    = activeProject.id ? activeProject.profile : startupProfileId;
+  const activeProfileLabel = profiles.find(p => p.id === activeProfileId)?.name ?? activeProfileId;
   const todoCounts    = kanban.reduce(
     (acc, col) => {
       acc.total += col.tasks.length;
@@ -287,7 +295,7 @@ function App() {
   handlersRef.current = {
     "app.interrupt":           () => {
       // Only abort when no overlay is open (overlays handle Escape themselves).
-      if (bridgeOpen || historyOpen || changesOpen || rulesOpen || planOpen || shortcutsOpen) return;
+      if (bridgeOpen || historyOpen || changesOpen || rulesOpen || statsOpen || planOpen || shortcutsOpen) return;
       if (streaming) handleAbort();
     },
     "app.thinking.cycle":      cycleThinking,
@@ -326,6 +334,7 @@ function App() {
     "desktop.panel.todo":      () => setPlanOpen(v => !v),
     "desktop.panel.changes":   () => setChangesOpen(v => !v),
     "desktop.panel.rules":     () => setRulesOpen(v => !v),
+    "desktop.panel.stats":     () => setStatsOpen(v => !v),
     "desktop.session.compact": () => bridge?.compact(),
     "desktop.session.export":  () => bridge?.exportHtml(),
   };
@@ -369,18 +378,12 @@ function App() {
       <div className="app-backdrop" />
       <div className="app">
         <div className={`window scanlines ${showSplit ? "is-split" : ""}`}>
-          {/* activeProfileId falls back to the ticked startup profile when no
-              tab is open: `activeProject` is then EMPTY_PROJECT, whose
-              `profile` is the built-in id, but the bridge spawns the next tab
-              into the ticked one (nothing to inherit from) — so showing the
-              built-in would tick a profile that is not where the next tab
-              actually goes. */}
           <WindowChrome
             project={activeProject}
             peer={safePeer}
             onCmd={() => setBridgeOpen(true)}
             profiles={profiles}
-            activeProfileId={activeProject.id ? activeProject.profile : startupProfileId}
+            activeProfileId={activeProfileId}
             startupProfileId={startupProfileId}
             onSelectProfile={handleSelectProfile}
             onCreateProfile={handleCreateProfile}
@@ -440,6 +443,7 @@ function App() {
                 onModel={() => openBridge("models")}
                 onChanges={() => setChangesOpen(true)}
                 onRules={() => setRulesOpen(true)}
+                onStats={() => setStatsOpen(true)}
                 onTweaks={() => window.postMessage({ type: '__activate_edit_mode' }, '*')}
                 autosave={t.autosave ?? true}
                 onAutosave={v => setTweak("autosave", v)}
@@ -502,6 +506,15 @@ function App() {
 
       {rulesOpen && (
         <ApprovalRulesPanel onClose={() => setRulesOpen(false)} />
+      )}
+
+      {statsOpen && (
+        // Keyed on the profile, not just mounted once: `refresh` only runs
+        // on mount/refresh-click (deps [bridge]), so without this a tab
+        // switch to a different profile while the panel is open would
+        // update the header's profileLabel but leave the previous
+        // profile's numbers showing underneath it.
+        <UsageStatsPanel key={activeProfileId} onClose={() => setStatsOpen(false)} profileLabel={activeProfileLabel} />
       )}
 
       {shortcutsOpen && (
