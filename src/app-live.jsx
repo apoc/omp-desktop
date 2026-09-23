@@ -19,7 +19,7 @@
 
 const {
   Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar,
-  StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, UsageStatsPanel, useTweaks,
+  StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, NULL_PEER, DEFAULT_PROFILE_ID,
   INTENT_FRAMING, APPROVAL_PROMPT,
@@ -40,6 +40,7 @@ function App() {
   const [changesOpen, setChangesOpen] = React.useState(false);
   const [rulesOpen,   setRulesOpen]   = React.useState(false);
   const [statsOpen,   setStatsOpen]   = React.useState(false);
+  const [promptHistoryOpen, setPromptHistoryOpen] = React.useState(false);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [planOpen,    setPlanOpen]    = React.useState(false);
   const [planMode,    setPlanMode]    = React.useState(false);
@@ -71,6 +72,10 @@ function App() {
   const [activity,      setActivity]      = React.useState([]);
   const [sparkline,     setSparkline]     = React.useState(Array(30).fill(0));
   const [loginProviders, setLoginProviders] = React.useState(null);
+  // Active tab's in-memory prompt history (issue #16) — see live.js
+  // promptHistories. Never persisted; re-sourced from the bridge snapshot
+  // on every update, same as any other per-session field here.
+  const [promptHistory, setPromptHistory] = React.useState([]);
 
   // ── Tab list — driven by bridge session registry ──────────────────────────
   // Each entry: { id, name, path, color, branch }
@@ -91,8 +96,12 @@ function App() {
     setModels, setActivity, setSparkline,
     setModelState, setThinkingLevel,
     setSessions, setActiveSessionId, setProfiles, setStartupProfileId,
+    setPromptHistory,
   });
   useThemeEffect(t);
+  React.useEffect(() => {
+    bridge?.setPromptHistoryLimit(t.promptHistoryLimit ?? window.OMP_PROMPT_HISTORY.DEFAULT_LIMIT);
+  }, [bridge, t.promptHistoryLimit]);
 
   // Fetch OAuth providers whenever the login view opens (ensures fresh auth status)
   React.useEffect(() => {
@@ -224,6 +233,12 @@ function App() {
   const [draftInsert, setDraftInsert] = React.useState(null);
   const handleInsertDraft = (text) => setDraftInsert({ text, nonce: Date.now() });
 
+  // Prompt-history picker (Ctrl+Up modal, issue #16) — same {text, nonce}
+  // shape and rationale as draftInsert above, but always *replaces* the
+  // draft (see composer.jsx's promptInsert effect) rather than appending.
+  const [promptInsert, setPromptInsert] = React.useState(null);
+  const handlePickHistoryPrompt = (text) => setPromptInsert({ text, nonce: Date.now() });
+
   const handleCommand = c => {
     if      (c.name === "plan")      { setPlanMode(true); planStartedRef.current = false; }
     else if (c.name === "todo")      { setPlanOpen(true); }
@@ -295,7 +310,7 @@ function App() {
   handlersRef.current = {
     "app.interrupt":           () => {
       // Only abort when no overlay is open (overlays handle Escape themselves).
-      if (bridgeOpen || historyOpen || changesOpen || rulesOpen || statsOpen || planOpen || shortcutsOpen) return;
+      if (bridgeOpen || historyOpen || changesOpen || rulesOpen || statsOpen || promptHistoryOpen || planOpen || shortcutsOpen) return;
       if (streaming) handleAbort();
     },
     "app.thinking.cycle":      cycleThinking,
@@ -335,6 +350,7 @@ function App() {
     "desktop.panel.changes":   () => setChangesOpen(v => !v),
     "desktop.panel.rules":     () => setRulesOpen(v => !v),
     "desktop.panel.stats":     () => setStatsOpen(v => !v),
+    "desktop.composer.promptHistory": () => setPromptHistoryOpen(v => !v),
     "desktop.session.compact": () => bridge?.compact(),
     "desktop.session.export":  () => bridge?.exportHtml(),
   };
@@ -432,6 +448,8 @@ function App() {
                 onPick={handleCommand}
                 onFollowUp={handleFollowUp}
                 draftInsert={draftInsert}
+                promptHistory={promptHistory}
+                promptInsert={promptInsert}
               />
               <StatusBar
                 ctx={liveCtx}
@@ -517,6 +535,15 @@ function App() {
         <UsageStatsPanel key={activeProfileId} onClose={() => setStatsOpen(false)} profileLabel={activeProfileLabel} />
       )}
 
+      {promptHistoryOpen && (
+        <PromptHistoryModal
+          open={promptHistoryOpen}
+          entries={promptHistory}
+          onClose={() => setPromptHistoryOpen(false)}
+          onPick={handlePickHistoryPrompt}
+        />
+      )}
+
       {shortcutsOpen && (
         <ShortcutsModal
           open={shortcutsOpen}
@@ -565,6 +592,11 @@ function App() {
             ]}
             onChange={v => setTweak("layout", v)}
           />
+        </TweakSection>
+        <TweakSection label="Session">
+          <TweakSlider label="prompt history" value={t.promptHistoryLimit ?? window.OMP_PROMPT_HISTORY.DEFAULT_LIMIT}
+            min={window.OMP_PROMPT_HISTORY.MIN_LIMIT} max={window.OMP_PROMPT_HISTORY.MAX_LIMIT} step={10} unit=" prompts"
+            onChange={v => setTweak("promptHistoryLimit", v)} />
         </TweakSection>
       </TweaksPanel>
     </>
