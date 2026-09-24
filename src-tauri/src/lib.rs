@@ -652,7 +652,9 @@ async fn app_update_check(
 }
 
 /// Download, install and relaunch into the update found by the last
-/// `app_update_check` — see `updater::install`. Only returns on failure.
+/// `app_update_check` — see `updater::install`. On Windows success never
+/// returns (the installer takes over); elsewhere `Ok` means a relaunch is
+/// already requested.
 #[tauri::command]
 async fn app_update_install(
     app: AppHandle,
@@ -760,6 +762,10 @@ fn setup(app: &tauri::App) {
 /// runtime cannot be initialised). This is a fatal startup condition;
 /// there is no meaningful recovery from inside `main`.
 pub fn run() {
+    // First, while still single-threaded: the updater's `check()` later
+    // injects SSL_CERT_* into the process env, and omp children must see
+    // the user's own (see `spawn::record_launch_env`).
+    agent::spawn::record_launch_env();
     let builder = tauri::Builder::default();
     // Windows and Linux deliver a folder "Open with" by launching the
     // executable with the path in argv, so without this a second open would

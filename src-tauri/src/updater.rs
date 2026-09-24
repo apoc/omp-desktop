@@ -22,6 +22,7 @@
 //! are therefore killed explicitly ([`AgentBridge::shutdown_all`]) first —
 //! on Unix each sits in its own process group and would outlive us.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -85,16 +86,39 @@ struct Progress {
 /// `.deb`/`.rpm` (falling back to a password prompt, then a TTY `sudo` a
 /// GUI app does not have), and would overwrite a `tauri dev` binary. Those
 /// installs belong to the package manager or the developer, not to us.
-pub const fn can_self_install(bundle: Option<&BundleType>) -> bool {
-    matches!(
-        bundle,
-        Some(
-            BundleType::AppImage
-                | BundleType::Msi
-                | BundleType::Nsis
-                | BundleType::App
-                | BundleType::Dmg
-        )
+///
+/// macOS needs `exe` as well: tauri-utils' `bundle_type()` reports `App`
+/// for *every* macOS binary whose bundle marker was never patched —
+/// `tauri dev`, `cargo build` included. For such a binary the plugin's
+/// install target is the directory holding it (`target/debug`), which it
+/// moves away and deletes. Only a binary running from inside a `.app`
+/// bundle is the bundle it claims to be.
+pub fn can_self_install(bundle: Option<&BundleType>, exe: Option<&Path>) -> bool {
+    match bundle {
+        Some(BundleType::AppImage | BundleType::Msi | BundleType::Nsis) => true,
+        Some(BundleType::App | BundleType::Dmg) => exe.is_some_and(in_app_bundle),
+        _ => false,
+    }
+}
+
+/// `<name>.app/Contents/MacOS/<exe>` — the layout the plugin's macOS
+/// install walks up from.
+fn in_app_bundle(exe: &Path) -> bool {
+    exe.parent().is_some_and(|dir| {
+        dir.ends_with("Contents/MacOS")
+            && dir
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::extension)
+                .is_some_and(|ext| ext == "app")
+    })
+}
+
+/// [`can_self_install`] for the running process.
+fn self_installable() -> bool {
+    can_self_install(
+        bundle_type().as_ref(),
+        std::env::current_exe().ok().as_deref(),
     )
 }
 
@@ -115,6 +139,9 @@ const fn should_emit(last_emitted: u64, downloaded: u64, total: Option<u64>) -> 
 }
 
 fn info_for(update: &Update, can_install: bool) -> UpdateInfo {
+    // Copied, not moved: the `Update` stays parked whole in
+    // `UpdaterState::pending` for `install`, and a command can't return
+    // data borrowed from managed state.
     UpdateInfo {
         version: update.version.clone(),
         current_version: update.current_version.clone(),
@@ -161,9 +188,7 @@ pub async fn check(app: &AppHandle, state: &UpdaterState) -> Result<Option<Updat
         .check()
         .await
         .map_err(|e| e.to_string())?;
-    let info = update
-        .as_ref()
-        .map(|u| info_for(u, can_self_install(bundle_type().as_ref())));
+    let info = update.as_ref().map(|u| info_for(u, self_installable()));
     *state
         .pending
         .lock()
@@ -172,15 +197,19 @@ pub async fn check(app: &AppHandle, state: &UpdaterState) -> Result<Option<Updat
 }
 
 /// Download, verify and install the update parked by the last [`check`],
-/// then relaunch into it. Only returns on failure — on success the process
-/// is replaced (Windows: by the installer; elsewhere: by a restart).
+/// then relaunch into it.
+///
+/// On Windows a successful install never returns: the installer takes over
+/// through the `on_before_exit` hook and the process exits. Elsewhere
+/// `Ok(())` means installed, omp children stopped and a relaunch already
+/// requested; `installing` stays set until the process goes.
 ///
 /// # Errors
 /// Nothing pending, an install already running, a notify-only build, or a
 /// download/verification/install failure. A failed attempt re-parks the
 /// update so the user can retry without checking again.
 pub async fn install(app: &AppHandle, state: &UpdaterState) -> Result<(), String> {
-    if !can_self_install(bundle_type().as_ref()) {
+    if !self_installable() {
         return Err("this installation can't update itself — download the new version from the release page".into());
     }
     if state.installing.swap(true, Ordering::AcqRel) {
@@ -193,8 +222,8 @@ pub async fn install(app: &AppHandle, state: &UpdaterState) -> Result<(), String
         .map(|mut pending| pending.take());
     let result = match taken {
         Ok(Some(update)) => {
-            let outcome = download_and_install(app, &update).await;
-            if outcome.is_err() {
+            let (unused, outcome) = download_and_install(app, update).await;
+            if let Some(update) = unused {
                 if let Ok(mut pending) = state.pending.lock() {
                     // A check that finished meanwhile knows better.
                     pending.get_or_insert(update);
@@ -205,19 +234,21 @@ pub async fn install(app: &AppHandle, state: &UpdaterState) -> Result<(), String
         Ok(None) => Err("no update pending — check for updates again".into()),
         Err(e) => Err(e),
     };
-    state.installing.store(false, Ordering::Release);
-    result?;
-
-    // Windows never gets here: `install` exited through the hook above.
-    app.state::<AgentBridge>().shutdown_all();
-    app.request_restart();
-    Ok(())
+    if result.is_err() {
+        state.installing.store(false, Ordering::Release);
+    }
+    result
 }
 
-async fn download_and_install(app: &AppHandle, update: &Update) -> Result<(), String> {
+/// Returns the update back when it is still installable (download or
+/// install failed), for re-parking.
+async fn download_and_install(
+    app: &AppHandle,
+    update: Update,
+) -> (Option<Update>, Result<(), String>) {
     let mut downloaded: u64 = 0;
     let mut last_emitted: u64 = 0;
-    let bytes = update
+    let bytes = match update
         .download(
             |chunk, total| {
                 downloaded += chunk as u64;
@@ -231,8 +262,28 @@ async fn download_and_install(app: &AppHandle, update: &Update) -> Result<(), St
             || {},
         )
         .await
-        .map_err(|e| e.to_string())?;
-    update.install(bytes).map_err(|e| e.to_string())
+    {
+        Ok(bytes) => bytes,
+        Err(e) => return (Some(update), Err(e.to_string())),
+    };
+    // Blocking from here on: `install` writes the whole bundle to disk (and
+    // on macOS may wait on an admin password prompt), and `shutdown_all`
+    // kills and waits on every omp child. Owned by that task; `AppHandle`
+    // is not an `Arc`, so `Arc::clone` does not apply.
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(e) = update.install(bytes) {
+            return (Some(update), Err(e.to_string()));
+        }
+        // Windows never gets here: `install` exited through the hook set
+        // in `check`.
+        handle.state::<AgentBridge>().shutdown_all();
+        handle.request_restart();
+        (None, Ok(()))
+    })
+    .await
+    // Only a panic in the task lands here; the update went with it.
+    .unwrap_or_else(|e| (None, Err(format!("install task failed: {e}"))))
 }
 
 #[cfg(test)]
@@ -241,30 +292,46 @@ mod tests {
 
     #[test]
     fn only_bundles_replaceable_in_place_self_install() {
-        for bundle in [
-            BundleType::AppImage,
-            BundleType::Msi,
-            BundleType::Nsis,
-            BundleType::App,
-            BundleType::Dmg,
-        ] {
+        let exe = Path::new("/opt/whatever/omp-desktop");
+        for bundle in [BundleType::AppImage, BundleType::Msi, BundleType::Nsis] {
             assert!(
-                can_self_install(Some(&bundle)),
+                can_self_install(Some(&bundle), Some(exe)),
                 "{bundle:?} should self-install"
             );
         }
         // Package-manager-owned installs and unbundled (`tauri dev`, source)
-        // builds are notify-only.
+        // builds on Linux/Windows are notify-only.
         for bundle in [BundleType::Deb, BundleType::Rpm] {
             assert!(
-                !can_self_install(Some(&bundle)),
+                !can_self_install(Some(&bundle), Some(exe)),
                 "{bundle:?} must be notify-only"
             );
         }
         assert!(
-            !can_self_install(None),
+            !can_self_install(None, Some(exe)),
             "an unbundled build must be notify-only"
         );
+    }
+
+    /// tauri-utils reports `App` for every unpatched macOS binary, so the
+    /// executable's location is what separates a real bundle from
+    /// `target/debug` — which the plugin would otherwise delete.
+    #[test]
+    fn macos_self_installs_only_from_inside_an_app_bundle() {
+        let bundled = Path::new("/Applications/OMP Desktop.app/Contents/MacOS/omp-desktop");
+        for bundle in [BundleType::App, BundleType::Dmg] {
+            assert!(can_self_install(Some(&bundle), Some(bundled)));
+            for exe in [
+                "/Users/dev/omp-desktop/src-tauri/target/debug/omp-desktop",
+                "/Users/dev/build/Contents/MacOS/omp-desktop", // not in a `.app`
+            ] {
+                assert!(
+                    !can_self_install(Some(&bundle), Some(Path::new(exe))),
+                    "{bundle:?} from {exe} must be notify-only"
+                );
+            }
+            assert!(!can_self_install(Some(&bundle), None));
+        }
     }
 
     #[test]

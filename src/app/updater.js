@@ -29,7 +29,6 @@
     update: null,     // normalized UpdateInfo, or null
     progress: null,   // { downloaded, total|null } while downloading
     error: null,
-    lastChecked: null,
   });
 
   const str = (v) => (typeof v === "string" && v ? v : null);
@@ -61,7 +60,7 @@
       case "check-done": {
         if (state.phase !== "checking") return state;
         const update = normalizeInfo(action.info);
-        return { ...state, phase: update ? "available" : "uptodate", update, error: null, lastChecked: action.at ?? null };
+        return { ...state, phase: update ? "available" : "uptodate", update, error: null };
       }
 
       case "check-failed":
@@ -70,7 +69,6 @@
           ...state,
           phase: state.update ? "available" : "error",
           error: String(action.error ?? "update check failed"),
-          lastChecked: action.at ?? null,
         };
 
       case "install-start":

@@ -33,7 +33,7 @@ const INFO = {
   canInstall: true, releaseUrl: "https://github.com/apoc/omp-desktop/releases/tag/v0.4.0",
 };
 const run = (...actions) => actions.reduce(U.reduce, U.initialState());
-const available = (info = INFO) => run({ type: "check-start" }, { type: "check-done", info, at: 1 });
+const available = (info = INFO) => run({ type: "check-start" }, { type: "check-done", info });
 
 // ── check lifecycle ───────────────────────────────────────────────────────
 
@@ -42,17 +42,16 @@ check("a found update lands in available with the normalized info", () => {
   assert.equal(s.phase, "available");
   assert.equal(s.update.version, "0.4.0");
   assert.equal(s.update.canInstall, true);
-  assert.equal(s.lastChecked, 1);
 });
 
 check("a null result means up to date", () => {
-  const s = run({ type: "check-start" }, { type: "check-done", info: null, at: 1 });
+  const s = run({ type: "check-start" }, { type: "check-done", info: null });
   assert.equal(s.phase, "uptodate");
   assert.equal(s.update, null);
 });
 
 check("a payload without a version is not an update", () => {
-  const s = run({ type: "check-start" }, { type: "check-done", info: { canInstall: true }, at: 1 });
+  const s = run({ type: "check-start" }, { type: "check-done", info: { canInstall: true } });
   assert.equal(s.phase, "uptodate");
   assert.equal(s.update, null);
 });
@@ -64,20 +63,29 @@ check("canInstall must be literally true — anything else is notify-only", () =
 });
 
 check("a failed check with nothing known is an error", () => {
-  const s = run({ type: "check-start" }, { type: "check-failed", error: "offline", at: 2 });
+  const s = run({ type: "check-start" }, { type: "check-failed", error: "offline" });
   assert.equal(s.phase, "error");
   assert.equal(s.error, "offline");
 });
 
 check("a failed re-check keeps the update an earlier check found", () => {
-  const s = [{ type: "check-start" }, { type: "check-failed", error: "offline", at: 2 }].reduce(U.reduce, available());
+  const s = [{ type: "check-start" }, { type: "check-failed", error: "offline" }].reduce(U.reduce, available());
   assert.equal(s.phase, "available");
   assert.equal(s.update.version, "0.4.0");
   assert.equal(s.error, "offline");
 });
 
+check("a successful up-to-date re-check drops the update found earlier", () => {
+  // Rust clears its parked update on `Ok(None)`; keeping it here would offer
+  // an install that can only fail with "no update pending".
+  const s = [{ type: "check-start" }, { type: "check-done", info: null }].reduce(U.reduce, available());
+  assert.equal(s.phase, "uptodate");
+  assert.equal(s.update, null);
+  assert.equal(U.shouldShowPill(s, null), false);
+});
+
 check("a check result arriving outside a check is ignored", () => {
-  const s = U.reduce(U.initialState(), { type: "check-done", info: INFO, at: 1 });
+  const s = U.reduce(U.initialState(), { type: "check-done", info: INFO });
   assert.equal(s.phase, "idle");
   assert.equal(s.update, null);
 });

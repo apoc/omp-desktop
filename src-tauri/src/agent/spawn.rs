@@ -1,7 +1,7 @@
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command, Stdio};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 
 /// Windows: prevent a console window from flashing when we spawn omp.exe
 /// from a GUI-subsystem parent. omp speaks JSON-RPC over stdio, so it's
@@ -416,6 +416,41 @@ fn resolve_cwd(dir: &str) -> String {
 fn sanitize_child_env(cmd: &mut Command) {
     cmd.env_remove("OMP_PROFILE");
     cmd.env_remove("PI_PROFILE");
+    strip_updater_env(cmd, UPDATER_ENV_ABSENT_AT_LAUNCH.get().copied());
+}
+
+/// Variables tauri-plugin-updater's `check()` sets *process-wide* on Linux
+/// when they are unset (`SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt`,
+/// `SSL_CERT_DIR=/etc/ssl/certs`). Every omp spawned after the first update
+/// check would inherit them — and on a distro without a Debian-style CA
+/// bundle (Fedora/RHEL keep theirs elsewhere) the OpenSSL-based tools the
+/// agent runs (`curl`, Python `ssl`) would load CAs from a missing file.
+const UPDATER_INJECTED_ENV: [&str; 2] = ["SSL_CERT_FILE", "SSL_CERT_DIR"];
+
+/// Which of [`UPDATER_INJECTED_ENV`] were absent when the app started — set
+/// once by [`record_launch_env`]. Unset (tests, or a caller that never
+/// recorded) strips nothing.
+static UPDATER_ENV_ABSENT_AT_LAUNCH: OnceLock<[bool; 2]> = OnceLock::new();
+
+/// Snapshot the launch environment. Must run first thing in `run()`,
+/// before any update check can have touched it.
+pub fn record_launch_env() {
+    let _ = UPDATER_ENV_ABSENT_AT_LAUNCH
+        .set(UPDATER_INJECTED_ENV.map(|name| std::env::var_os(name).is_none()));
+}
+
+/// Remove each variable the user didn't have at launch, so a child sees the
+/// user's own environment rather than the updater's additions. A value the
+/// user did set is inherited untouched.
+fn strip_updater_env(cmd: &mut Command, absent_at_launch: Option<[bool; 2]>) {
+    let Some(absent) = absent_at_launch else {
+        return;
+    };
+    for (name, absent) in UPDATER_INJECTED_ENV.into_iter().zip(absent) {
+        if absent {
+            cmd.env_remove(name);
+        }
+    }
 }
 
 /// Spawn omp for a live session using the best available RPC mode.
@@ -509,7 +544,7 @@ pub(super) fn spawn_omp(
 mod tests {
     use super::{
         help_text_supports_profile, help_text_supports_rpc_ui, omp_args, profile_refusal,
-        resolve_cwd, sanitize_child_env, Command,
+        resolve_cwd, sanitize_child_env, strip_updater_env, Command,
     };
 
     #[test]
@@ -776,6 +811,25 @@ mod tests {
             .get_envs()
             .any(|(k, _)| k == std::ffi::OsStr::new("PI_CODING_AGENT_DIR"));
         assert!(!cleared, "PI_CODING_AGENT_DIR must be left inherited");
+    }
+
+    /// A variable the updater injected (absent at launch) is removed; one
+    /// the user set before launch is left inherited; with no snapshot
+    /// nothing is touched.
+    #[test]
+    fn strip_updater_env_removes_only_what_was_absent_at_launch() {
+        let removed = |cmd: &Command, key: &str| {
+            cmd.get_envs()
+                .any(|(k, v)| k == std::ffi::OsStr::new(key) && v.is_none())
+        };
+        let mut cmd = Command::new("omp");
+        strip_updater_env(&mut cmd, Some([true, false]));
+        assert!(removed(&cmd, "SSL_CERT_FILE"));
+        assert!(!removed(&cmd, "SSL_CERT_DIR"), "a user-set value stays");
+
+        let mut untouched = Command::new("omp");
+        strip_updater_env(&mut untouched, None);
+        assert_eq!(untouched.get_envs().count(), 0);
     }
 
     #[test]

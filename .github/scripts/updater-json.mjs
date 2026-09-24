@@ -13,10 +13,11 @@
 //        [--pub-date <RFC 3339>] > latest.json
 //
 // The feed's `version` is `--app-version` (tauri.conf.json), not the tag:
-// it must equal what the installed binary reports, or every client would
-// "update" to the same build forever. A stable tag that disagrees with it
-// is therefore an error; a prerelease tag is allowed through, since
-// releases/latest/ never serves a prerelease's feed.
+// it must equal what the published binaries report. A stable tag that
+// disagrees with it is an error — that is a forgotten version bump, and
+// the feed would announce the old version, so installs already on it
+// would never be offered this release. A prerelease tag is allowed
+// through, since releases/latest/ never serves a prerelease's feed.
 //
 // Release notes are the `## [X.Y.Z]` section of the changelog, if any.
 // <dir> holds the downloaded `*.sig` assets, named exactly as on the
@@ -26,8 +27,9 @@
 // Fails (exit 1) when a platform the app ships to has no signed artifact,
 // so a broken build can never publish a feed that strands those users.
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 /** Platform keys every release must cover — see tauri-plugin-updater's
  *  `{os}-{arch}` fallback lookup. */
@@ -83,8 +85,8 @@ export function changelogSection(text, version) {
   return lines.slice(start + 1, end < 0 ? undefined : end).join("\n").trim();
 }
 
-/** Error text when `tag` and the built app version disagree in a way that
- *  would publish a self-perpetuating update, else null. */
+/** Error text when a stable `tag` disagrees with the built app version (a
+ *  forgotten bump: the feed would never offer this release), else null. */
 export function versionMismatch(tag, appVersion) {
   const tagVersion = tag.replace(/^v/, "");
   if (tagVersion === appVersion || tagVersion.includes("-")) return null;
@@ -122,7 +124,13 @@ function main() {
   process.stdout.write(JSON.stringify(feed, null, 2) + "\n");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run only when executed directly, not when imported (test-updater-json.mjs).
+// Node resolves the entry point's symlinks and percent-encodes its URL, so
+// compare like with like — a raw `file://${argv[1]}` never matches a path
+// with a space, a symlink or a Windows drive, and `main()` would silently
+// not run, leaving an empty feed.
+const entry = process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : null;
+if (import.meta.url === entry) {
   try {
     main();
   } catch (err) {

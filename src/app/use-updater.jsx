@@ -5,9 +5,10 @@
    preference.
 
    A background check never opens anything — a found update only surfaces
-   as the tab-bar pill. A manual check (pill, `/check-updates`, keymap)
-   opens the modal immediately so "checking…" / "up to date" / the error
-   are visible. */
+   as the tab-bar pill, which just opens the modal on what the last check
+   found. A manual check (the tab-bar version label, `/check-updates`,
+   keymap) opens the modal immediately so "checking…" / "up to date" / the
+   error are visible. */
 
 function useUpdater({ bridge, autoCheck, skipped, setTweak }) {
   const U = window.OMP_UPDATER;
@@ -34,8 +35,8 @@ function useUpdater({ bridge, autoCheck, skipped, setTweak }) {
     dispatch({ type: "check-start" });
     const res = await bridge.checkForUpdate();
     dispatch(res.ok
-      ? { type: "check-done", info: res.value, at: Date.now() }
-      : { type: "check-failed", error: res.error, at: Date.now() });
+      ? { type: "check-done", info: res.value }
+      : { type: "check-failed", error: res.error });
     if (!res.ok && !manual) console.warn("[updater] background check failed:", res.error);
   }, [bridge]);
 
@@ -69,9 +70,13 @@ function useUpdater({ bridge, autoCheck, skipped, setTweak }) {
     setOpen(false);
   }, [setTweak]);
 
-  const openRelease = React.useCallback(() => {
+  const openRelease = React.useCallback(async () => {
     const url = stateRef.current.update?.releaseUrl;
-    if (url) bridge?.openExternalUrl(url);
+    if (!url || !bridge) return;
+    // For a notify-only install this is the modal's only action; a launcher
+    // that can't start (no xdg-open) must at least leave a trace.
+    const res = await bridge.openExternalUrl(url);
+    if (!res.ok) console.error("[updater] opening the release page failed:", res.error);
   }, [bridge]);
 
   return {

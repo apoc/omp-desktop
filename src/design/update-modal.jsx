@@ -31,16 +31,31 @@ function UpdateModal({ updater, busyTabs, onClose }) {
     return () => { restore?.focus?.(); };
   }, []);
 
-  // Escape closes, except mid-install, where there is nothing to go back to.
-  const onKeyDown = e => {
-    if (e.key !== "Escape" || inFlight) return;
-    e.stopPropagation();
-    onClose();
-  };
+  // Capture phase on `window`, not the panel's own onKeyDown: focus can
+  // leave the panel while it is open — the composer refocuses itself when
+  // a turn ends, and a failed install unmounts the focused button — and a
+  // keystroke must then neither type into nor Enter-send the hidden
+  // composer. Same guard as prompt-history-modal.jsx. Escape closes except
+  // mid-install; any other unmodified key aimed outside the panel is
+  // swallowed and focus pulled back. Modified keys pass (global shortcuts).
+  React.useEffect(() => {
+    const onKey = e => {
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (e.key === "Escape") {
+        e.preventDefault(); e.stopPropagation();
+        if (!inFlight) onClose();
+      } else if (!panelRef.current?.contains(e.target)) {
+        e.preventDefault(); e.stopPropagation();
+        panelRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [inFlight, onClose]);
 
   return (
     <div className="bridge-scrim" onClick={inFlight ? undefined : onClose} style={{ paddingTop: "12vh" }}>
-      <div className="update-panel" ref={panelRef} tabIndex={-1} onKeyDown={onKeyDown} onClick={e => e.stopPropagation()}>
+      <div className="update-panel" ref={panelRef} tabIndex={-1} onClick={e => e.stopPropagation()}>
         <div className="update-head">
           <_UpdIcon name="arrowUp" size={13} color="var(--accent)" />
           <span className="mono" style={{ color: "var(--fg-2)" }}>updates · OMP Desktop {version ? `v${version}` : ""}</span>

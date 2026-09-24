@@ -42,8 +42,9 @@
 #    (.github/scripts/updater-json.mjs) — not by tauri-action in each build
 #    job, where four parallel read-modify-writes of one asset race. The job
 #    fails rather than publish a feed missing a platform, and refuses a
-#    stable tag that disagrees with tauri.conf.json's version (clients would
-#    re-install the same build forever). The app reads
+#    stable tag that disagrees with tauri.conf.json's version (a forgotten
+#    bump: the feed would announce the old version, so installs already on
+#    it would never be offered the release). The app reads
 #    releases/latest/download/latest.json, so a release reaches users only
 #    once it is published and not marked pre-release.
 #    NEVER commit the private key. Losing it means installed copies can
@@ -232,6 +233,9 @@ jobs:
             --changelog CHANGELOG.md \
             > latest.json
           cat latest.json
+          # Never upload a feed that can't be parsed or offers nothing —
+          # clients would fail every check until the next release.
+          jq -e '(.version | length > 0) and (.platforms | length > 0)' latest.json > /dev/null
 
       - name: Upload latest.json
         run: gh release upload "$TAG" latest.json --repo "$GITHUB_REPOSITORY" --clobber

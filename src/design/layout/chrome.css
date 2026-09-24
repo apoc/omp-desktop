@@ -254,7 +254,7 @@
 }
 
 /* Tab-bar pill announcing an available update. */
-.update-pill {
+.btn.update-pill {
   height: 18px; padding: 0 8px;
   border-radius: 9px;
   border-color: color-mix(in oklab, var(--accent) 45%, transparent);

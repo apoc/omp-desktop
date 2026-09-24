@@ -11,7 +11,8 @@
     "test:scroll-pin": "node test-scroll-pin.mjs",
     "test:slash-commands": "node test-slash-commands.mjs",
     "test:subagents": "node test-subagents.mjs",
-    "test:updater": "node test-updater.mjs"
+    "test:updater": "node test-updater.mjs",
+    "test:updater-json": "node test-updater-json.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
