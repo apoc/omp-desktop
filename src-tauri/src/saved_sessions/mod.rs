@@ -33,6 +33,15 @@ pub struct SavedSession {
     pub id: String,
     pub title: String,
     pub timestamp: String,
+    /// Last-activity timestamp: the latest top-level `timestamp` (or, for a
+    /// `title` event, `updatedAt`) seen across *every* event in the file,
+    /// not just title renames. omp appends events to a session's `.jsonl`
+    /// file in chronological order, so this ends up being the timestamp of
+    /// the file's last line — i.e. when the conversation was last touched,
+    /// regardless of when it was created (`timestamp`). `None` only for a
+    /// file whose lines carry neither field, in which case callers fall
+    /// back to `timestamp` (see `scan_dir`'s sort and the frontend history
+    /// modal's display, both of which do `updated_at.unwrap_or(timestamp)`).
     pub updated_at: Option<String>,
     pub cwd: String,
     pub project_name: String,
@@ -165,6 +174,26 @@ fn parse_session_file(path: &Path) -> Option<SavedSession> {
 
         let event_type = val.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
+        // Last activity, not creation: every event line carries a top-level
+        // `timestamp` except `title`, which carries `updatedAt` instead. Track
+        // the maximum seen across the whole file — the file is append-only
+        // and chronological, so in practice this ends up being the last
+        // line's value, but comparing rather than overwriting unconditionally
+        // means a stray out-of-order line can't understate how recently the
+        // session was actually touched. Previously this only looked at the
+        // `title` event's `updatedAt`, so a session with no title event (or
+        // one that was never renamed after the first message) sorted by its
+        // creation `timestamp` instead of its last message — issue #23.
+        if let Some(event_ts) = val
+            .get("timestamp")
+            .and_then(|s| s.as_str())
+            .or_else(|| val.get("updatedAt").and_then(|s| s.as_str()))
+        {
+            if updated_at.as_deref().is_none_or(|cur| event_ts > cur) {
+                updated_at = Some(event_ts.to_string());
+            }
+        }
+
         match event_type {
             "title" => {
                 if let Some(t) = val.get("title").and_then(|s| s.as_str()) {
@@ -172,9 +201,6 @@ fn parse_session_file(path: &Path) -> Option<SavedSession> {
                     if !trimmed.is_empty() {
                         explicit_title = trimmed.to_string();
                     }
-                }
-                if let Some(u) = val.get("updatedAt").and_then(|s| s.as_str()) {
-                    updated_at = Some(u.to_string());
                 }
             }
             "session" => {

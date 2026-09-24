@@ -86,6 +86,58 @@ fn parses_session_file_with_explicit_title() {
 }
 
 #[test]
+fn parse_session_file_last_activity_tracks_latest_message_not_creation() {
+    // No `title` event at all — before the fix, `updated_at` stayed `None`
+    // for a session like this and callers fell back to the creation
+    // `timestamp`, even though the conversation kept going for two more
+    // days (issue #23).
+    let dir = make_test_dir("last_activity_no_title");
+    let file_path = dir.join("test_last_activity.jsonl");
+    write_jsonl(
+        &file_path,
+        &[
+            r#"{"type":"session","version":3,"id":"sess-789","timestamp":"2026-09-04T00:00:00.000Z","cwd":"/test/three"}"#,
+            r#"{"type":"message","id":"m1","parentId":null,"timestamp":"2026-09-04T00:00:05.000Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#,
+            r#"{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-09-06T12:30:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"still here two days later"}]}}"#,
+        ],
+    );
+
+    let session = parse_session_file(&file_path).expect("parsed session");
+    assert_eq!(session.timestamp, "2026-09-04T00:00:00.000Z");
+    assert_eq!(
+        session.updated_at.as_deref(),
+        Some("2026-09-06T12:30:00.000Z")
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn parse_session_file_last_activity_beats_a_stale_title_rename() {
+    // The title was set once, early on, and never touched again — but the
+    // conversation continued well past that point. Last activity must
+    // reflect the later message, not the title event's `updatedAt`.
+    let dir = make_test_dir("last_activity_stale_title");
+    let file_path = dir.join("test_stale_title.jsonl");
+    write_jsonl(
+        &file_path,
+        &[
+            r#"{"type":"title","v":1,"title":"Early topic","updatedAt":"2026-09-04T00:00:10.000Z"}"#,
+            r#"{"type":"session","version":3,"id":"sess-321","timestamp":"2026-09-04T00:00:00.000Z","cwd":"/test/four"}"#,
+            r#"{"type":"message","id":"m1","parentId":null,"timestamp":"2026-09-08T09:00:00.000Z","message":{"role":"user","content":[{"type":"text","text":"back after a few days"}]}}"#,
+        ],
+    );
+
+    let session = parse_session_file(&file_path).expect("parsed session");
+    assert_eq!(
+        session.updated_at.as_deref(),
+        Some("2026-09-08T09:00:00.000Z")
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn parse_session_file_returns_none_without_id_or_timestamp() {
     let dir = make_test_dir("no_id");
     let file_path = dir.join("headerless.jsonl");
@@ -218,6 +270,40 @@ fn scan_dir_filters_by_cwd_and_sorts_newest_first() {
     // Filter is case- and slash-insensitive.
     let filtered_win = scan_dir(&root, Some(r"\PROJ\ONE\")).expect("scan ok");
     assert_eq!(filtered_win.len(), 2);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn scan_dir_sorts_by_last_activity_not_creation_date() {
+    // Direct regression for issue #23: session "old" was created first but
+    // has a much later last message than session "new", which was created
+    // after it but never touched again. "old" must sort above "new".
+    let root = make_test_dir("scan_activity_root");
+
+    let sess_old = root.join("sess-old");
+    fs::create_dir_all(&sess_old).unwrap();
+    write_jsonl(
+        &sess_old.join("old.jsonl"),
+        &[
+            r#"{"type":"session","version":3,"id":"old","timestamp":"2026-09-01T00:00:00.000Z","cwd":"/proj/one"}"#,
+            r#"{"type":"message","id":"m1","parentId":null,"timestamp":"2026-09-10T00:00:00.000Z","message":{"role":"user","content":[{"type":"text","text":"resumed much later"}]}}"#,
+        ],
+    );
+
+    let sess_new = root.join("sess-new");
+    fs::create_dir_all(&sess_new).unwrap();
+    write_jsonl(
+        &sess_new.join("new.jsonl"),
+        &[
+            r#"{"type":"session","version":3,"id":"new","timestamp":"2026-09-05T00:00:00.000Z","cwd":"/proj/two"}"#,
+        ],
+    );
+
+    let all = scan_dir(&root, None).expect("scan ok");
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].id, "old");
+    assert_eq!(all[1].id, "new");
 
     let _ = fs::remove_dir_all(&root);
 }
