@@ -59,6 +59,18 @@
         const shown = escapeHtml(text);
         return block ? '<p>' + shown.trimEnd() + '</p>\n' : shown;
       },
+      // The `html` escape above does not stop the lexer from *acting* on a
+      // tag: an inline `<pre>`, `<code>`, `<kbd>` or `<script>` switches it
+      // into raw-block mode until the matching close tag (across paragraphs,
+      // since one lexer queues the whole document), and every text token
+      // lexed meanwhile is the raw source flagged `escaped: true`, which the
+      // default renderer emits verbatim — so `wrap it in <code>` followed by
+      // `<img/src=x onerror=…>` would render live. `escaped` is set nowhere
+      // else; every other text token falls through (`false`) to marked's
+      // default, which escapes it.
+      text(token) {
+        return token.escaped && !token.tokens ? escapeHtml(token.text) : false;
+      },
       code({ text, lang }) {
         const code     = text ?? '';
         const language = (lang ?? '').split(/\s/)[0];

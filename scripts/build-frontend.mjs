@@ -109,6 +109,9 @@ if (/<[a-z][^>]*\son[a-z]+\s*=/i.test(html)) {
 }
 const cspOf = (file) => JSON.parse(readFileSync(join(root, "src-tauri", file), "utf8")).app?.security?.csp;
 const devCsp = cspOf("tauri.conf.json");
+if (typeof devCsp !== "string") {
+  throw new Error("tauri.conf.json: app.security.csp must be a policy string (build-frontend.mjs derives the release CSP from it)");
+}
 const distCsp = cspOf("tauri.dist.conf.json");
 const expectedCsp = devCsp
   .split(";")
