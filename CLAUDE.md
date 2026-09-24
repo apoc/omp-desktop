@@ -13,6 +13,7 @@ Tauri 2 desktop shell for `omp` (oh-my-pi). React UI loaded from `src/` by Tauri
 | Rust fmt | `cd src-tauri && cargo fmt` |
 | Rust lint (must stay clean) | `cd src-tauri && cargo +nightly clippy --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery -D warnings` |
 | Rust tests | `cd src-tauri && cargo test` |
+| All JS regression scripts | `npm test` — add a new `test-*.mjs` to its chain in `package.json` (not `test-rpc.mjs`, which needs a live omp) |
 | Probe omp RPC | `node test-rpc.mjs` |
 | Keymap chord regression | `node test-keymap.mjs` (or `npm run test:keymap`) |
 | Chat scroll-pin regression | `node test-scroll-pin.mjs` (or `npm run test:scroll-pin`) |
@@ -22,7 +23,7 @@ Tauri 2 desktop shell for `omp` (oh-my-pi). React UI loaded from `src/` by Tauri
 | Updater state regression | `node test-updater.mjs` (or `npm run test:updater`) |
 | Updater feed assembly regression | `node test-updater-json.mjs` (or `npm run test:updater-json`) |
 
-`omp` must be on PATH (`%LOCALAPPDATA%\omp\omp.exe` on Win). CI = `cargo check` + `cargo test` on win/linux/mac.
+`omp` must be on PATH (`%LOCALAPPDATA%\omp\omp.exe` on Win). CI and every release run the same suite (`.github/workflows/tests.yml`): `cargo test --locked` on win/linux/mac, plus `npm test`.
 
 ## Architecture
 
@@ -191,7 +192,7 @@ Trigger: 6th major component in one file, or 4th unrelated concern in one Rust m
 - Module-level `#![allow(clippy::needless_pass_by_value)]` in `lib.rs` is intentional — Tauri `#[command]` requires owned types.
 
 **Frontend:**
-- Prettier for JS/TS; respect any present ESLint config. Use repo-configured npm scripts when present (none currently — no JS test/lint pipeline in this repo).
+- Prettier for JS/TS; respect any present ESLint config. Use repo-configured npm scripts when present (`npm test` runs the JS regression scripts; there is no JS lint pipeline).
 - Don't reformat unrelated files. Preserve existing import ordering/style.
 - Prefer TS types over `any` (when TS is present; this repo is JSX).
 
@@ -224,8 +225,9 @@ All non-trivial code **must** have test coverage before committing. This is not 
 
 ## CI / release
 
-- `.github/workflows/ci.yml` — `cargo check --locked` + `cargo test --locked` on win/linux/mac for `src-tauri/**`, `src/**`, or workflow changes.
-- `.github/workflows/release.yml` — a signed `tauri build` per platform, then one `updater-json` job that assembles `latest.json` via `.github/scripts/updater-json.mjs`, with the matching CHANGELOG section as notes. The rationale and the guards are documented in the workflow header and the script. Users see an update only once the draft is published. Dry run: `gh workflow run release.yml --ref <branch> -f tag=vX.Y.Z-rc.N`, then delete the draft.
+- `.github/workflows/tests.yml` — the shared test gate, a reusable workflow (`workflow_call`): `cargo test --locked` on win/linux/mac, plus `npm test`. It is called by both workflows below, so CI and releases can't drift apart.
+- `.github/workflows/ci.yml` — runs `tests.yml` on every PR, and on pushes to master that touch `src-tauri/**`, `src/**`, `test-*.mjs`, `package.json`, `.github/scripts/**` or the workflows.
+- `.github/workflows/release.yml` — `tests.yml` first; nothing builds unless it passes. Then a signed `tauri build` per platform, then one `updater-json` job that assembles `latest.json` via `.github/scripts/updater-json.mjs`, with the matching CHANGELOG section as notes. The rationale and the guards are documented in the workflow header and the script. Users see an update only once the draft is published. Dry run: `gh workflow run release.yml --ref <branch> -f tag=vX.Y.Z-rc.N`, then delete the draft.
 
 ## Changelog workflow
 

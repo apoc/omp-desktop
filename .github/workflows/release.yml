@@ -1,11 +1,14 @@
 # Release pipeline — triggered by pushing a version tag (e.g. v0.2.0).
 #
 # Flow:
-#   1. Tag push  →  builds signed installers on Windows, macOS (arm64 + x64), Linux
-#   2. Uploads artefacts + their updater `.sig` files to a draft GitHub Release
-#   3. Once every build succeeded, `updater-json` assembles `latest.json` from
+#   1. Tag push  →  the full test suite (tests.yml: cargo test on Windows,
+#      Linux, macOS + the JS regression scripts); nothing builds unless it
+#      passes
+#   2. Builds signed installers on Windows, macOS (arm64 + x64), Linux
+#   3. Uploads artefacts + their updater `.sig` files to a draft GitHub Release
+#   4. Once every build succeeded, `updater-json` assembles `latest.json` from
 #      those signatures and uploads it to the same draft
-#   4. You review the draft, then publish manually
+#   5. You review the draft, then publish manually
 #
 # Manual run (Actions → Release → Run workflow, or
 #   gh workflow run release.yml --ref <branch> -f tag=vX.Y.Z-rc.1):
@@ -84,8 +87,12 @@ on:
         required: true
 
 jobs:
+  test:
+    uses: ./.github/workflows/tests.yml
+
   build:
     name: build · ${{ matrix.label }}
+    needs: test             # never publish a release the test suite rejects
     permissions:
       contents: write       # needed to create / update the GitHub Release
 

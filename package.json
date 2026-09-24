@@ -6,6 +6,7 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "tauri": "tauri",
+    "test": "node test-keymap.mjs && node test-prompt-history.mjs && node test-scroll-pin.mjs && node test-slash-commands.mjs && node test-subagents.mjs && node test-updater.mjs && node test-updater-json.mjs",
     "test:keymap": "node test-keymap.mjs",
     "test:prompt-history": "node test-prompt-history.mjs",
     "test:scroll-pin": "node test-scroll-pin.mjs",
