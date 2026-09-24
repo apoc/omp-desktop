@@ -34,7 +34,7 @@ pub struct SavedSession {
     pub title: String,
     pub timestamp: String,
     /// Last-activity timestamp: the later of the latest `message` event's
-    /// top-level `timestamp` and an explicit rename's `title` event
+    /// top-level `timestamp` and the latest retitle's `title` event
     /// `updatedAt` — i.e. when the conversation was actually last touched,
     /// regardless of when it was created (`timestamp`). Every other event
     /// type is deliberately excluded, in particular `session` and the
@@ -159,10 +159,14 @@ fn apply_message_event(
 /// Compares raw strings — valid only because every omp timestamp uses the
 /// same ISO-8601 UTC-with-milliseconds format (`…T…Z`), which sorts
 /// lexicographically in chronological order (see the `session` event's
-/// `timestamp` field, parsed the same way just below). A real session file
-/// observed on disk had a `message` line's timestamp precede an earlier
-/// line's after a mid-session omp restart, so this compares on every call
-/// rather than trusting line order and overwriting unconditionally.
+/// `timestamp` field, parsed the same way just below). Comparing instead
+/// of letting the last line win is load-bearing: the `title` event is
+/// always the physically first line of the file, yet it carries the
+/// timestamp of the *latest* retitle — an explicit `/rename` or omp's own
+/// automatic one — which can postdate every `message` line that follows
+/// it. Forked sessions add a second case: they copy the parent's messages
+/// verbatim, including their pre-fork timestamps, so a later line in the
+/// file is not guaranteed to carry a later timestamp there either.
 fn update_last_activity(current: &mut Option<String>, candidate: &str) {
     if current.as_deref().is_none_or(|cur| candidate > cur) {
         *current = Some(candidate.to_string());
@@ -196,7 +200,8 @@ fn parse_session_file(path: &Path) -> Option<SavedSession> {
         let event_type = val.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
         // Last activity is tracked only from `message` (a real turn) and
-        // `title` (an explicit rename) events — see the `updated_at` doc
+        // `title` (the latest retitle, explicit `/rename` or omp's own
+        // automatic one) events — see the `updated_at` doc
         // comment on `SavedSession` for why every other event type,
         // including the exit lifecycle event omp appends when an RPC
         // child for this session terminates, is deliberately excluded.
