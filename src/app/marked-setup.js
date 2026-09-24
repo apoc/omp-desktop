@@ -31,6 +31,11 @@
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+  // marked's own text escape (`escape(text, false)`): `<>"'` always, but a
+  // well-formed `&…;` reference stays a reference — output is text-node
+  // content, where a reference can only ever decode to a character.
+  const escapeKeepingRefs = (s) => String(s)
+    .replace(/[<>"']|&(?!(?:#\d{1,7}|#[xX][\da-fA-F]{1,6}|\w+);)/g, escapeHtml);
   // CommonMark decodes character references in a link destination or
   // title (`&amp;`, `&#106;`). Decode once, then check *and* emit that
   // same string: checking the raw text would let `&#106;avascript:`
@@ -69,7 +74,7 @@
       // else; every other text token falls through (`false`) to marked's
       // default, which escapes it.
       text(token) {
-        return token.escaped && !token.tokens ? escapeHtml(token.text) : false;
+        return token.escaped && !token.tokens ? escapeKeepingRefs(token.text) : false;
       },
       code({ text, lang }) {
         const code     = text ?? '';
