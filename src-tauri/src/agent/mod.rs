@@ -355,35 +355,39 @@ impl AgentBridge {
     }
 
     /// Kill and reap every session's process tree, synchronously. For the
-    /// paths where the process is about to end *without* running `Drop` —
-    /// an update's relaunch (`AppHandle::request_restart` / the Windows
-    /// installer hand-off both end in `std::process::exit`), where a Unix
-    /// child in its own process group would otherwise outlive us. Blocks
-    /// briefly per child; only ever called on the way out. Idempotent: the
-    /// map is drained, so a later call (or `Drop`) finds nothing to do.
+    /// path where the process is about to end *without* running `Drop` —
+    /// an update's relaunch (`AppHandle::request_restart`), where a Unix
+    /// child in its own process group would otherwise outlive us. Only
+    /// ever called on the way out. Idempotent: the map is drained, so a
+    /// later call (or `Drop`) finds nothing to do.
     pub fn shutdown_all(&self) {
-        let Ok(mut sessions) = self.sessions.lock() else {
-            return;
+        let children: Vec<std::process::Child> = {
+            let Ok(mut sessions) = self.sessions.lock() else {
+                return;
+            };
+            sessions
+                .drain()
+                .filter_map(|(_, mut inner)| {
+                    // Mirrors `reap_and_clear_grants`: clear liveness first,
+                    // so a reader thread that outlives this (it holds its
+                    // own `Arc<AtomicBool>`) and later wakes on EOF finds no
+                    // map entry *and* an already-false `alive`, instead of
+                    // emitting into an `AppHandle` being torn down. Then the
+                    // supervisor, whose Drop kills the whole tree.
+                    inner.alive.store(false, Ordering::Release);
+                    inner.stdin = None;
+                    drop(inner.supervisor.take());
+                    let mut child = inner.child.take()?;
+                    let _ = child.kill();
+                    Some(child)
+                })
+                .collect()
         };
-        for (_, mut inner) in sessions.drain() {
-            // Mirrors `reap_and_clear_grants`: clear liveness before
-            // anything else, so a reader thread that outlives this
-            // drain loop (it holds its own `Arc<AtomicBool>`) and later
-            // wakes on EOF finds no map entry *and* an already-false
-            // `alive`, instead of emitting into an `AppHandle` whose
-            // webview is being torn down.
-            inner.alive.store(false, Ordering::Release);
-            inner.stdin = None;
-            if let Some(mut c) = inner.child.take() {
-                let _ = c.kill();
-                let _ = c.wait();
-            }
-            // `inner.supervisor` is left untouched here (unlike
-            // start_session/stop_session, which move it off-thread) —
-            // this whole path only runs on the way out, where blocking
-            // briefly is acceptable; `inner` (and its supervisor) drops
-            // automatically at the end of this loop body, which kills
-            // the rest of the process tree via `ProcessSupervisor::Drop`.
+        // Every tree is signalled before any wait, so the teardowns overlap
+        // instead of adding up, and reader threads parked on the lock are
+        // released first.
+        for mut child in children {
+            let _ = child.wait();
         }
     }
 }

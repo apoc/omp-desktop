@@ -6,9 +6,16 @@
 // Run: node test-updater-json.mjs  (or: npm run test:updater-json)
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   buildPlatforms, changelogSection, keysFor, versionMismatch,
 } from "./.github/scripts/updater-json.mjs";
+
+const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), ".github/scripts/updater-json.mjs");
 
 let passed = 0;
 function check(label, fn) {
@@ -94,6 +101,28 @@ check("a stable tag must match the app version; a prerelease may not", () => {
   assert.equal(versionMismatch("v0.3.1", "0.3.1"), null);
   assert.match(versionMismatch("v0.3.2", "0.3.1"), /does not match/);
   assert.equal(versionMismatch("v0.3.2-rc.1", "0.3.1"), null);
+});
+
+// The CLI path the workflow actually runs, through a symlink whose name has
+// a space — the case where a naive `import.meta.url === file://argv[1]`
+// entry guard silently skipped main() and emitted an empty feed.
+check("run directly (via a symlink with a space), the CLI writes the feed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "updater-json-"));
+  try {
+    for (const n of ASSETS) writeFileSync(join(dir, `${n}.sig`), `sig:${n}\n`);
+    const link = join(dir, "a b.mjs");
+    symlinkSync(realpathSync(SCRIPT), link);
+    const run = (...extra) => execFileSync(process.execPath, [link, "--sigdir", dir, "--repo", "o/r",
+      "--tag", "v0.3.0", "--app-version", "0.3.0", ...extra], { encoding: "utf8", stdio: "pipe" });
+    const feed = JSON.parse(run());
+    assert.equal(feed.version, "0.3.0");
+    assert.equal(feed.platforms["linux-x86_64"].signature, "sig:OMP.Desktop_0.3.0_amd64.AppImage");
+    assert.ok(!Number.isNaN(Date.parse(feed.pub_date)), "pub_date must be a parseable timestamp");
+    // Strict flags: a typo must fail, not silently drop the release notes.
+    assert.throws(() => run("--change-log", "CHANGELOG.md"), /Unknown option/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 console.log(`test-updater-json: ${passed} checks passed`);

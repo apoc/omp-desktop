@@ -2520,15 +2520,10 @@
     // Thin IPC wrappers; the state machine is app/updater.js, driven by
     // app/use-updater.jsx. Not per-session, so nothing here touches `state`.
 
-    /** Running app version (`tauri.conf.json`'s `version`), or null. */
-    async appVersion() {
-      if (!window.__TAURI__) return null;
-      try {
-        return await window.__TAURI__.app.getVersion();
-      } catch (err) {
-        console.error("[live] getVersion error:", err);
-        return null;
-      }
+    /** Running app version (`tauri.conf.json`'s `version`), or null. Same
+     *  IPC as `window.__TAURI__.app.getVersion()`. */
+    appVersion() {
+      return _invokeSafe("plugin:app|version", undefined, null);
     },
 
     /** `{ok: true, value}` — value is the UpdateInfo, or null when up to
@@ -2538,18 +2533,21 @@
     },
 
     /** Download, install and relaunch into the update the last check
-     *  found. Windows: resolves only on failure (the installer takes
-     *  over the process); elsewhere `{ok: true}` briefly precedes the
-     *  restart. */
-    installUpdate() {
-      return _invokeResult("app_update_install");
-    },
-
-    /** Subscribe to `{downloaded, total}` download progress. Resolves to
-     *  an unlisten function. */
-    async onUpdateProgress(cb) {
-      if (!window.__TAURI__) return () => {};
-      return window.__TAURI__.event.listen("update://progress", ev => cb(ev.payload));
+     *  found, reporting `{downloaded, total}` to `onProgress` meanwhile.
+     *  Windows: resolves only on failure (the installer takes over the
+     *  process); elsewhere `{ok: true}` briefly precedes the restart.
+     *  The listener lives exactly as long as the install — it is attached
+     *  before the invoke, so no early chunk is missed. */
+    async installUpdate(onProgress) {
+      if (!window.__TAURI__) return { ok: false, error: "not connected" };
+      const unlisten = await window.__TAURI__.event
+        .listen("update://progress", ev => onProgress(ev.payload))
+        .catch(err => { console.error("[live] update progress listener failed:", err); return null; });
+      try {
+        return await _invokeResult("app_update_install");
+      } finally {
+        unlisten?.();
+      }
     },
 
     /** Open an http(s) URL in the system browser (same allow-list as the

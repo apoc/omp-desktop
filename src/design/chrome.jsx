@@ -81,7 +81,7 @@ function WindowChrome({
 }
 
 // ── Project tabs ─────────────────────────────────────────────────────
-function TabBar({ projects, activeId, onSelect, onClose, onNew, onHistory, profiles = [], appVersion, update, onUpdate, onCheckUpdate }) {
+function TabBar({ projects, activeId, onSelect, onClose, onNew, onHistory, profiles = [], appVersion, updateVersion, onUpdate, onCheckUpdate }) {
   // Tabs can run under different profiles, so a tab whose profile is not the
   // built-in one is labelled with it — otherwise two tabs on the same folder
   // in different profiles look identical. Falls back to the raw id until the
@@ -125,15 +125,12 @@ function TabBar({ projects, activeId, onSelect, onClose, onNew, onHistory, profi
       </button>
       <div style={{ flex: 1 }} />
       <div className="tabs-right mono">
-        {/* `update`: {version, phase} when the pill should show, else null. */}
-        {update && (
-          <button className="btn outlined update-pill" onClick={onUpdate} title={`OMP Desktop v${update.version} is available`}>
-            <Icon name="arrowUp" size={9} />
-            {update.phase === "downloading" ? "updating…" : `v${update.version}`}
+        {updateVersion && (
+          <button className="btn outlined update-pill" onClick={onUpdate} title={`OMP Desktop v${updateVersion} is available`}>
+            <Icon name="arrowUp" size={9} />v{updateVersion}
           </button>
         )}
-        <button className="btn ghost" style={{ height: 18, padding: "0 4px", color: "var(--fg-4)" }}
-          onClick={onCheckUpdate} title="check for updates">
+        <button className="btn ghost app-version" onClick={onCheckUpdate} title="check for updates">
           {appVersion ? `v${appVersion}` : "—"}
         </button>
       </div>

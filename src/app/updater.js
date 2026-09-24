@@ -41,7 +41,6 @@
     if (!version) return null;
     return {
       version,
-      currentVersion: str(raw.currentVersion),
       notes: str(raw.notes),
       date: str(raw.date),
       canInstall: raw.canInstall === true,
@@ -49,12 +48,18 @@
     };
   }
 
-  const isBusy = (phase) => phase === "checking" || phase === "downloading" || phase === "restarting";
+  // One spelling of each phase predicate, shared by the reducer, the hook's
+  // IPC gate and the modal, so they can't drift apart.
+  // Installing: the process is committed to being replaced (downloading or
+  // already restarting) — nothing else may start, and the modal can't close.
+  const isInstalling = (state) => state.phase === "downloading" || state.phase === "restarting";
+  // Busy: no new check may start (one is running, or an install is).
+  const isBusy = (state) => state.phase === "checking" || isInstalling(state);
 
   function reduce(state, action) {
     switch (action?.type) {
       case "check-start":
-        if (isBusy(state.phase)) return state;
+        if (isBusy(state)) return state;
         return { ...state, phase: "checking", error: null };
 
       case "check-done": {
@@ -101,13 +106,13 @@
   const canStartInstall = (state) =>
     state.phase === "available" && state.update?.canInstall === true;
 
-  // The tab-bar pill: an update exists and the user hasn't skipped this
-  // exact version. A skipped version stays hidden until a newer one
-  // appears; an install in flight always shows (it was chosen explicitly).
-  function shouldShowPill(state, skippedVersion) {
-    if (!state.update) return false;
-    if (state.phase === "downloading" || state.phase === "restarting") return true;
-    return state.update.version !== skippedVersion;
+  // The version the tab-bar pill announces, or null for no pill: an update
+  // exists and the user hasn't skipped this exact version. A skipped
+  // version stays hidden until a newer one appears. (During an install the
+  // modal can't be closed and covers the tab bar, so no in-flight variant.)
+  function pillVersion(state, skippedVersion) {
+    const version = state.update?.version;
+    return version && version !== skippedVersion ? version : null;
   }
 
   // Whole percent, or null while the size is unknown (indeterminate bar).
@@ -136,8 +141,10 @@
     initialState,
     normalizeInfo,
     reduce,
+    isBusy,
+    isInstalling,
     canStartInstall,
-    shouldShowPill,
+    pillVersion,
     progressPct,
     formatBytes,
     busyTabCount,

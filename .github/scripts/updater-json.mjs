@@ -9,8 +9,7 @@
 //
 // Usage:
 //   node updater-json.mjs --sigdir <dir> --repo <owner/name> --tag <vX.Y.Z> \
-//        --app-version <X.Y.Z> [--changelog <CHANGELOG.md>] \
-//        [--pub-date <RFC 3339>] > latest.json
+//        --app-version <X.Y.Z> [--changelog <CHANGELOG.md>] > latest.json
 //
 // The feed's `version` is `--app-version` (tauri.conf.json), not the tag:
 // it must equal what the published binaries report. A stable tag that
@@ -30,6 +29,7 @@
 import { readFileSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
 
 /** Platform keys every release must cover — see tauri-plugin-updater's
  *  `{os}-{arch}` fallback lookup. */
@@ -93,17 +93,17 @@ export function versionMismatch(tag, appVersion) {
   return `tag ${tag} does not match the app version ${appVersion} in tauri.conf.json`;
 }
 
-function args(argv) {
-  const out = {};
-  for (let i = 0; i < argv.length; i += 2) {
-    if (!argv[i].startsWith("--")) throw new Error(`unexpected argument ${argv[i]}`);
-    out[argv[i].slice(2)] = argv[i + 1];
-  }
-  return out;
-}
-
 function main() {
-  const a = args(process.argv.slice(2));
+  // Strict: an unknown or valueless flag is an error, not a silent default.
+  const { values: a } = parseArgs({
+    options: {
+      sigdir: { type: "string" },
+      repo: { type: "string" },
+      tag: { type: "string" },
+      "app-version": { type: "string" },
+      changelog: { type: "string" },
+    },
+  });
   for (const k of ["sigdir", "repo", "tag", "app-version"]) if (!a[k]) throw new Error(`--${k} is required`);
   const mismatch = versionMismatch(a.tag, a["app-version"]);
   if (mismatch) throw new Error(mismatch);
@@ -118,7 +118,7 @@ function main() {
   const feed = {
     version: a["app-version"],
     notes: a.changelog ? changelogSection(readFileSync(a.changelog, "utf8"), a["app-version"]) : "",
-    pub_date: a["pub-date"] ?? new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+    pub_date: new Date().toISOString(),
     platforms,
   };
   process.stdout.write(JSON.stringify(feed, null, 2) + "\n");

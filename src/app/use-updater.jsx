@@ -1,5 +1,5 @@
 /* app/use-updater.jsx — drives the in-app updater (issue #19): the
-   app/updater.js reducer, the background check timer, download progress,
+   app/updater.js reducer, the background check timer, install progress,
    and whether the update modal is open. `autoCheck` and `skipped` are the
    `updateCheck`/`skippedUpdate` tweaks, so both persist like any other
    preference.
@@ -10,9 +10,11 @@
    keymap) opens the modal immediately so "checking…" / "up to date" / the
    error are visible. */
 
+// Frozen and loaded before this file (index.html), so safe to read once.
+const UPDATER = window.OMP_UPDATER;
+
 function useUpdater({ bridge, autoCheck, skipped, setTweak }) {
-  const U = window.OMP_UPDATER;
-  const [state, dispatch] = React.useReducer(U.reduce, undefined, U.initialState);
+  const [state, dispatch] = React.useReducer(UPDATER.reduce, undefined, UPDATER.initialState);
   const [open, setOpen] = React.useState(false);
   const [version, setVersion] = React.useState(null);
 
@@ -25,13 +27,12 @@ function useUpdater({ bridge, autoCheck, skipped, setTweak }) {
     bridge?.appVersion().then(setVersion);
   }, [bridge]);
 
-  const check = React.useCallback(async (manual) => {
+  // `manual` stays private: only the timer passes false. Gates the IPC call
+  // itself — the reducer would merely drop the transition. A check already
+  // running feeds the modal just opened; one during an install would race it.
+  const runCheck = React.useCallback(async (manual) => {
     if (manual) setOpen(true);
-    if (!bridge) return;
-    const phase = stateRef.current.phase;
-    // Already checking: the result lands in the modal just opened above.
-    // Downloading/restarting: a new check would race the install.
-    if (phase === "checking" || phase === "downloading" || phase === "restarting") return;
+    if (!bridge || UPDATER.isBusy(stateRef.current)) return;
     dispatch({ type: "check-start" });
     const res = await bridge.checkForUpdate();
     dispatch(res.ok
@@ -40,29 +41,24 @@ function useUpdater({ bridge, autoCheck, skipped, setTweak }) {
     if (!res.ok && !manual) console.warn("[updater] background check failed:", res.error);
   }, [bridge]);
 
+  // The public entry point is always a manual check, and takes no argument,
+  // so it can be handed straight to onClick / a keymap handler.
+  const check = React.useCallback(() => { runCheck(true); }, [runCheck]);
+
   React.useEffect(() => {
     if (!autoCheck || !bridge) return undefined;
-    const first = setTimeout(() => check(false), U.STARTUP_DELAY_MS);
-    const every = setInterval(() => check(false), U.CHECK_INTERVAL_MS);
+    const first = setTimeout(() => runCheck(false), UPDATER.STARTUP_DELAY_MS);
+    const every = setInterval(() => runCheck(false), UPDATER.CHECK_INTERVAL_MS);
     return () => { clearTimeout(first); clearInterval(every); };
-  }, [autoCheck, bridge, check, U]);
-
-  React.useEffect(() => {
-    if (!bridge) return undefined;
-    let unlisten = null;
-    let disposed = false;
-    bridge.onUpdateProgress(p => dispatch({ type: "progress", downloaded: p?.downloaded, total: p?.total }))
-      .then(fn => { if (disposed) fn(); else unlisten = fn; })
-      .catch(err => console.error("[updater] progress listener failed:", err));
-    return () => { disposed = true; unlisten?.(); };
-  }, [bridge]);
+  }, [autoCheck, bridge, runCheck]);
 
   const install = React.useCallback(async () => {
-    if (!bridge || !U.canStartInstall(stateRef.current)) return;
+    if (!bridge || !UPDATER.canStartInstall(stateRef.current)) return;
     dispatch({ type: "install-start" });
-    const res = await bridge.installUpdate();
+    const res = await bridge.installUpdate(p =>
+      dispatch({ type: "progress", downloaded: p?.downloaded, total: p?.total }));
     dispatch(res.ok ? { type: "install-done" } : { type: "install-failed", error: res.error });
-  }, [bridge, U]);
+  }, [bridge]);
 
   const skip = React.useCallback(() => {
     const v = stateRef.current.update?.version;
@@ -83,7 +79,7 @@ function useUpdater({ bridge, autoCheck, skipped, setTweak }) {
     state,
     version,
     open,
-    showPill: U.shouldShowPill(state, skipped),
+    pillVersion: UPDATER.pillVersion(state, skipped),
     openModal: React.useCallback(() => setOpen(true), []),
     close: React.useCallback(() => setOpen(false), []),
     check,

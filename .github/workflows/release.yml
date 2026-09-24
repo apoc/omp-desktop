@@ -34,7 +34,7 @@
 #    src-tauri/tauri.conf.json). This is a minisign key, unrelated to
 #    Authenticode or Apple notarisation. Add to repo secrets:
 #      TAURI_SIGNING_PRIVATE_KEY           — contents of the private key file
-#      TAURI_SIGNING_PRIVATE_KEY_PASSWORD  — its password
+#      TAURI_SIGNING_PRIVATE_KEY_PASSWORD  — its password (if it has one)
 #    `src-tauri/tauri.release.conf.json` turns on `createUpdaterArtifacts`
 #    for this workflow only (a local `npm run build` has no key and would
 #    fail with it on). The build jobs check for the key before compiling.
@@ -61,9 +61,16 @@
 name: Release
 
 # One run per tag: two runs uploading into the same draft would interleave.
+# (`concurrency` can't read `env`, hence the repeated expression.)
 concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
+
+env:
+  # A manual run names its release by the `tag` input; `github.ref_name`
+  # would be the branch there. Shared by both jobs, so the draft the builds
+  # upload into is the one `updater-json` reads back.
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 on:
   push:
@@ -79,10 +86,6 @@ on:
 jobs:
   build:
     name: build · ${{ matrix.label }}
-    env:
-      # A manual run names its release by the `tag` input; `github.ref_name`
-      # would be the branch there.
-      TAG: ${{ inputs.tag || github.ref_name }}
     permissions:
       contents: write       # needed to create / update the GitHub Release
 
@@ -117,9 +120,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Fail in seconds, not after a full compile: without the key the
-      # bundler errors at the very end, and a build without signatures
-      # would silently ship no update.
+      # Fail in seconds, not after a full compile: with createUpdaterArtifacts
+      # on, the bundler only errors on a missing key at the very end.
       - name: Require updater signing key
         shell: bash
         env:
@@ -196,8 +198,8 @@ jobs:
             **Windows:** if SmartScreen blocks the installer, click _More info → Run anyway_.
             This will resolve once the app is code-signed.
 
-            **Updates:** from this release on, Windows, macOS and the Linux `.AppImage`
-            update themselves in-app; `.deb`/`.rpm` installs are notified and link here.
+            **Updates:** Windows, macOS and the Linux `.AppImage` update themselves
+            in-app; `.deb`/`.rpm` installs are notified and link here.
 
             ### Requirements
             - [oh-my-pi](https://github.com/can1357/oh-my-pi) (`omp`) must be installed
@@ -213,13 +215,12 @@ jobs:
     permissions:
       contents: write
     env:
-      TAG: ${{ inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
-      # `gh` resolves draft releases by tag (the tag itself only exists once
-      # the draft is published).
+      # A draft is invisible to GitHub's by-tag release lookup; `gh` falls
+      # back to searching drafts.
       - name: Download updater signatures
         run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.sig' --dir sigs
 
@@ -233,8 +234,9 @@ jobs:
             --changelog CHANGELOG.md \
             > latest.json
           cat latest.json
-          # Never upload a feed that can't be parsed or offers nothing —
-          # clients would fail every check until the next release.
+          # Guard against an empty or truncated file reaching clients: the
+          # script validates the feed itself, but a feed that doesn't parse
+          # would break every client's check until the next release.
           jq -e '(.version | length > 0) and (.platforms | length > 0)' latest.json > /dev/null
 
       - name: Upload latest.json

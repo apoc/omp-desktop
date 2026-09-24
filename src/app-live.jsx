@@ -261,7 +261,7 @@ function App() {
     else if (c.name === "new")       { bridge?.newSession(); }
     else if (c.name === "history")   { setHistoryOpen(true); }
     else if (c.name === "shortcuts") { setShortcutsOpen(true); }
-    else if (c.name === "check-updates") { updater.check(true); }
+    else if (c.name === "check-updates") { updater.check(); }
   };
 
   const handleResumeSession = async (session) => {
@@ -365,7 +365,7 @@ function App() {
     "desktop.composer.promptHistory": () => setPromptHistoryOpen(v => !v),
     "desktop.session.compact": () => bridge?.compact(),
     "desktop.session.export":  () => bridge?.exportHtml(),
-    "desktop.update.check":    () => updater.check(true),
+    "desktop.update.check":    updater.check,
   };
 
   // Profile switch applies to the active tab only: its omp process is
@@ -427,9 +427,9 @@ function App() {
             onClose={handleCloseTab}
             onHistory={() => setHistoryOpen(true)}
             appVersion={updater.version}
-            update={updater.showPill ? { version: updater.state.update.version, phase: updater.state.phase } : null}
+            updateVersion={updater.pillVersion}
             onUpdate={updater.openModal}
-            onCheckUpdate={() => updater.check(true)}
+            onCheckUpdate={updater.check}
           />
 
           <div className={`stage ${showRail ? "with-rail" : ""}`}>
@@ -583,11 +583,7 @@ function App() {
       )}
 
       {updater.open && (
-        <UpdateModal
-          updater={updater}
-          busyTabs={window.OMP_UPDATER.busyTabCount(sessions)}
-          onClose={updater.close}
-        />
+        <UpdateModal updater={updater} busyTabs={window.OMP_UPDATER.busyTabCount(sessions)} />
       )}
 
       <TweaksPanel title="Tweaks" noDeckControls>

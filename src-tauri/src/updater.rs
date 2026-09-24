@@ -17,14 +17,17 @@
 //! system package manager, a source or `tauri dev` build) is notify-only:
 //! the frontend links to the release page instead.
 //!
-//! Both relaunch paths end in `std::process::exit`, so managed state is
-//! never dropped and `AgentBridge`'s `Drop` never runs. The omp children
-//! are therefore killed explicitly ([`AgentBridge::shutdown_all`]) first —
-//! on Unix each sits in its own process group and would outlive us.
+//! The non-Windows relaunch (`request_restart`) ends the process without
+//! dropping managed state, so `AgentBridge`'s `Drop` never runs; the omp
+//! children are killed explicitly ([`AgentBridge::shutdown_all`]) first —
+//! on Unix each sits in its own process group and would outlive us. On
+//! Windows the plugin launches the installer and then exits; every omp
+//! tree sits in a `KILL_ON_JOB_CLOSE` job object and dies with us. Killing
+//! them earlier (in `on_before_exit`, which runs *before* the installer is
+//! launched) would strand every tab if that launch then failed.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use tauri::utils::config::BundleType;
@@ -50,12 +53,63 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 /// with thousands of events for one installer.
 const PROGRESS_STEP: u64 = 256 * 1024;
 
-/// The update announced by the last successful [`check`], held for
-/// [`install`], plus a guard against overlapping installs.
+const BUSY: &str = "an update is already being installed";
+
+/// Where the updater is: nothing known, an update announced by the last
+/// [`check`] and held for [`install`], or an install under way (terminal on
+/// success — the process is replaced). One enum under one lock, so "parked
+/// while installing" can't be represented.
+#[derive(Default)]
+enum Slot {
+    #[default]
+    Empty,
+    // Boxed: an `Update` is several hundred bytes, the other variants none.
+    Parked(Box<Update>),
+    Installing,
+}
+
 #[derive(Default)]
 pub struct UpdaterState {
-    pending: Mutex<Option<Update>>,
-    installing: AtomicBool,
+    slot: Mutex<Slot>,
+}
+
+impl UpdaterState {
+    fn slot(&self) -> Result<MutexGuard<'_, Slot>, String> {
+        self.slot
+            .lock()
+            .map_err(|_| "updater lock poisoned".to_string())
+    }
+
+    /// Hold `update` (or forget the last one) unless an install owns the
+    /// slot.
+    fn park(&self, update: Option<Update>) -> Result<(), String> {
+        let mut slot = self.slot()?;
+        if matches!(*slot, Slot::Installing) {
+            return Err(BUSY.into());
+        }
+        *slot = update.map_or(Slot::Empty, |u| Slot::Parked(Box::new(u)));
+        drop(slot);
+        Ok(())
+    }
+
+    /// Take the parked update for installing; the slot stays `Installing`
+    /// (an empty slot stays empty).
+    fn claim(&self) -> Result<Update, String> {
+        let previous = {
+            let mut slot = self.slot()?;
+            let next = if matches!(*slot, Slot::Empty) {
+                Slot::Empty
+            } else {
+                Slot::Installing
+            };
+            std::mem::replace(&mut *slot, next)
+        };
+        match previous {
+            Slot::Parked(update) => Ok(*update),
+            Slot::Installing => Err(BUSY.into()),
+            Slot::Empty => Err("no update pending — check for updates again".into()),
+        }
+    }
 }
 
 /// What the frontend needs to render an available update.
@@ -63,7 +117,6 @@ pub struct UpdaterState {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {
     version: String,
-    current_version: String,
     /// Release notes as published in the feed (markdown source).
     notes: Option<String>,
     /// RFC 3339 publish date, verbatim from the feed.
@@ -140,11 +193,10 @@ const fn should_emit(last_emitted: u64, downloaded: u64, total: Option<u64>) -> 
 
 fn info_for(update: &Update, can_install: bool) -> UpdateInfo {
     // Copied, not moved: the `Update` stays parked whole in
-    // `UpdaterState::pending` for `install`, and a command can't return
-    // data borrowed from managed state.
+    // `UpdaterState` for `install`, and a command can't return data
+    // borrowed from managed state.
     UpdateInfo {
         version: update.version.clone(),
-        current_version: update.current_version.clone(),
         notes: update.body.clone(),
         // The feed's own string rather than re-formatting `update.date`:
         // formatting an `OffsetDateTime` needs `time`'s `formatting`
@@ -165,44 +217,31 @@ fn info_for(update: &Update, can_install: bool) -> UpdateInfo {
 /// Network/TLS failure, a malformed or missing `latest.json`, or no entry
 /// for this platform in it.
 pub async fn check(app: &AppHandle, state: &UpdaterState) -> Result<Option<UpdateInfo>, String> {
-    if state.installing.load(Ordering::Acquire) {
-        return Err("an update is already being installed".into());
+    // Refuse up front (no pointless network round-trip) and again after the
+    // await, which an install may have started during.
+    if matches!(*state.slot()?, Slot::Installing) {
+        return Err(BUSY.into());
     }
-    let builder = app.updater_builder().timeout(CHECK_TIMEOUT);
-    // Windows only: `Update::install` hands off to the installer and then
-    // calls this hook right before `std::process::exit(0)`. It replaces the
-    // plugin's default hook, so `cleanup_before_exit` is repeated here.
-    #[cfg(windows)]
-    let builder = {
-        // Owned by the `'static` hook; `AppHandle` is not an `Arc`, so
-        // `Arc::clone` does not apply.
-        let handle = app.clone();
-        builder.on_before_exit(move || {
-            handle.state::<AgentBridge>().shutdown_all();
-            handle.cleanup_before_exit();
-        })
-    };
-    let update = builder
+    let update = app
+        .updater_builder()
+        .timeout(CHECK_TIMEOUT)
         .build()
         .map_err(|e| e.to_string())?
         .check()
         .await
         .map_err(|e| e.to_string())?;
     let info = update.as_ref().map(|u| info_for(u, self_installable()));
-    *state
-        .pending
-        .lock()
-        .map_err(|_| "updater lock poisoned".to_string())? = update;
+    state.park(update)?;
     Ok(info)
 }
 
 /// Download, verify and install the update parked by the last [`check`],
 /// then relaunch into it.
 ///
-/// On Windows a successful install never returns: the installer takes over
-/// through the `on_before_exit` hook and the process exits. Elsewhere
-/// `Ok(())` means installed, omp children stopped and a relaunch already
-/// requested; `installing` stays set until the process goes.
+/// On Windows a successful install never returns: the plugin launches the
+/// installer and exits the process. Elsewhere `Ok(())` means installed,
+/// omp children stopped and a relaunch already requested; the slot stays
+/// `Installing` until the process goes.
 ///
 /// # Errors
 /// Nothing pending, an install already running, a notify-only build, or a
@@ -212,30 +251,13 @@ pub async fn install(app: &AppHandle, state: &UpdaterState) -> Result<(), String
     if !self_installable() {
         return Err("this installation can't update itself — download the new version from the release page".into());
     }
-    if state.installing.swap(true, Ordering::AcqRel) {
-        return Err("an update is already being installed".into());
-    }
-    let taken = state
-        .pending
-        .lock()
-        .map_err(|_| "updater lock poisoned".to_string())
-        .map(|mut pending| pending.take());
-    let result = match taken {
-        Ok(Some(update)) => {
-            let (unused, outcome) = download_and_install(app, update).await;
-            if let Some(update) = unused {
-                if let Ok(mut pending) = state.pending.lock() {
-                    // A check that finished meanwhile knows better.
-                    pending.get_or_insert(update);
-                }
-            }
-            outcome
-        }
-        Ok(None) => Err("no update pending — check for updates again".into()),
-        Err(e) => Err(e),
-    };
+    let update = state.claim()?;
+    let (unused, result) = download_and_install(app, update).await;
     if result.is_err() {
-        state.installing.store(false, Ordering::Release);
+        // Back to what it was — nothing else wrote the slot meanwhile:
+        // `park` never overwrites `Installing`.
+        let mut slot = state.slot()?;
+        *slot = unused.map_or(Slot::Empty, |u| Slot::Parked(Box::new(u)));
     }
     result
 }
@@ -275,8 +297,8 @@ async fn download_and_install(
         if let Err(e) = update.install(bytes) {
             return (Some(update), Err(e.to_string()));
         }
-        // Windows never gets here: `install` exited through the hook set
-        // in `check`.
+        // Windows never gets here: the plugin exited the process after
+        // launching the installer.
         handle.state::<AgentBridge>().shutdown_all();
         handle.request_restart();
         (None, Ok(()))
@@ -332,6 +354,26 @@ mod tests {
             }
             assert!(!can_self_install(Some(&bundle), None));
         }
+    }
+
+    /// An install owns the slot: a check finishing mid-install must not
+    /// replace it (a failed install re-parks its own update), and a second
+    /// install is refused. With nothing parked, claiming leaves the slot
+    /// usable for the next check.
+    #[test]
+    fn installing_slot_is_exclusive_and_empty_claim_is_harmless() {
+        let state = UpdaterState::default();
+        let claimed = state.claim().err();
+        assert!(claimed.is_some_and(|e| e.contains("no update pending")));
+        assert!(
+            state.park(None).is_ok(),
+            "an empty claim must not wedge the slot"
+        );
+
+        *state.slot().unwrap() = Slot::Installing;
+        assert_eq!(state.park(None).unwrap_err(), BUSY);
+        assert_eq!(state.claim().err().as_deref(), Some(BUSY));
+        assert!(matches!(*state.slot().unwrap(), Slot::Installing));
     }
 
     #[test]

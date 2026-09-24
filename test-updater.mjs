@@ -29,7 +29,7 @@ function check(label, fn) {
 }
 
 const INFO = {
-  version: "0.4.0", currentVersion: "0.3.0", notes: "fixes", date: "2026-09-24T00:00:00Z",
+  version: "0.4.0", notes: "fixes", date: "2026-09-24T00:00:00Z",
   canInstall: true, releaseUrl: "https://github.com/apoc/omp-desktop/releases/tag/v0.4.0",
 };
 const run = (...actions) => actions.reduce(U.reduce, U.initialState());
@@ -81,7 +81,7 @@ check("a successful up-to-date re-check drops the update found earlier", () => {
   const s = [{ type: "check-start" }, { type: "check-done", info: null }].reduce(U.reduce, available());
   assert.equal(s.phase, "uptodate");
   assert.equal(s.update, null);
-  assert.equal(U.shouldShowPill(s, null), false);
+  assert.equal(U.pillVersion(s, null), null);
 });
 
 check("a check result arriving outside a check is ignored", () => {
@@ -93,6 +93,23 @@ check("a check result arriving outside a check is ignored", () => {
 check("no check starts while downloading (would drop the in-flight update)", () => {
   const downloading = U.reduce(available(), { type: "install-start" });
   assert.equal(U.reduce(downloading, { type: "check-start" }), downloading);
+});
+
+check("restarting is terminal: nothing moves it back to an installable state", () => {
+  const r = [{ type: "install-start" }, { type: "install-done" }].reduce(U.reduce, available());
+  for (const a of [
+    { type: "check-start" }, { type: "check-failed", error: "x" }, { type: "install-start" },
+    { type: "install-failed", error: "x" }, { type: "progress", downloaded: 1, total: 2 },
+  ]) {
+    assert.equal(U.reduce(r, a), r, `${a.type} must not leave restarting`);
+  }
+});
+
+check("busy/installing selectors cover exactly the phases they gate", () => {
+  const phases = ["idle", "checking", "available", "uptodate", "error", "downloading", "restarting"];
+  const at = (phase) => ({ ...U.initialState(), phase });
+  assert.deepEqual(phases.filter((p) => U.isInstalling(at(p))), ["downloading", "restarting"]);
+  assert.deepEqual(phases.filter((p) => U.isBusy(at(p))), ["checking", "downloading", "restarting"]);
 });
 
 // ── install lifecycle ─────────────────────────────────────────────────────
@@ -137,17 +154,12 @@ check("unknown total (no Content-Length) stays indeterminate", () => {
 
 // ── selectors ─────────────────────────────────────────────────────────────
 
-check("pill shows for an update unless that exact version was skipped", () => {
+check("pill announces an update unless that exact version was skipped", () => {
   const s = available();
-  assert.equal(U.shouldShowPill(U.initialState(), null), false);
-  assert.equal(U.shouldShowPill(s, null), true);
-  assert.equal(U.shouldShowPill(s, "0.4.0"), false);
-  assert.equal(U.shouldShowPill(s, "0.3.9"), true, "skipping an older version doesn't hide a newer one");
-});
-
-check("pill always shows while an install is in flight, even for a skipped version", () => {
-  const d = U.reduce(available(), { type: "install-start" });
-  assert.equal(U.shouldShowPill(d, "0.4.0"), true);
+  assert.equal(U.pillVersion(U.initialState(), null), null);
+  assert.equal(U.pillVersion(s, null), "0.4.0");
+  assert.equal(U.pillVersion(s, "0.4.0"), null);
+  assert.equal(U.pillVersion(s, "0.3.9"), "0.4.0", "skipping an older version doesn't hide a newer one");
 });
 
 check("progressPct clamps and floors", () => {

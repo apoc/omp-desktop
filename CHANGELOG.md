@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Release builds are now signed for the updater. The release workflow needs the `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets and fails early without them. Once every platform has built, it publishes `latest.json`, using this changelog's section for the version as release notes. It won't publish a feed that is missing a platform, or one whose tag disagrees with the app version. A manual run of the workflow now names its release after the `tag` input; it used to name it after the branch.
+- Release builds are now signed for the updater. The release workflow needs the `TAURI_SIGNING_PRIVATE_KEY` secret (plus `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if the key has one) and fails early without the key. Once every platform has built, it publishes `latest.json`, using this changelog's section for the version as release notes. It won't publish a feed that is missing a platform, or one whose tag disagrees with the app version. A manual run of the workflow now names its release after the `tag` input; it used to name it after the branch.
 
 ## [0.3.0] - 2026-09-24
 
