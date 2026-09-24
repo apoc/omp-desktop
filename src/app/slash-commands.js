@@ -33,6 +33,7 @@
     { name: "todo",      hint: "open the kanban surface",                      icon: "▦", group: "View"    },
     { name: "export",    hint: "export this session to HTML",                  icon: "⇪", group: "View"    },
     { name: "shortcuts", hint: "view and rebind keyboard shortcuts",           icon: "⌘", group: "View"    },
+    { name: "check-updates", hint: "check for OMP Desktop updates",            icon: "↑", group: "View"    },
   ].map((c) => Object.freeze({ ...c, source: DESKTOP, aliases: [] })));
 
   const SOURCE_STYLE = {

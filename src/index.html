@@ -124,6 +124,11 @@
        its own top-level init, so this must load before both. -->
   <script src="app/subagents.js"></script>
 
+  <!-- In-app updater state (issue #19): pure reducer + selectors.
+       Dependency-free IIFE; design/update-modal.jsx and
+       app/use-updater.jsx read window.OMP_UPDATER. -->
+  <script src="app/updater.js"></script>
+
   <!-- Design components (unchanged — from src/design/ copy) -->
   <script src="design/tweaks/style.js"></script>
   <script src="design/tweaks/use-tweaks.js"></script>
@@ -159,6 +164,7 @@
   <script type="text/babel" src="design/history-modal.jsx"></script>
   <script type="text/babel" src="design/prompt-history-modal.jsx"></script>
   <script type="text/babel" src="design/shortcuts-modal.jsx"></script>
+  <script type="text/babel" src="design/update-modal.jsx"></script>
 
   <!-- Live data layer (must load before app-live.jsx) -->
   <script src="model-names.js"></script>
@@ -170,6 +176,7 @@
   <script type="text/babel" src="app/use-bridge-snapshot.jsx"></script>
   <script type="text/babel" src="app/use-keymap.jsx"></script>
   <script type="text/babel" src="app/use-subagent-manager.jsx"></script>
+  <script type="text/babel" src="app/use-updater.jsx"></script>
 
   <script type="text/babel" src="app-live.jsx"></script>
 </body>

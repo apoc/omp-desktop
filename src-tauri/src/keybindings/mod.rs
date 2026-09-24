@@ -77,6 +77,7 @@ pub const ACTION_IDS: &[&str] = &[
     "desktop.composer.promptHistory",
     "desktop.session.compact",
     "desktop.session.export",
+    "desktop.update.check",
 ];
 
 // ── public types ──────────────────────────────────────────────────────────────

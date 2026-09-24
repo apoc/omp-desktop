@@ -20,10 +20,24 @@
 # 3. Icons: replace src-tauri/icons/icon.png (512×512) and icon.ico before
 #    cutting a real release — the current placeholders are tiny stubs.
 #
-# 4. Code signing (optional but recommended):
-#    Windows  →  add TAURI_SIGNING_PRIVATE_KEY + TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-#                to repo secrets, then configure windows.certificateThumbprint in
-#                tauri.conf.json for Authenticode signing.
+# 4. Updater signing (REQUIRED — the in-app updater only accepts builds
+#    signed with the key whose public half is `plugins.updater.pubkey` in
+#    src-tauri/tauri.conf.json). This is a minisign key, unrelated to
+#    Authenticode or Apple notarisation. Add to repo secrets:
+#      TAURI_SIGNING_PRIVATE_KEY           — contents of the private key file
+#      TAURI_SIGNING_PRIVATE_KEY_PASSWORD  — its password
+#    `src-tauri/tauri.release.conf.json` turns on `createUpdaterArtifacts`
+#    for this workflow only (a local `npm run build` has no key and would
+#    fail with it on). tauri-action then uploads the `.sig` files and a
+#    merged `latest.json`; the app reads it from
+#    releases/latest/download/latest.json, so a release reaches users only
+#    once it is published and not marked pre-release.
+#    NEVER commit the private key. Losing it means installed copies can
+#    never verify another update — keep a backup.
+#
+# 5. Code signing (optional but recommended):
+#    Windows  →  configure windows.certificateThumbprint in tauri.conf.json
+#                (and the certificate secrets it needs) for Authenticode.
 #    macOS    →  add APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD,
 #                APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD,
 #                APPLE_TEAM_ID for notarisation.
@@ -117,9 +131,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Uncomment and add secrets for code signing:
-          # TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Updater signing — see prerequisite 4 above.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Uncomment and add secrets for macOS code signing:
           # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -142,9 +157,12 @@ jobs:
             **Windows:** if SmartScreen blocks the installer, click _More info → Run anyway_.
             This will resolve once the app is code-signed.
 
+            **Updates:** from this release on, Windows, macOS and the Linux `.AppImage`
+            update themselves in-app; `.deb`/`.rpm` installs are notified and link here.
+
             ### Requirements
             - [oh-my-pi](https://github.com/can1357/oh-my-pi) (`omp`) must be installed
               and available on your `PATH`.
           releaseDraft: true        # publish manually after reviewing artefacts
           prerelease: ${{ contains(github.ref_name || inputs.tag, '-') }}
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json

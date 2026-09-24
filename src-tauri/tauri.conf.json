@@ -31,6 +31,17 @@
       }
     ]
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUwRTg1QkEyNjE2NjVEREYKUldUZlhXWmhvbHZvVUJzQkROakpTdHhvcWdQdVRoMnNZNDl3T3ZKeEZJenNzc1p4RzArekIrcnoK",
+      "endpoints": [
+        "https://github.com/apoc/omp-desktop/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

@@ -19,11 +19,11 @@
 
 const {
   Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar, SubagentPane,
-  StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, useTweaks,
+  StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, UpdateModal, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, DEFAULT_PROFILE_ID,
   INTENT_FRAMING, APPROVAL_PROMPT,
-  useBridgeSnapshot, useThemeEffect, useSubagentManager, timeNow,
+  useBridgeSnapshot, useThemeEffect, useSubagentManager, useUpdater, timeNow,
   useKeymap, useKeymapDispatch, ShortcutsModal,
 } = window;
 const { isSlashCommand } = window.OMP_SLASH;
@@ -145,6 +145,8 @@ function App() {
   });
   const subagentList = React.useMemo(() => window.OMP_SUBAGENTS.listAgents(subagents), [subagents]);
 
+  const updater = useUpdater({ bridge, autoCheck: t.updateCheck ?? true, skipped: t.skippedUpdate, setTweak });
+
   // Handler map read through a ref so the dispatch effect never re-subscribes.
   const handlersRef = React.useRef({});
   useKeymapDispatch(handlersRef);
@@ -259,6 +261,7 @@ function App() {
     else if (c.name === "new")       { bridge?.newSession(); }
     else if (c.name === "history")   { setHistoryOpen(true); }
     else if (c.name === "shortcuts") { setShortcutsOpen(true); }
+    else if (c.name === "check-updates") { updater.check(true); }
   };
 
   const handleResumeSession = async (session) => {
@@ -319,7 +322,7 @@ function App() {
   handlersRef.current = {
     "app.interrupt":           () => {
       // Only abort when no overlay is open (overlays handle Escape themselves).
-      if (bridgeOpen || historyOpen || changesOpen || rulesOpen || statsOpen || promptHistoryOpen || planOpen || shortcutsOpen) return;
+      if (bridgeOpen || historyOpen || changesOpen || rulesOpen || statsOpen || promptHistoryOpen || planOpen || shortcutsOpen || updater.open) return;
       if (streaming) handleAbort();
     },
     "app.thinking.cycle":      cycleThinking,
@@ -362,6 +365,7 @@ function App() {
     "desktop.composer.promptHistory": () => setPromptHistoryOpen(v => !v),
     "desktop.session.compact": () => bridge?.compact(),
     "desktop.session.export":  () => bridge?.exportHtml(),
+    "desktop.update.check":    () => updater.check(true),
   };
 
   // Profile switch applies to the active tab only: its omp process is
@@ -422,6 +426,10 @@ function App() {
             onNew={handleNewProject}
             onClose={handleCloseTab}
             onHistory={() => setHistoryOpen(true)}
+            appVersion={updater.version}
+            update={updater.showPill ? { version: updater.state.update.version, phase: updater.state.phase } : null}
+            onUpdate={updater.openModal}
+            onCheckUpdate={() => updater.check(true)}
           />
 
           <div className={`stage ${showRail ? "with-rail" : ""}`}>
@@ -574,6 +582,14 @@ function App() {
         />
       )}
 
+      {updater.open && (
+        <UpdateModal
+          updater={updater}
+          busyTabs={window.OMP_UPDATER.busyTabCount(sessions)}
+          onClose={updater.close}
+        />
+      )}
+
       <TweaksPanel title="Tweaks" noDeckControls>
         <TweakSection label="Look">
           <TweakRadio label="theme" value={t.theme}
@@ -619,6 +635,8 @@ function App() {
           <TweakSlider label="prompt history" value={t.promptHistoryLimit ?? window.OMP_PROMPT_HISTORY.DEFAULT_LIMIT}
             min={window.OMP_PROMPT_HISTORY.MIN_LIMIT} max={window.OMP_PROMPT_HISTORY.MAX_LIMIT} step={10} unit=" prompts"
             onChange={v => setTweak("promptHistoryLimit", v)} />
+          <TweakToggle label="check for updates" value={t.updateCheck ?? true}
+            onChange={v => setTweak("updateCheck", v)} />
         </TweakSection>
       </TweaksPanel>
     </>

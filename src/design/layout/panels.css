@@ -1,16 +1,17 @@
-/* Changes panel + approval-rules panel + usage-stats panel — bordered
-   card overlays sharing .bridge-scrim's backdrop, split into their own
-   file since overlays.css already covers four unrelated concerns (split
-   pane / command bridge / kanban / plan annotations) well past the
-   ~150-line-per-layer guideline. */
+/* Changes panel + approval-rules panel + usage-stats panel + update
+   panel — bordered card overlays sharing .bridge-scrim's backdrop, split
+   into their own file since overlays.css already covers four unrelated
+   concerns (split pane / command bridge / kanban / plan annotations) well
+   past the ~150-line-per-layer guideline. */
 
 /* ── Shared panel shell ───────────────────────────────────────────────── */
-/* All three panels are the same card; only their dimensions differ.
+/* All four panels are the same card; only their dimensions differ.
    Grouped rather than restated per panel so a change to the card's
    border, radius or shadow can't apply to some panels and miss others. */
 .changes-panel,
 .rules-panel,
-.stats-panel {
+.stats-panel,
+.update-panel {
   background: var(--bg-elevated);
   border: 1px solid var(--line-bright);
   border-radius: 14px;
@@ -20,13 +21,14 @@
 }
 .changes-head,
 .rules-head,
-.stats-head {
+.stats-head,
+.update-head {
   display: flex; align-items: center; gap: 8px;
   height: 40px; padding: 0 14px;
   border-bottom: 1px solid var(--line);
   background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 8%, transparent), transparent);
 }
-/* Used by all three panels for their loading/empty states. */
+/* Used by every panel for its loading/empty states. */
 .panel-empty {
   color: var(--fg-4);
   padding: 16px;
@@ -161,3 +163,48 @@
 .stats-chips {
   display: flex; flex-wrap: wrap; gap: 6px;
 }
+
+/* ── Update panel (issue #19) ─────────────────────────────────────────── */
+.update-panel {
+  width: min(520px, calc(100vw - 40px));
+  max-height: min(520px, calc(100vh - 160px));
+}
+.update-body {
+  flex: 1; min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.update-title {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: var(--d-text-lg);
+}
+.update-notes {
+  margin: 0;
+  max-height: 220px; overflow-y: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+  background: var(--bg-surface);
+  color: var(--fg-2);
+  font-size: var(--d-text-sm);
+  white-space: pre-wrap; word-break: break-word;
+}
+.update-hint { color: var(--fg-3); font-size: var(--d-text-xs); }
+.update-error { color: var(--rose); font-size: var(--d-text-xs); }
+.update-progress { display: flex; align-items: center; gap: 10px; font-size: var(--d-text-xs); }
+.update-tube { flex: 1; width: auto; }
+/* Unknown download size (no Content-Length): a sliding segment instead
+   of a fill that would sit at a made-up percentage. */
+.update-indeterminate { animation: update-slide 1.2s var(--ease-out) infinite; }
+@keyframes update-slide {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(340%); }
+}
+.update-foot {
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+}
+/* Focused programmatically on open (keyboard reach), not a control. */
+.update-panel:focus { outline: none; }

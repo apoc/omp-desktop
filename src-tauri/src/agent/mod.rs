@@ -353,6 +353,39 @@ impl AgentBridge {
             errs.remove(session_id);
         }
     }
+
+    /// Kill and reap every session's process tree, synchronously. For the
+    /// paths where the process is about to end *without* running `Drop` —
+    /// an update's relaunch (`AppHandle::request_restart` / the Windows
+    /// installer hand-off both end in `std::process::exit`), where a Unix
+    /// child in its own process group would otherwise outlive us. Blocks
+    /// briefly per child; only ever called on the way out. Idempotent: the
+    /// map is drained, so a later call (or `Drop`) finds nothing to do.
+    pub fn shutdown_all(&self) {
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return;
+        };
+        for (_, mut inner) in sessions.drain() {
+            // Mirrors `reap_and_clear_grants`: clear liveness before
+            // anything else, so a reader thread that outlives this
+            // drain loop (it holds its own `Arc<AtomicBool>`) and later
+            // wakes on EOF finds no map entry *and* an already-false
+            // `alive`, instead of emitting into an `AppHandle` whose
+            // webview is being torn down.
+            inner.alive.store(false, Ordering::Release);
+            inner.stdin = None;
+            if let Some(mut c) = inner.child.take() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            // `inner.supervisor` is left untouched here (unlike
+            // start_session/stop_session, which move it off-thread) —
+            // this whole path only runs on the way out, where blocking
+            // briefly is acceptable; `inner` (and its supervisor) drops
+            // automatically at the end of this loop body, which kills
+            // the rest of the process tree via `ProcessSupervisor::Drop`.
+        }
+    }
 }
 
 impl Default for AgentBridge {
@@ -363,28 +396,7 @@ impl Default for AgentBridge {
 
 impl Drop for AgentBridge {
     fn drop(&mut self) {
-        if let Ok(mut sessions) = self.sessions.lock() {
-            for (_, mut inner) in sessions.drain() {
-                // Mirrors `reap_and_clear_grants`: clear liveness before
-                // anything else, so a reader thread that outlives this
-                // drain loop (it holds its own `Arc<AtomicBool>`) and later
-                // wakes on EOF finds no map entry *and* an already-false
-                // `alive`, instead of emitting into an `AppHandle` whose
-                // webview is being torn down.
-                inner.alive.store(false, Ordering::Release);
-                inner.stdin = None;
-                if let Some(mut c) = inner.child.take() {
-                    let _ = c.kill();
-                    let _ = c.wait();
-                }
-                // `inner.supervisor` is left untouched here (unlike
-                // start_session/stop_session, which move it off-thread) —
-                // this whole path only runs on app shutdown, where blocking
-                // briefly is acceptable; `inner` (and its supervisor) drops
-                // automatically at the end of this loop body, which kills
-                // the rest of the process tree via `ProcessSupervisor::Drop`.
-            }
-        }
+        self.shutdown_all();
     }
 }
 
@@ -524,6 +536,47 @@ mod tests {
     fn validate_command_type_rejects_non_string_type() {
         let err = validate_command_type(r#"{"type":42}"#).unwrap_err();
         assert!(err.contains("missing string 'type'"));
+    }
+
+    /// The updater's relaunch ends in `std::process::exit`, so `Drop` never
+    /// runs — `shutdown_all` is the only thing standing between a session's
+    /// omp child and an orphan. Proves it kills *and* reaps (a zombie would
+    /// still have a `/proc` entry), empties the map, and clears liveness.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shutdown_all_kills_and_reaps_every_session() {
+        let bridge = AgentBridge::new();
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let proc_dir = std::path::PathBuf::from(format!("/proc/{}", child.id()));
+        let alive = Arc::new(AtomicBool::new(true));
+        bridge.sessions.lock().unwrap().insert(
+            "sess-x".into(),
+            BridgeInner {
+                gen: 1,
+                stdin: None,
+                child: Some(child),
+                supervisor: None,
+                journal: Arc::new(Mutex::new(EventJournal::new(
+                    EVENT_JOURNAL_CAPACITY,
+                    EVENT_JOURNAL_MAX_BYTES,
+                ))),
+                // Kept so the flag is observable after the entry is drained.
+                alive: Arc::clone(&alive),
+            },
+        );
+        assert!(proc_dir.exists(), "precondition: child is running");
+
+        bridge.shutdown_all();
+
+        assert!(bridge.sessions.lock().unwrap().is_empty());
+        assert!(!alive.load(Ordering::Acquire));
+        assert!(
+            !proc_dir.exists(),
+            "shutdown_all must kill and reap the child, not leave it running or a zombie"
+        );
     }
 
     #[test]

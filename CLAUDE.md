@@ -19,6 +19,7 @@ Tauri 2 desktop shell for `omp` (oh-my-pi). React UI loaded from `src/` by Tauri
 | Slash-command palette regression | `node test-slash-commands.mjs` (or `npm run test:slash-commands`) |
 | Prompt history regression | `node test-prompt-history.mjs` (or `npm run test:prompt-history`) |
 | Subagent manager reducer regression | `node test-subagents.mjs` (or `npm run test:subagents`) |
+| Updater state regression | `node test-updater.mjs` (or `npm run test:updater`) |
 
 `omp` must be on PATH (`%LOCALAPPDATA%\omp\omp.exe` on Win). CI = `cargo check` + `cargo test` on win/linux/mac.
 
@@ -60,6 +61,15 @@ Replaces the old prototype-only "peer session" split/rail widgets (removed). omp
 - The Rust bridge only forwards allowlisted command types (`ALLOWED_COMMAND_TYPES` in `src-tauri/src/agent/mod.rs`) — a new RPC command in `live.js` must be added there too, or `send_command` rejects it before it reaches omp.
 - The manager pane *is* the tweaks `layout: "split"` column (`.window.is-split`); open/close goes through `setTweak`. Transcripts (`state.subagentTranscripts`) are ephemeral — not snapshotted, dropped on tab switch, refetched on demand; a response landing after a switch is discarded.
 
+## In-app updates
+
+`src-tauri/src/updater.rs` over `tauri-plugin-updater` (issue #19). The feed is `latest.json` on the newest **published, non-prerelease** GitHub release (`plugins.updater.endpoints` in `tauri.conf.json`), verified against the minisign key in `plugins.updater.pubkey`. Two commands: `app_update_check` parks the plugin's `Update` in `UpdaterState` and returns a serialisable `UpdateInfo`, and `app_update_install` installs whatever is parked. The download URL never crosses IPC, so the webview can only install what the signed feed announced. Progress arrives as throttled `update://progress` events.
+
+- **Self-install is deliberately narrower than the plugin** (`can_self_install`): only AppImage/MSI/NSIS/`.app`. `.deb`/`.rpm` (the plugin would `pkexec dpkg -i`, falling back to a TTY `sudo`) and unbundled `tauri dev`/source builds are notify-only; the UI links to the release page instead.
+- **Both relaunch paths skip `Drop`.** The Windows installer hand-off (`on_before_exit` → `std::process::exit`) and `request_restart` both end the process without dropping managed state. So `AgentBridge::shutdown_all` kills the omp children explicitly first; on Unix they sit in their own process group and would be orphaned otherwise. Our `on_before_exit` replaces the plugin's default, so it repeats `cleanup_before_exit`.
+- Frontend: `app/updater.js` is the pure reducer (regression: `test-updater.mjs`), `app/use-updater.jsx` owns the timer (15 s after launch, then every 6 h), progress listener and modal state, and `design/update-modal.jsx` renders it. A background check never opens anything; it only lights the tab-bar pill. The `updateCheck`/`skippedUpdate` tweaks persist auto-check and "skip this version". Release notes render as plain text: `notes` is not covered by the signature.
+- Release signing: `bundle.createUpdaterArtifacts` lives in `src-tauri/tauri.release.conf.json`, merged only by `release.yml` (`--config`). In `tauri.conf.json` it would make every local `npm run build` fail for lack of the private key. The key itself is only in the `TAURI_SIGNING_PRIVATE_KEY`/`_PASSWORD` repo secrets and is **never** committed. Rotating it strands every installed copy.
+
 ## OS folder opens ("Open with OMP Desktop")
 
 `src-tauri/src/external_open.rs` + `src-tauri/packaging/`. Three delivery paths, one queue:
@@ -81,16 +91,17 @@ Paths are canonicalised in Rust (`canonical_folder`) before they reach the front
 Script order **is** the dependency graph:
 
 1. Vendored libs: React, ReactDOM, Babel, `marked.min.js`, `highlight.min.js` + marked-wiring inline.
-2. App constants: `app/constants.js` → `app/keymap.js` (plain, IIFE — defines `window.OMP_KEYMAP`; must load before any Babel file that calls `OMP_KEYMAP.matches`/`.keysFor`, including `composer.jsx`, `shortcuts-modal.jsx`, `use-keymap.jsx`) → `mentions.js` (plain, IIFE) → `app/image-attach.js` (plain, IIFE — defines `window.OMP_IMAGES`; `composer.jsx` destructures it at top level) → `app/slash-commands.js` (plain, IIFE — defines `window.OMP_SLASH`; `composer.jsx` and `live.js` both destructure it at top level, so this must load before either) → `app/scroll-pin.js` (plain, IIFE — defines `window.OMP_SCROLL_PIN`; `chat/chat-view.jsx` destructures it at top level, so this must load before it) → `app/prompt-history.js` (plain, IIFE — defines `window.OMP_PROMPT_HISTORY`; `composer.jsx` references it in event handlers, and `live.js` reads it at its own top-level IIFE init — not just inside a later-called function — so this must load before `live.js` too, same constraint as `slash-commands.js`) → `app/subagents.js` (plain, IIFE — defines `window.OMP_SUBAGENTS`; `design/subagents/*.jsx` destructure it at top level and `live.js` reads it at its top-level IIFE init, so this must load before both). **Before** the `design/` layer *and* before `app/use-bridge-snapshot.jsx` — `profile-menu.jsx`, `chrome.jsx`, `live.js` and `use-bridge-snapshot.jsx` destructure `DEFAULT_PROFILE_ID`/`isSubmitEnter` off `window` at *top level*, so moving this after any of them silently yields `undefined` (no resolver, no error). `composer.jsx` and `chat/ask-bubble.jsx` only call `isSubmitEnter` inside handlers — late-bound global lookups, insensitive to script order.
+2. App constants: `app/constants.js` → `app/keymap.js` (plain, IIFE — defines `window.OMP_KEYMAP`; must load before any Babel file that calls `OMP_KEYMAP.matches`/`.keysFor`, including `composer.jsx`, `shortcuts-modal.jsx`, `use-keymap.jsx`) → `mentions.js` (plain, IIFE) → `app/image-attach.js` (plain, IIFE — defines `window.OMP_IMAGES`; `composer.jsx` destructures it at top level) → `app/slash-commands.js` (plain, IIFE — defines `window.OMP_SLASH`; `composer.jsx` and `live.js` both destructure it at top level, so this must load before either) → `app/scroll-pin.js` (plain, IIFE — defines `window.OMP_SCROLL_PIN`; `chat/chat-view.jsx` destructures it at top level, so this must load before it) → `app/prompt-history.js` (plain, IIFE — defines `window.OMP_PROMPT_HISTORY`; `composer.jsx` references it in event handlers, and `live.js` reads it at its own top-level IIFE init — not just inside a later-called function — so this must load before `live.js` too, same constraint as `slash-commands.js`) → `app/subagents.js` (plain, IIFE — defines `window.OMP_SUBAGENTS`; `design/subagents/*.jsx` destructure it at top level and `live.js` reads it at its top-level IIFE init, so this must load before both) → `app/updater.js` (plain, IIFE — defines `window.OMP_UPDATER`; only read inside `design/update-modal.jsx` and `app/use-updater.jsx` function bodies). **Before** the `design/` layer *and* before `app/use-bridge-snapshot.jsx` — `profile-menu.jsx`, `chrome.jsx`, `live.js` and `use-bridge-snapshot.jsx` destructure `DEFAULT_PROFILE_ID`/`isSubmitEnter` off `window` at *top level*, so moving this after any of them silently yields `undefined` (no resolver, no error). `composer.jsx` and `chat/ask-bubble.jsx` only call `isSubmitEnter` inside handlers — late-bound global lookups, insensitive to script order.
 3. Tweaks: `tweaks/style.js`, `tweaks/use-tweaks.js` (plain, IIFE) → `tweaks/panel.jsx`, `tweaks/controls.jsx` (Babel; controls depends on panel).
 4. UI primitives: `ui/icons.jsx` (defines `Icon`, `TOOL_META`) → `ui/sparks.jsx` → `ui/markdown.jsx` → `ui/plan-annotations.jsx`.
 5. Chat: `chat/user-bubble.jsx` → `chat/eval-cell.jsx` → `chat/assistant-bubble.jsx` → `chat/tool-card.jsx` → `chat/ask-bubble.jsx` → `chat/chat-view.jsx`.
    Then subagents: `subagents/subagent-bits.jsx` → `subagent-inspector.jsx` → `subagent-pane.jsx` (destructures `SubagentInspector`) → `subagent-rail-card.jsx`, all before `chrome.jsx`, whose `AmbientRail` destructures `window.SubagentRailCard` at top level.
-6. `design/mention-menu.jsx` → `design/composer.jsx` → `design/profile-menu.jsx` (before `chrome.jsx`, which destructures `window.ProfileMenu`) → `design/chrome.jsx` → `design/panels.jsx` → the remaining panels/modals → `design/shortcuts-modal.jsx` (after `history-modal.jsx`; reads `window.OMP_KEYMAP` at top level).
+6. `design/mention-menu.jsx` → `design/composer.jsx` → `design/profile-menu.jsx` (before `chrome.jsx`, which destructures `window.ProfileMenu`) → `design/chrome.jsx` → `design/panels.jsx` → the remaining panels/modals → `design/shortcuts-modal.jsx` (after `history-modal.jsx`; reads `window.OMP_KEYMAP` at top level) → `design/update-modal.jsx`.
 7. Live data: `model-names.js` → `adapter.js` → `live.js`.
 8. `app/use-bridge-snapshot.jsx` (after `live.js`, whose snapshot it mirrors).
 9. `app/use-keymap.jsx` (after `live.js` — calls `bridge.listKeybindings`; after `use-bridge-snapshot.jsx`; before `app-live.jsx`).
    → `app/use-subagent-manager.jsx` (UI state for the subagent manager; before `app-live.jsx`).
+   → `app/use-updater.jsx` (in-app updater state; before `app-live.jsx`).
 10. `app-live.jsx` last.
 
 When adding a file, insert at the correct point — there is no resolver to catch ordering bugs.
@@ -154,7 +165,7 @@ Trigger: 6th major component in one file, or 4th unrelated concern in one Rust m
 **Rust:**
 - **Toolchain/edition:** edition **2021**, stable toolchain (clippy only is nightly). No `rust-version` key — check `src-tauri/Cargo.toml` before using a newer-edition or recently-stabilised feature; don't assume 2024 idioms (`gen` blocks, RPIT lifetime capture changes) are available.
 - **Verify before finishing a task:** `cargo fmt` → `cargo test --locked` → `cargo +nightly clippy --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery -D warnings`. Pedantic+nursery is stricter than the generic `clippy -D warnings`; `redundant_clone` and `too_many_arguments` fire here and are hard errors.
-- **Errors:** `thiserror`/`anyhow` are deliberately *not* dependencies. Tauri serialises command errors to JS, so the IPC boundary is `Result<T, String>` — 22 of the 28 `#[tauri::command]` fns; the rest return `ProfileList`, `Option<String>`, `Vec<String>`, or nothing. Internal helpers match it (`json_store::with_lock_str` exists purely to tunnel `String` errors through `io::Error`). Add `thiserror` only alongside a genuine library-shaped module with variants a caller matches on — not to restyle existing `String` errors.
+- **Errors:** `thiserror`/`anyhow` are deliberately *not* dependencies. Tauri serialises command errors to JS, so the IPC boundary is `Result<T, String>` — 25 of the 31 `#[tauri::command]` fns; the rest return `ProfileList`, `Option<String>`, `Vec<String>`, or nothing. Internal helpers match it (`json_store::with_lock_str` exists purely to tunnel `String` errors through `io::Error`). Add `thiserror` only alongside a genuine library-shaped module with variants a caller matches on — not to restyle existing `String` errors.
 - No `unwrap`/`expect` outside `#[cfg(test)]` unless the invariant is unrecoverable **and** commented (see `run()`'s documented `# Panics`).
 - Prefer borrowing (`&str`, `&[T]`, `&Path`) in params; owned only when ownership is required. No needless `String`↔`&str` conversions.
 - **Cloning is a last resort, and every surviving `.clone()` must be load-bearing.** Before writing one, in this order:
@@ -212,7 +223,7 @@ All non-trivial code **must** have test coverage before committing. This is not 
 ## CI / release
 
 - `.github/workflows/ci.yml` — `cargo check --locked` + `cargo test --locked` on win/linux/mac for `src-tauri/**`, `src/**`, or workflow changes.
-- `.github/workflows/release.yml` — bundles via `tauri build`.
+- `.github/workflows/release.yml` — bundles via `tauri build` with `--config src-tauri/tauri.release.conf.json`, signs the updater artifacts (needs the `TAURI_SIGNING_PRIVATE_KEY`/`_PASSWORD` secrets) and uploads `latest.json` to the draft release. Users see an update only once the draft is published.
 
 ## Changelog workflow
 

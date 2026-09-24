@@ -16,6 +16,7 @@ mod navigation_guard;
 mod profiles;
 mod saved_sessions;
 mod stats;
+mod updater;
 mod workspace;
 
 use agent::AgentBridge;
@@ -640,6 +641,117 @@ async fn keybindings_reset(
     .await
 }
 
+/// Ask the release feed for a newer version — see `updater::check`.
+/// `None` means up to date.
+#[tauri::command]
+async fn app_update_check(
+    app: AppHandle,
+    state: State<'_, updater::UpdaterState>,
+) -> Result<Option<updater::UpdateInfo>, String> {
+    updater::check(&app, &state).await
+}
+
+/// Download, install and relaunch into the update found by the last
+/// `app_update_check` — see `updater::install`. Only returns on failure.
+#[tauri::command]
+async fn app_update_install(
+    app: AppHandle,
+    state: State<'_, updater::UpdaterState>,
+) -> Result<(), String> {
+    updater::install(&app, &state).await
+}
+
+/// App-level state that needs a resolved path, the launch session, and the
+/// cold-start "Open with" argv — `run()`'s `setup` hook.
+fn setup(app: &tauri::App) {
+    #[cfg(debug_assertions)]
+    if let Some(win) = app.get_webview_window("main") {
+        win.open_devtools();
+    }
+    // Falls back to the temp dir if the config dir can't be resolved
+    // (e.g. a locked-down test environment) rather than failing
+    // startup — approval grants and profiles just won't survive a
+    // restart there.
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    // Approval-rule store: project-scoped grants persist under
+    // <app_config_dir>/approval-rules/<project-hash>.json.
+    app.manage(Arc::new(RuleBook::new(config_dir.join("approval-rules"))));
+    // Profile list: <app_config_dir>/profiles.json.
+    let store = Arc::new(profiles::ProfileStore::load(
+        config_dir.join("profiles.json"),
+    ));
+    // The user's chosen startup profile. `startup_id` is always a
+    // listed id, and `resolve` maps the built-in one to `None` (no
+    // `--profile` flag), so a deleted default degrades to omp's own
+    // tree instead of failing the launch spawn.
+    let startup = store
+        .resolve(Some(&store.startup_id()))
+        .ok()
+        .flatten()
+        .map(str::to_owned);
+    // Moved, not `Arc::clone`d: `store` is not read after this point,
+    // so a second handle would be dropped at the end of `setup`.
+    app.manage(store);
+    // Keybinding overlay: <app_config_dir>/keybindings.json.
+    app.manage(Arc::new(keybindings::overlay::OverlayStore::new(
+        config_dir.join("keybindings.json"),
+    )));
+
+    // Start the default session (no cwd = omp's working directory).
+    // The frontend activates this session on load via OMP_BRIDGE.activateSession("default").
+    //
+    // Failure handling: the bridge caches the spawn error keyed
+    // by session_id. The frontend's activateSession queries
+    // session_status on attach and surfaces the cached reason
+    // if any — no event timing race, no delayed emit thread.
+    let bridge = app.state::<AgentBridge>();
+    let rule_book = app.state::<Arc<RuleBook>>();
+    let default_session = bridge.start_session(
+        "default".into(),
+        None,
+        None,
+        // The startup profile chosen in the selector; `None` is the
+        // built-in profile (omp's own ~/.omp/agent). Tabs the user
+        // opens later inherit the active tab's profile.
+        startup.as_deref(),
+        // `app.handle()` returns a borrow and `start_session` needs an
+        // owned handle; `AppHandle` is not an `Arc`, so `Arc::clone`
+        // does not apply here.
+        app.handle().clone(),
+        Arc::clone(rule_book.inner()),
+    );
+    if let Err(e) = default_session {
+        eprintln!("[omp-desktop] failed to start default session: {e}");
+    }
+
+    // A cold start *is* how Windows and Linux file managers open a
+    // folder, so the launch argv is the third delivery path into the
+    // queue (alongside the single-instance forward and macOS'
+    // `Opened` event). Queued, not opened here: the webview has no
+    // listener yet, so `live.js` drains it on init.
+    //
+    // `args_os`, not `args`: the latter panics on a non-UTF-8
+    // argument, and a Linux directory name is an arbitrary byte
+    // string that the `.desktop` entry's `%F` passes verbatim. A
+    // lossy path fails `canonicalize` and is logged like any other
+    // unusable request instead of killing the launch. Only this
+    // cold-start path is protected — a forwarded open goes through
+    // `tauri-plugin-single-instance`, whose sending process collects
+    // `std::env::args()` and so aborts before anything reaches us.
+    //
+    // A cold start's argv was produced in this process' own cwd, so
+    // that is the base for a relative path; an unreadable cwd
+    // degrades to the empty path, which means the same thing.
+    external_open::ingest_args(
+        app.handle(),
+        &std::env::current_dir().unwrap_or_default(),
+        std::env::args_os().map(|arg| arg.to_string_lossy().into_owned()),
+    );
+}
+
 /// Run the Tauri application. Panics if the runtime fails to initialise.
 ///
 /// # Panics
@@ -678,9 +790,11 @@ pub fn run() {
     let app = builder
         .plugin(navigation_guard::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AgentBridge::new())
         .manage(GitWatcherState::new())
         .manage(OpenProjectState::new())
+        .manage(updater::UpdaterState::default())
         .invoke_handler(tauri::generate_handler![
             send_command,
             start_session,
@@ -711,94 +825,11 @@ pub fn run() {
             keybindings_list,
             keybindings_set,
             keybindings_reset,
+            app_update_check,
+            app_update_install,
         ])
         .setup(|app| {
-            #[cfg(debug_assertions)]
-            if let Some(win) = app.get_webview_window("main") {
-                win.open_devtools();
-            }
-            // Falls back to the temp dir if the config dir can't be resolved
-            // (e.g. a locked-down test environment) rather than failing
-            // startup — approval grants and profiles just won't survive a
-            // restart there.
-            let config_dir = app
-                .path()
-                .app_config_dir()
-                .unwrap_or_else(|_| std::env::temp_dir());
-            // Approval-rule store: project-scoped grants persist under
-            // <app_config_dir>/approval-rules/<project-hash>.json.
-            app.manage(Arc::new(RuleBook::new(config_dir.join("approval-rules"))));
-            // Profile list: <app_config_dir>/profiles.json.
-            let store = Arc::new(profiles::ProfileStore::load(
-                config_dir.join("profiles.json"),
-            ));
-            // The user's chosen startup profile. `startup_id` is always a
-            // listed id, and `resolve` maps the built-in one to `None` (no
-            // `--profile` flag), so a deleted default degrades to omp's own
-            // tree instead of failing the launch spawn.
-            let startup = store
-                .resolve(Some(&store.startup_id()))
-                .ok()
-                .flatten()
-                .map(str::to_owned);
-            // Moved, not `Arc::clone`d: `store` is not read after this point,
-            // so a second handle would be dropped with the setup closure.
-            app.manage(store);
-            // Keybinding overlay: <app_config_dir>/keybindings.json.
-            app.manage(Arc::new(keybindings::overlay::OverlayStore::new(
-                config_dir.join("keybindings.json"),
-            )));
-
-            // Start the default session (no cwd = omp's working directory).
-            // The frontend activates this session on load via OMP_BRIDGE.activateSession("default").
-            //
-            // Failure handling: the bridge caches the spawn error keyed
-            // by session_id. The frontend's activateSession queries
-            // session_status on attach and surfaces the cached reason
-            // if any — no event timing race, no delayed emit thread.
-            let bridge = app.state::<AgentBridge>();
-            let rule_book = app.state::<Arc<RuleBook>>();
-            let default_session = bridge.start_session(
-                "default".into(),
-                None,
-                None,
-                // The startup profile chosen in the selector; `None` is the
-                // built-in profile (omp's own ~/.omp/agent). Tabs the user
-                // opens later inherit the active tab's profile.
-                startup.as_deref(),
-                // `app.handle()` returns a borrow and `start_session` needs an
-                // owned handle; `AppHandle` is not an `Arc`, so `Arc::clone`
-                // does not apply here.
-                app.handle().clone(),
-                Arc::clone(rule_book.inner()),
-            );
-            if let Err(e) = default_session {
-                eprintln!("[omp-desktop] failed to start default session: {e}");
-            }
-
-            // A cold start *is* how Windows and Linux file managers open a
-            // folder, so the launch argv is the third delivery path into the
-            // queue (alongside the single-instance forward and macOS'
-            // `Opened` event). Queued, not opened here: the webview has no
-            // listener yet, so `live.js` drains it on init.
-            //
-            // `args_os`, not `args`: the latter panics on a non-UTF-8
-            // argument, and a Linux directory name is an arbitrary byte
-            // string that the `.desktop` entry's `%F` passes verbatim. A
-            // lossy path fails `canonicalize` and is logged like any other
-            // unusable request instead of killing the launch. Only this
-            // cold-start path is protected — a forwarded open goes through
-            // `tauri-plugin-single-instance`, whose sending process collects
-            // `std::env::args()` and so aborts before anything reaches us.
-            //
-            // A cold start's argv was produced in this process' own cwd, so
-            // that is the base for a relative path; an unreadable cwd
-            // degrades to the empty path, which means the same thing.
-            external_open::ingest_args(
-                app.handle(),
-                &std::env::current_dir().unwrap_or_default(),
-                std::env::args_os().map(|arg| arg.to_string_lossy().into_owned()),
-            );
+            setup(app);
             Ok(())
         })
         .build(tauri::generate_context!())

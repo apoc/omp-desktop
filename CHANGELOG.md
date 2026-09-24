@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- In-app updates (#19) — the tab bar now shows the running version (it used to show a hardcoded placeholder) and, once a newer release is published, an update pill. The pill, the version label, `/check-updates` and a rebindable **Check for updates** shortcut open a panel with the release notes and **install & restart**, which downloads the signed update, verifies it, closes every tab's omp process and relaunches. It warns first if any tab is mid-turn. Windows, macOS and the Linux AppImage update themselves; `.deb`/`.rpm` and source builds only get the notice and a link to the release page. The app checks 15 s after launch and then every 6 h; background checks never open anything, and **skip this version** hides the notice until a newer version appears. Automatic checks can be turned off in Tweaks → Session. Installs from before this release have to be updated by hand once.
+
+### Changed
+
+- Release builds are now signed for the updater: the release workflow needs the `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets, and publishes `latest.json` next to the installers.
+
 ## [0.3.0] - 2026-09-24
 
 ### Added

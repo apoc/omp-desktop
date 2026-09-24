@@ -2516,6 +2516,48 @@
       return _invokeSafe("list_project_files", { cwd, query, limit }, []);
     },
 
+    // ── App updates (issue #19) — see src-tauri/src/updater.rs ─────────────
+    // Thin IPC wrappers; the state machine is app/updater.js, driven by
+    // app/use-updater.jsx. Not per-session, so nothing here touches `state`.
+
+    /** Running app version (`tauri.conf.json`'s `version`), or null. */
+    async appVersion() {
+      if (!window.__TAURI__) return null;
+      try {
+        return await window.__TAURI__.app.getVersion();
+      } catch (err) {
+        console.error("[live] getVersion error:", err);
+        return null;
+      }
+    },
+
+    /** `{ok: true, value}` — value is the UpdateInfo, or null when up to
+     *  date — or `{ok: false, error}`. */
+    checkForUpdate() {
+      return _invokeResult("app_update_check");
+    },
+
+    /** Download, install and relaunch into the update the last check
+     *  found. Windows: resolves only on failure (the installer takes
+     *  over the process); elsewhere `{ok: true}` briefly precedes the
+     *  restart. */
+    installUpdate() {
+      return _invokeResult("app_update_install");
+    },
+
+    /** Subscribe to `{downloaded, total}` download progress. Resolves to
+     *  an unlisten function. */
+    async onUpdateProgress(cb) {
+      if (!window.__TAURI__) return () => {};
+      return window.__TAURI__.event.listen("update://progress", ev => cb(ev.payload));
+    },
+
+    /** Open an http(s) URL in the system browser (same allow-list as the
+     *  webview's navigation guard — see `open_url_external`). */
+    openExternalUrl(url) {
+      return _invokeResult("open_url_external", { url });
+    },
+
     /** Update the in-memory prompt-history cap (tweaks panel setting,
      *  default OMP_PROMPT_HISTORY.DEFAULT_LIMIT). Trims every tab's list
      *  eagerly, not just on the next record/backfill — otherwise lowering
