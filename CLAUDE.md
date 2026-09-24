@@ -223,7 +223,7 @@ All non-trivial code **must** have test coverage before committing. This is not 
 ## CI / release
 
 - `.github/workflows/ci.yml` — `cargo check --locked` + `cargo test --locked` on win/linux/mac for `src-tauri/**`, `src/**`, or workflow changes.
-- `.github/workflows/release.yml` — bundles via `tauri build` with `--config src-tauri/tauri.release.conf.json`, signs the updater artifacts (needs the `TAURI_SIGNING_PRIVATE_KEY`/`_PASSWORD` secrets) and uploads `latest.json` to the draft release. Users see an update only once the draft is published.
+- `.github/workflows/release.yml` — bundles via `tauri build` with `--config src-tauri/tauri.release.conf.json` and signs the updater artifacts; it needs the `TAURI_SIGNING_PRIVATE_KEY`/`_PASSWORD` secrets, and each build job fails fast without them. tauri-action's own `latest.json` is off (`includeUpdaterJson: false`), because four parallel jobs read-modify-writing one asset race. Instead, once every build has succeeded, the `updater-json` job runs `.github/scripts/updater-json.mjs` over the uploaded `.sig` files and uploads `latest.json`. That job fails on a missing platform, and on a stable tag that disagrees with `tauri.conf.json`'s version, which would make clients reinstall the same build forever. The feed's notes are the matching CHANGELOG section. Users see an update only once the draft is published. Dry run: `gh workflow run release.yml --ref <branch> -f tag=vX.Y.Z-rc.N`, then delete the draft.
 
 ## Changelog workflow
 
