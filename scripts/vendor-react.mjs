@@ -85,6 +85,9 @@ try {
   // Bun labels each module with its path relative to cwd: build from inside
   // `work` so the labels read `node_modules/…` and a re-run is byte-identical.
   process.chdir(work);
+  // Written only once all four built: a partial run must not leave src/
+  // with mismatched React versions (react-dom refuses to start on one).
+  const outputs = [];
   for (const build of ["development", "production"]) {
     for (const [entry, name, what, plugins, extraNotices] of [
       ["react-entry.js", "react", "React", [], []],
@@ -107,9 +110,12 @@ try {
       if (code.includes(work) || code.includes("vendor-react-")) {
         throw new Error(`${file}: a temp path leaked into the bundle`);
       }
-      writeFileSync(join(outDir, file), `${banner(what, build, extraNotices)}\n${code}`);
-      console.log(`wrote src/${file} (${code.length} bytes)`);
+      outputs.push([file, `${banner(what, build, extraNotices)}\n${code}`]);
     }
+  }
+  for (const [file, text] of outputs) {
+    writeFileSync(join(outDir, file), text);
+    console.log(`wrote src/${file} (${text.length} bytes)`);
   }
 } finally {
   process.chdir(startDir); // Windows cannot remove the cwd

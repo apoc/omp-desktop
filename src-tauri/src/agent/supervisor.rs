@@ -170,7 +170,8 @@ impl ProcessSupervisor {
 
     /// Kill the whole supervised process tree right now.
     ///
-    /// Idempotent: the atomic swap-to-`0` means only the first caller (be
+    /// Idempotent: the atomic swap to the empty sentinel (`0` pgid on Unix,
+    /// a null job handle on Windows) means only the first caller (be
     /// it an explicit `kill_tree()` or the subsequent `Drop`) actually
     /// closes/signals anything — a second call is a documented no-op
     /// rather than a double-close (Windows) or a harmless-but-wasteful

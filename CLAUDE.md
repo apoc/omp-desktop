@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Tauri 2 desktop shell for `omp` (oh-my-pi). React UI loaded from `src/` by Tauri's asset server. Rust backend spawns `omp --mode rpc` per tab. **No bundler** — JSX is transpiled in-browser by `@babel/standalone`.
+Tauri 2 desktop shell for `omp` (oh-my-pi). React UI served from `src/` in `tauri dev` (**no bundler** — JSX is transpiled in-browser by `@babel/standalone`) and from the precompiled `dist/` in release builds (see *Release frontend*). Rust backend spawns `omp --mode rpc` per tab.
 
 ## Commands
 
@@ -9,6 +9,7 @@ Tauri 2 desktop shell for `omp` (oh-my-pi). React UI loaded from `src/` by Tauri
 | Install Tauri CLI | `npm install` |
 | Dev | `npm run dev` |
 | Prod build | `npm run build` (= `tauri build --config src-tauri/tauri.dist.conf.json`: embeds the precompiled `dist/`) |
+| Build `dist/` only | `npm run build:frontend` (writes the gitignored `dist/`; also the last step of `npm test`) |
 | Rust check (CI) | `cd src-tauri && cargo check --locked` |
 | Rust fmt | `cd src-tauri && cargo fmt` |
 | Rust lint (must stay clean) | `cd src-tauri && cargo +nightly clippy --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery -D warnings` |
@@ -111,7 +112,7 @@ When adding a file, insert at the correct point — there is no resolver to catc
 
 ### Release frontend (`dist/`)
 
-`tauri dev` serves `src/` as is: development React, and every `text/babel` script compiled in the browser on each start (~1 s). Release builds embed `dist/` instead, written by `scripts/build-frontend.mjs` — the `beforeBuildCommand` of `src-tauri/tauri.dist.conf.json`, which `npm run build` and `release.yml` merge via `--config` (a plain `tauri build` without it still works, just embeds the slow `src/`). The script compiles each `.jsx` with the *vendored* Babel and the exact options Babel's script-tag loader uses (so `dist/` runs byte-identical code), turns its tag into `<script defer src="….js">` (deferred scripts run after all parser-blocking ones, in document order — the order Babel runs them in), points the React tags at the production build and drops Babel. It matches `index.html`'s tags literally and fails the build if one is missing, so keep the Babel/React tags in their plain form. The release CSP in `tauri.dist.conf.json` is the dev one minus `'unsafe-eval'` (only Babel needed it); the script fails if the two drift apart. `npm test` runs the script, so CI catches a broken rewrite before a release does. `tauri.conf.json` keeps `frontendDist: ../src` because `generate_context!` embeds it at compile time — pointing it at `dist/` would make every `cargo test`/`clippy` depend on a generated folder.
+`tauri dev` serves `src/` as is: development React, and every `text/babel` script compiled in the browser on each start (~1.5 s). Release builds embed `dist/` instead, written by `scripts/build-frontend.mjs` — the `beforeBuildCommand` of `src-tauri/tauri.dist.conf.json`, which `npm run build` and `release.yml` merge via `--config` (a plain `tauri build` without it still works, just embeds the slow `src/`). The script compiles each `.jsx` with the *vendored* Babel and the exact options Babel's script-tag loader uses (so `dist/` runs byte-identical code), turns its tag into `<script defer src="….js">` (deferred scripts run after all parser-blocking ones, in document order — the order Babel runs them in; but *before* DOMContentLoaded/load, whereas Babel runs them after, so JSX must not depend on either event or on `document.readyState`), points the React tags at the production build and drops Babel. It matches `index.html`'s tags literally and fails the build if one is missing, so keep the Babel/React tags in their plain form. `npm test` runs the script, so CI catches a broken rewrite before a release does. `tauri.conf.json` keeps `frontendDist: ../src` because `generate_context!` embeds it at compile time — pointing it at `dist/` would make every `cargo test`/`clippy` depend on a generated folder.
 
 ### IIFE rule
 
@@ -149,13 +150,13 @@ Trigger: 6th major component in one file, or 4th unrelated concern in one Rust m
 
 - `omp --mode rpc`, **not** `omp --rpc` (latter falls through to TUI, floods stdout with ANSI).
 - Blank-line stdout: `agent/reader.rs` distinguishes EOF (`(0,_)`) from blank lines and strips CR/LF. Don't revert to `reader.lines()` with blanket `_ => break` — silently kills reader on first blank line.
-- Window controls use document-level click delegation (React mounts after `DOMContentLoaded`); `querySelector` in `_setupWindowChrome` would miss it.
+- Window controls use document-level click delegation (React may mount before or after `DOMContentLoaded` — after in `tauri dev`, before in release `dist/`); a `querySelector` in `_setupWindowChrome` would be timing-dependent.
 - `set_model` response **must** call `notify()` immediately, else next `turn_start` re-emits stale `state.model` and UI reverts.
 - Long `if/else if` chains in `_handleResponse` (`live.js`): a single misplaced `}` cascades — `_handleResponse` never closes, IIFE syntax errors, `window.OMP_DATA` never set. Re-verify brace structure when inserting branches.
 - Frameless window via DWM: `decorations: false` + `platform.css` strips outer padding/shadow under `.tauri-native`. CSS uses `color-mix(in oklab, …)` — needs WebView2 ≥ 101.
-- Strict CSP: `default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; …`. Asset protocol disabled. `tauri-plugin-shell` deliberately removed. Don't add CDN tags or `convertFileSrc()` without revisiting both.
+- Strict CSP: `default-src 'self'; script-src 'self' 'unsafe-inline'; …` — no `'unsafe-eval'`: nothing uses `eval`/`new Function` (Babel runs its output as inline `<script>`s, which `'unsafe-inline'` covers), and dev and release share this one policy so an eval dependency can't work in `tauri dev` and break only in release. Asset protocol disabled. `tauri-plugin-shell` deliberately removed. Don't add CDN tags or `convertFileSrc()` without revisiting both.
 - Thinking levels are RPC-driven. Cycle = `cycle_thinking_level` (response carries new level). Set = `set_thinking_level`. Valid: `off | minimal | low | medium | high | xhigh`. Never invent fallbacks like `auto`/`extended` — RPC silently ignores them.
-- No CDN dependencies. React/ReactDOM/Babel/marked/hljs are vendored. App must work offline. Babel, marked (`lib/marked.umd.js`) and hljs (`@highlightjs/cdn-assets`) are copied verbatim from npm. React 19 ships no UMD build, so `src/react{,-dom}.{development,production}.js` are generated: `bun scripts/vendor-react.mjs <version>` writes all four — never hand-edit them, and always commit the four together (a stale pair would mean debug and release run different React versions). Since marked 15 renderers receive *raw* token fields (`href`, `title`, `lang`, autolink `text`), so the renderers in `index.html` escape them themselves — and decode character references in a link's `href` *before* the scheme check, or `&#106;avascript:` slips through as a relative URL.
+- No CDN dependencies. React/ReactDOM/Babel/marked/hljs are vendored. App must work offline. Babel, marked (`lib/marked.umd.js`) and hljs (`@highlightjs/cdn-assets`) are copied verbatim from npm. React 19 ships no UMD build, so `src/react{,-dom}.{development,production}.js` are generated: `bun scripts/vendor-react.mjs <version>` writes all four — never hand-edit them, and always commit the four together (a stale pair would mean `tauri dev` and `dist/` builds run different React versions). Since marked 15 renderers receive *raw* token fields (`href`, `title`, `lang`, autolink `text`), so the renderers in `index.html` escape them themselves — and decode character references in a link's `href` *before* the scheme check, or `&#106;avascript:` slips through as a relative URL.
 - `tauri-plugin-single-instance` must stay the **first** plugin registered, and is deliberately `cfg`'d to Windows/Linux only — on macOS `LaunchServices` already reuses the running instance, and the plugin would fight it.
 - Tauri's built-in Linux desktop template has a bare `Exec={{exec}}`: without `src-tauri/packaging/omp-desktop.desktop`'s `%F` the folder the user picked never reaches argv and "Open with" silently opens an empty app. Same trap for the `MimeType` line — dropping it removes the app from the file manager's menu entirely, and dropping its `{{mime_type}}` half would silently strip any future `fileAssociations`/deep-link registration from the Linux entry alone.
 - `src-tauri/packaging/windows-folder-verb.wxs` hardcodes the `Open with OMP Desktop` label and re-derives `Win64` (preprocessor defines don't cross `.wxs` files; a 32-bit component would write to `Wow6432Node`, where 64-bit Explorer never looks). Keep the label in sync with `productName`.
@@ -230,7 +231,7 @@ All non-trivial code **must** have test coverage before committing. This is not 
 ## CI / release
 
 - `.github/workflows/tests.yml` — the shared test gate, a reusable workflow (`workflow_call`): `cargo test --locked` on win/linux/mac, plus `npm test`. It is called by both workflows below, so CI and releases can't drift apart.
-- `.github/workflows/ci.yml` — runs `tests.yml` on every PR, and on pushes to master that touch `src-tauri/**`, `src/**`, `test-*.mjs`, `package.json`, `.github/scripts/**` or the workflows.
+- `.github/workflows/ci.yml` — runs `tests.yml` on every PR, and on pushes to master that touch `src-tauri/**`, `src/**`, `test-*.mjs`, `package.json`, `scripts/**`, `.github/scripts/**` or the workflows.
 - `.github/workflows/release.yml` — `tests.yml` first; nothing builds unless it passes. Then a signed `tauri build` per platform, then one `updater-json` job that assembles `latest.json` via `.github/scripts/updater-json.mjs`, with the matching CHANGELOG section as notes. The rationale and the guards are documented in the workflow header and the script. Users see an update only once the draft is published. Dry run: `gh workflow run release.yml --ref <branch> -f tag=vX.Y.Z-rc.N`, then delete the draft.
 
 ## Changelog workflow

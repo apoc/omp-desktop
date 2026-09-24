@@ -13,8 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Faster startup in release builds: the interface ships precompiled and uses React's production build, so the first screen appears in about 0.1 s instead of 1.7 s, and the embedded frontend shrinks from 5.6 MB to 1.6 MB. `npm run dev` is unchanged.
-- Stricter Content Security Policy in release builds: `eval` is no longer allowed.
+- Faster startup in release builds: the interface ships precompiled and uses React's production build, so the first screen appears in about 0.1 s instead of 1.7 s, and the bundled frontend files shrink from 5.4 MB to 1.3 MB. `npm run dev` is unchanged.
+- Stricter Content Security Policy: `eval` is no longer allowed (nothing in the app needed it).
 - All dependencies updated: React 19.3 (was 18.3), marked 18 (was 12), highlight.js 11.12, Babel 7.29.9, Tauri 2.11.6 and its plugins, `gix` 0.87, `notify` 8, `sha2` 0.11, `windows-sys` 0.61, Tauri CLI 2.11.5. This also clears two `quick-xml` security advisories.
 
 ## [0.3.1] - 2026-09-24

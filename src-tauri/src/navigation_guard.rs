@@ -97,12 +97,11 @@ pub fn classify(url: &Url, dev_url: Option<&Url>) -> Navigation {
 /// crafted `mailto:` address could break out of the quoted argument
 /// entirely. `ShellExecuteExW` does neither.
 ///
-/// On Unix, `open::that_detached` forks and drops the child without
-/// `wait()`-ing on it, which is the crate's own documented trade-off for
-/// "outlive your app" semantics; the process becomes defunct (a PID-table
-/// slot, not a resource leak) until this app exits and it is reparented to
-/// init. Acceptable here: a click is a rare, user-initiated event, not a
-/// hot path.
+/// On Linux/BSD `open::that_detached` double-forks and reaps the
+/// intermediate child, so the launched handler neither blocks this call nor
+/// lingers as a zombie. On macOS it waits for `/usr/bin/open`, which hands
+/// the URL to `LaunchServices` and returns at once — it does not wait for the
+/// browser.
 ///
 /// # Errors
 /// The URL is app-local or not a web/mail URL, or the launcher failed to

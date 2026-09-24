@@ -6,14 +6,17 @@
 //
 // src/ stays what `tauri dev` serves: development React, and every
 // `<script type="text/babel">` compiled in the browser by Babel on each
-// start (about a second). dist/ is src/ with that work done ahead of time:
+// start (~1.5 s). dist/ is src/ with that work done ahead of time:
 //
 // - each .jsx is compiled by the *same* vendored Babel, with the exact
 //   options Babel's script-tag loader uses, so the output is the code the
 //   browser would have run (minus the inline source map);
 // - its tag becomes a plain `<script defer>`: deferred scripts run after
 //   every parser-blocking script, in document order — the same order Babel
-//   runs its scripts in, after all plain ones;
+//   runs its scripts in, after all plain ones. Timing differs, though:
+//   Babel runs them after DOMContentLoaded (usually after load), deferred
+//   scripts before both, with readyState "interactive" — so JSX must not
+//   depend on either event;
 // - Babel and the development React files are dropped, and the React tags
 //   point at the minified production build.
 //
@@ -43,10 +46,12 @@ const DROPPED = new Set(["babel.min.js", "react.development.js", "react-dom.deve
 
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out);
-cpSync(src, out, {
-  recursive: true,
-  filter: (path) => !path.endsWith(".jsx") && !DROPPED.has(path.slice(src.length + 1)),
-});
+// The filter only skips `.jsx`: on Windows, Node < 22.4 hands it `\\?\`-
+// prefixed paths, so matching dropped files by relative name there silently
+// fails. Delete them explicitly instead — without `force`, so a renamed
+// vendored file fails the build.
+cpSync(src, out, { recursive: true, filter: (path) => !path.endsWith(".jsx") });
+for (const name of DROPPED) rmSync(join(out, name));
 
 let html = readFileSync(join(src, "index.html"), "utf8");
 const replaceOnce = (from, to) => {
@@ -63,7 +68,15 @@ let bytesIn = 0;
 let bytesOut = 0;
 html = html.replace(/<script type="text\/babel" src="([^"]+)\.jsx"><\/script>/g, (_, path) => {
   const source = readFileSync(join(src, `${path}.jsx`), "utf8");
-  const { code } = Babel.transform(source, babelOptions(`${path}.jsx`));
+  let code;
+  try {
+    ({ code } = Babel.transform(source, babelOptions(`${path}.jsx`)));
+  } catch (err) {
+    // Rethrown as a fresh Error: Node would otherwise print the throw site
+    // first — one 3 MB line of babel.min.js — ahead of the message, which
+    // already names the file and carries a code frame.
+    throw new Error(err.message);
+  }
   const target = join(out, `${path}.js`);
   if (existsSync(target)) throw new Error(`${path}.js already exists in src/; cannot compile ${path}.jsx onto it`);
   mkdirSync(dirname(target), { recursive: true });
@@ -74,19 +87,14 @@ html = html.replace(/<script type="text\/babel" src="([^"]+)\.jsx"><\/script>/g,
   return `<script defer src="${path}.js"></script>`;
 });
 
-if (/<script[^>]*(text\/babel|\.jsx")/.test(html)) throw new Error("index.html: a Babel script tag was not compiled");
-for (const [, path] of html.matchAll(/<script[^>]* src="([^"]+)"/g)) {
+// Anything Babel's own loader would run (`text/babel`, `text/jsx`, any case)
+// but the rewrite above did not match must fail the build, not ship dead.
+if (/<script\b[^>]*(text\/(?:babel|jsx)|\.jsx["'\s>])/i.test(html)) {
+  throw new Error("index.html: a Babel script tag was not compiled");
+}
+for (const [, path] of html.matchAll(/<script\b[^>]*\ssrc="([^"]+)"/gi)) {
   if (!existsSync(join(out, path))) throw new Error(`dist/index.html loads ${path}, which dist/ lacks`);
 }
 writeFileSync(join(out, "index.html"), html);
-
-// The release CSP (tauri.dist.conf.json) must be the dev one minus
-// 'unsafe-eval' — only Babel needed eval. Checked here so the two copies
-// can't drift apart unnoticed.
-const csp = (file) => JSON.parse(readFileSync(join(root, "src-tauri", file), "utf8")).app.security.csp;
-const expected = csp("tauri.conf.json").replace(" 'unsafe-eval'", "");
-if (csp("tauri.dist.conf.json") !== expected) {
-  throw new Error(`tauri.dist.conf.json csp must be tauri.conf.json's minus 'unsafe-eval':\n  ${expected}`);
-}
 
 console.log(`dist/: compiled ${compiled} JSX files (${bytesIn >> 10} KB → ${bytesOut >> 10} KB), dropped Babel and development React`);

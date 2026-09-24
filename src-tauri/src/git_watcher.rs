@@ -29,7 +29,7 @@ impl GitWatcherState {
 
     /// Begin watching `head_path` (`.git/HEAD`) for `session_id`.
     ///
-    /// On every filesystem event that names the HEAD file, re-reads the
+    /// On every change to the HEAD file (see [`is_head_change`]), re-reads the
     /// current branch via [`crate::git::probe`] and emits
     /// `"git://branch/{session_id}"` on `app`.  Errors starting the watcher
     /// are propagated; the caller treats them as non-fatal so the branch
@@ -61,8 +61,8 @@ impl GitWatcherState {
         // HEAD atomically via rename(HEAD.lock → HEAD), which replaces the
         // inode and orphans a file-level watch after the first branch switch.
         // Watching the parent avoids this and is also how notify's Windows
-        // and macOS backends already behave internally.  The filename filter
-        // in the callback above ensures only HEAD events trigger a re-read.
+        // and macOS backends already behave internally.  [`is_head_change`]
+        // in the callback above ensures only HEAD changes trigger a re-read.
         let git_dir = head_path
             .parent()
             .ok_or_else(|| "HEAD path has no parent".to_owned())?;

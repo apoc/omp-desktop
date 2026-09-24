@@ -42,7 +42,7 @@
     // attempted (chromium and WebView2 do the same) - so it would run in
     // the app's own privileged origin, which exposes `window.__TAURI__`.
     // marked's own `cleanUrl` only `encodeURI`s the href; it never checks
-    // the scheme. Runs after DOMContentLoaded so both libs are parsed.
+    // the scheme. Parser-blocking, so both libs above are already loaded.
     (function () {
       if (!window.marked || !window.hljs) return;
       // Since marked 15, renderers get raw token fields: `href`, `title`,
@@ -58,10 +58,20 @@
       // title (`&amp;`, `&#106;`). Decode once, then check *and* emit that
       // same string: checking the raw text would let `&#106;avascript:`
       // pass as a relative URL and then decode to `javascript:` in the
-      // attribute. A <textarea> parses its content as RCDATA, so this only
-      // decodes references and never creates elements.
+      // attribute. Only `;`-terminated references are decoded, as CommonMark
+      // requires — HTML text parsing would also expand legacy forms without
+      // `;`, turning `?a=1&currency=USD` into `?a=1¤cy=USD`. Each one goes
+      // through a <textarea> (RCDATA: decodes references, never creates
+      // elements); a result longer than 2 UTF-16 units means the name was
+      // invalid and only a prefix decoded, so the reference stays literal.
       const decoder = document.createElement('textarea');
-      const decodeRefs = (s) => { decoder.innerHTML = s; return decoder.value; };
+      const decodeRefs = (s) => s.includes('&')
+        ? s.replace(/&(?:#\d{1,7}|#[xX][\da-fA-F]{1,6}|[A-Za-z][A-Za-z\d]{1,31});/g, (ref) => {
+            decoder.innerHTML = ref;
+            const v = decoder.value;
+            return v.length <= 2 ? v : ref;
+          })
+        : s;
       window.marked.use({
         renderer: {
           code({ text, lang }) {
