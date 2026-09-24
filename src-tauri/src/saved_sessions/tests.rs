@@ -138,6 +138,35 @@ fn parse_session_file_last_activity_beats_a_stale_title_rename() {
 }
 
 #[test]
+fn parse_session_file_ignores_lifecycle_events_for_last_activity() {
+    // omp appends a `custom` `session_exit` line (and other lifecycle
+    // events like `model_change`) stamped with wall-clock time whenever
+    // the RPC child for a resumed session terminates — even if the user
+    // sent no new message. Resuming a dormant session and closing the tab
+    // must not bump it to the top of the history list (review regression
+    // for #23).
+    let dir = make_test_dir("ignores_lifecycle");
+    let file_path = dir.join("test_lifecycle.jsonl");
+    write_jsonl(
+        &file_path,
+        &[
+            r#"{"type":"session","version":3,"id":"sess-654","timestamp":"2026-09-04T00:00:00.000Z","cwd":"/test/five"}"#,
+            r#"{"type":"message","id":"m1","parentId":null,"timestamp":"2026-09-04T00:05:00.000Z","message":{"role":"user","content":[{"type":"text","text":"the real last message"}]}}"#,
+            r#"{"type":"model_change","id":"mc1","parentId":"m1","timestamp":"2026-09-20T00:00:00.000Z","model":"foo","role":"main"}"#,
+            r#"{"type":"custom","customType":"session_exit","id":"c1","parentId":"mc1","timestamp":"2026-09-20T00:00:01.000Z"}"#,
+        ],
+    );
+
+    let session = parse_session_file(&file_path).expect("parsed session");
+    assert_eq!(
+        session.updated_at.as_deref(),
+        Some("2026-09-04T00:05:00.000Z")
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn parse_session_file_returns_none_without_id_or_timestamp() {
     let dir = make_test_dir("no_id");
     let file_path = dir.join("headerless.jsonl");
@@ -304,6 +333,42 @@ fn scan_dir_sorts_by_last_activity_not_creation_date() {
     assert_eq!(all.len(), 2);
     assert_eq!(all[0].id, "old");
     assert_eq!(all[1].id, "new");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn scan_dir_ignores_lifecycle_events_when_ranking_activity() {
+    // "quiet" was resumed and closed with no new message — its `custom`
+    // session_exit line is stamped well after "active"'s last real
+    // message, but must not out-rank it (review regression for #23).
+    let root = make_test_dir("scan_lifecycle_root");
+
+    let sess_quiet = root.join("sess-quiet");
+    fs::create_dir_all(&sess_quiet).unwrap();
+    write_jsonl(
+        &sess_quiet.join("quiet.jsonl"),
+        &[
+            r#"{"type":"session","version":3,"id":"quiet","timestamp":"2026-09-01T00:00:00.000Z","cwd":"/proj/one"}"#,
+            r#"{"type":"message","id":"m1","parentId":null,"timestamp":"2026-09-01T00:05:00.000Z","message":{"role":"user","content":[{"type":"text","text":"one message, long ago"}]}}"#,
+            r#"{"type":"custom","customType":"session_exit","id":"c1","parentId":"m1","timestamp":"2026-09-20T00:00:00.000Z"}"#,
+        ],
+    );
+
+    let sess_active = root.join("sess-active");
+    fs::create_dir_all(&sess_active).unwrap();
+    write_jsonl(
+        &sess_active.join("active.jsonl"),
+        &[
+            r#"{"type":"session","version":3,"id":"active","timestamp":"2026-09-05T00:00:00.000Z","cwd":"/proj/two"}"#,
+            r#"{"type":"message","id":"m1","parentId":null,"timestamp":"2026-09-12T00:00:00.000Z","message":{"role":"user","content":[{"type":"text","text":"actually recent"}]}}"#,
+        ],
+    );
+
+    let all = scan_dir(&root, None).expect("scan ok");
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].id, "active");
+    assert_eq!(all[1].id, "quiet");
 
     let _ = fs::remove_dir_all(&root);
 }
