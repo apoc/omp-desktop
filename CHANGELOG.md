@@ -8,12 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Markdown links whose URL scheme is written with HTML character references (e.g. `&#106;avascript:`) are no longer rendered as clickable links.
+- Markdown links whose scheme is hidden behind HTML character references (e.g. `&#106;avascript:`) now render as plain text instead of clickable links.
+- A code block's language tag can no longer inject HTML attributes into the rendered page.
 
 ### Changed
 
-- Updated every dependency to its latest version. Bundled libraries: React 19.3.0 (was 18.3.1), marked 18.0.14 (was 12.0.2), highlight.js 11.12.0 and Babel 7.29.9. Rust: Tauri 2.11.6 and its plugins, `gix` 0.87, `notify` 8, `sha2` 0.11, `windows-sys` 0.61, plus all compatible crate updates. Tauri CLI: 2.11.5.
-- Faster startup: release builds now ship the interface precompiled instead of compiling it in the app on every launch, and use React's minified production build. The first screen appears in about 0.1 s instead of about 1.7 s (measured in Chromium), and the embedded frontend shrinks from 5.6 MB to 1.6 MB. Development builds (`npm run dev`) are unchanged, keeping React's warnings and readable error messages.
+- Faster startup in release builds: the interface ships precompiled and uses React's production build, so the first screen appears in about 0.1 s instead of 1.7 s, and the embedded frontend shrinks from 5.6 MB to 1.6 MB. `npm run dev` is unchanged.
+- Stricter Content Security Policy in release builds: `eval` is no longer allowed.
+- All dependencies updated: React 19.3 (was 18.3), marked 18 (was 12), highlight.js 11.12, Babel 7.29.9, Tauri 2.11.6 and its plugins, `gix` 0.87, `notify` 8, `sha2` 0.11, `windows-sys` 0.61, Tauri CLI 2.11.5. This also clears two `quick-xml` security advisories.
 
 ## [0.3.1] - 2026-09-24
 
