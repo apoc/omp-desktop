@@ -21,7 +21,7 @@
 //! `.spawn()`, then [`ProcessSupervisor::attach`] on the resulting `Child`
 //! after `.spawn()`. Dropping the returned supervisor — or calling
 //! [`ProcessSupervisor::kill_tree`] explicitly — kills the whole tree.
-//! Both steps store only a plain integer (a pid or a raw handle value), so
+//! Both steps store only a pid or a raw job handle in an atomic, so
 //! `ProcessSupervisor` is `Send` with no unsafe impl required.
 
 #[cfg(unix)]
@@ -30,7 +30,7 @@ use std::process::{Child, Command};
 #[cfg(unix)]
 use std::sync::atomic::AtomicI32;
 #[cfg(windows)]
-use std::sync::atomic::AtomicIsize;
+use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering;
 
 #[cfg(windows)]
@@ -49,13 +49,13 @@ use windows_sys::Win32::System::JobObjects::{
 /// implicitly on `Drop`.
 ///
 /// Holds a Win32 job handle on Windows, or a process-group id on Unix —
-/// both plain integers, never a borrowed or aliased pointer, so no
+/// each in an atomic that is `Send + Sync` on its own, so no
 /// `unsafe impl Send` is needed.
 #[cfg(windows)]
 pub(super) struct ProcessSupervisor {
-    /// Job object handle, or `0` once closed (including if creation or
+    /// Job object handle, or null once closed (including if creation or
     /// setup failed, in which case there was never anything to close).
-    job: AtomicIsize,
+    job: AtomicPtr<core::ffi::c_void>,
 }
 
 #[cfg(unix)]
@@ -109,15 +109,16 @@ impl ProcessSupervisor {
         // from here on (closed below on any setup failure, otherwise by
         // `kill_tree`/`Drop`).
         let job: HANDLE = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-        if job == 0 {
+        if job.is_null() {
             // Job object creation failed (e.g. handle-table exhaustion).
             // Fall back to no supervision rather than panicking — omp
             // itself still runs, it just won't get tree-kill semantics.
-            return Self {
-                job: AtomicIsize::new(0),
-            };
+            return Self::unsupervised();
         }
 
+        // SAFETY: `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` is a plain C struct
+        // of integers and nested integer structs, for which all-zero bytes
+        // is a valid value (and the documented "no limits" starting point).
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         // SAFETY: `job` is the handle just created above; `info` is a
@@ -137,26 +138,30 @@ impl ProcessSupervisor {
             // SAFETY: `job` was created by this function and has not been
             // assigned to anything or closed yet — sole owner.
             unsafe { CloseHandle(job) };
-            return Self {
-                job: AtomicIsize::new(0),
-            };
+            return Self::unsupervised();
         }
 
-        let process_handle = child.as_raw_handle() as HANDLE;
-        // SAFETY: `job` is a valid, configured job handle; `process_handle`
-        // is the live handle of the `Child` passed in, which outlives this
-        // call.
-        let assigned = unsafe { AssignProcessToJobObject(job, process_handle) };
+        // SAFETY: `job` is a valid, configured job handle; the process
+        // handle is the live handle of the `Child` passed in, which
+        // outlives this call.
+        let assigned = unsafe { AssignProcessToJobObject(job, child.as_raw_handle()) };
         if assigned == 0 {
             // SAFETY: same reasoning as the `configured == 0` branch above.
             unsafe { CloseHandle(job) };
-            return Self {
-                job: AtomicIsize::new(0),
-            };
+            return Self::unsupervised();
         }
 
         Self {
-            job: AtomicIsize::new(job),
+            job: AtomicPtr::new(job),
+        }
+    }
+
+    /// A supervisor with nothing to close — the fallback when job-object
+    /// setup fails.
+    #[cfg(windows)]
+    const fn unsupervised() -> Self {
+        Self {
+            job: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -187,11 +192,11 @@ impl ProcessSupervisor {
     /// See the Unix doc comment above for the idempotency guarantee.
     #[cfg(windows)]
     pub(super) fn kill_tree(&self) {
-        let job = self.job.swap(0, Ordering::AcqRel);
-        if job != 0 {
+        let job = self.job.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if !job.is_null() {
             // SAFETY: `job` was produced by a successful `attach` and has
             // not been closed before — the swap above guarantees exactly
-            // one caller ever observes the non-zero value. Closing the
+            // one caller ever observes the non-null value. Closing the
             // last handle to a job object carrying
             // `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` terminates every
             // process ever assigned to it.
@@ -333,6 +338,9 @@ mod tests {
         // Clean up: kill the orphans directly by pid so this test doesn't
         // leak `sleep 30` processes into the rest of the suite run.
         for pid in grandchildren {
+            // SAFETY: plain-integer FFI call, no pointers involved. `pid`
+            // is one of this test's own grandchildren (read via `pgrep -P`),
+            // and real pids always fit `i32`.
             unsafe {
                 libc::kill(i32::try_from(pid).unwrap_or(0), libc::SIGKILL);
             }
