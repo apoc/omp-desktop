@@ -1,14 +1,23 @@
 # Release pipeline — triggered by pushing a version tag (e.g. v0.2.0).
 #
 # Flow:
-#   1. Tag push  →  builds native installer on Windows, macOS (arm64 + x64), Linux
-#   2. Uploads artefacts to a draft GitHub Release
-#   3. You review the draft, then publish manually
+#   1. Tag push  →  builds signed installers on Windows, macOS (arm64 + x64), Linux
+#   2. Uploads artefacts + their updater `.sig` files to a draft GitHub Release
+#   3. Once every build succeeded, `updater-json` assembles `latest.json` from
+#      those signatures and uploads it to the same draft
+#   4. You review the draft, then publish manually
+#
+# Manual run (Actions → Release → Run workflow, or
+#   gh workflow run release.yml --ref <branch> -f tag=vX.Y.Z-rc.1):
+#   builds the selected branch/ref into a draft release named by `tag`,
+#   created at that commit. Use a prerelease tag (`-rc.N`) for a dry run and
+#   delete the draft afterwards — never an already-published tag, whose
+#   assets would be overwritten.
 #
 # Platforms produced:
 #   Windows   →  .msi + .exe (NSIS) installer
-#   macOS     →  .dmg (universal via separate arm64 / x64 jobs)
-#   Linux     →  .AppImage + .deb
+#   macOS     →  .dmg + .app.tar.gz (separate arm64 / x64 jobs)
+#   Linux     →  .AppImage + .deb + .rpm
 #
 # ── Prerequisites ─────────────────────────────────────────────────────────────
 # 1. Push a semver tag:
@@ -28,8 +37,13 @@
 #      TAURI_SIGNING_PRIVATE_KEY_PASSWORD  — its password
 #    `src-tauri/tauri.release.conf.json` turns on `createUpdaterArtifacts`
 #    for this workflow only (a local `npm run build` has no key and would
-#    fail with it on). tauri-action then uploads the `.sig` files and a
-#    merged `latest.json`; the app reads it from
+#    fail with it on). The build jobs check for the key before compiling.
+#    `latest.json` is written once, by the `updater-json` job
+#    (.github/scripts/updater-json.mjs) — not by tauri-action in each build
+#    job, where four parallel read-modify-writes of one asset race. The job
+#    fails rather than publish a feed missing a platform, and refuses a
+#    stable tag that disagrees with tauri.conf.json's version (clients would
+#    re-install the same build forever). The app reads
 #    releases/latest/download/latest.json, so a release reaches users only
 #    once it is published and not marked pre-release.
 #    NEVER commit the private key. Losing it means installed copies can
@@ -45,6 +59,11 @@
 
 name: Release
 
+# One run per tag: two runs uploading into the same draft would interleave.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 on:
   push:
     tags:
@@ -59,6 +78,10 @@ on:
 jobs:
   build:
     name: build · ${{ matrix.label }}
+    env:
+      # A manual run names its release by the `tag` input; `github.ref_name`
+      # would be the branch there.
+      TAG: ${{ inputs.tag || github.ref_name }}
     permissions:
       contents: write       # needed to create / update the GitHub Release
 
@@ -92,6 +115,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # Fail in seconds, not after a full compile: without the key the
+      # bundler errors at the very end, and a build without signatures
+      # would silently ship no update.
+      - name: Require updater signing key
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is not set (see prerequisite 4)"
+            exit 1
+          fi
 
       # ── Node (Tauri CLI is an npm dev-dep) ──────────────────────────────────
       - uses: actions/setup-node@v4
@@ -142,10 +178,12 @@ jobs:
           # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          tagName: ${{ github.ref_name || inputs.tag }}
-          releaseName: 'omp-desktop ${{ github.ref_name || inputs.tag }}'
+          tagName: ${{ env.TAG }}
+          releaseName: 'omp-desktop ${{ env.TAG }}'
+          # Assembled once by the `updater-json` job below instead.
+          includeUpdaterJson: false
           releaseBody: |
-            ## omp-desktop ${{ github.ref_name || inputs.tag }}
+            ## omp-desktop ${{ env.TAG }}
 
             ### Installation
             | Platform | File |
@@ -164,5 +202,36 @@ jobs:
             - [oh-my-pi](https://github.com/can1357/oh-my-pi) (`omp`) must be installed
               and available on your `PATH`.
           releaseDraft: true        # publish manually after reviewing artefacts
-          prerelease: ${{ contains(github.ref_name || inputs.tag, '-') }}
+          prerelease: ${{ contains(env.TAG, '-') }}
           args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json
+
+  updater-json:
+    name: updater feed (latest.json)
+    needs: build            # every platform built and signed, or no feed at all
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # `gh` resolves draft releases by tag (the tag itself only exists once
+      # the draft is published).
+      - name: Download updater signatures
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.sig' --dir sigs
+
+      - name: Assemble latest.json
+        run: |
+          node .github/scripts/updater-json.mjs \
+            --sigdir sigs \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$TAG" \
+            --app-version "$(jq -r .version src-tauri/tauri.conf.json)" \
+            --changelog CHANGELOG.md \
+            > latest.json
+          cat latest.json
+
+      - name: Upload latest.json
+        run: gh release upload "$TAG" latest.json --repo "$GITHUB_REPOSITORY" --clobber
