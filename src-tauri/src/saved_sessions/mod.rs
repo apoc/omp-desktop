@@ -33,6 +33,20 @@ pub struct SavedSession {
     pub id: String,
     pub title: String,
     pub timestamp: String,
+    /// Last-activity timestamp: the later of the latest `message` event's
+    /// top-level `timestamp` and the latest retitle's `title` event
+    /// `updatedAt` — i.e. when the conversation was actually last touched,
+    /// regardless of when it was created (`timestamp`). Every other event
+    /// type is deliberately excluded, in particular `session` and the
+    /// `custom` lifecycle events omp appends around an RPC child's exit
+    /// (e.g. `session_exit`): those are stamped with wall-clock time when
+    /// the child process terminates, not when the user last did anything,
+    /// so resuming a dormant session and closing the tab without sending a
+    /// new message must not bump it back to the top of the history list.
+    /// `None` only for a file with no `message` or `title` event at all,
+    /// in which case callers fall back to `timestamp` (see `scan_dir`'s
+    /// sort and the frontend history modal's display, both of which do
+    /// `updated_at.unwrap_or(timestamp)`).
     pub updated_at: Option<String>,
     pub cwd: String,
     pub project_name: String,
@@ -139,6 +153,26 @@ fn apply_message_event(
     });
 }
 
+/// Record `candidate` as the session's last-activity timestamp if it is
+/// later than (or the first) value seen so far for `current`.
+///
+/// Compares raw strings — valid only because every omp timestamp uses the
+/// same ISO-8601 UTC-with-milliseconds format (`…T…Z`), which sorts
+/// lexicographically in chronological order (see the `session` event's
+/// `timestamp` field, parsed the same way just below). Comparing instead
+/// of letting the last line win is load-bearing: the `title` event is
+/// always the physically first line of the file, yet it carries the
+/// timestamp of the *latest* retitle — an explicit `/rename` or omp's own
+/// automatic one — which can postdate every `message` line that follows
+/// it. Forked sessions add a second case: they copy the parent's messages
+/// verbatim, including their pre-fork timestamps, so a later line in the
+/// file is not guaranteed to carry a later timestamp there either.
+fn update_last_activity(current: &mut Option<String>, candidate: &str) {
+    if current.as_deref().is_none_or(|cur| candidate > cur) {
+        *current = Some(candidate.to_string());
+    }
+}
+
 /// Parse a single `.jsonl` session file and extract metadata.
 fn parse_session_file(path: &Path) -> Option<SavedSession> {
     let file = File::open(path).ok()?;
@@ -165,6 +199,12 @@ fn parse_session_file(path: &Path) -> Option<SavedSession> {
 
         let event_type = val.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
+        // Last activity is tracked only from `message` (a real turn) and
+        // `title` (the latest retitle, explicit `/rename` or omp's own
+        // automatic one) events — see the `updated_at` doc
+        // comment on `SavedSession` for why every other event type,
+        // including the exit lifecycle event omp appends when an RPC
+        // child for this session terminates, is deliberately excluded.
         match event_type {
             "title" => {
                 if let Some(t) = val.get("title").and_then(|s| s.as_str()) {
@@ -173,8 +213,8 @@ fn parse_session_file(path: &Path) -> Option<SavedSession> {
                         explicit_title = trimmed.to_string();
                     }
                 }
-                if let Some(u) = val.get("updatedAt").and_then(|s| s.as_str()) {
-                    updated_at = Some(u.to_string());
+                if let Some(ts) = val.get("updatedAt").and_then(|s| s.as_str()) {
+                    update_last_activity(&mut updated_at, ts);
                 }
             }
             "session" => {
@@ -188,12 +228,17 @@ fn parse_session_file(path: &Path) -> Option<SavedSession> {
                     cwd = dir.to_string();
                 }
             }
-            "message" => apply_message_event(
-                &val,
-                &mut message_count,
-                &mut fallback_title,
-                &mut last_preview,
-            ),
+            "message" => {
+                apply_message_event(
+                    &val,
+                    &mut message_count,
+                    &mut fallback_title,
+                    &mut last_preview,
+                );
+                if let Some(ts) = val.get("timestamp").and_then(|s| s.as_str()) {
+                    update_last_activity(&mut updated_at, ts);
+                }
+            }
             _ => {}
         }
     }
