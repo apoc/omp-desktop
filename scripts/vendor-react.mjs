@@ -11,9 +11,9 @@
 // - src/react-dom.{development,production}.js  → window.ReactDOM
 //                                                (react-dom + react-dom/client)
 //
-// index.html loads the development pair in debug builds (and in a plain
-// browser) and the minified production pair in release builds — see the
-// loader there and `release_build_flag` in src-tauri/src/lib.rs.
+// src/index.html (what `tauri dev` serves) loads the development pair;
+// scripts/build-frontend.mjs points release builds' dist/ at the minified
+// production pair.
 //
 // react-dom resolves `react` to the window.React the first file defined, so
 // there is exactly one React instance (two copies break hooks).

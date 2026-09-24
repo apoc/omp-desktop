@@ -8,7 +8,7 @@ Tauri 2 desktop shell for `omp` (oh-my-pi). React UI loaded from `src/` by Tauri
 |---|---|
 | Install Tauri CLI | `npm install` |
 | Dev | `npm run dev` |
-| Prod build | `npm run build` |
+| Prod build | `npm run build` (= `tauri build --config src-tauri/tauri.dist.conf.json`: embeds the precompiled `dist/`) |
 | Rust check (CI) | `cd src-tauri && cargo check --locked` |
 | Rust fmt | `cd src-tauri && cargo fmt` |
 | Rust lint (must stay clean) | `cd src-tauri && cargo +nightly clippy --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery -D warnings` |
@@ -93,7 +93,7 @@ Paths are canonicalised in Rust (`canonical_folder`) before they reach the front
 
 Script order **is** the dependency graph:
 
-1. Vendored libs: React + ReactDOM (written by an inline loader via `document.write` so they stay parser-blocking: the `production` pair when `window.__OMP_RELEASE_BUILD__` is true, which only `release_build_flag` in `lib.rs` sets, for release binaries; the `development` pair otherwise — debug builds and a plain browser), Babel, `marked.min.js`, `highlight.min.js` + marked-wiring inline.
+1. Vendored libs: React + ReactDOM (development build here; release builds get the production pair — see *Release frontend* below), Babel, `marked.min.js`, `highlight.min.js` + marked-wiring inline.
 2. App constants: `app/constants.js` → `app/keymap.js` (plain, IIFE — defines `window.OMP_KEYMAP`; must load before any Babel file that calls `OMP_KEYMAP.matches`/`.keysFor`, including `composer.jsx`, `shortcuts-modal.jsx`, `use-keymap.jsx`) → `mentions.js` (plain, IIFE) → `app/image-attach.js` (plain, IIFE — defines `window.OMP_IMAGES`; `composer.jsx` destructures it at top level) → `app/slash-commands.js` (plain, IIFE — defines `window.OMP_SLASH`; `composer.jsx` and `live.js` both destructure it at top level, so this must load before either) → `app/scroll-pin.js` (plain, IIFE — defines `window.OMP_SCROLL_PIN`; `chat/chat-view.jsx` destructures it at top level, so this must load before it) → `app/prompt-history.js` (plain, IIFE — defines `window.OMP_PROMPT_HISTORY`; `composer.jsx` references it in event handlers, and `live.js` reads it at its own top-level IIFE init — not just inside a later-called function — so this must load before `live.js` too, same constraint as `slash-commands.js`) → `app/subagents.js` (plain, IIFE — defines `window.OMP_SUBAGENTS`; `design/subagents/*.jsx` destructure it at top level and `live.js` reads it at its top-level IIFE init, so this must load before both) → `app/updater.js` (plain, IIFE — defines `window.OMP_UPDATER`; only read inside `design/update-modal.jsx` and `app/use-updater.jsx` function bodies). **Before** the `design/` layer *and* before `app/use-bridge-snapshot.jsx` — `profile-menu.jsx`, `chrome.jsx`, `live.js` and `use-bridge-snapshot.jsx` destructure `DEFAULT_PROFILE_ID`/`isSubmitEnter` off `window` at *top level*, so moving this after any of them silently yields `undefined` (no resolver, no error). `composer.jsx` and `chat/ask-bubble.jsx` only call `isSubmitEnter` inside handlers — late-bound global lookups, insensitive to script order.
 3. Tweaks: `tweaks/style.js`, `tweaks/use-tweaks.js` (plain, IIFE) → `tweaks/panel.jsx`, `tweaks/controls.jsx` (Babel; controls depends on panel).
 4. UI primitives: `ui/icons.jsx` (defines `Icon`, `TOOL_META`) → `ui/sparks.jsx` → `ui/markdown.jsx` → `ui/plan-annotations.jsx`.
@@ -108,6 +108,10 @@ Script order **is** the dependency graph:
 10. `app-live.jsx` last.
 
 When adding a file, insert at the correct point — there is no resolver to catch ordering bugs.
+
+### Release frontend (`dist/`)
+
+`tauri dev` serves `src/` as is: development React, and every `text/babel` script compiled in the browser on each start (~1 s). Release builds embed `dist/` instead, written by `scripts/build-frontend.mjs` — the `beforeBuildCommand` of `src-tauri/tauri.dist.conf.json`, which `npm run build` and `release.yml` merge via `--config` (a plain `tauri build` without it still works, just embeds the slow `src/`). The script compiles each `.jsx` with the *vendored* Babel and the exact options Babel's script-tag loader uses (so `dist/` runs byte-identical code), turns its tag into `<script defer src="….js">` (deferred scripts run after all parser-blocking ones, in document order — the order Babel runs them in), points the React tags at the production build and drops Babel. It matches `index.html`'s tags literally and fails the build if one is missing, so keep the Babel/React tags in their plain form. The release CSP in `tauri.dist.conf.json` is the dev one minus `'unsafe-eval'` (only Babel needed it); the script fails if the two drift apart. `npm test` runs the script, so CI catches a broken rewrite before a release does. `tauri.conf.json` keeps `frontendDist: ../src` because `generate_context!` embeds it at compile time — pointing it at `dist/` would make every `cargo test`/`clippy` depend on a generated folder.
 
 ### IIFE rule
 

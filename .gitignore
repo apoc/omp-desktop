@@ -2,6 +2,9 @@
 /src-tauri/target/
 /src-tauri/gen/
 
+# ── Release frontend (scripts/build-frontend.mjs) ─────────────────────────────
+/dist/
+
 # ── Node ──────────────────────────────────────────────────────────────────────
 node_modules/
 

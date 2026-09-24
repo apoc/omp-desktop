@@ -20,20 +20,13 @@
   <!-- React 19 + Babel — served locally, no CDN dependency. React 19 ships
        no UMD builds; the React files are generated from the official npm
        packages by scripts/vendor-react.mjs (never edit them by hand).
-       Release builds load the minified production pair, debug builds and a
-       plain browser the development pair (warnings, readable errors):
-       `window.__OMP_RELEASE_BUILD__` is set before this runs by
-       `release_build_flag` in src-tauri/src/lib.rs. document.write keeps
-       these parser-blocking, so they still run before everything below. -->
-  <script>
-    (function () {
-      var build = window.__OMP_RELEASE_BUILD__ === true ? 'production' : 'development';
-      document.write(
-        '<script src="react.' + build + '.js"><\/script>' +
-        '<script src="react-dom.' + build + '.js"><\/script>'
-      );
-    })();
-  </script>
+       This file is what `tauri dev` serves: development React, JSX
+       compiled in the browser by Babel. Release builds embed dist/ instead,
+       written by scripts/build-frontend.mjs: production React, JSX compiled
+       ahead of time, no Babel. Keep the tags below in their exact form —
+       that script rewrites them and fails if it can't find them. -->
+  <script src="react.development.js"></script>
+  <script src="react-dom.development.js"></script>
   <script src="babel.min.js"></script>
 
   <!-- Markdown + syntax highlighting — must load before design components -->

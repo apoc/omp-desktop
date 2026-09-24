@@ -754,22 +754,6 @@ fn setup(app: &tauri::App) {
     );
 }
 
-/// Tells the page which build it runs in, before any page script executes:
-/// `index.html` loads React's minified production build when
-/// `window.__OMP_RELEASE_BUILD__` is true, and the development build (with
-/// its warnings and readable errors) otherwise — a debug `tauri dev` build,
-/// or the page opened in a plain browser.
-fn release_build_flag<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
-    let script = if cfg!(debug_assertions) {
-        "window.__OMP_RELEASE_BUILD__ = false;"
-    } else {
-        "window.__OMP_RELEASE_BUILD__ = true;"
-    };
-    tauri::plugin::Builder::new("release-build-flag")
-        .js_init_script(script)
-        .build()
-}
-
 /// Run the Tauri application. Panics if the runtime fails to initialise.
 ///
 /// # Panics
@@ -811,7 +795,6 @@ pub fn run() {
     }));
     let app = builder
         .plugin(navigation_guard::init())
-        .plugin(release_build_flag())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AgentBridge::new())
