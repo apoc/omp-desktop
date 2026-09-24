@@ -40,8 +40,8 @@ use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    SetInformationJobObject, JOBOBJECT_BASIC_LIMIT_INFORMATION,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 
 /// Guarantees the process tree rooted at a spawned child is killed as a
@@ -116,14 +116,17 @@ impl ProcessSupervisor {
             return Self::unsupervised();
         }
 
-        // SAFETY: `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` is a plain C struct
-        // of integers and nested integer structs, for which all-zero bytes
-        // is a valid value (and the documented "no limits" starting point).
-        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // Every other field defaulted (all-zero) means "no other limits".
+        let info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+            BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
+                LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         // SAFETY: `job` is the handle just created above; `info` is a
-        // correctly sized `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` (zeroed,
-        // then had its one relevant field set), matching what
+        // correctly sized `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` (defaulted,
+        // with its one relevant field set), matching what
         // `SetInformationJobObject` expects for `JobObjectExtendedLimitInformation`.
         let configured = unsafe {
             SetInformationJobObject(
@@ -338,11 +341,13 @@ mod tests {
         // Clean up: kill the orphans directly by pid so this test doesn't
         // leak `sleep 30` processes into the rest of the suite run.
         for pid in grandchildren {
+            // `kill(0, …)` would hit this test's own process group, so an
+            // unconvertible pid must fail the test, never fall back to 0.
+            let pid = libc::pid_t::try_from(pid).expect("pid from pgrep fits pid_t");
             // SAFETY: plain-integer FFI call, no pointers involved. `pid`
-            // is one of this test's own grandchildren (read via `pgrep -P`),
-            // and real pids always fit `i32`.
+            // is one of this test's own grandchildren (read via `pgrep -P`).
             unsafe {
-                libc::kill(i32::try_from(pid).unwrap_or(0), libc::SIGKILL);
+                libc::kill(pid, libc::SIGKILL);
             }
         }
     }

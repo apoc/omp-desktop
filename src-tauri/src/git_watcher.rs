@@ -46,13 +46,7 @@ impl GitWatcherState {
 
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             let Ok(event) = res else { return };
-            // notify watches the parent dir on Windows (ReadDirectoryChangesW),
-            // so filter to events whose changed path is named "HEAD".
-            let hits_head = event
-                .paths
-                .iter()
-                .any(|p| p.file_name().is_some_and(|n| n == "HEAD"));
-            if !hits_head {
+            if !is_head_change(&event) {
                 return;
             }
             let (branch, _) = crate::git::probe(&repo_owned);
@@ -96,5 +90,54 @@ impl GitWatcherState {
 impl Default for GitWatcherState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Whether `event` is a change to a file named `HEAD`.
+///
+/// Name filter: notify watches the parent dir on Windows
+/// (`ReadDirectoryChangesW`), and `start` watches the parent everywhere, so
+/// events for sibling files (`index`, `HEAD.lock`, …) arrive too.
+///
+/// Access filter: since notify 7 inotify also reports `IN_OPEN` as
+/// `Access(Open)`. [`crate::git::probe`] opens HEAD itself, so reacting to
+/// opens would re-trigger the probe from its own read, forever. A branch
+/// switch (`rename(HEAD.lock → HEAD)`) arrives as `Modify(Name)` and a
+/// direct write as `Modify(Data)`, so no real change is lost.
+fn is_head_change(event: &notify::Event) -> bool {
+    !event.kind.is_access()
+        && event
+            .paths
+            .iter()
+            .any(|p| p.file_name().is_some_and(|n| n == "HEAD"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_head_change;
+    use notify::event::{AccessKind, AccessMode, EventKind, ModifyKind, RenameMode};
+    use notify::Event;
+
+    #[test]
+    fn opening_head_is_not_a_change() {
+        // The probe's own read of HEAD must not look like a branch switch,
+        // or every probe schedules the next one.
+        let open = Event::new(EventKind::Access(AccessKind::Open(AccessMode::Any)))
+            .add_path("/repo/.git/HEAD".into());
+        assert!(!is_head_change(&open));
+    }
+
+    #[test]
+    fn renaming_onto_head_is_a_change() {
+        let switch = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::To)))
+            .add_path("/repo/.git/HEAD".into());
+        assert!(is_head_change(&switch));
+    }
+
+    #[test]
+    fn sibling_files_are_ignored() {
+        let lock = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::From)))
+            .add_path("/repo/.git/HEAD.lock".into());
+        assert!(!is_head_change(&lock));
     }
 }

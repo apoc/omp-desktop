@@ -13,7 +13,7 @@
 // react-dom resolves `react` to the window.React the first file defined, so
 // there is exactly one React instance (two copies break hooks). Development
 // builds, matching what the app has always shipped.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -24,13 +24,24 @@ if (!/^\d+\.\d+\.\d+$/.test(version ?? "")) {
 }
 const outDir = resolve(import.meta.dir, "..", "src");
 const work = mkdtempSync(join(tmpdir(), "vendor-react-"));
+const startDir = process.cwd();
 
 try {
+  // Without a manifest of its own, npm walks up from `work` to the first
+  // ancestor holding a package.json/node_modules and installs *there*.
+  writeFileSync(join(work, "package.json"), '{ "private": true }\n');
   const install = Bun.spawnSync(
-    ["npm", "install", "--no-save", "--no-audit", "--no-fund", `react@${version}`, `react-dom@${version}`],
+    [
+      "npm", "install", "--no-save", "--no-audit", "--no-fund", "--ignore-scripts",
+      `react@${version}`, `react-dom@${version}`,
+    ],
     { cwd: work, stdout: "inherit", stderr: "inherit" },
   );
   if (install.exitCode !== 0) throw new Error("npm install failed");
+  const pkgVersion = (name) =>
+    JSON.parse(readFileSync(join(work, "node_modules", name, "package.json"), "utf8")).version;
+  // react, react-dom and scheduler share this exact MIT text.
+  const license = readFileSync(join(work, "node_modules", "react", "LICENSE"), "utf8").trim();
 
   // ESM entries: Bun wraps a CommonJS entry in a lazy module that nothing
   // ever calls, so the global assignment would never run.
@@ -53,15 +64,31 @@ try {
     },
   };
 
-  const banner = (what) =>
-    `/**\n * ${what} ${version} (development build), bundled from the official npm\n` +
-    ` * package by scripts/vendor-react.mjs. Do not edit; regenerate instead.\n` +
-    ` * @license MIT — Copyright (c) Meta Platforms, Inc. and affiliates.\n */`;
+  // `/*!` so any later minifier keeps it; Bun drops every upstream comment,
+  // including the `@license` headers, so the notices are restated here.
+  const banner = (what, extraNotices) =>
+    [
+      `/*! ${what} ${version} (development build), bundled from the official npm`,
+      `packages (scheduler ${pkgVersion("scheduler")}) by scripts/vendor-react.mjs with Bun ${Bun.version}.`,
+      "Do not edit; regenerate instead.",
+      "",
+      ...license.split("\n"),
+      ...extraNotices,
+    ]
+      .map((line, i) => (i === 0 ? line : line ? ` * ${line}` : " *"))
+      .join("\n") + "\n */";
 
-  for (const [entry, file, what, plugins] of [
-    ["react-entry.js", "react.development.js", "React", []],
-    ["react-dom-entry.js", "react-dom.development.js", "ReactDOM", [reactFromGlobal]],
+  // Bun labels each module with its path relative to cwd: build from inside
+  // `work` so the labels read `node_modules/…` and a re-run is byte-identical.
+  process.chdir(work);
+  for (const [entry, file, what, plugins, extraNotices] of [
+    ["react-entry.js", "react.development.js", "React", [], []],
+    [
+      "react-dom-entry.js", "react-dom.development.js", "ReactDOM", [reactFromGlobal],
+      ["", "Includes Modernizr 3.0.0pre (Custom Build) | MIT"],
+    ],
   ]) {
+    // Bun.build throws (an AggregateError of its logs) on failure.
     const result = await Bun.build({
       entrypoints: [join(work, entry)],
       format: "iife",
@@ -70,13 +97,14 @@ try {
       define: { "process.env.NODE_ENV": '"development"' },
       plugins,
     });
-    if (!result.success) throw new AggregateError(result.logs, `bundling ${file} failed`);
-    // Bun labels each module with its path relative to cwd, which runs
-    // through the random temp dir; strip it so a re-run is byte-identical.
-    const code = (await result.outputs[0].text()).replace(/^(\s*\/\/ )\S*?vendor-react-[^/]+\//gm, "$1");
-    writeFileSync(join(outDir, file), `${banner(what)}\n${code}`);
+    const code = await result.outputs[0].text();
+    if (code.includes(work) || code.includes("vendor-react-")) {
+      throw new Error(`${file}: a temp path leaked into the bundle`);
+    }
+    writeFileSync(join(outDir, file), `${banner(what, extraNotices)}\n${code}`);
     console.log(`wrote src/${file} (${code.length} bytes)`);
   }
 } finally {
+  process.chdir(startDir); // Windows cannot remove the cwd
   rmSync(work, { recursive: true, force: true });
 }
