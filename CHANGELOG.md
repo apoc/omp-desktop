@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Raw HTML in agent replies and plans is shown as text instead of being rendered, so markup like `<img onerror=…>` can no longer run scripts in the app.
+
+### Changed
+
+- Release builds no longer allow inline scripts or inline event handlers (Content Security Policy), as a second line of defence against injected markup.
+
 ## [0.3.2] - 2026-09-24
 
 ### Fixed

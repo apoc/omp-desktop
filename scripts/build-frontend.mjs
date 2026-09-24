@@ -95,6 +95,29 @@ if (/<script\b[^>]*(text\/(?:babel|jsx)|\.jsx["'\s>])/i.test(html)) {
 for (const [, path] of html.matchAll(/<script\b[^>]*\ssrc="([^"]+)"/gi)) {
   if (!existsSync(join(out, path))) throw new Error(`dist/index.html loads ${path}, which dist/ lacks`);
 }
+// Release builds run under a CSP whose script-src lacks 'unsafe-inline'
+// (src-tauri/tauri.dist.conf.json): src/ needs it only because Babel injects
+// each compiled file as an inline <script>. Without it an injected
+// `<img onerror>` can't run even if markup ever slips past the markdown
+// renderer — so an inline script or handler here would be dead in release,
+// and the CSP may differ from src/'s in exactly that one token.
+if (/<script\b(?![^>]*\ssrc=)[^>]*>/i.test(html)) {
+  throw new Error("dist/index.html: inline <script> — move it into a file (the release CSP blocks it)");
+}
+if (/<[a-z][^>]*\son[a-z]+\s*=/i.test(html)) {
+  throw new Error("dist/index.html: inline on* event handler attribute (the release CSP blocks it)");
+}
+const cspOf = (file) => JSON.parse(readFileSync(join(root, "src-tauri", file), "utf8")).app?.security?.csp;
+const devCsp = cspOf("tauri.conf.json");
+const distCsp = cspOf("tauri.dist.conf.json");
+const expectedCsp = devCsp
+  .split(";")
+  .map((d) => (/^\s*script-src\s/.test(d) ? d.replace(/\s'unsafe-inline'(?=\s|$)/, "") : d))
+  .join(";");
+if (expectedCsp === devCsp) throw new Error("tauri.conf.json: script-src no longer has 'unsafe-inline' to strip");
+if (distCsp !== expectedCsp) {
+  throw new Error(`tauri.dist.conf.json: app.security.csp must be tauri.conf.json's minus script-src 'unsafe-inline':\n  ${expectedCsp}`);
+}
 writeFileSync(join(out, "index.html"), html);
 
 console.log(`dist/: compiled ${compiled} JSX files (${bytesIn >> 10} KB → ${bytesOut >> 10} KB), dropped Babel and development React`);
