@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Updated every dependency to its latest version. Bundled libraries: React 19.3.0 (was 18.3.1), marked 18.0.14 (was 12.0.2), highlight.js 11.12.0 and Babel 7.29.9. Rust: Tauri 2.11.6 and its plugins, `gix` 0.87, `notify` 8, `sha2` 0.11, `windows-sys` 0.61, plus all compatible crate updates. Tauri CLI: 2.11.5.
+- Release builds now use React's minified production build: about a fifth of the size and faster rendering. Debug builds (`npm run dev`) keep the development build, with its warnings and readable error messages.
 
 ## [0.3.1] - 2026-09-24
 

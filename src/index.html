@@ -18,10 +18,22 @@
   <div id="root"></div>
 
   <!-- React 19 + Babel — served locally, no CDN dependency. React 19 ships
-       no UMD builds; the two React files are generated from the official
-       npm packages by scripts/vendor-react.mjs (never edit them by hand). -->
-  <script src="react.development.js"></script>
-  <script src="react-dom.development.js"></script>
+       no UMD builds; the React files are generated from the official npm
+       packages by scripts/vendor-react.mjs (never edit them by hand).
+       Release builds load the minified production pair, debug builds and a
+       plain browser the development pair (warnings, readable errors):
+       `window.__OMP_RELEASE_BUILD__` is set before this runs by
+       `release_build_flag` in src-tauri/src/lib.rs. document.write keeps
+       these parser-blocking, so they still run before everything below. -->
+  <script>
+    (function () {
+      var build = window.__OMP_RELEASE_BUILD__ === true ? 'production' : 'development';
+      document.write(
+        '<script src="react.' + build + '.js"><\/script>' +
+        '<script src="react-dom.' + build + '.js"><\/script>'
+      );
+    })();
+  </script>
   <script src="babel.min.js"></script>
 
   <!-- Markdown + syntax highlighting — must load before design components -->
