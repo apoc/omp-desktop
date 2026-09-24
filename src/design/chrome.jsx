@@ -96,10 +96,13 @@ function TabBar({ projects, activeId, onSelect, onClose, onNew, onHistory, profi
         return (
           <div key={p.id}
             className={`tab ${active ? "active" : ""}`}
-            onClick={() => onSelect(p.id)}
-            // Middle-click closes, as in browsers (#24). Swallowing the
-            // middle-button mousedown stops Windows autoscroll and Linux
-            // primary-selection paste from firing on the tab.
+            // Middle-click closes, as in browsers (#24). WebKit before
+            // Safari 18.2 / WebKitGTK 2.46 has no `auxclick` and reports it as
+            // a `click` with button 1, hence the check here too; newer engines
+            // never send `click` for button 1, so this can't double-fire.
+            // Swallowing the middle-button mousedown stops Windows autoscroll
+            // and Linux primary-selection paste from firing on the tab.
+            onClick={e => (e.button === 1 ? onClose?.(p.id) : onSelect(p.id))}
             onMouseDown={e => { if (e.button === 1) e.preventDefault(); }}
             onAuxClick={e => { if (e.button === 1) { e.preventDefault(); onClose?.(p.id); } }}>
             <span className="tab-bar-mark" style={{ background: active ? p.color : "transparent" }} />
