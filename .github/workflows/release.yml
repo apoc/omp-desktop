@@ -213,7 +213,7 @@ jobs:
               and available on your `PATH`.
           releaseDraft: true        # publish manually after reviewing artefacts
           prerelease: ${{ contains(env.TAG, '-') }}
-          args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json
+          args: ${{ matrix.args }} --config src-tauri/tauri.dist.conf.json --config src-tauri/tauri.release.conf.json
 
   updater-json:
     name: updater feed (latest.json)

@@ -572,6 +572,21 @@ mod tests {
         dir
     }
 
+    #[test]
+    fn hex_sha256_matches_known_vectors() {
+        // The hex digest is persisted (snapshot filenames, approval project
+        // keys), so a hashing-crate upgrade that changed the output or its
+        // formatting would orphan existing on-disk state.
+        assert_eq!(
+            hex_sha256(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            hex_sha256(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
     /// Spawn a trivial child process, wait for it to exit, and return its
     /// now-dead pid — a pid guaranteed not to belong to any live process
     /// (barring extremely unlikely pid reuse in the instant between wait

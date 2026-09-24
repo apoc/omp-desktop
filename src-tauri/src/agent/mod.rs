@@ -49,7 +49,7 @@ const EVENT_JOURNAL_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// `type` values the frontend may legitimately send over `send_command`.
 /// Anything else is rejected before it reaches omp's stdin — hardens the
 /// boundary against a renderer bug (or a script running under the CSP's
-/// `'unsafe-eval'` allowance) forwarding an unintended or malformed
+/// `'unsafe-inline'` allowance) forwarding an unintended or malformed
 /// command. Kept in sync with every `_send`/`_sendWithResponse` call site
 /// in `src/live.js`.
 const ALLOWED_COMMAND_TYPES: &[&str] = &[

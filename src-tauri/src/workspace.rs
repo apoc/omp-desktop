@@ -18,8 +18,8 @@
 //! formatting logic by hand, whereas `git status --porcelain=v1` and
 //! `git diff` already do this correctly and stably.
 //!
-//! [`accept`] and [`reject`] also shell out, for the same reason: gix
-//! 0.83's index-writing/checkout support is far less mature than its read
+//! [`accept`] and [`reject`] also shell out, for the same reason: gix's
+//! index-writing/checkout support is far less mature than its read
 //! APIs, and `git add` / `git checkout` / `git reset` already implement
 //! safe, atomic index and worktree mutation.
 
@@ -606,7 +606,7 @@ fn resolve_file_target(
 ///
 /// ### Why shell out to `git` here
 ///
-/// gix 0.83's in-memory index API can stage individual entries, but
+/// gix's in-memory index API can stage individual entries, but
 /// hashing the current worktree content into a blob, computing correct
 /// stat metadata, inserting at the right sorted position, and writing the
 /// index back atomically is exactly what `git add` already does safely.

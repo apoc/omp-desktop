@@ -17,7 +17,14 @@
 <body>
   <div id="root"></div>
 
-  <!-- React 18 + Babel — served locally, no CDN dependency -->
+  <!-- React 19 + Babel — served locally, no CDN dependency. React 19 ships
+       no UMD builds; the React files are generated from the official npm
+       packages by scripts/vendor-react.mjs (never edit them by hand).
+       This file is what `tauri dev` serves: development React, JSX
+       compiled in the browser by Babel. Release builds embed dist/ instead,
+       written by scripts/build-frontend.mjs: production React, JSX compiled
+       ahead of time, no Babel. Keep the tags below in their exact form —
+       that script rewrites them and fails if it can't find them. -->
   <script src="react.development.js"></script>
   <script src="react-dom.development.js"></script>
   <script src="babel.min.js"></script>
@@ -26,7 +33,8 @@
   <script src="marked.min.js"></script>
   <script src="highlight.min.js"></script>
   <script>
-    // Wire marked v12 to use highlight.js for code blocks, and to close a
+    // Wire marked 18 (token-object renderer API) to use highlight.js for
+    // code blocks, and to close a
     // link-rendering gap `on_navigation` (src-tauri/src/navigation_guard.rs)
     // cannot reach: a `javascript:` (or `data:`/`vbscript:`) href never
     // fires the webview's navigation-policy hook at all - WebKit executes
@@ -34,12 +42,39 @@
     // attempted (chromium and WebView2 do the same) - so it would run in
     // the app's own privileged origin, which exposes `window.__TAURI__`.
     // marked's own `cleanUrl` only `encodeURI`s the href; it never checks
-    // the scheme. Runs after DOMContentLoaded so both libs are parsed.
+    // the scheme. Parser-blocking, so both libs above are already loaded.
     (function () {
       if (!window.marked || !window.hljs) return;
+      // Since marked 15, renderers get raw token fields: `href`, `title`,
+      // `lang` and an autolink's `text` arrive unescaped and must be
+      // escaped here (and the `autolink` flag itself needs marked 18).
+      const escapeHtml = (s) => String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+      // CommonMark decodes character references in a link destination or
+      // title (`&amp;`, `&#106;`). Decode once, then check *and* emit that
+      // same string: checking the raw text would let `&#106;avascript:`
+      // pass as a relative URL and then decode to `javascript:` in the
+      // attribute. Only `;`-terminated references are decoded, as CommonMark
+      // requires — HTML text parsing would also expand legacy forms without
+      // `;`, turning `?a=1&currency=USD` into `?a=1¤cy=USD`. Each one goes
+      // through a <textarea> (RCDATA: decodes references, never creates
+      // elements); a result longer than 2 UTF-16 units means the name was
+      // invalid and only a prefix decoded, so the reference stays literal.
+      const decoder = document.createElement('textarea');
+      const decodeRefs = (s) => s.includes('&')
+        ? s.replace(/&(?:#\d{1,7}|#[xX][\da-fA-F]{1,6}|[A-Za-z][A-Za-z\d]{1,31});/g, (ref) => {
+            decoder.innerHTML = ref;
+            const v = decoder.value;
+            return v.length <= 2 ? v : ref;
+          })
+        : s;
       window.marked.use({
         renderer: {
-          code(text, lang) {
+          code({ text, lang }) {
             const code     = text ?? '';
             const language = (lang ?? '').split(/\s/)[0];
             let highlighted;
@@ -48,33 +83,33 @@
                 ? hljs.highlight(code, { language }).value
                 : hljs.highlightAuto(code).value;
             } catch (_) {
-              highlighted = code
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
+              highlighted = escapeHtml(code);
             }
-            const cls = language ? ' language-' + language : '';
+            const cls = language ? ' language-' + escapeHtml(language) : '';
             return '<pre class="code-block"><code class="hljs' + cls + '">' +
                    highlighted + '</code></pre>';
           },
-          link(href, title, text) {
+          link({ href, title, tokens, text, autolink }) {
             // Only these schemes can ever be a legitimate chat/diff/plan
             // link; anything else (a script scheme, or an href `new URL`
-            // can't even parse) renders as plain text - `text` is already
-            // the rendered-safe inner HTML, so no anchor, no navigation
+            // can't even parse) renders as plain text - `inner` is the
+            // rendered-safe inner HTML, so no anchor, no navigation
             // attempt, no policy hook to bypass.
+            const inner = autolink ? escapeHtml(text) : this.parser.parseInline(tokens);
+            // An autolink `<…>` resolves no references, so it stays literal.
+            const url = autolink ? href : decodeRefs(href);
             let scheme = null;
-            try { scheme = new URL(href, 'https://omp-desktop.invalid/').protocol; }
+            try { scheme = new URL(url, 'https://omp-desktop.invalid/').protocol; }
             catch (_) { /* leave scheme null - falls through to plain text */ }
             if (scheme !== 'http:' && scheme !== 'https:' && scheme !== 'mailto:') {
-              return text;
+              return inner;
             }
             let safeHref;
-            try { safeHref = encodeURI(href).replace(/%25/g, '%'); }
-            catch (_) { return text; }
+            try { safeHref = escapeHtml(encodeURI(url).replace(/%25/g, '%')); }
+            catch (_) { return inner; }
             let out = '<a href="' + safeHref + '"';
-            if (title) out += ' title="' + title + '"';
-            return out + '>' + text + '</a>';
+            if (title) out += ' title="' + escapeHtml(decodeRefs(title)) + '"';
+            return out + '>' + inner + '</a>';
           }
         }
       });

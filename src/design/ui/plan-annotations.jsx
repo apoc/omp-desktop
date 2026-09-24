@@ -12,7 +12,9 @@ function segmentPlan(text) {
     if (!window.marked) throw new Error("no marked");
     const tokens = window.marked.lexer(text);
     return tokens
-      .filter(t => t.type !== "space")
+      // `def` (link reference definition, emitted since marked 16.2) renders
+      // to nothing; the links it defines are already resolved at lex time.
+      .filter(t => t.type !== "space" && t.type !== "def")
       .map((t, i) => ({ index: i, kind: t.type, raw: t.raw ?? "", html: window.marked.parser([t]) }));
   } catch {
     return [{ index: 0, kind: "paragraph", raw: text, html: `<pre>${text.replace(/</g,"&lt;")}</pre>` }];
