@@ -96,7 +96,12 @@ function TabBar({ projects, activeId, onSelect, onClose, onNew, onHistory, profi
         return (
           <div key={p.id}
             className={`tab ${active ? "active" : ""}`}
-            onClick={() => onSelect(p.id)}>
+            onClick={() => onSelect(p.id)}
+            // Middle-click closes, as in browsers (#24). Swallowing the
+            // middle-button mousedown stops Windows autoscroll and Linux
+            // primary-selection paste from firing on the tab.
+            onMouseDown={e => { if (e.button === 1) e.preventDefault(); }}
+            onAuxClick={e => { if (e.button === 1) { e.preventDefault(); onClose?.(p.id); } }}>
             <span className="tab-bar-mark" style={{ background: active ? p.color : "transparent" }} />
             <Icon name="folder" size={11} color={active ? p.color : "var(--fg-4)"} />
             {p.runState && p.runState !== "idle" && (

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Middle-clicking a project tab closes it, like in a browser (#24).
+
 ### Fixed
 
 - Conversation history is now ordered by when a session was last active (its most recent message), not by when it was created — a session you continue days after starting now correctly sorts to the top (#23).
