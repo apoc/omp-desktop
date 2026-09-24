@@ -20,7 +20,9 @@
     "showRadar": true,
     "fontSize":  100,
     "autosave":  true,
-    "promptHistoryLimit": 100
+    "promptHistoryLimit": 100,
+    "updateCheck": true,
+    "skippedUpdate": null
   }/*EDITMODE-END*/;
 
   const NULL_MODEL    = { id: "", name: "–", provider: "", note: "", latency: 0, current: false };

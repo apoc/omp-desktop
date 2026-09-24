@@ -253,3 +253,19 @@
   font-size: var(--d-text-xs);
 }
 
+/* Tab-bar pill announcing an available update. */
+.btn.update-pill {
+  height: 18px; padding: 0 8px;
+  border-radius: 9px;
+  border-color: color-mix(in oklab, var(--accent) 45%, transparent);
+  color: var(--accent);
+  font-size: var(--d-text-xs);
+}
+/* Running version; click checks for updates. xs like its neighbours —
+   `.btn` alone would bump it to sm. */
+.btn.app-version {
+  height: 18px; padding: 0 4px;
+  color: var(--fg-4);
+  font-size: var(--d-text-xs);
+}
+

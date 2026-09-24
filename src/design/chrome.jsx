@@ -81,7 +81,7 @@ function WindowChrome({
 }
 
 // ── Project tabs ─────────────────────────────────────────────────────
-function TabBar({ projects, activeId, onSelect, onClose, onNew, onHistory, profiles = [] }) {
+function TabBar({ projects, activeId, onSelect, onClose, onNew, onHistory, profiles = [], appVersion, updateVersion, onUpdate, onCheckUpdate }) {
   // Tabs can run under different profiles, so a tab whose profile is not the
   // built-in one is labelled with it — otherwise two tabs on the same folder
   // in different profiles look identical. Falls back to the raw id until the
@@ -125,7 +125,14 @@ function TabBar({ projects, activeId, onSelect, onClose, onNew, onHistory, profi
       </button>
       <div style={{ flex: 1 }} />
       <div className="tabs-right mono">
-        <span style={{ color: "var(--fg-4)" }}>v0.4.7-aurora</span>
+        {updateVersion && (
+          <button className="btn outlined update-pill" onClick={onUpdate} title={`OMP Desktop v${updateVersion} is available`}>
+            <Icon name="arrowUp" size={9} />v{updateVersion}
+          </button>
+        )}
+        <button className="btn ghost app-version" onClick={onCheckUpdate} title="check for updates">
+          {appVersion ? `v${appVersion}` : "—"}
+        </button>
       </div>
     </div>
   );

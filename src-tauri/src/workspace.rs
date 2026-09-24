@@ -816,6 +816,10 @@ mod tests {
         run_git(&dir, &["init", "-q"]);
         run_git(&dir, &["config", "user.email", "test@example.com"]);
         run_git(&dir, &["config", "user.name", "Test"]);
+        // Byte-exact content assertions must not depend on the machine's
+        // global git config: Windows runners set `core.autocrlf=true`, which
+        // turns a restored "base content\n" into "base content\r\n".
+        run_git(&dir, &["config", "core.autocrlf", "false"]);
         std::fs::write(dir.join("committed.txt"), "base content\n").expect("write base file");
         run_git(&dir, &["add", "."]);
         run_git(&dir, &["commit", "-q", "-m", "init"]);

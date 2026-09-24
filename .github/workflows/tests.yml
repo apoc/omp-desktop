@@ -1,0 +1,65 @@
+# Test suite — reusable, so CI and the release pipeline run the same gate.
+# Called by ci.yml (every push/PR) and release.yml (before any build).
+#
+#   rust  →  cargo test --locked on Windows, Linux and macOS
+#   js    →  every JS regression script (`npm test`, see package.json)
+#
+# `cargo test` compiles the crate and its tests, so it subsumes the
+# `cargo check` CI used to run on its own.
+
+name: Tests
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: cargo test · ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artefacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: test-${{ matrix.os }}
+
+      # WebKit + GTK are required to compile the Tauri crate on Linux
+      - name: Install system dependencies (Linux only)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --locked
+
+  js:
+    name: JS regression scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Dependency-free node scripts: no `npm ci` needed.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: npm test
+        run: npm test

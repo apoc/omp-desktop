@@ -2516,6 +2516,46 @@
       return _invokeSafe("list_project_files", { cwd, query, limit }, []);
     },
 
+    // ── App updates (issue #19) — see src-tauri/src/updater.rs ─────────────
+    // Thin IPC wrappers; the state machine is app/updater.js, driven by
+    // app/use-updater.jsx. Not per-session, so nothing here touches `state`.
+
+    /** Running app version (`tauri.conf.json`'s `version`), or null. Same
+     *  IPC as `window.__TAURI__.app.getVersion()`. */
+    appVersion() {
+      return _invokeSafe("plugin:app|version", undefined, null);
+    },
+
+    /** `{ok: true, value}` — value is the UpdateInfo, or null when up to
+     *  date — or `{ok: false, error}`. */
+    checkForUpdate() {
+      return _invokeResult("app_update_check");
+    },
+
+    /** Download, install and relaunch into the update the last check
+     *  found, reporting `{downloaded, total}` to `onProgress` meanwhile.
+     *  Windows: resolves only on failure (the installer takes over the
+     *  process); elsewhere `{ok: true}` briefly precedes the restart.
+     *  The listener lives exactly as long as the install — it is attached
+     *  before the invoke, so no early chunk is missed. */
+    async installUpdate(onProgress) {
+      if (!window.__TAURI__) return { ok: false, error: "not connected" };
+      const unlisten = await window.__TAURI__.event
+        .listen("update://progress", ev => onProgress(ev.payload))
+        .catch(err => { console.error("[live] update progress listener failed:", err); return null; });
+      try {
+        return await _invokeResult("app_update_install");
+      } finally {
+        unlisten?.();
+      }
+    },
+
+    /** Open an http(s) URL in the system browser (same allow-list as the
+     *  webview's navigation guard — see `open_url_external`). */
+    openExternalUrl(url) {
+      return _invokeResult("open_url_external", { url });
+    },
+
     /** Update the in-memory prompt-history cap (tweaks panel setting,
      *  default OMP_PROMPT_HISTORY.DEFAULT_LIMIT). Trims every tab's list
      *  eagerly, not just on the next record/backfill — otherwise lowering
