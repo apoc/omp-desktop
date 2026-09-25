@@ -1,0 +1,75 @@
+/* Attached-image viewer (chat/image-lightbox.jsx, issue #25) ─────────── */
+
+/* Thumbnail trigger in the user bubble (chat.css .user-image). */
+.user-image-btn {
+  appearance: none; padding: 0; border: 0; background: none;
+  border-radius: 8px; cursor: zoom-in; display: block;
+  align-self: flex-start; /* hug the image, so the focus ring does too */
+}
+.user-image-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.user-image-btn:hover .user-image { border-color: var(--fg-5); }
+/* The enlarged copy flies out of / back into this rect. */
+.user-image.is-lifted { visibility: hidden; }
+
+.lightbox {
+  position: fixed; inset: 0;
+  z-index: 200;
+  background: color-mix(in oklab, var(--bg-app) 82%, transparent);
+  backdrop-filter: blur(12px);
+  cursor: zoom-out;
+  outline: none;
+  animation: lbScrimIn 220ms var(--ease-out);
+}
+/* The scrim animates its own background only: an opacity fade would make
+   the image translucent while it flies out of / back into the thumbnail. */
+.lightbox.is-closing { animation: lbScrimOut 220ms var(--ease-out) forwards; }
+
+/* left/top/width/height come from OMP_LIGHTBOX.fitRect; the FLIP transform
+   (app/lightbox.js flipTransform) assumes a top-left origin. */
+.lightbox-img {
+  position: fixed;
+  transform-origin: 0 0;
+  border-radius: 10px;
+  border: 1px solid var(--line-bright);
+  box-shadow: var(--shadow-window);
+  background: var(--bg-surface);
+  user-select: none;
+}
+.lightbox-img.is-swap { animation: lbFadeIn 180ms var(--ease-out); }
+
+.lightbox-btn {
+  position: fixed;
+  display: grid; place-items: center;
+  width: 36px; height: 36px; padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line-bright);
+  background: color-mix(in oklab, var(--bg-elevated) 90%, transparent);
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+  animation: lbFadeIn 220ms var(--ease-out);
+}
+.lightbox-btn:hover { background: var(--bg-hover); color: var(--fg); }
+.lightbox-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.lightbox-close { top: 12px; right: 16px; }
+.lightbox-prev, .lightbox-next { top: 50%; margin-top: -18px; }
+.lightbox-prev { left: 18px; }
+.lightbox-prev svg { transform: scaleX(-1); }
+.lightbox-next { right: 18px; }
+.lightbox-count {
+  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+  font-size: var(--d-text-xs); color: var(--fg-3);
+  pointer-events: none;
+  animation: lbFadeIn 220ms var(--ease-out);
+}
+.lightbox.is-closing .lightbox-btn,
+.lightbox.is-closing .lightbox-count { visibility: hidden; }
+
+@keyframes lbFadeIn   { from { opacity: 0; } }
+@keyframes lbScrimIn  { from { background-color: transparent; backdrop-filter: blur(0); } }
+@keyframes lbScrimOut { to   { background-color: transparent; backdrop-filter: blur(0); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .lightbox, .lightbox.is-closing, .lightbox-img.is-swap,
+  .lightbox-btn, .lightbox-count { animation: none; }
+}

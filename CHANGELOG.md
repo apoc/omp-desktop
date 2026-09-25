@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Middle-clicking a project tab closes it, like in a browser (#24).
+- Clicking an image attached to a message pops it out into an enlarged viewer; with several images, switch between them with the arrow buttons or ←/→ keys, close with Esc or a click (#25).
 
 ### Fixed
 

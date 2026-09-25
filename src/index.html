@@ -84,6 +84,12 @@
        app/use-updater.jsx read window.OMP_UPDATER. -->
   <script src="app/updater.js"></script>
 
+  <!-- Attached-image viewer geometry (issue #25): pure fit/FLIP/step
+       helpers. Dependency-free IIFE; design/chat/image-lightbox.jsx
+       destructures window.OMP_LIGHTBOX at top level, so this must load
+       before it. -->
+  <script src="app/lightbox.js"></script>
+
   <!-- Design components (unchanged — from src/design/ copy) -->
   <script src="design/tweaks/style.js"></script>
   <script src="design/tweaks/use-tweaks.js"></script>
@@ -93,6 +99,8 @@
   <script type="text/babel" src="design/ui/sparks.jsx"></script>
   <script type="text/babel" src="design/ui/markdown.jsx"></script>
   <script type="text/babel" src="design/ui/plan-annotations.jsx"></script>
+  <!-- user-bubble.jsx destructures window.ImageLightbox at top level. -->
+  <script type="text/babel" src="design/chat/image-lightbox.jsx"></script>
   <script type="text/babel" src="design/chat/user-bubble.jsx"></script>
   <script type="text/babel" src="design/chat/eval-cell.jsx"></script>
   <script type="text/babel" src="design/chat/assistant-bubble.jsx"></script>
