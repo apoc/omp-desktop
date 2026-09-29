@@ -58,6 +58,13 @@ check("basename keeps the original case of either separator style", () => {
   assert.equal(N.basename("/home/apoc/devel/omp-desktop"), "omp-desktop");
 });
 
+check("parentName is the containing folder, empty without one", () => {
+  assert.equal(N.parentName("/home/apoc/devel/dotfiles/"), "devel");
+  assert.equal(N.parentName("C:\\Users\\Me\\MyRepo"), "Me");
+  assert.equal(N.parentName("/srv"), "");
+  assert.equal(N.parentName(""), "");
+});
+
 // ── groupTabs ─────────────────────────────────────────────────────────────
 
 check("the same folder under two profiles is two groups", () => {

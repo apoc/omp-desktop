@@ -628,6 +628,8 @@ function App() {
             ]}
             onChange={v => setTweak("layout", v)}
           />
+          <TweakToggle label="project sidebar" value={t.sidebar ?? true}
+            onChange={v => setTweak("sidebar", v)} />
         </TweakSection>
         <TweakSection label="Session">
           <TweakSlider label="prompt history" value={t.promptHistoryLimit ?? window.OMP_PROMPT_HISTORY.DEFAULT_LIMIT}

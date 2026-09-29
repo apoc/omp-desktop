@@ -28,6 +28,13 @@
     return parts.length ? parts[parts.length - 1] : p;
   }
 
+  /** Name of the folder containing `p` ("devel" for ~/devel/x), or "" when
+   *  `p` has no parent segment (a root-level folder, a bare drive). */
+  function parentName(p) {
+    const parts = (p || "").split(/[\\/]/).filter(Boolean);
+    return parts.length > 1 ? parts[parts.length - 2] : "";
+  }
+
   function groupKey(tab) {
     return tab.path ? `${tab.profile}|${normPath(tab.path)}` : `tab:${tab.id}`;
   }
@@ -99,6 +106,7 @@
   window.OMP_PROJECT_NAV = {
     normPath,
     basename,
+    parentName,
     groupKey,
     groupTabs,
     groupRunState,
