@@ -6,7 +6,8 @@
    - Ambient rail: TokenGauge, ActivityRadar, subagents card, Minimap
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID, SubagentRailCard } = window;
+const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot } = window;
+const { groupTabs } = window.OMP_PROJECT_NAV;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` — same
 // guard and rationale as composer.jsx's copy (kept local rather than a
@@ -81,7 +82,11 @@ function WindowChrome({
 }
 
 // ── Project tabs ─────────────────────────────────────────────────────
-function TabBar({ projects, activeId, onSelect, onClose, onNew, onHistory, profiles = [], appVersion, updateVersion, onUpdate, onCheckUpdate }) {
+function TabBar({
+  projects, activeId, onSelect, onClose, onNew, onHistory, onNewInProject,
+  sidebarOpen, onToggleSidebar,
+  profiles = [], appVersion, updateVersion, onUpdate, onCheckUpdate,
+}) {
   // Tabs can run under different profiles, so a tab whose profile is not the
   // built-in one is labelled with it — otherwise two tabs on the same folder
   // in different profiles look identical. Falls back to the raw id until the
@@ -90,7 +95,28 @@ function TabBar({ projects, activeId, onSelect, onClose, onNew, onHistory, profi
     id === DEFAULT_PROFILE_ID ? null : (profiles.find(p => p.id === id)?.name ?? id);
   return (
     <div className="tabs">
-      {projects.map((p) => {
+      <button className={`tab-add ${sidebarOpen ? "on" : ""}`}
+        title={`project sidebar (${hintFor("desktop.sidebar.toggle", "Ctrl+B")})`}
+        aria-pressed={!!sidebarOpen}
+        onClick={onToggleSidebar}>
+        <Icon name="sidebar" size={11} />
+      </button>
+      {/* Tabs on one folder + profile share a chip (#27); a project with a
+          single tab renders as a plain tab. */}
+      {groupTabs(projects).map((group) => {
+        if (group.tabs.length > 1) {
+          return (
+            <TabGroupChip key={group.key}
+              group={group}
+              activeId={activeId}
+              profileLabel={profileLabel}
+              onSelect={onSelect}
+              onClose={onClose}
+              onNewInProject={onNewInProject}
+            />
+          );
+        }
+        const p = group.tabs[0];
         const active = p.id === activeId;
         const profile = profileLabel(p.profile);
         return (
@@ -107,16 +133,7 @@ function TabBar({ projects, activeId, onSelect, onClose, onNew, onHistory, profi
             onAuxClick={e => { if (e.button === 1) { e.preventDefault(); onClose?.(p.id); } }}>
             <span className="tab-bar-mark" style={{ background: active ? p.color : "transparent" }} />
             <Icon name="folder" size={11} color={active ? p.color : "var(--fg-4)"} />
-            {p.runState && p.runState !== "idle" && (
-              <span
-                className={`tab-run-dot ${p.runState}`}
-                title={
-                  p.runState === "waiting-user" ? "waiting for you"
-                    : p.runState === "failed"    ? "agent process exited"
-                    : "running"
-                }
-              />
-            )}
+            <TabRunDot state={p.runState} />
             <span className="tab-name" title={p.name}>{p.name}</span>
             {profile && (
               <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>

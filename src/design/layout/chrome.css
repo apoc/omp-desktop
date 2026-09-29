@@ -237,7 +237,9 @@
   color: var(--fg-3);
   transition: opacity 120ms, background 120ms;
 }
-.tab:hover .tab-close { opacity: 1; }
+/* Child combinator: a grouped chip's popover rows are descendants of the
+   `.tab` too, and must reveal their own × per row, not all at once. */
+.tab:hover > .tab-close { opacity: 1; }
 .tab-close:hover { background: var(--bg-active); color: var(--fg); }
 
 .tab-add {
@@ -247,6 +249,57 @@
   color: var(--fg-3);
 }
 .tab-add:hover { color: var(--accent); background: var(--bg-hover); }
+.tab-add.on { color: var(--accent); }
+
+/* ── Grouped tab chip (#27) ──────────────────────────────────────────── */
+.tab-count {
+  font-family: var(--font-mono); font-size: var(--d-text-xs); color: var(--fg-4);
+  padding: 0 5px; border-radius: 8px; background: var(--bg-hover); line-height: 15px;
+}
+.tab.active .tab-count { color: var(--fg-3); background: var(--bg-active); }
+/* Always visible, unlike .tab-close: it is the only way into the group. */
+.tab-group-trigger {
+  width: 16px; height: 16px; padding: 0; margin-left: -4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 4px; background: transparent; border: 0; color: var(--fg-3);
+}
+.tab-group-trigger:hover,
+.tab-group-trigger[aria-expanded="true"] { background: var(--bg-active); color: var(--fg); }
+/* Left-anchored, unlike .profile-pop: tabs start at the window's left edge,
+   so growing rightward from the chip never runs into `.window`'s clipping. */
+.tab-group-pop {
+  position: absolute; top: 100%; left: 0; z-index: 40;
+  min-width: 220px; max-width: 320px;
+  padding: 4px;
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-bright);
+  border-radius: var(--r-2);
+  box-shadow: var(--shadow-pop);
+  cursor: default;
+}
+.tab-group-row { display: flex; align-items: center; gap: 2px; padding-right: 4px; border-radius: var(--r-1); }
+.tab-group-row:hover { background: var(--bg-hover); }
+.tab-group-row.active { background: var(--bg-surface); }
+.tab-group-item {
+  appearance: none; border: 0; background: transparent;
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: var(--r-1);
+  font-size: var(--d-text-sm); color: var(--fg-2);
+  text-align: left; cursor: pointer;
+}
+.tab-group-item:hover, .tab-group-row:hover .tab-group-item, .tab-group-row.active .tab-group-item { color: var(--fg); }
+.tab-group-pop > .tab-group-item:hover { background: var(--bg-hover); }
+/* Not a `.btn`: same missing-focus-ring fix as .profile-item. */
+.tab-group-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.tab-group-item .tab-name { flex: 1; }
+/* Fixed gutter so names align whether or not a row has a run dot. */
+.tab-group-dot { width: 10px; flex: none; display: inline-flex; align-items: center; justify-content: center; }
+.tab-group-row:hover .tab-close { opacity: 1; }
+/* Not a `.btn` either, so no global focus ring. */
+.tab-group-row .tab-close:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: -1px; }
+.tab-group-sep { height: 1px; margin: 4px 2px; background: var(--line); }
 
 .tabs-right {
   display: flex; align-items: center; gap: 8px; padding: 0 12px;

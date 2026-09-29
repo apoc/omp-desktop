@@ -125,6 +125,10 @@
   <!-- Per-tab profile selector — chrome.jsx destructures window.ProfileMenu
        at top level, so this must load before it. -->
   <script type="text/babel" src="design/profile-menu.jsx"></script>
+  <!-- Grouped tab-bar chip (#27) — chrome.jsx destructures
+       window.TabGroupChip / window.TabRunDot at top level, so this must load
+       before it. -->
+  <script type="text/babel" src="design/tab-group-chip.jsx"></script>
   <script type="text/babel" src="design/chrome.jsx"></script>
   <script type="text/babel" src="design/panels.jsx"></script>
   <script type="text/babel" src="design/changes-panel.jsx"></script>
