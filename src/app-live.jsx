@@ -445,8 +445,7 @@ function App() {
   const liveCtx   = ctx ?? data.ctx;
   // No tab open (the app starts that way): the session column shows the
   // empty state instead of a transcript and a composer with nowhere to send.
-  const noTab      = sessions.length === 0;
-  const recentList = recentRows(recentProjects, sessions, activeProfileId);
+  const noTab = sessions.length === 0;
 
   return (
     <>
@@ -487,7 +486,7 @@ function App() {
               <ProjectSidebar
                 tabs={sessions}
                 activeId={activeSessionId}
-                recents={recentList}
+                recents={recentRows(recentProjects, sessions, activeProfileId)}
                 profileLabel={profileLabel}
                 onSelectTab={handleSelectTab}
                 onCloseTab={handleCloseTab}
@@ -501,12 +500,7 @@ function App() {
             <div className={`stage ${showRail ? "with-rail" : ""}`}>
               <main className="session">
                 {noTab ? (
-                  <EmptyWorkspace
-                    recents={recentList}
-                    notes={workspaceNotes}
-                    onOpenFolder={handleNewProject}
-                    onOpenRecent={handleOpenRecent}
-                  />
+                  <EmptyWorkspace notes={workspaceNotes} />
                 ) : (<>
                   <ChatView key={activeSessionId} messages={messages}
                     planMode={planMode}

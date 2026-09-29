@@ -30,39 +30,19 @@
 }
 
 /* ── Empty workspace (no tab open) ──────────────────────────────────── */
-.empty-ws {
-  flex: 1; min-height: 0; overflow-y: auto;
-  display: flex; align-items: center; justify-content: center;
-  padding: 24px;
-}
-.empty-ws-card { width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 4px; }
-.empty-ws-title {
-  margin-bottom: 10px;
-  font-family: var(--font-mono); font-size: var(--d-text-sm); color: var(--fg-3);
-  text-transform: lowercase; letter-spacing: 0.04em;
-}
-.btn.empty-ws-open { align-self: flex-start; gap: 8px; }
-.empty-ws-section {
-  margin-top: 18px; padding: 0 8px 4px;
-  font-size: var(--d-text-xs); color: var(--fg-5);
-  text-transform: lowercase; letter-spacing: 0.04em;
-}
-.empty-ws-recent {
-  appearance: none; border: 0; background: transparent;
-  display: flex; align-items: center; gap: 8px;
-  height: 28px; padding: 0 8px; border-radius: var(--r-1);
-  color: var(--fg-2); text-align: left; cursor: pointer;
-}
-.empty-ws-recent:hover { background: var(--bg-hover); color: var(--fg); }
-.empty-ws-recent:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
-.empty-ws-name { font-family: var(--font-mono); font-size: var(--d-text-sm); }
-.empty-ws-parent {
-  flex: 1; min-width: 0;
-  font-family: var(--font-mono); font-size: var(--d-text-xs); color: var(--fg-5);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.empty-ws { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+/* Fills the column; the canvas draws its own background (see
+   design/empty-workspace.jsx), so it needs no fill here. */
+.empty-ws-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+/* Bridge notes float over the rain, below the logo. */
+.empty-ws-notes {
+  position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
+  width: min(460px, calc(100% - 48px));
+  display: flex; flex-direction: column; gap: 8px;
 }
 .empty-ws-note {
-  margin-top: 14px; padding: 8px 12px;
+  padding: 8px 12px;
+  background: color-mix(in oklab, var(--bg-window) 88%, transparent);
   border: 1px solid color-mix(in oklab, var(--rose) 40%, var(--line));
   border-radius: var(--r-2);
   font-size: var(--d-text-sm); color: var(--fg-2);

@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Opening a recent project, or resuming a conversation from history, focuses its tab when it is already open instead of starting a second copy (#27). `+` / `Ctrl+T` still always opens a new tab.
 - A folder picked with `+` / `Ctrl+T` is opened at its real (symlink-resolved) path, the same form "Open with OMP Desktop" and the recent-projects list use, so an open project is always recognised (#27).
-- The app no longer opens an empty "OMP Desktop" tab at launch — an agent running in whatever directory the app happened to start in, with no project behind it. It starts on a screen offering *open folder…* and the recent projects of the startup profile instead, and returns there when the last tab is closed; no agent process runs until a project is opened.
+- The app no longer opens an empty "OMP Desktop" tab at launch — an agent running in whatever directory the app happened to start in, with no project behind it. With no tab open (at launch, or after closing the last one) the main area shows an animated "digital rain" welcome screen with an OMP-DESKTOP logo (static when the system asks for reduced motion); projects open from the sidebar or the tab bar, and no agent process runs until one does.
 
 ## [0.3.3] - 2026-09-25
 
