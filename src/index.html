@@ -90,6 +90,12 @@
        before it. -->
   <script src="app/lightbox.js"></script>
 
+  <!-- Project navigation (issue #27): pure tab grouping/lookup helpers.
+       Dependency-free IIFE; design/chrome.jsx, design/tab-group-chip.jsx
+       and design/project-sidebar.jsx destructure window.OMP_PROJECT_NAV at
+       top level and live.js calls it, so it must load before all of them. -->
+  <script src="app/project-nav.js"></script>
+
   <!-- Design components (unchanged — from src/design/ copy) -->
   <script src="design/tweaks/style.js"></script>
   <script src="design/tweaks/use-tweaks.js"></script>

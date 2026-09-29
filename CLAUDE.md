@@ -25,6 +25,7 @@ Tauri 2 desktop shell for `omp` (oh-my-pi). React UI served from `src/` in `taur
 | Updater state regression | `node test-updater.mjs` (or `npm run test:updater`) |
 | Updater feed assembly regression | `node test-updater-json.mjs` (or `npm run test:updater-json`) |
 | Image viewer geometry regression | `node test-lightbox.mjs` (or `npm run test:lightbox`) |
+| Project navigation regression | `node test-project-nav.mjs` (or `npm run test:project-nav`) |
 
 `omp` must be on PATH (`%LOCALAPPDATA%\omp\omp.exe` on Win). CI and every release run the same suite (`.github/workflows/tests.yml`): `cargo test --locked` on win/linux/mac, plus `npm test`.
 
