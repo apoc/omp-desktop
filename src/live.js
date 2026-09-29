@@ -134,6 +134,17 @@
   // to inherit from) starts in. App-wide and persisted, unlike a tab's own
   // profile - `_resetSessionVars` must never touch it.
   let startupProfileId = DEFAULT_PROFILE_ID;
+  // Profile the next tab opens under while *no* tab is open — picked in the
+  // profile menu at the empty workspace (otherwise the active tab's own
+  // profile governs). Session-only: persisting it is the startup default's
+  // job. Dropped as soon as a tab is active, so closing the last tab falls
+  // back to the startup default as before.
+  let _noTabProfileId = null;
+  // Notes filed while no tab is open (a failed "Open with"): there is no
+  // transcript to hold them, and `_resetSessionVars` would drop them from
+  // `state.messages`. The empty workspace shows them; the next tab that
+  // activates receives them as local-only notes, so none is lost unseen.
+  let workspaceNotes = [];
   // Recently opened project folders (the project sidebar's `recent`
   // section), always for the active tab's profile: `_recentsProfile` is the
   // profile the list was fetched for, so `_syncRecentsProfile` can tell when
@@ -284,7 +295,9 @@
       promptHistory:   promptHistories.get(activeSessionId) ?? [],
       profiles,
       startupProfileId,
+      noTabProfileId:  _noTabProfile(),
       recentProjects,
+      workspaceNotes,
     };
   }
 
@@ -633,11 +646,16 @@
     _chunkAcc = null; // drop any partial chunk run from the previous session
 
     activeSessionId = id;
+    _noTabProfileId = null;
     _syncRecentsProfile();
 
     // Restore cached snapshot (preserves streaming messages) or start fresh
     if (!_restoreSession(id)) {
       _resetSessionVars();
+    }
+    if (workspaceNotes.length > 0) {
+      for (const note of workspaceNotes) _pushAssistantNote(note, true);
+      workspaceNotes = [];
     }
 
     // Arm event buffering before attaching the live listener so a line that
@@ -703,19 +721,18 @@
     _replayBuffer = null;
     for (const envelope of buffered) _dispatchEnvelope(envelope);
 
-    // Surface any cached startup error for this session. Tauri starts
-    // the default session in setup() before the frontend can attach
-    // listeners, so a spawn failure (e.g. omp not on PATH) — or a child
-    // that died during startup, whose reason `reader.rs` records in
-    // `last_errors` for exactly this reason — would otherwise be
-    // invisible. session_status returns the cached error synchronously —
-    // no event timing race.
+    // Surface any cached startup error for this session. A background tab
+    // (or a respawn) can fail before any listener is attached, so a spawn
+    // failure (e.g. omp not on PATH) — or a child that died during startup,
+    // whose reason `reader.rs` records in `last_errors` for exactly this
+    // reason — would otherwise be invisible. session_status returns the
+    // cached error synchronously — no event timing race.
     try {
       const startupError = await window.__TAURI__.core.invoke("session_status", { sessionId: id });
       if (_switchGen !== myGen) return; // superseded by a newer switch
       // Same renderer as the `agent://exit` path: this is the *same* backend
       // string (the reader writes `last_errors` and emits the event with one
-      // value), and the launch tab plus every background tab reach the
+      // value), and every background tab reaches the
       // failure only through here — the event fires with no listener
       // attached. Rendering it raw would drop the profile-aware login
       // instructions in precisely the cases the note was written for.
@@ -963,52 +980,21 @@
   // `take_pending_open_projects` empties the queue, so the startup drain and
   // the event handler are the same idempotent call.
 
-  /** Pure: may the pathless launch tab be retired, now that an OS request
-   *  has opened a real project tab?
-   *
-   *  Only the launch tab qualifies (any tab with a `path` was asked for),
-   *  and only while it is untouched - a transcript means a prompt the user
-   *  sent or a note about a failed spawn, neither of which is ours to
-   *  discard. `snapshot` is the tab's cached state (`sessionSnapshots`),
-   *  absent when it was never activated.
-   *
-   *  Proven with an eval-kernel cell (6/6 cases: no entry, project tab,
-   *  empty launch tab, launch tab with a transcript, never-activated tab,
-   *  snapshot without a messages array). */
-  function _isRetirableLaunchTab(entry, snapshot) {
-    if (!entry || entry.path) return false;
-    return (snapshot?.messages?.length ?? 0) === 0;
-  }
-
   /** Turn one queued folder into a project tab. Side-effectful (spawns omp,
-   *  switches the active tab, may close the launch tab). */
+   *  switches the active tab). */
   async function _openExternalProject(path) {
-    let opened;
     try {
-      opened = await _startProjectSession(path, { profile: _activeProfileId() });
+      await _startProjectSession(path, { profile: _activeProfileId() });
     } catch (e) {
       // `_startProjectSession` already rolled the tab back, so the only
       // thing left is telling the user: the OS has no UI to report into and
       // silently ignoring a double-clicked folder looks like a hang.
       console.error(`[live] folder open failed for '${path}':`, e);
-      _pushAssistantNote(`**Could not open project:** ${String(e?.message ?? e)}`);
+      const note = `**Could not open project:** ${String(e?.message ?? e)}`;
+      if (activeSessionId) _pushAssistantNote(note);
+      else workspaceNotes = [...workspaceNotes, note];
       notify();
       return;
-    }
-    // The launch tab is a pathless session with nothing in it, so retire it
-    // instead of leaving a stray tab beside the folder the user opened - on
-    // a cold start it is the tab this request replaced, on a warm one an
-    // untouched tab the project tab supersedes. Read after the open: the
-    // snapshot only exists once `_switchToSession` left that tab.
-    //
-    // Gated on the new tab still being active, because a tab click landing
-    // inside the open above bumps `_switchGen`, making our own
-    // `_switchToSession` bail - and `activeSessionId` may then *be*
-    // "default", whose snapshot this switch already emptied. Closing it
-    // there would kill the tab the user just picked, mid-turn.
-    if (activeSessionId === opened
-        && _isRetirableLaunchTab(sessionRegistry.get("default"), sessionSnapshots.get("default"))) {
-      await window.OMP_BRIDGE.closeSession("default");
     }
   }
 
@@ -1780,9 +1766,9 @@
       .catch(e => console.error("[live] send error:", e));
   }
 
-  // Project path (cwd) of the active tab, or null for the pathless
-  // "default" session — used to scope project-level approval rules and
-  // workspace status/diff to the right repo.
+  // Project path (cwd) of the active tab, or null for a pathless tab (a
+  // resumed session with no recorded cwd) — used to scope project-level
+  // approval rules and workspace status/diff to the right repo.
   function _activeProjectPath() {
     const entry = sessionRegistry.get(activeSessionId);
     return entry?.path || null;
@@ -1809,13 +1795,23 @@
   /** The active tab's omp profile id. Profile-scoped reads *and* new-tab
    *  spawns both use this, so they can never disagree: a new tab inherits the
    *  active tab's profile ("work" stays "work" when you open a second
-   *  folder), and with no tab open there is nothing to inherit, so the user's
-   *  ticked default applies to both. Two helpers with different fallbacks
+   *  folder), and with no tab open there is nothing to inherit, so the
+   *  empty workspace's pick, else the user's ticked default, applies to
+   *  both. Two helpers with different fallbacks
    *  meant that after closing the last tab the history panel listed the
    *  built-in tree while the next `openSession` spawned into the ticked
    *  profile - and `resumeSession` must match whatever was listed. */
   function _activeProfileId() {
-    return _resolveProfile(sessionRegistry.get(activeSessionId), startupProfileId, profiles);
+    return _resolveProfile(sessionRegistry.get(activeSessionId), _noTabProfile(), profiles);
+  }
+
+  /** Profile a tab opened now would get with no tab to inherit from: the
+   *  empty workspace's pick while it is still listed, else the startup
+   *  default. */
+  function _noTabProfile() {
+    return _noTabProfileId && profiles.some(p => p.id === _noTabProfileId)
+      ? _noTabProfileId
+      : startupProfileId;
   }
 
   /** Re-read the persisted profile list + default into `profiles` /
@@ -1827,6 +1823,10 @@
     const list = res?.profiles;
     if (Array.isArray(list) && list.length > 0) {
       profiles = list;
+      // A pick that stopped resolving is dropped, not merely masked by
+      // `_noTabProfile()`: re-listing the same id later (another window)
+      // must not resurrect it without the user choosing it again.
+      if (_noTabProfileId && !profiles.some(p => p.id === _noTabProfileId)) _noTabProfileId = null;
       // `startupId` is validated server-side against the same list, so it is
       // always one of these ids - no client-side reconciliation needed.
       if (res.startupId) startupProfileId = res.startupId;
@@ -1894,20 +1894,6 @@
     const names = entries.filter(s => s.profile === id).map(s => s.name);
     if (names.length === 0) return null;
     return `in use by ${names.length === 1 ? "tab" : "tabs"}: ${names.join(", ")}`;
-  }
-
-  /** Pure decision: should the launch tab be stamped with the resolved
-   *  startup profile? Only when it is still on the built-in placeholder
-   *  AND the resolved startup differs from it — the user may switch this
-   *  tab's profile during the `_refreshProfiles()` round-trip below, and
-   *  that choice is newer than the persisted default, so a tab that already
-   *  moved off the placeholder (or no longer exists) must be left alone.
-   *  Proven with an eval-kernel cell (4/4 cases: both built-in -> no stamp,
-   *  startup differs from the built-in placeholder -> stamp, tab already
-   *  switched away -> no stamp, tab missing (`undefined` entryProfile) ->
-   *  no stamp). */
-  function _shouldStampLaunchProfile(entryProfile, startupId) {
-    return entryProfile === DEFAULT_PROFILE_ID && startupId !== DEFAULT_PROFILE_ID;
   }
 
   // ── Window chrome (drag + controls) ──────────────────────────────────────
@@ -2449,6 +2435,22 @@
       return res;
     },
 
+    /** With no tab open, choose the profile the next tab opens under (the
+     *  profile menu's pick at the empty workspace; nothing to respawn).
+     *  Not persisted — see `setStartupProfile` for that. Resolves to `{ok}`
+     *  or `{ok: false, error}` like `switchSessionProfile`. */
+    async selectNoTabProfile(id) {
+      // Any registered tab, not just the active one: an open in flight has
+      // registered its tab but not activated it yet, and has already chosen
+      // its profile — acknowledging the pick would silently drop it.
+      if (sessionRegistry.size > 0) return { ok: false, error: "a tab is open" };
+      if (!profiles.some(p => p.id === id)) return { ok: false, error: `unknown profile '${id}'` };
+      _noTabProfileId = id;
+      _syncRecentsProfile();
+      notify();
+      return { ok: true };
+    },
+
     /** Switch one tab to another profile. A profile is fixed at spawn, so the
      *  tab keeps its id/name/path but its omp process is replaced and its
      *  transcript dropped — it comes back as a fresh session. Resolves to
@@ -2459,7 +2461,7 @@
      *  Not unit-tested directly: every step is a Tauri IPC call or an event
      *  listener mutation and there is no fake `__TAURI__` harness in this
      *  repo. The pure decisions it leans on are extracted and proven
-     *  separately (`_resolveProfile`, `_shouldStampLaunchProfile`); what
+     *  separately (`_resolveProfile`); what
      *  remains is ordering, and the comments inside state why each await
      *  sits where it does. */
     async switchSessionProfile(id, profileId) {
@@ -2624,7 +2626,7 @@
 
     /** List project-relative file/dir paths matching `query`, for the
      *  composer's `@`-mention autocomplete. Scoped to the active tab's
-     *  project path; returns [] for the pathless "default" session (no
+     *  project path; returns [] for a pathless tab (no
      *  project root to search) or when the RPC throws. */
     async listFiles(query, limit = 30) {
       const cwd = _activeProjectPath();
@@ -2702,49 +2704,20 @@
   if (window.__TAURI__) {
     document.documentElement.classList.add("tauri-native");
 
-    // Register the "default" session that lib.rs::setup already started.
-    // `setup` spawns it under the *ticked* startup profile, which only
-    // `profiles.json` knows - so the id here is provisional and corrected
-    // below once the list arrives.
-    sessionRegistry.set("default", {
-      id: "default", name: "OMP Desktop", path: "", color: "var(--accent)", branch: null,
-      profile: DEFAULT_PROFILE_ID,
-    });
-
-    // Load the persisted profile list + ticked default so the selector can
-    // label tabs (fire-and-forget: it notifies once the list arrives), then
-    // stamp the launch tab with the profile its process actually runs under.
-    // Without this the chip would claim "default" while the child writes to
-    // `~/.omp/profiles/work/agent`, and the history panel - which scopes its
-    // query by the tab's profile - would query the wrong tree.
-    const profilesReady = _refreshProfiles().then(() => {
-      const entry = sessionRegistry.get("default");
-      if (entry && _shouldStampLaunchProfile(entry.profile, startupProfileId)) {
-        sessionRegistry.set("default", { ...entry, profile: startupProfileId });
-        notify();
-      }
-      // The stamp may have moved the active profile after `_refreshProfiles`
-      // already synced the recent list against the provisional one.
-      _syncRecentsProfile();
-    });
-
-    // Activate it — registers listener + fetches initial state
-    const launchReady = _switchToSession("default");
-
-    // OS folder-open requests, drained only after both of the above: a
-    // cold-start "Open with" is already queued in Rust, and opening it
-    // early would race the launch tab's own activation (which the open may
-    // then retire) and inherit the *provisional* built-in profile instead
-    // of the ticked startup one.
-    // `allSettled`, not `all`: neither failure may disable folder opens. It
-    // also marks both promises handled, so a rejection that used to surface
-    // as an unhandled one is only visible if logged here.
-    Promise.allSettled([profilesReady, launchReady]).then(results => {
-      for (const r of results) {
-        if (r.status === "rejected") console.error("[live] startup step failed:", r.reason);
-      }
-      _setupExternalOpens();
-    });
+    // No tab at launch: `lib.rs::setup` spawns nothing, and the UI shows its
+    // empty state until a folder is opened. Load the persisted profile list
+    // + ticked default first — with no tab to inherit from, it decides the
+    // profile of the first tab and whose recent projects are listed
+    // (`_refreshProfiles` syncs them).
+    //
+    // OS folder-open requests are drained only after that: a cold-start
+    // "Open with" is already queued in Rust, and opening it early would
+    // spawn under the provisional built-in profile instead of the ticked
+    // startup one. `.finally`, not `.then`: a failed list must not disable
+    // folder opens.
+    _refreshProfiles()
+      .catch(e => console.error("[live] startup profile load failed:", e))
+      .finally(_setupExternalOpens);
 
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", _setupWindowChrome);

@@ -7,7 +7,8 @@
 // A "tab" is a snapshot `sessions` entry: `{id, name, path, profile, color,
 // runState, sessionFile}`. A project is identified by (profile, folder): the
 // same folder opened under two profiles is two projects, because each runs
-// against its own omp tree. Pathless tabs (the launch tab) never group.
+// against its own omp tree. Pathless tabs (a resumed session with no
+// recorded cwd) never group.
 (function () {
   const RUN_STATE_RANK = { idle: 0, running: 1, "waiting-user": 2, failed: 3 };
 

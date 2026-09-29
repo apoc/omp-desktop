@@ -18,7 +18,7 @@
    ═════════════════════════════════════════════════════════════════════ */
 
 const {
-  Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar, SubagentPane, ProjectSidebar,
+  Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar, SubagentPane, ProjectSidebar, EmptyWorkspace,
   StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, UpdateModal, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, DEFAULT_PROFILE_ID,
@@ -96,6 +96,11 @@ function App() {
   const [startupProfileId, setStartupProfileId] = React.useState(DEFAULT_PROFILE_ID);
   // Recently opened folders of the active tab's profile (project sidebar).
   const [recentProjects, setRecentProjects] = React.useState([]);
+  // With no tab open: the profile the next tab opens under (the menu's pick,
+  // else the startup default — resolved by the bridge), and notes filed
+  // while there was no transcript to hold them.
+  const [noTabProfileId, setNoTabProfileId] = React.useState(DEFAULT_PROFILE_ID);
+  const [workspaceNotes, setWorkspaceNotes] = React.useState([]);
 
   // ── Cross-cutting effects ─────────────────────────────────────────────────
   useBridgeSnapshot(bridge, {
@@ -103,6 +108,7 @@ function App() {
     setModels, setActivity, setSparkline,
     setModelState, setThinkingLevel,
     setSessions, setActiveSessionId, setProfiles, setStartupProfileId, setRecentProjects,
+    setNoTabProfileId, setWorkspaceNotes,
     setPromptHistory, setSubagents, setSubagentTranscripts,
   });
   useThemeEffect(t);
@@ -124,11 +130,12 @@ function App() {
   // ── Derived values ────────────────────────────────────────────────────────
   const activeProject = sessions.find(s => s.id === activeSessionId) ?? sessions[0] ?? EMPTY_PROJECT;
   // No tab open → `activeProject` is EMPTY_PROJECT (built-in profile), but
-  // the bridge spawns the next tab into the ticked startup profile (nothing
-  // to inherit from) — so showing the built-in would tick a profile that
-  // isn't where the next tab actually goes. Shared by WindowChrome's menu
-  // and the usage-stats panel's header label, instead of a second copy.
-  const activeProfileId    = activeProject.id ? activeProject.profile : startupProfileId;
+  // the bridge spawns the next tab into the empty workspace's pick or the
+  // ticked startup profile (nothing to inherit from) — so showing the
+  // built-in would tick a profile that isn't where the next tab actually
+  // goes. Shared by WindowChrome's menu, the keymap, recents and the
+  // usage-stats panel's header label, instead of a second copy.
+  const activeProfileId    = activeProject.id ? activeProject.profile : noTabProfileId;
   const activeProfileLabel = profiles.find(p => p.id === activeProfileId)?.name ?? activeProfileId;
   // Profile chip text for a tab/project: none for the built-in profile (same
   // expression as TabBar's own copy, which labels the tab bar).
@@ -144,8 +151,9 @@ function App() {
   );
 
   // ── Keymap ────────────────────────────────────────────────────────────────
-  // Placed after activeProject so useKeymap can pass the active tab's profile.
-  const keymap = useKeymap(bridge, activeProject?.profile);
+  // The derived profile, not the tab's own: with no tab open it follows the
+  // startup default / empty-workspace pick, which must reload the omp layer.
+  const keymap = useKeymap(bridge, activeProfileId);
 
   const subagentUi = useSubagentManager({
     bridge, layout: t.layout, setTweak, activeSessionId, subagents, messages, setHoveredMsgIdx,
@@ -416,11 +424,10 @@ function App() {
   // would respawn a different tab than the one shown (and on that
   // `wasActive === false` path a failure would surface no note at all).
   const handleSelectProfile = React.useCallback(id => {
-    // EMPTY_PROJECT.id is "" when no tab is open — switchSessionProfile
-    // would look it up in the session registry, find nothing, and resolve
-    // {ok: false, error: "unknown tab"}, a reason that doesn't match what's
-    // actually true (there's no tab, not a bad id). Short-circuit instead.
-    if (!activeProject.id) return Promise.resolve({ ok: false, error: "no tab open" });
+    // EMPTY_PROJECT.id is "" when no tab is open — the app starts that
+    // way — so there is no process to respawn: the pick only decides which
+    // profile the next tab opens under (and whose recents are listed).
+    if (!activeProject.id) return bridge?.selectNoTabProfile(id);
     return bridge?.switchSessionProfile(activeProject.id, id);
   }, [bridge, activeProject.id]);
   const handleCreateProfile = React.useCallback(name => bridge?.createProfile(name), [bridge]);
@@ -436,6 +443,10 @@ function App() {
   const showRail  = t.layout !== "focus";
   const showSplit = subagentUi.paneOpen;
   const liveCtx   = ctx ?? data.ctx;
+  // No tab open (the app starts that way): the session column shows the
+  // empty state instead of a transcript and a composer with nowhere to send.
+  const noTab      = sessions.length === 0;
+  const recentList = recentRows(recentProjects, sessions, activeProfileId);
 
   return (
     <>
@@ -476,7 +487,7 @@ function App() {
               <ProjectSidebar
                 tabs={sessions}
                 activeId={activeSessionId}
-                recents={recentRows(recentProjects, sessions, activeProfileId)}
+                recents={recentList}
                 profileLabel={profileLabel}
                 onSelectTab={handleSelectTab}
                 onCloseTab={handleCloseTab}
@@ -489,38 +500,47 @@ function App() {
             )}
             <div className={`stage ${showRail ? "with-rail" : ""}`}>
               <main className="session">
-                <ChatView key={activeSessionId} messages={messages}
-                  planMode={planMode}
-                  annotations={planAnnotations}
-                  onAnnotate={handleAnnotate}
-                  onAskAnswer={handleAskAnswer}
-                  onConfirmAsk={handleConfirmAsk}
-                  onCancelAsk={handleCancelAsk}
-                  onGrantApproval={handleGrantApproval}
-                  hoveredMsgIdx={hoveredMsgIdx}
-                  hasProjectPath={!!activeProject?.path}
-                  onInspectSubagent={subagentUi.open}
-                />
-                <Composer
-                  onSend={handleSend}
-                  planMode={planMode}
-                  onTogglePlan={togglePlanMode}
-                  onOpenCmd={() => openBridge("commands")}
-                  onOpenModel={() => openBridge("models")}
-                  currentModel={model}
-                  thinking={thinkingLevel}
-                  onCycleThinking={cycleThinking}
-                  isStreaming={streaming}
-                  onAbort={handleAbort}
-                  onApprove={handleApprovePlan}
-                  annotationCount={Object.keys(planAnnotations).length}
-                  microcopy={data.microcopy}
-                  onPick={handleCommand}
-                  onFollowUp={handleFollowUp}
-                  draftInsert={draftInsert}
-                  promptHistory={promptHistory}
-                  promptInsert={promptInsert}
-                />
+                {noTab ? (
+                  <EmptyWorkspace
+                    recents={recentList}
+                    notes={workspaceNotes}
+                    onOpenFolder={handleNewProject}
+                    onOpenRecent={handleOpenRecent}
+                  />
+                ) : (<>
+                  <ChatView key={activeSessionId} messages={messages}
+                    planMode={planMode}
+                    annotations={planAnnotations}
+                    onAnnotate={handleAnnotate}
+                    onAskAnswer={handleAskAnswer}
+                    onConfirmAsk={handleConfirmAsk}
+                    onCancelAsk={handleCancelAsk}
+                    onGrantApproval={handleGrantApproval}
+                    hoveredMsgIdx={hoveredMsgIdx}
+                    hasProjectPath={!!activeProject?.path}
+                    onInspectSubagent={subagentUi.open}
+                  />
+                  <Composer
+                    onSend={handleSend}
+                    planMode={planMode}
+                    onTogglePlan={togglePlanMode}
+                    onOpenCmd={() => openBridge("commands")}
+                    onOpenModel={() => openBridge("models")}
+                    currentModel={model}
+                    thinking={thinkingLevel}
+                    onCycleThinking={cycleThinking}
+                    isStreaming={streaming}
+                    onAbort={handleAbort}
+                    onApprove={handleApprovePlan}
+                    annotationCount={Object.keys(planAnnotations).length}
+                    microcopy={data.microcopy}
+                    onPick={handleCommand}
+                    onFollowUp={handleFollowUp}
+                    draftInsert={draftInsert}
+                    promptHistory={promptHistory}
+                    promptInsert={promptInsert}
+                  />
+                </>)}
                 <StatusBar
                   ctx={liveCtx}
                   model={model}

@@ -14,7 +14,7 @@
 //!   `packaging/omp-desktop.desktop`). When an instance is already
 //!   running, `tauri-plugin-single-instance` forwards that argv to it
 //!   instead of starting a second app (each instance owns its own omp
-//!   children, so a second one would be a second launch session).
+//!   children, so a second one would be a second window of tabs).
 //!
 //! All three converge on [`ingest_args`] / [`ingest_urls`]: resolve to a
 //! canonical directory, queue it, then emit [`OPEN_PROJECT_EVENT`] once.
