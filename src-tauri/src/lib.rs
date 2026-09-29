@@ -14,6 +14,7 @@ mod json_store;
 mod keybindings;
 mod navigation_guard;
 mod profiles;
+mod recent_projects;
 mod saved_sessions;
 mod stats;
 mod updater;
@@ -641,6 +642,57 @@ async fn keybindings_reset(
     .await
 }
 
+/// `profile` as the key its recent-projects entries are stored under: the
+/// built-in profile (`None`/blank/`"default"`) is `"default"`, an unlisted
+/// id is an `Err` (same validation as every other profile-scoped command).
+fn recents_key(store: &profiles::ProfileStore, profile: Option<String>) -> Result<String, String> {
+    Ok(store
+        .resolve_owned(profile)?
+        .unwrap_or_else(|| profiles::DEFAULT_PROFILE_ID.to_owned()))
+}
+
+/// `profile`'s recently opened project folders, newest first (the project
+/// sidebar's `recent` section). Folders gone from disk are omitted.
+#[tauri::command]
+async fn recent_projects_list(
+    profile: Option<String>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+    recents: State<'_, Arc<recent_projects::RecentProjectsStore>>,
+) -> Result<Vec<recent_projects::RecentProject>, String> {
+    let key = recents_key(&store, profile)?;
+    with_blocking(&recents, move |s| Ok(s.list(&key))).await
+}
+
+/// Record `path` as just opened under `profile` and return the updated list.
+/// The path is canonicalised first, so a folder that no longer exists (or a
+/// file) is refused instead of recorded.
+#[tauri::command]
+async fn recent_projects_touch(
+    path: String,
+    profile: Option<String>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+    recents: State<'_, Arc<recent_projects::RecentProjectsStore>>,
+) -> Result<Vec<recent_projects::RecentProject>, String> {
+    let key = recents_key(&store, profile)?;
+    with_blocking(&recents, move |s| {
+        let canonical = external_open::canonical_folder(Path::new(&path))?;
+        s.touch(&key, canonical, recent_projects::now_ms())
+    })
+    .await
+}
+
+/// Drop `path` from `profile`'s recent list and return the updated list.
+#[tauri::command]
+async fn recent_projects_remove(
+    path: String,
+    profile: Option<String>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+    recents: State<'_, Arc<recent_projects::RecentProjectsStore>>,
+) -> Result<Vec<recent_projects::RecentProject>, String> {
+    let key = recents_key(&store, profile)?;
+    with_blocking(&recents, move |s| s.remove(&key, &path)).await
+}
+
 /// Ask the release feed for a newer version — see `updater::check`.
 /// `None` means up to date.
 #[tauri::command]
@@ -700,6 +752,10 @@ fn setup(app: &tauri::App) {
     // Keybinding overlay: <app_config_dir>/keybindings.json.
     app.manage(Arc::new(keybindings::overlay::OverlayStore::new(
         config_dir.join("keybindings.json"),
+    )));
+    // Recently opened projects: <app_config_dir>/recent-projects.json.
+    app.manage(Arc::new(recent_projects::RecentProjectsStore::new(
+        config_dir.join("recent-projects.json"),
     )));
 
     // Start the default session (no cwd = omp's working directory).
@@ -831,6 +887,9 @@ pub fn run() {
             keybindings_list,
             keybindings_set,
             keybindings_reset,
+            recent_projects_list,
+            recent_projects_touch,
+            recent_projects_remove,
             app_update_check,
             app_update_install,
         ])

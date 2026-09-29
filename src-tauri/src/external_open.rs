@@ -164,7 +164,7 @@ fn ingest<I: Iterator<Item = Result<String, String>>>(app: &AppHandle, resolved:
 /// Symlinks and `..` are resolved once, and anything that is not a directory
 /// (a file dragged onto the app icon, a stale shortcut) is rejected rather
 /// than silently spawning an agent somewhere unexpected.
-fn canonical_folder(path: &Path) -> Result<String, String> {
+pub fn canonical_folder(path: &Path) -> Result<String, String> {
     let canonical = path
         .canonicalize()
         .map_err(|e| format!("cannot resolve '{}': {e}", path.display()))?;
