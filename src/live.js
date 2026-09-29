@@ -134,6 +134,13 @@
   // to inherit from) starts in. App-wide and persisted, unlike a tab's own
   // profile - `_resetSessionVars` must never touch it.
   let startupProfileId = DEFAULT_PROFILE_ID;
+  // Recently opened project folders (the project sidebar's `recent`
+  // section), always for the active tab's profile: `_recentsProfile` is the
+  // profile the list was fetched for, so `_syncRecentsProfile` can tell when
+  // a tab switch, a closed last tab or a new startup default moved the
+  // active profile and the list is stale. App-wide like `profiles`.
+  let recentProjects = [];
+  let _recentsProfile = null;
 
   let activeSessionId  = null;
   let activeListeners  = [];          // unlisten functions for current session
@@ -277,6 +284,7 @@
       promptHistory:   promptHistories.get(activeSessionId) ?? [],
       profiles,
       startupProfileId,
+      recentProjects,
     };
   }
 
@@ -625,6 +633,7 @@
     _chunkAcc = null; // drop any partial chunk run from the previous session
 
     activeSessionId = id;
+    _syncRecentsProfile();
 
     // Restore cached snapshot (preserves streaming messages) or start fresh
     if (!_restoreSession(id)) {
@@ -903,7 +912,14 @@
     const tabName = name || _tabNameFor(cwd, "new session");
     // Register in tab list before starting omp so the tab shows immediately.
     // Register with null branch — chip hidden until git resolves.
-    sessionRegistry.set(id, { id, name: tabName, path: cwd ?? "", color, branch: null, profile });
+    sessionRegistry.set(id, {
+      id, name: tabName, path: cwd ?? "", color, branch: null, profile,
+      // The conversation's `.jsonl`, same form as `SavedSession.path`: known
+      // up front for a resume, filled in from `get_state` otherwise (see
+      // `_applyRpcState`). `resumeSession` matches on it to focus instead of
+      // spawning a duplicate.
+      sessionFile: resume ?? null,
+    });
     try {
       await _spawnSession(id, cwd, { resume, profile });
     } catch (e) {
@@ -928,6 +944,8 @@
       notify();
       throw e;
     }
+    // Only a folder that actually spawned is remembered.
+    if (cwd) void _touchRecent(cwd, profile);
     // Activate
     await _switchToSession(id);
     return id;
@@ -1711,6 +1729,13 @@
       const entry = sessionRegistry.get(activeSessionId);
       sessionRegistry.set(activeSessionId, { ...entry, name: rpcState.sessionName });
     }
+    // Remember which conversation this tab runs, for `resumeSession`'s
+    // focus-existing lookup. Re-read: the `sessionName` write above may have
+    // replaced the entry.
+    const current = activeSessionId ? sessionRegistry.get(activeSessionId) : null;
+    if (rpcState.sessionFile && current && current.sessionFile !== rpcState.sessionFile) {
+      sessionRegistry.set(activeSessionId, { ...current, sessionFile: rpcState.sessionFile });
+    }
 
     _refreshCtx();
     notify();
@@ -1807,7 +1832,54 @@
       if (res.startupId) startupProfileId = res.startupId;
       notify();
     }
+    _syncRecentsProfile();
     return profiles;
+  }
+
+  /** Adopt a recent-projects list fetched for `profile` — unless the active
+   *  profile moved on while the request was in flight (a stale answer would
+   *  show another profile's folders), or the call failed (`null`).
+   *
+   *  The recents functions below are IPC glue over module state, with no
+   *  fake `__TAURI__` harness in this repo to unit-test them against; the
+   *  store's semantics are proven by `recent_projects.rs`'s tests and the
+   *  focus-existing lookups by `test-project-nav.mjs`. */
+  function _applyRecents(profile, list) {
+    if (!Array.isArray(list) || profile !== _activeProfileId()) return;
+    recentProjects = list;
+    _recentsProfile = profile;
+    notify();
+  }
+
+  // Recents IPC runs one call at a time, each applied before the next is
+  // issued. The backend's `list` is unlocked and every command is its own
+  // `spawn_blocking` task, so unordered calls could let a `list` read the
+  // file before a `touch` wrote it and still resolve after it — the stale
+  // list would win, and nothing refetches until the profile changes.
+  let _recentsQueue = Promise.resolve();
+  function _recentsCall(cmd, args) {
+    const run = _recentsQueue.then(async () => {
+      _applyRecents(args.profile, await _invokeSafe(cmd, args, null));
+    });
+    _recentsQueue = run.catch(() => {});
+    return run;
+  }
+
+  function _refreshRecents() {
+    return _recentsCall("recent_projects_list", { profile: _activeProfileId() });
+  }
+
+  /** Refetch the recent list when the active profile is no longer the one
+   *  it was fetched for. Cheap to call on every activation. */
+  function _syncRecentsProfile() {
+    if (_activeProfileId() !== _recentsProfile) void _refreshRecents();
+  }
+
+  /** Record `path` as opened under `profile`. The backend canonicalises it
+   *  and refuses a folder that no longer exists; `_invokeSafe` logs that. */
+  function _touchRecent(path, profile) {
+    if (!path) return Promise.resolve();
+    return _recentsCall("recent_projects_touch", { path, profile });
   }
 
   /** Which open tabs (by name) are running under profile `id`, given a
@@ -2212,9 +2284,35 @@
      *  default profile applies. Returns the new session id, or rejects if
      *  the resolved profile no longer exists on the backend (unlisted by
      *  another window, or a hand-edited profiles.json) — no tab is left
-     *  registered when that happens. */
-    async openSession(cwd) {
-      return _startProjectSession(cwd, { profile: _activeProfileId() });
+     *  registered when that happens.
+     *
+     *  `profile` overrides the inherited one — "new conversation in this
+     *  project" passes the project's own profile, which need not be the
+     *  active tab's. Always spawns: `+`/`Ctrl+T` mean a *new* tab. */
+    async openSession(cwd, profile = _activeProfileId()) {
+      return _startProjectSession(cwd, { profile });
+    },
+
+    /** Open project folder `path` (a recent-projects row) under the active
+     *  profile: focus an open tab on it when there is one — the active tab
+     *  if it qualifies, else the newest — and spawn a tab only otherwise.
+     *  Resolves to the tab id; rejects like `openSession` on a failed spawn.
+     *  The lookup is `findProjectTab`, proven by `test-project-nav.mjs`. */
+    async openProject(path) {
+      const profile = _activeProfileId();
+      const id = window.OMP_PROJECT_NAV.findProjectTab(
+        [...sessionRegistry.values()], path, profile, activeSessionId,
+      );
+      if (id) {
+        await window.OMP_BRIDGE.activateSession(id);
+        return id;
+      }
+      return _startProjectSession(path, { profile });
+    },
+
+    /** Drop `path` from the active profile's recent projects. */
+    async forgetRecentProject(path) {
+      await _recentsCall("recent_projects_remove", { path, profile: _activeProfileId() });
     },
 
     /** Switch the active tab. Resets state and re-fetches from the session's omp. */
@@ -2270,17 +2368,28 @@
       return _invokeResult("keybindings_reset", { action, profile: _activeProfileId() });
     },
 
-    /** Resume a saved session into a new tab, under the active tab's profile
-     *  (the profile whose sessions directory the entry was listed from).
-     *  Returns the new session id, null if `session` doesn't reference a
-     *  valid saved-session path, or rejects if the resolved profile no
-     *  longer exists on the backend (see `openSession`). */
+    /** Resume a saved session under the active tab's profile (the profile
+     *  whose sessions directory the entry was listed from). A tab already
+     *  running that conversation in this profile is focused instead of
+     *  spawning a second process onto the same `.jsonl`. Returns the tab id,
+     *  null if `session` doesn't reference a valid saved-session path, or
+     *  rejects if the resolved profile no longer exists on the backend (see
+     *  `openSession`). The lookup is `findConversationTab`, proven by
+     *  `test-project-nav.mjs`. */
     async resumeSession(session) {
       if (!session || !session.path) return null;
+      const profile = _activeProfileId();
+      const open = window.OMP_PROJECT_NAV.findConversationTab(
+        [...sessionRegistry.values()], session.path, profile,
+      );
+      if (open) {
+        await window.OMP_BRIDGE.activateSession(open);
+        return open;
+      }
       const cwd = session.cwd || "";
       const name = session.title || _tabNameFor(cwd, "resumed");
       return _startProjectSession(cwd, {
-        resume: session.path, name, color: "var(--cyan)", profile: _activeProfileId(),
+        resume: session.path, name, color: "var(--cyan)", profile,
       });
     },
 
@@ -2400,7 +2509,9 @@
         // user just picked) and re-creates the very snapshot
         // `_killSessionProcess` just deleted.
         const wasActive = id === activeSessionId;
-        sessionRegistry.set(id, { ...entry, profile: profileId, branch: null });
+        // `sessionFile: null`: the respawn is a fresh conversation, not the
+        // one the old incarnation ran.
+        sessionRegistry.set(id, { ...entry, profile: profileId, branch: null, sessionFile: null });
         if (wasActive) await _detachActiveSession();
         // After the detach, which nulls `activeSessionId` synchronously — so no
         // later `_saveCurrentSession` can re-add it. A resurrected snapshot
@@ -2443,6 +2554,9 @@
           }
           return spawnError ? { ok: false, error: spawnError } : { ok: true };
         }
+        // The folder is now open under `profileId`, so it belongs in that
+        // profile's recents.
+        if (!spawnError && entry.path) void _touchRecent(entry.path, profileId);
 
         if (wasActive && activeSessionId === null) {
           // Reclaim focus only if nothing else took the active slot while the
@@ -2493,6 +2607,8 @@
         } else {
           // No sessions left — reset to empty state
           await _detachActiveSession();
+          // No active tab: the active profile falls back to the startup one.
+          _syncRecentsProfile();
           notify();
         }
       } else {
@@ -2500,10 +2616,10 @@
       }
     },
 
-    /** Open native folder picker and return the chosen path (or null). */
+    /** Open native folder picker and return the chosen (canonical) path, or
+     *  null when cancelled or the pick is unusable (logged). */
     async pickFolder() {
-      if (!window.__TAURI__) return null;
-      return window.__TAURI__.core.invoke("open_project");
+      return _invokeSafe("open_project", undefined, null);
     },
 
     /** List project-relative file/dir paths matching `query`, for the
@@ -2607,6 +2723,9 @@
         sessionRegistry.set("default", { ...entry, profile: startupProfileId });
         notify();
       }
+      // The stamp may have moved the active profile after `_refreshProfiles`
+      // already synced the recent list against the provisional one.
+      _syncRecentsProfile();
     });
 
     // Activate it — registers listener + fetches initial state

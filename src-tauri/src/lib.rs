@@ -411,28 +411,31 @@ async fn list_project_files(
 async fn open_project(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = std::sync::mpsc::channel();
-    // Use into_path() rather than to_string() so we get a real PathBuf
-    // and convert through to_string_lossy(). Avoids platform-specific
-    // FilePath::to_string formatting (URL encoding, UNC prefix quirks)
-    // that could diverge from what std::fs and the rest of the app
-    // expect downstream.
     app.dialog()
         .file()
         .set_title("Open Project Folder")
         .pick_folder(move |result| {
             let _ = tx.send(result);
         });
-    let picked = tauri::async_runtime::spawn_blocking(move || rx.recv())
-        .await
-        .map_err(|e| format!("join error: {e}"))?
-        .map_err(|e| format!("channel error: {e}"))?;
-    let Some(picked) = picked else {
-        return Ok(None);
-    };
-    let path = picked
-        .into_path()
-        .map_err(|e| format!("invalid picked path: {e}"))?;
-    Ok(Some(path.to_string_lossy().into_owned()))
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(picked) = rx.recv().map_err(|e| format!("channel error: {e}"))? else {
+            return Ok(None);
+        };
+        // into_path() rather than to_string(): a real PathBuf avoids
+        // platform-specific FilePath::to_string formatting (URL encoding,
+        // UNC prefix quirks).
+        let path = picked
+            .into_path()
+            .map_err(|e| format!("invalid picked path: {e}"))?;
+        // Canonical, like an OS "Open with" folder: the tab path is compared
+        // with the canonical recent-projects entries (`openProject`'s
+        // focus-existing lookup), so a folder picked through a symlink must
+        // not look like a different project. Off the async thread: it is a
+        // filesystem call.
+        external_open::canonical_folder(&path).map(Some)
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
 }
 
 /// Start watching `.git/HEAD` for a session's project path.

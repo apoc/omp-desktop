@@ -28,6 +28,7 @@ function useBridgeSnapshot(bridge, setters) {
       setters.setSubagentTranscripts(snap.subagentTranscripts ?? {});
       setters.setProfiles(snap.profiles ?? []);
       setters.setStartupProfileId(snap.startupProfileId ?? _UB_DEFAULT_PROFILE_ID);
+      setters.setRecentProjects(snap.recentProjects ?? []);
       if (snap.activeSessionId) setters.setActiveSessionId(snap.activeSessionId);
     });
     return unsub;

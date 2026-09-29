@@ -279,7 +279,7 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
         {/* Footer */}
         <div className="bridge-foot mono" style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span className="kbd">↑↓</span> navigate
-          <span className="kbd">↵</span> resume in new tab
+          <span className="kbd">↵</span> resume
           <span className="kbd">esc</span> close
           <div style={{ flex: 1 }} />
           <span style={{ color: "var(--fg-4)" }}>~/.omp/agent/sessions</span>

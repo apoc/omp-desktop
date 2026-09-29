@@ -93,13 +93,15 @@ function App() {
   // Which profile is ticked as the default for new tabs / the next launch.
   // App-wide and persisted, unlike a tab's own profile.
   const [startupProfileId, setStartupProfileId] = React.useState(DEFAULT_PROFILE_ID);
+  // Recently opened folders of the active tab's profile (project sidebar).
+  const [recentProjects, setRecentProjects] = React.useState([]);
 
   // ── Cross-cutting effects ─────────────────────────────────────────────────
   useBridgeSnapshot(bridge, {
     setMessages, setStreaming, setCtx, setKanban, setPlanMeta,
     setModels, setActivity, setSparkline,
     setModelState, setThinkingLevel,
-    setSessions, setActiveSessionId, setProfiles, setStartupProfileId,
+    setSessions, setActiveSessionId, setProfiles, setStartupProfileId, setRecentProjects,
     setPromptHistory, setSubagents, setSubagentTranscripts,
   });
   useThemeEffect(t);
