@@ -18,7 +18,7 @@
    ═════════════════════════════════════════════════════════════════════ */
 
 const {
-  Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar, SubagentPane,
+  Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar, SubagentPane, ProjectSidebar,
   StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, UpdateModal, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, DEFAULT_PROFILE_ID,
@@ -27,6 +27,7 @@ const {
   useKeymap, useKeymapDispatch, ShortcutsModal,
 } = window;
 const { isSlashCommand } = window.OMP_SLASH;
+const { recentRows } = window.OMP_PROJECT_NAV;
 
 function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
@@ -129,6 +130,10 @@ function App() {
   // and the usage-stats panel's header label, instead of a second copy.
   const activeProfileId    = activeProject.id ? activeProject.profile : startupProfileId;
   const activeProfileLabel = profiles.find(p => p.id === activeProfileId)?.name ?? activeProfileId;
+  // Profile chip text for a tab/project: none for the built-in profile (same
+  // expression as TabBar's own copy, which labels the tab bar).
+  const profileLabel = id =>
+    id === DEFAULT_PROFILE_ID ? null : (profiles.find(p => p.id === id)?.name ?? id);
   const todoCounts    = kanban.reduce(
     (acc, col) => {
       acc.total += col.tasks.length;
@@ -314,6 +319,34 @@ function App() {
   // Close tab → kills that session's omp process; bridge updates tab list
   const handleCloseTab = id => { bridge?.closeSession(id); };
 
+  // ── Project navigation (#27) ──────────────────────────────────────────────
+  const showSidebar   = t.sidebar ?? true;
+  const toggleSidebar = () => setTweak("sidebar", !showSidebar);
+
+  // A recent project: focus its open tab in the active profile, else spawn.
+  const handleOpenRecent = async path => {
+    if (!bridge) return;
+    try {
+      await bridge.openProject(path);
+    } catch (err) {
+      // Same rejection/rollback as openSession (see handleNewProject).
+      console.error("[app] failed to open recent project:", err);
+    }
+  };
+
+  // "New conversation" in a project: always a new tab, under the project's
+  // own profile rather than the active tab's.
+  const handleNewInProject = async (path, profile) => {
+    if (!bridge) return;
+    try {
+      await bridge.openSession(path, profile);
+    } catch (err) {
+      console.error("[app] failed to open conversation:", err);
+    }
+  };
+
+  const handleForgetRecent = path => { bridge?.forgetRecentProject(path); };
+
   // ── Global keymap handler map ─────────────────────────────────────────────
   // Written into handlersRef every render so the dispatch hook always reads
   // the latest closures without re-subscribing to the window listener.
@@ -343,6 +376,7 @@ function App() {
     "desktop.commands.open":   () => { setBridgeView("commands"); setBridgeOpen(v => !v); },
     "desktop.history.open":    () => setHistoryOpen(v => !v),
     "desktop.shortcuts.open":  () => setShortcutsOpen(v => !v),
+    "desktop.sidebar.toggle":  toggleSidebar,
     "desktop.tab.new":         handleNewProject,
     "desktop.tab.close":       () => { if (activeProject.id) handleCloseTab(activeProject.id); },
     // Indexed on `activeProject.id`, not `activeSessionId` — same rationale
@@ -427,6 +461,9 @@ function App() {
             onSelect={handleSelectTab}
             onNew={handleNewProject}
             onClose={handleCloseTab}
+            onNewInProject={handleNewInProject}
+            sidebarOpen={showSidebar}
+            onToggleSidebar={toggleSidebar}
             onHistory={() => setHistoryOpen(true)}
             appVersion={updater.version}
             updateVersion={updater.pillVersion}
@@ -434,88 +471,105 @@ function App() {
             onCheckUpdate={updater.check}
           />
 
-          <div className={`stage ${showRail ? "with-rail" : ""}`}>
-            <main className="session">
-              <ChatView key={activeSessionId} messages={messages}
-                planMode={planMode}
-                annotations={planAnnotations}
-                onAnnotate={handleAnnotate}
-                onAskAnswer={handleAskAnswer}
-                onConfirmAsk={handleConfirmAsk}
-                onCancelAsk={handleCancelAsk}
-                onGrantApproval={handleGrantApproval}
-                hoveredMsgIdx={hoveredMsgIdx}
-                hasProjectPath={!!activeProject?.path}
-                onInspectSubagent={subagentUi.open}
-              />
-              <Composer
-                onSend={handleSend}
-                planMode={planMode}
-                onTogglePlan={togglePlanMode}
-                onOpenCmd={() => openBridge("commands")}
-                onOpenModel={() => openBridge("models")}
-                currentModel={model}
-                thinking={thinkingLevel}
-                onCycleThinking={cycleThinking}
-                isStreaming={streaming}
-                onAbort={handleAbort}
-                onApprove={handleApprovePlan}
-                annotationCount={Object.keys(planAnnotations).length}
-                microcopy={data.microcopy}
-                onPick={handleCommand}
-                onFollowUp={handleFollowUp}
-                draftInsert={draftInsert}
-                promptHistory={promptHistory}
-                promptInsert={promptInsert}
-              />
-              <StatusBar
-                ctx={liveCtx}
-                model={model}
-                thinking={thinkingLevel}
-                todoDone={todoCounts.done}
-                todoTotal={todoCounts.total}
-                onTodo={() => setPlanOpen(true)}
-                onModel={() => openBridge("models")}
-                onChanges={() => setChangesOpen(true)}
-                onRules={() => setRulesOpen(true)}
-                onStats={() => setStatsOpen(true)}
-                onTweaks={() => window.postMessage({ type: '__activate_edit_mode' }, '*')}
-                autosave={t.autosave ?? true}
-                onAutosave={v => setTweak("autosave", v)}
-              />
-            </main>
-
-            {showSplit && (
-              <SubagentPane
-                state={subagents}
-                filter={subagentUi.filter} onFilter={subagentUi.setFilter}
-                selected={subagentUi.selected} onSelect={subagentUi.select}
-                level={subagentUi.level}
-                transcript={subagentUi.selected ? subagentTranscripts[subagentUi.selected.id] : null}
-                onLoadTranscript={id => bridge?.loadSubagentTranscript(id)}
-                onClose={subagentUi.closePane}
-                onJumpToCall={subagentUi.jumpToCall}
-                onCopy={subagentUi.copy}
+          <div className="workspace">
+            {showSidebar && (
+              <ProjectSidebar
+                tabs={sessions}
+                activeId={activeSessionId}
+                recents={recentRows(recentProjects, sessions, activeProfileId)}
+                profileLabel={profileLabel}
+                onSelectTab={handleSelectTab}
+                onCloseTab={handleCloseTab}
+                onNewInProject={handleNewInProject}
+                onOpenRecent={handleOpenRecent}
+                onForgetRecent={handleForgetRecent}
+                onOpenFolder={handleNewProject}
+                onHide={toggleSidebar}
               />
             )}
+            <div className={`stage ${showRail ? "with-rail" : ""}`}>
+              <main className="session">
+                <ChatView key={activeSessionId} messages={messages}
+                  planMode={planMode}
+                  annotations={planAnnotations}
+                  onAnnotate={handleAnnotate}
+                  onAskAnswer={handleAskAnswer}
+                  onConfirmAsk={handleConfirmAsk}
+                  onCancelAsk={handleCancelAsk}
+                  onGrantApproval={handleGrantApproval}
+                  hoveredMsgIdx={hoveredMsgIdx}
+                  hasProjectPath={!!activeProject?.path}
+                  onInspectSubagent={subagentUi.open}
+                />
+                <Composer
+                  onSend={handleSend}
+                  planMode={planMode}
+                  onTogglePlan={togglePlanMode}
+                  onOpenCmd={() => openBridge("commands")}
+                  onOpenModel={() => openBridge("models")}
+                  currentModel={model}
+                  thinking={thinkingLevel}
+                  onCycleThinking={cycleThinking}
+                  isStreaming={streaming}
+                  onAbort={handleAbort}
+                  onApprove={handleApprovePlan}
+                  annotationCount={Object.keys(planAnnotations).length}
+                  microcopy={data.microcopy}
+                  onPick={handleCommand}
+                  onFollowUp={handleFollowUp}
+                  draftInsert={draftInsert}
+                  promptHistory={promptHistory}
+                  promptInsert={promptInsert}
+                />
+                <StatusBar
+                  ctx={liveCtx}
+                  model={model}
+                  thinking={thinkingLevel}
+                  todoDone={todoCounts.done}
+                  todoTotal={todoCounts.total}
+                  onTodo={() => setPlanOpen(true)}
+                  onModel={() => openBridge("models")}
+                  onChanges={() => setChangesOpen(true)}
+                  onRules={() => setRulesOpen(true)}
+                  onStats={() => setStatsOpen(true)}
+                  onTweaks={() => window.postMessage({ type: '__activate_edit_mode' }, '*')}
+                  autosave={t.autosave ?? true}
+                  onAutosave={v => setTweak("autosave", v)}
+                />
+              </main>
 
-            {showRail && (
-              <AmbientRail
-                ctx={liveCtx}
-                activity={activity}
-                subagents={subagentList}
-                subagentPaneOpen={showSplit}
-                onOpenSubagent={subagentUi.open}
-                onToggleSubagentPane={subagentUi.togglePane}
-                messages={messages}
-                microcopy={data.microcopy}
-                sparklineValues={sparkline}
-                onClose={() => setTweak("layout", "focus")}
-                hoveredMsgIdx={hoveredMsgIdx}
-                onMinimapHover={setHoveredMsgIdx}
-                onMinimapClick={handleMinimapClick}
-              />
-            )}
+              {showSplit && (
+                <SubagentPane
+                  state={subagents}
+                  filter={subagentUi.filter} onFilter={subagentUi.setFilter}
+                  selected={subagentUi.selected} onSelect={subagentUi.select}
+                  level={subagentUi.level}
+                  transcript={subagentUi.selected ? subagentTranscripts[subagentUi.selected.id] : null}
+                  onLoadTranscript={id => bridge?.loadSubagentTranscript(id)}
+                  onClose={subagentUi.closePane}
+                  onJumpToCall={subagentUi.jumpToCall}
+                  onCopy={subagentUi.copy}
+                />
+              )}
+
+              {showRail && (
+                <AmbientRail
+                  ctx={liveCtx}
+                  activity={activity}
+                  subagents={subagentList}
+                  subagentPaneOpen={showSplit}
+                  onOpenSubagent={subagentUi.open}
+                  onToggleSubagentPane={subagentUi.togglePane}
+                  messages={messages}
+                  microcopy={data.microcopy}
+                  sparklineValues={sparkline}
+                  onClose={() => setTweak("layout", "focus")}
+                  hoveredMsgIdx={hoveredMsgIdx}
+                  onMinimapHover={setHoveredMsgIdx}
+                  onMinimapClick={handleMinimapClick}
+                />
+              )}
+            </div>
           </div>
         </div>
       </div>

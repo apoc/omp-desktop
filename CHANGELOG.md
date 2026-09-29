@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Project sidebar (toggle with `Ctrl+B` / `⌘B`, the tab-bar button, or the *project sidebar* tweak): open tabs grouped by project — hover a project to start a new conversation there — plus the recently opened folders of the active tab's profile; click one to open it, hover to drop it from the list (#27).
+- Tabs on the same folder and profile collapse into one tab-bar chip with a count; its dropdown switches between them or starts a new conversation in that project (#27).
+
+### Changed
+
+- Opening a recent project, or resuming a conversation from history, focuses its tab when it is already open instead of starting a second copy (#27). `+` / `Ctrl+T` still always opens a new tab.
+- A folder picked with `+` / `Ctrl+T` is opened at its real (symlink-resolved) path, the same form "Open with OMP Desktop" and the recent-projects list use, so an open project is always recognised (#27).
+
 ## [0.3.3] - 2026-09-25
 
 ### Added
