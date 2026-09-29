@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn list_falls_back_to_process_cwd_for_empty_path() {
-        // The pathless "default" session sends "" — must still return hits
+        // A pathless tab (a resumed session with no cwd) sends "" — must still return hits
         // rather than erroring, walking the process's actual working
         // directory (the crate root under `cargo test`). Asserting only
         // `is_ok()` would pass even if the fallback silently produced an

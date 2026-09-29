@@ -14,6 +14,7 @@ mod json_store;
 mod keybindings;
 mod navigation_guard;
 mod profiles;
+mod recent_projects;
 mod saved_sessions;
 mod stats;
 mod updater;
@@ -410,28 +411,31 @@ async fn list_project_files(
 async fn open_project(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = std::sync::mpsc::channel();
-    // Use into_path() rather than to_string() so we get a real PathBuf
-    // and convert through to_string_lossy(). Avoids platform-specific
-    // FilePath::to_string formatting (URL encoding, UNC prefix quirks)
-    // that could diverge from what std::fs and the rest of the app
-    // expect downstream.
     app.dialog()
         .file()
         .set_title("Open Project Folder")
         .pick_folder(move |result| {
             let _ = tx.send(result);
         });
-    let picked = tauri::async_runtime::spawn_blocking(move || rx.recv())
-        .await
-        .map_err(|e| format!("join error: {e}"))?
-        .map_err(|e| format!("channel error: {e}"))?;
-    let Some(picked) = picked else {
-        return Ok(None);
-    };
-    let path = picked
-        .into_path()
-        .map_err(|e| format!("invalid picked path: {e}"))?;
-    Ok(Some(path.to_string_lossy().into_owned()))
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(picked) = rx.recv().map_err(|e| format!("channel error: {e}"))? else {
+            return Ok(None);
+        };
+        // into_path() rather than to_string(): a real PathBuf avoids
+        // platform-specific FilePath::to_string formatting (URL encoding,
+        // UNC prefix quirks).
+        let path = picked
+            .into_path()
+            .map_err(|e| format!("invalid picked path: {e}"))?;
+        // Canonical, like an OS "Open with" folder: the tab path is compared
+        // with the canonical recent-projects entries (`openProject`'s
+        // focus-existing lookup), so a folder picked through a symlink must
+        // not look like a different project. Off the async thread: it is a
+        // filesystem call.
+        external_open::canonical_folder(&path).map(Some)
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
 }
 
 /// Start watching `.git/HEAD` for a session's project path.
@@ -641,6 +645,57 @@ async fn keybindings_reset(
     .await
 }
 
+/// `profile` as the key its recent-projects entries are stored under: the
+/// built-in profile (`None`/blank/`"default"`) is `"default"`, an unlisted
+/// id is an `Err` (same validation as every other profile-scoped command).
+fn recents_key(store: &profiles::ProfileStore, profile: Option<String>) -> Result<String, String> {
+    Ok(store
+        .resolve_owned(profile)?
+        .unwrap_or_else(|| profiles::DEFAULT_PROFILE_ID.to_owned()))
+}
+
+/// `profile`'s recently opened project folders, newest first (the project
+/// sidebar's `recent` section). Folders gone from disk are omitted.
+#[tauri::command]
+async fn recent_projects_list(
+    profile: Option<String>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+    recents: State<'_, Arc<recent_projects::RecentProjectsStore>>,
+) -> Result<Vec<recent_projects::RecentProject>, String> {
+    let key = recents_key(&store, profile)?;
+    with_blocking(&recents, move |s| Ok(s.list(&key))).await
+}
+
+/// Record `path` as just opened under `profile` and return the updated list.
+/// The path is canonicalised first, so a folder that no longer exists (or a
+/// file) is refused instead of recorded.
+#[tauri::command]
+async fn recent_projects_touch(
+    path: String,
+    profile: Option<String>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+    recents: State<'_, Arc<recent_projects::RecentProjectsStore>>,
+) -> Result<Vec<recent_projects::RecentProject>, String> {
+    let key = recents_key(&store, profile)?;
+    with_blocking(&recents, move |s| {
+        let canonical = external_open::canonical_folder(Path::new(&path))?;
+        s.touch(&key, canonical, recent_projects::now_ms())
+    })
+    .await
+}
+
+/// Drop `path` from `profile`'s recent list and return the updated list.
+#[tauri::command]
+async fn recent_projects_remove(
+    path: String,
+    profile: Option<String>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+    recents: State<'_, Arc<recent_projects::RecentProjectsStore>>,
+) -> Result<Vec<recent_projects::RecentProject>, String> {
+    let key = recents_key(&store, profile)?;
+    with_blocking(&recents, move |s| s.remove(&key, &path)).await
+}
+
 /// Ask the release feed for a newer version — see `updater::check`.
 /// `None` means up to date.
 #[tauri::command]
@@ -663,8 +718,9 @@ async fn app_update_install(
     updater::install(&app, &state).await
 }
 
-/// App-level state that needs a resolved path, the launch session, and the
-/// cold-start "Open with" argv — `run()`'s `setup` hook.
+/// App-level state that needs a resolved path, and the cold-start "Open
+/// with" argv — `run()`'s `setup` hook. No omp process starts here: the app
+/// opens with no tab until the user (or an OS folder open) picks a project.
 fn setup(app: &tauri::App) {
     #[cfg(debug_assertions)]
     if let Some(win) = app.get_webview_window("main") {
@@ -682,52 +738,17 @@ fn setup(app: &tauri::App) {
     // <app_config_dir>/approval-rules/<project-hash>.json.
     app.manage(Arc::new(RuleBook::new(config_dir.join("approval-rules"))));
     // Profile list: <app_config_dir>/profiles.json.
-    let store = Arc::new(profiles::ProfileStore::load(
+    app.manage(Arc::new(profiles::ProfileStore::load(
         config_dir.join("profiles.json"),
-    ));
-    // The user's chosen startup profile. `startup_id` is always a
-    // listed id, and `resolve` maps the built-in one to `None` (no
-    // `--profile` flag), so a deleted default degrades to omp's own
-    // tree instead of failing the launch spawn.
-    let startup = store
-        .resolve(Some(&store.startup_id()))
-        .ok()
-        .flatten()
-        .map(str::to_owned);
-    // Moved, not `Arc::clone`d: `store` is not read after this point,
-    // so a second handle would be dropped at the end of `setup`.
-    app.manage(store);
+    )));
     // Keybinding overlay: <app_config_dir>/keybindings.json.
     app.manage(Arc::new(keybindings::overlay::OverlayStore::new(
         config_dir.join("keybindings.json"),
     )));
-
-    // Start the default session (no cwd = omp's working directory).
-    // The frontend activates this session on load via OMP_BRIDGE.activateSession("default").
-    //
-    // Failure handling: the bridge caches the spawn error keyed
-    // by session_id. The frontend's activateSession queries
-    // session_status on attach and surfaces the cached reason
-    // if any — no event timing race, no delayed emit thread.
-    let bridge = app.state::<AgentBridge>();
-    let rule_book = app.state::<Arc<RuleBook>>();
-    let default_session = bridge.start_session(
-        "default".into(),
-        None,
-        None,
-        // The startup profile chosen in the selector; `None` is the
-        // built-in profile (omp's own ~/.omp/agent). Tabs the user
-        // opens later inherit the active tab's profile.
-        startup.as_deref(),
-        // `app.handle()` returns a borrow and `start_session` needs an
-        // owned handle; `AppHandle` is not an `Arc`, so `Arc::clone`
-        // does not apply here.
-        app.handle().clone(),
-        Arc::clone(rule_book.inner()),
-    );
-    if let Err(e) = default_session {
-        eprintln!("[omp-desktop] failed to start default session: {e}");
-    }
+    // Recently opened projects: <app_config_dir>/recent-projects.json.
+    app.manage(Arc::new(recent_projects::RecentProjectsStore::new(
+        config_dir.join("recent-projects.json"),
+    )));
 
     // A cold start *is* how Windows and Linux file managers open a
     // folder, so the launch argv is the third delivery path into the
@@ -769,7 +790,7 @@ pub fn run() {
     let builder = tauri::Builder::default();
     // Windows and Linux deliver a folder "Open with" by launching the
     // executable with the path in argv, so without this a second open would
-    // start a whole second app — a second launch session, a second set of
+    // start a whole second app — a second window, a second set of
     // omp children — instead of adding a tab to the running one. The
     // forwarded argv goes through the same queue as a cold start's.
     //
@@ -831,6 +852,9 @@ pub fn run() {
             keybindings_list,
             keybindings_set,
             keybindings_reset,
+            recent_projects_list,
+            recent_projects_touch,
+            recent_projects_remove,
             app_update_check,
             app_update_install,
         ])

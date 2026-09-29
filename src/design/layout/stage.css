@@ -29,3 +29,22 @@
   border-right: 1px solid var(--line);
 }
 
+/* ── Empty workspace (no tab open) ──────────────────────────────────── */
+.empty-ws { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+/* Fills the column; the canvas draws its own background (see
+   design/empty-workspace.jsx), so it needs no fill here. */
+.empty-ws-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+/* Bridge notes float over the rain, below the logo. */
+.empty-ws-notes {
+  position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
+  width: min(460px, calc(100% - 48px));
+  display: flex; flex-direction: column; gap: 8px;
+}
+.empty-ws-note {
+  padding: 8px 12px;
+  background: color-mix(in oklab, var(--bg-window) 88%, transparent);
+  border: 1px solid color-mix(in oklab, var(--rose) 40%, var(--line));
+  border-radius: var(--r-2);
+  font-size: var(--d-text-sm); color: var(--fg-2);
+}
+

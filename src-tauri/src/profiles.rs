@@ -398,9 +398,8 @@ fn normalize(profiles: Vec<Profile>) -> Vec<Profile> {
 ///
 /// `None` means the built-in profile, and so does any pointer that no longer
 /// resolves — a profile deleted by this app instance, by another one, or by a
-/// hand edit. Falling back keeps launch working instead of failing every
-/// spawn against a profile that isn't there; `resolve` would otherwise reject
-/// it and `setup` would start with no session at all.
+/// hand edit. Falling back keeps new tabs working instead of failing every
+/// spawn against a profile that isn't there, which `resolve` would reject.
 fn normalize_startup(startup: Option<String>, profiles: &[Profile]) -> Option<String> {
     startup
         .filter(|id| !is_default(id))
@@ -641,6 +640,10 @@ impl ProfileStore {
     /// The id new processes start in when no tab dictates otherwise. Always a
     /// listed profile: the pointer is re-validated on load and on every
     /// mutation, so a deleted startup profile reads back as the built-in one.
+    ///
+    /// Test-only since the app stopped spawning a launch session: the
+    /// frontend reads the pointer through `snapshot()` (`list_profiles`).
+    #[cfg(test)]
     pub fn startup_id(&self) -> String {
         self.cache
             .lock()

@@ -90,6 +90,17 @@
        before it. -->
   <script src="app/lightbox.js"></script>
 
+  <!-- Project navigation (issue #27): pure tab grouping/lookup helpers.
+       Dependency-free IIFE; design/chrome.jsx, design/tab-group-chip.jsx
+       and design/project-sidebar.jsx destructure window.OMP_PROJECT_NAV at
+       top level and live.js calls it, so it must load before all of them. -->
+  <script src="app/project-nav.js"></script>
+
+  <!-- Empty-workspace backdrop: pure digital-rain + ASCII logo geometry.
+       Dependency-free IIFE; design/empty-workspace.jsx destructures
+       window.OMP_MATRIX at top level, so it must load before it. -->
+  <script src="app/matrix-rain.js"></script>
+
   <!-- Design components (unchanged — from src/design/ copy) -->
   <script src="design/tweaks/style.js"></script>
   <script src="design/tweaks/use-tweaks.js"></script>
@@ -119,7 +130,17 @@
   <!-- Per-tab profile selector — chrome.jsx destructures window.ProfileMenu
        at top level, so this must load before it. -->
   <script type="text/babel" src="design/profile-menu.jsx"></script>
+  <!-- Grouped tab-bar chip (#27) — chrome.jsx destructures
+       window.TabGroupChip / window.TabRunDot at top level, so this must load
+       before it. -->
+  <script type="text/babel" src="design/tab-group-chip.jsx"></script>
   <script type="text/babel" src="design/chrome.jsx"></script>
+  <!-- Project sidebar (#27); reads window.TabRunDot (tab-group-chip.jsx)
+       and window.OMP_PROJECT_NAV at top level. -->
+  <script type="text/babel" src="design/project-sidebar.jsx"></script>
+  <!-- Session column with no tab open; destructures window.MarkdownContent
+       and window.OMP_MATRIX at top level. -->
+  <script type="text/babel" src="design/empty-workspace.jsx"></script>
   <script type="text/babel" src="design/panels.jsx"></script>
   <script type="text/babel" src="design/changes-panel.jsx"></script>
   <script type="text/babel" src="design/approval-rules-panel.jsx"></script>

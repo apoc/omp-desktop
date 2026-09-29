@@ -114,8 +114,7 @@ function ProfileMenu({
       if (!res?.ok) { setError(res?.error ?? "could not save"); return; }
       // A freshly created profile is what the user wants this tab to use —
       // selecting it here is the whole point of adding it. Awaited, so a
-      // refused switch (e.g. no tab open) reports instead of closing on a
-      // half-done action.
+      // refused pick reports instead of closing on a half-done action.
       if (mode === "create") {
         // Leave create mode first: the profile now *exists*, so the form has
         // done its job whatever the switch does next. Keeping it mounted with
@@ -140,11 +139,12 @@ function ProfileMenu({
   };
 
   // `onSelect` resolves to {ok} | {ok: false, error} on every path
-  // (live.js::switchSessionProfile guarantees it), and several of those
-  // refusals are invisible anywhere else: "no tab open" when the last tab
-  // was closed, an unlisted profile another window deleted, or a switch
-  // already in flight for this tab. Await it and keep the popover open with
-  // the reason rather than closing on an action that did not happen.
+  // (live.js::switchSessionProfile with a tab open, selectNoTabProfile
+  // without one), and several of those refusals are invisible anywhere
+  // else: an unlisted profile another window deleted, a switch already in
+  // flight for this tab, or a tab that opened while the no-tab pick was
+  // pending. Await it and keep the popover open with the reason rather
+  // than closing on an action that did not happen.
   const pick = async id => {
     if (id === activeId) { close(); return; }
     if (busy.current) return;

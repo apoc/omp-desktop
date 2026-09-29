@@ -14,7 +14,7 @@
 //!   `packaging/omp-desktop.desktop`). When an instance is already
 //!   running, `tauri-plugin-single-instance` forwards that argv to it
 //!   instead of starting a second app (each instance owns its own omp
-//!   children, so a second one would be a second launch session).
+//!   children, so a second one would be a second window of tabs).
 //!
 //! All three converge on [`ingest_args`] / [`ingest_urls`]: resolve to a
 //! canonical directory, queue it, then emit [`OPEN_PROJECT_EVENT`] once.
@@ -164,7 +164,7 @@ fn ingest<I: Iterator<Item = Result<String, String>>>(app: &AppHandle, resolved:
 /// Symlinks and `..` are resolved once, and anything that is not a directory
 /// (a file dragged onto the app icon, a stale shortcut) is rejected rather
 /// than silently spawning an agent somewhere unexpected.
-fn canonical_folder(path: &Path) -> Result<String, String> {
+pub fn canonical_folder(path: &Path) -> Result<String, String> {
     let canonical = path
         .canonicalize()
         .map_err(|e| format!("cannot resolve '{}': {e}", path.display()))?;

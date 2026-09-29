@@ -22,7 +22,8 @@
     "autosave":  true,
     "promptHistoryLimit": 100,
     "updateCheck": true,
-    "skippedUpdate": null
+    "skippedUpdate": null,
+    "sidebar": true
   }/*EDITMODE-END*/;
 
   const NULL_MODEL    = { id: "", name: "–", provider: "", note: "", latency: 0, current: false };

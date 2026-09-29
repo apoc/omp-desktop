@@ -18,7 +18,7 @@
    ═════════════════════════════════════════════════════════════════════ */
 
 const {
-  Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar, SubagentPane,
+  Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar, SubagentPane, ProjectSidebar, EmptyWorkspace,
   StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, UpdateModal, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, DEFAULT_PROFILE_ID,
@@ -27,6 +27,7 @@ const {
   useKeymap, useKeymapDispatch, ShortcutsModal,
 } = window;
 const { isSlashCommand } = window.OMP_SLASH;
+const { recentRows } = window.OMP_PROJECT_NAV;
 
 function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
@@ -93,13 +94,21 @@ function App() {
   // Which profile is ticked as the default for new tabs / the next launch.
   // App-wide and persisted, unlike a tab's own profile.
   const [startupProfileId, setStartupProfileId] = React.useState(DEFAULT_PROFILE_ID);
+  // Recently opened folders of the active tab's profile (project sidebar).
+  const [recentProjects, setRecentProjects] = React.useState([]);
+  // With no tab open: the profile the next tab opens under (the menu's pick,
+  // else the startup default — resolved by the bridge), and notes filed
+  // while there was no transcript to hold them.
+  const [noTabProfileId, setNoTabProfileId] = React.useState(DEFAULT_PROFILE_ID);
+  const [workspaceNotes, setWorkspaceNotes] = React.useState([]);
 
   // ── Cross-cutting effects ─────────────────────────────────────────────────
   useBridgeSnapshot(bridge, {
     setMessages, setStreaming, setCtx, setKanban, setPlanMeta,
     setModels, setActivity, setSparkline,
     setModelState, setThinkingLevel,
-    setSessions, setActiveSessionId, setProfiles, setStartupProfileId,
+    setSessions, setActiveSessionId, setProfiles, setStartupProfileId, setRecentProjects,
+    setNoTabProfileId, setWorkspaceNotes,
     setPromptHistory, setSubagents, setSubagentTranscripts,
   });
   useThemeEffect(t);
@@ -121,12 +130,17 @@ function App() {
   // ── Derived values ────────────────────────────────────────────────────────
   const activeProject = sessions.find(s => s.id === activeSessionId) ?? sessions[0] ?? EMPTY_PROJECT;
   // No tab open → `activeProject` is EMPTY_PROJECT (built-in profile), but
-  // the bridge spawns the next tab into the ticked startup profile (nothing
-  // to inherit from) — so showing the built-in would tick a profile that
-  // isn't where the next tab actually goes. Shared by WindowChrome's menu
-  // and the usage-stats panel's header label, instead of a second copy.
-  const activeProfileId    = activeProject.id ? activeProject.profile : startupProfileId;
+  // the bridge spawns the next tab into the empty workspace's pick or the
+  // ticked startup profile (nothing to inherit from) — so showing the
+  // built-in would tick a profile that isn't where the next tab actually
+  // goes. Shared by WindowChrome's menu, the keymap, recents and the
+  // usage-stats panel's header label, instead of a second copy.
+  const activeProfileId    = activeProject.id ? activeProject.profile : noTabProfileId;
   const activeProfileLabel = profiles.find(p => p.id === activeProfileId)?.name ?? activeProfileId;
+  // Profile chip text for a tab/project: none for the built-in profile (same
+  // expression as TabBar's own copy, which labels the tab bar).
+  const profileLabel = id =>
+    id === DEFAULT_PROFILE_ID ? null : (profiles.find(p => p.id === id)?.name ?? id);
   const todoCounts    = kanban.reduce(
     (acc, col) => {
       acc.total += col.tasks.length;
@@ -137,8 +151,9 @@ function App() {
   );
 
   // ── Keymap ────────────────────────────────────────────────────────────────
-  // Placed after activeProject so useKeymap can pass the active tab's profile.
-  const keymap = useKeymap(bridge, activeProject?.profile);
+  // The derived profile, not the tab's own: with no tab open it follows the
+  // startup default / empty-workspace pick, which must reload the omp layer.
+  const keymap = useKeymap(bridge, activeProfileId);
 
   const subagentUi = useSubagentManager({
     bridge, layout: t.layout, setTweak, activeSessionId, subagents, messages, setHoveredMsgIdx,
@@ -312,6 +327,34 @@ function App() {
   // Close tab → kills that session's omp process; bridge updates tab list
   const handleCloseTab = id => { bridge?.closeSession(id); };
 
+  // ── Project navigation (#27) ──────────────────────────────────────────────
+  const showSidebar   = t.sidebar ?? true;
+  const toggleSidebar = () => setTweak("sidebar", !showSidebar);
+
+  // A recent project: focus its open tab in the active profile, else spawn.
+  const handleOpenRecent = async path => {
+    if (!bridge) return;
+    try {
+      await bridge.openProject(path);
+    } catch (err) {
+      // Same rejection/rollback as openSession (see handleNewProject).
+      console.error("[app] failed to open recent project:", err);
+    }
+  };
+
+  // "New conversation" in a project: always a new tab, under the project's
+  // own profile rather than the active tab's.
+  const handleNewInProject = async (path, profile) => {
+    if (!bridge) return;
+    try {
+      await bridge.openSession(path, profile);
+    } catch (err) {
+      console.error("[app] failed to open conversation:", err);
+    }
+  };
+
+  const handleForgetRecent = path => { bridge?.forgetRecentProject(path); };
+
   // ── Global keymap handler map ─────────────────────────────────────────────
   // Written into handlersRef every render so the dispatch hook always reads
   // the latest closures without re-subscribing to the window listener.
@@ -341,6 +384,7 @@ function App() {
     "desktop.commands.open":   () => { setBridgeView("commands"); setBridgeOpen(v => !v); },
     "desktop.history.open":    () => setHistoryOpen(v => !v),
     "desktop.shortcuts.open":  () => setShortcutsOpen(v => !v),
+    "desktop.sidebar.toggle":  toggleSidebar,
     "desktop.tab.new":         handleNewProject,
     "desktop.tab.close":       () => { if (activeProject.id) handleCloseTab(activeProject.id); },
     // Indexed on `activeProject.id`, not `activeSessionId` — same rationale
@@ -380,11 +424,10 @@ function App() {
   // would respawn a different tab than the one shown (and on that
   // `wasActive === false` path a failure would surface no note at all).
   const handleSelectProfile = React.useCallback(id => {
-    // EMPTY_PROJECT.id is "" when no tab is open — switchSessionProfile
-    // would look it up in the session registry, find nothing, and resolve
-    // {ok: false, error: "unknown tab"}, a reason that doesn't match what's
-    // actually true (there's no tab, not a bad id). Short-circuit instead.
-    if (!activeProject.id) return Promise.resolve({ ok: false, error: "no tab open" });
+    // EMPTY_PROJECT.id is "" when no tab is open — the app starts that
+    // way — so there is no process to respawn: the pick only decides which
+    // profile the next tab opens under (and whose recents are listed).
+    if (!activeProject.id) return bridge?.selectNoTabProfile(id);
     return bridge?.switchSessionProfile(activeProject.id, id);
   }, [bridge, activeProject.id]);
   const handleCreateProfile = React.useCallback(name => bridge?.createProfile(name), [bridge]);
@@ -400,6 +443,9 @@ function App() {
   const showRail  = t.layout !== "focus";
   const showSplit = subagentUi.paneOpen;
   const liveCtx   = ctx ?? data.ctx;
+  // No tab open (the app starts that way): the session column shows the
+  // empty state instead of a transcript and a composer with nowhere to send.
+  const noTab = sessions.length === 0;
 
   return (
     <>
@@ -425,6 +471,9 @@ function App() {
             onSelect={handleSelectTab}
             onNew={handleNewProject}
             onClose={handleCloseTab}
+            onNewInProject={handleNewInProject}
+            sidebarOpen={showSidebar}
+            onToggleSidebar={toggleSidebar}
             onHistory={() => setHistoryOpen(true)}
             appVersion={updater.version}
             updateVersion={updater.pillVersion}
@@ -432,88 +481,109 @@ function App() {
             onCheckUpdate={updater.check}
           />
 
-          <div className={`stage ${showRail ? "with-rail" : ""}`}>
-            <main className="session">
-              <ChatView key={activeSessionId} messages={messages}
-                planMode={planMode}
-                annotations={planAnnotations}
-                onAnnotate={handleAnnotate}
-                onAskAnswer={handleAskAnswer}
-                onConfirmAsk={handleConfirmAsk}
-                onCancelAsk={handleCancelAsk}
-                onGrantApproval={handleGrantApproval}
-                hoveredMsgIdx={hoveredMsgIdx}
-                hasProjectPath={!!activeProject?.path}
-                onInspectSubagent={subagentUi.open}
-              />
-              <Composer
-                onSend={handleSend}
-                planMode={planMode}
-                onTogglePlan={togglePlanMode}
-                onOpenCmd={() => openBridge("commands")}
-                onOpenModel={() => openBridge("models")}
-                currentModel={model}
-                thinking={thinkingLevel}
-                onCycleThinking={cycleThinking}
-                isStreaming={streaming}
-                onAbort={handleAbort}
-                onApprove={handleApprovePlan}
-                annotationCount={Object.keys(planAnnotations).length}
-                microcopy={data.microcopy}
-                onPick={handleCommand}
-                onFollowUp={handleFollowUp}
-                draftInsert={draftInsert}
-                promptHistory={promptHistory}
-                promptInsert={promptInsert}
-              />
-              <StatusBar
-                ctx={liveCtx}
-                model={model}
-                thinking={thinkingLevel}
-                todoDone={todoCounts.done}
-                todoTotal={todoCounts.total}
-                onTodo={() => setPlanOpen(true)}
-                onModel={() => openBridge("models")}
-                onChanges={() => setChangesOpen(true)}
-                onRules={() => setRulesOpen(true)}
-                onStats={() => setStatsOpen(true)}
-                onTweaks={() => window.postMessage({ type: '__activate_edit_mode' }, '*')}
-                autosave={t.autosave ?? true}
-                onAutosave={v => setTweak("autosave", v)}
-              />
-            </main>
-
-            {showSplit && (
-              <SubagentPane
-                state={subagents}
-                filter={subagentUi.filter} onFilter={subagentUi.setFilter}
-                selected={subagentUi.selected} onSelect={subagentUi.select}
-                level={subagentUi.level}
-                transcript={subagentUi.selected ? subagentTranscripts[subagentUi.selected.id] : null}
-                onLoadTranscript={id => bridge?.loadSubagentTranscript(id)}
-                onClose={subagentUi.closePane}
-                onJumpToCall={subagentUi.jumpToCall}
-                onCopy={subagentUi.copy}
+          <div className="workspace">
+            {showSidebar && (
+              <ProjectSidebar
+                tabs={sessions}
+                activeId={activeSessionId}
+                recents={recentRows(recentProjects, sessions, activeProfileId)}
+                profileLabel={profileLabel}
+                onSelectTab={handleSelectTab}
+                onCloseTab={handleCloseTab}
+                onNewInProject={handleNewInProject}
+                onOpenRecent={handleOpenRecent}
+                onForgetRecent={handleForgetRecent}
+                onOpenFolder={handleNewProject}
+                onHide={toggleSidebar}
               />
             )}
+            <div className={`stage ${showRail ? "with-rail" : ""}`}>
+              <main className="session">
+                {noTab ? (
+                  <EmptyWorkspace notes={workspaceNotes} />
+                ) : (<>
+                  <ChatView key={activeSessionId} messages={messages}
+                    planMode={planMode}
+                    annotations={planAnnotations}
+                    onAnnotate={handleAnnotate}
+                    onAskAnswer={handleAskAnswer}
+                    onConfirmAsk={handleConfirmAsk}
+                    onCancelAsk={handleCancelAsk}
+                    onGrantApproval={handleGrantApproval}
+                    hoveredMsgIdx={hoveredMsgIdx}
+                    hasProjectPath={!!activeProject?.path}
+                    onInspectSubagent={subagentUi.open}
+                  />
+                  <Composer
+                    onSend={handleSend}
+                    planMode={planMode}
+                    onTogglePlan={togglePlanMode}
+                    onOpenCmd={() => openBridge("commands")}
+                    onOpenModel={() => openBridge("models")}
+                    currentModel={model}
+                    thinking={thinkingLevel}
+                    onCycleThinking={cycleThinking}
+                    isStreaming={streaming}
+                    onAbort={handleAbort}
+                    onApprove={handleApprovePlan}
+                    annotationCount={Object.keys(planAnnotations).length}
+                    microcopy={data.microcopy}
+                    onPick={handleCommand}
+                    onFollowUp={handleFollowUp}
+                    draftInsert={draftInsert}
+                    promptHistory={promptHistory}
+                    promptInsert={promptInsert}
+                  />
+                </>)}
+                <StatusBar
+                  ctx={liveCtx}
+                  model={model}
+                  thinking={thinkingLevel}
+                  todoDone={todoCounts.done}
+                  todoTotal={todoCounts.total}
+                  onTodo={() => setPlanOpen(true)}
+                  onModel={() => openBridge("models")}
+                  onChanges={() => setChangesOpen(true)}
+                  onRules={() => setRulesOpen(true)}
+                  onStats={() => setStatsOpen(true)}
+                  onTweaks={() => window.postMessage({ type: '__activate_edit_mode' }, '*')}
+                  autosave={t.autosave ?? true}
+                  onAutosave={v => setTweak("autosave", v)}
+                />
+              </main>
 
-            {showRail && (
-              <AmbientRail
-                ctx={liveCtx}
-                activity={activity}
-                subagents={subagentList}
-                subagentPaneOpen={showSplit}
-                onOpenSubagent={subagentUi.open}
-                onToggleSubagentPane={subagentUi.togglePane}
-                messages={messages}
-                microcopy={data.microcopy}
-                sparklineValues={sparkline}
-                onClose={() => setTweak("layout", "focus")}
-                hoveredMsgIdx={hoveredMsgIdx}
-                onMinimapHover={setHoveredMsgIdx}
-                onMinimapClick={handleMinimapClick}
-              />
-            )}
+              {showSplit && (
+                <SubagentPane
+                  state={subagents}
+                  filter={subagentUi.filter} onFilter={subagentUi.setFilter}
+                  selected={subagentUi.selected} onSelect={subagentUi.select}
+                  level={subagentUi.level}
+                  transcript={subagentUi.selected ? subagentTranscripts[subagentUi.selected.id] : null}
+                  onLoadTranscript={id => bridge?.loadSubagentTranscript(id)}
+                  onClose={subagentUi.closePane}
+                  onJumpToCall={subagentUi.jumpToCall}
+                  onCopy={subagentUi.copy}
+                />
+              )}
+
+              {showRail && (
+                <AmbientRail
+                  ctx={liveCtx}
+                  activity={activity}
+                  subagents={subagentList}
+                  subagentPaneOpen={showSplit}
+                  onOpenSubagent={subagentUi.open}
+                  onToggleSubagentPane={subagentUi.togglePane}
+                  messages={messages}
+                  microcopy={data.microcopy}
+                  sparklineValues={sparkline}
+                  onClose={() => setTweak("layout", "focus")}
+                  hoveredMsgIdx={hoveredMsgIdx}
+                  onMinimapHover={setHoveredMsgIdx}
+                  onMinimapClick={handleMinimapClick}
+                />
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -626,6 +696,8 @@ function App() {
             ]}
             onChange={v => setTweak("layout", v)}
           />
+          <TweakToggle label="project sidebar" value={t.sidebar ?? true}
+            onChange={v => setTweak("sidebar", v)} />
         </TweakSection>
         <TweakSection label="Session">
           <TweakSlider label="prompt history" value={t.promptHistoryLimit ?? window.OMP_PROMPT_HISTORY.DEFAULT_LIMIT}
