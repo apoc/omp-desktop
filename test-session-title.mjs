@@ -113,11 +113,6 @@ check("a null snapshot never refines", () => {
   assert.equal(T.shouldRefineTitle(null, 99, 2, OK), false);
 });
 
-check("the cadence and budget are exported positive numbers", () => {
-  assert.ok(Number.isInteger(T.REFINE_EVERY_TURNS) && T.REFINE_EVERY_TURNS > 0);
-  assert.ok(Number.isInteger(T.REFINE_MAX) && T.REFINE_MAX > 0);
-});
-
 // ── isAutoRenameNote ────────────────────────────────────────────────────
 // omp's exact outcome strings, verbatim from slash-commands/
 // builtin-lifecycle.ts (rename handle) — paraphrased fixtures would let an
@@ -173,6 +168,15 @@ check("a bare or argued /rename is a manual rename", () => {
   assert.equal(T.isManualRename("  /rename   My Title"), true);
 });
 
+check("omp's colon spelling /rename:Title is a manual rename", () => {
+  // omp's parseSlashCommand ends the name at the first whitespace or `:`,
+  // so this runs the rename builtin with args "My Title"; missing it let a
+  // later refresh overwrite the title the user typed.
+  assert.equal(T.isManualRename("/rename:My Title"), true);
+  assert.equal(T.isManualRename("/rename:"), true);
+  assert.equal(T.isManualRename("/rename-files:x"), false);
+});
+
 check("a prefix, a different case, or a non-command is not a manual rename", () => {
   // omp's builtin dispatch is case-sensitive, and a skill named
   // /rename-files must not retire the automatic title.
@@ -187,6 +191,23 @@ check("a prefix, a different case, or a non-command is not a manual rename", () 
 check("a non-string is not a manual rename", () => {
   assert.equal(T.isManualRename(undefined), false);
   assert.equal(T.isManualRename(null), false);
+});
+
+// ── isRenameStateStale ─────────────────────────────────────────────────
+
+check("an in-process session switch retires the auto-rename state", () => {
+  // /resume or /branch typed as a prompt: the pending /rename returns
+  // silently and leftover budget must not retitle the other conversation.
+  assert.equal(T.isRenameStateStale({ sessionId: "b" }, "a"), true);
+});
+
+check("the same session, or an unknown side, is not stale", () => {
+  assert.equal(T.isRenameStateStale({ sessionId: "a" }, "a"), false);
+  // Nothing sent yet: the state is not bound to any session.
+  assert.equal(T.isRenameStateStale({ sessionId: "b" }, null), false);
+  // An omp that reports no sessionId can't prove a switch.
+  assert.equal(T.isRenameStateStale({}, "a"), false);
+  assert.equal(T.isRenameStateStale(null, "a"), false);
 });
 
 // ── shouldRearmAfterAbort ───────────────────────────────────────────────

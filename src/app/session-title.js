@@ -107,13 +107,28 @@
   }
 
   /** Whether `text` is a user-typed `/rename` (optional title arguments).
-   *  The leading token must be exactly `rename`: omp's builtin dispatch is
+   *  The command name ends where omp's `parseSlashCommand` ends it: at the
+   *  first whitespace or `:`, so `/rename:My Title` is a manual rename
+   *  too. The name must be exactly `rename`: omp's builtin dispatch is
    *  case-sensitive, and a skill or template named `/rename-files` must
    *  not retire the automatic title. */
   function isManualRename(text) {
     if (typeof text !== "string") return false;
-    const tok = /^\/(\S*)/.exec(text.trim())?.[1];
+    const tok = /^\/([^\s:]*)/.exec(text.trim())?.[1];
     return tok === "rename";
+  }
+
+  /** Whether the tab's auto-rename state belongs to an omp session other
+   *  than the one `get_state` now reports. omp can switch sessions inside
+   *  the process without an RPC `new_session` (`/resume`, `/branch` typed
+   *  as prompts). A pending `/rename` then returns without a note (its
+   *  `isCurrent()` checks the session id), and leftover refinement budget
+   *  would retitle a conversation whose name may be a manual one — the
+   *  same reason a resumed tab starts without budget. Unknown on either
+   *  side (nothing sent yet, older omp without `sessionId`) is not stale. */
+  function isRenameStateStale(rpcState, boundSessionId) {
+    const current = rpcState && rpcState.sessionId;
+    return !!(boundSessionId && current && current !== boundSessionId);
   }
 
   /** Whether an `agent_end` counts toward the refine cadence. Non-terminal
@@ -126,7 +141,7 @@
 
   window.OMP_SESSION_TITLE = {
     shouldAutoRename, shouldRefineTitle, isAutoRenameNote, sessionTitleFromEvent,
-    isManualRename, shouldRearmAfterAbort, countsAsRefineTurn,
+    isManualRename, isRenameStateStale, shouldRearmAfterAbort, countsAsRefineTurn,
     REFINE_EVERY_TURNS, REFINE_MAX,
   };
 })();
