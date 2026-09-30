@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Release builds stamp every script and stylesheet URL with the app version (`?v=X.Y.Z`), so a webview that cached a previous version's files after an in-app update can no longer serve them: the WebView2 data folder survives the updater, and embedded assets carry no cache validators, which could leave an updated app running a mix of old and new frontend modules until the cache happened to evict.
+- The Linux `.AppImage` starts when another user mounts it — `firejail --appimage`, the AppImage catalog's test, root-extracted copies — instead of failing with `AppRun.wrapped: Permission denied`. Tauri CLI before 2.12 shipped that launcher as owner/group-only (`0770`); builds now use Tauri 2.12, and a release fails if any file in the AppImage is limited to its owner.
 
 ## [0.4.0] - 2026-09-30
 

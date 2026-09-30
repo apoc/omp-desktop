@@ -13,7 +13,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
-tauri-plugin-updater = "2"
+# 2.13: `check()` no longer sets SSL_CERT_FILE/SSL_CERT_DIR process-wide on
+# Linux, which every omp child would have inherited.
+tauri-plugin-updater = "2.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 notify = "8"

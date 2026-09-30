@@ -166,7 +166,8 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            squashfs-tools    # unsquashfs, for the AppImage file-mode check
 
       # ── Node deps (Tauri CLI) ───────────────────────────────────────────────
       - name: npm ci
@@ -214,6 +215,35 @@ jobs:
           releaseDraft: true        # publish manually after reviewing artefacts
           prerelease: ${{ contains(env.TAG, '-') }}
           args: ${{ matrix.args }} --config src-tauri/tauri.dist.conf.json --config src-tauri/tauri.release.conf.json
+
+      # tauri-action has already uploaded to the draft by now, but failing here
+      # keeps updater-json from running, so the draft can't be published whole.
+      # Every file must be usable by a uid other than the one that mounts it:
+      # firejail --appimage and the appimage.github.io catalog mount as root
+      # and run as another user. Tauri CLI < 2.12 shipped AppRun.wrapped as
+      # 0770 (tauri-apps/tauri#16155), invisible when the builder starts it.
+      # Reads the modes stored in the squashfs: `--appimage-extract` from the
+      # current runtime creates every directory 0700, whatever the image says.
+      - name: Check AppImage file modes (Linux only)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          appimage="$(ls src-tauri/target/release/bundle/appimage/*.AppImage)"
+          offset="$("$appimage" --appimage-offset)"
+          listing="$(unsquashfs -lln -o "$offset" "$appimage")"
+          bad="$(printf '%s\n' "$listing" | awk '
+            length($1) != 10 || $1 !~ /^[-d]/ { next }  # headers, symlinks, devices
+            substr($1, 8, 1) != "r" ||
+            ($1 ~ /^d/ && substr($1, 10, 1) != "x") ||
+            ($1 ~ /^-/ && substr($1, 4, 1) == "x" && substr($1, 10, 1) != "x")')"
+          if [ -z "$(printf '%s\n' "$listing" | awk '$NF ~ /\/AppRun$/')" ]; then
+            echo "::error::unsquashfs listed no AppRun; can't vouch for the file modes"
+            exit 1
+          fi
+          if [ -n "$bad" ]; then
+            echo "::error::AppImage has owner-limited files; it won't start under firejail or another uid:"
+            echo "$bad"
+            exit 1
+          fi
 
   updater-json:
     name: updater feed (latest.json)

@@ -783,10 +783,6 @@ fn setup(app: &tauri::App) {
 /// runtime cannot be initialised). This is a fatal startup condition;
 /// there is no meaningful recovery from inside `main`.
 pub fn run() {
-    // First, while still single-threaded: the updater's `check()` later
-    // injects SSL_CERT_* into the process env, and omp children must see
-    // the user's own (see `spawn::record_launch_env`).
-    agent::spawn::record_launch_env();
     let builder = tauri::Builder::default();
     // Windows and Linux deliver a folder "Open with" by launching the
     // executable with the path in argv, so without this a second open would
