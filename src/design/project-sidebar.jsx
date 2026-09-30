@@ -61,7 +61,7 @@ function ProjectSidebar({
                 <button className="psb-main" title={group.path || group.name}
                   onClick={() => onSelectTab(groupTarget(group, activeId))}>
                   <Icon name="folder" size={11} color={containsActive ? "var(--accent)" : "var(--fg-4)"} />
-                  <span className="psb-name">{group.name}</span>
+                  <span className="psb-name">{multi ? group.name : group.tabs[0].name}</span>
                   {profile && (
                     <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
                   )}

@@ -14,6 +14,7 @@
   const { timeNow } = window;
   const { LOCAL_COMMANDS, adaptAvailableCommands, mergeSlashCommands, isSlashCommand } = window.OMP_SLASH;
   const SUB = window.OMP_SUBAGENTS;
+  const STITLE = window.OMP_SESSION_TITLE;
 
   // ── Safe defaults so design components never crash on missing fields ──────
   const DEFAULT_DATA = {
@@ -936,6 +937,14 @@
       // `_applyRpcState`). `resumeSession` matches on it to focus instead of
       // spawning a duplicate.
       sessionFile: resume ?? null,
+      // Auto-rename state machine (src/app/session-title.js): a fresh tab
+      // is armed to ask omp for a session title after its first completed
+      // turn (RPC mode never auto-titles); a resume keeps its saved name
+      // and stays unarmed. `inFlight` spans the `/rename` send until its
+      // outcome is confirmed, gating both the one-shot trigger and the
+      // suppression of the builtin's outcome note.
+      autoRenameArmed: !resume,
+      autoRenameInFlight: false,
     });
     try {
       await _spawnSession(id, cwd, { resume, profile });
@@ -1313,6 +1322,17 @@
     // output channel is this frame; without handling it, the command looks
     // like it did nothing.
     if (type === "command_output") {
+      // Our automatic `/rename` prints its outcome as a builtin note; that
+      // is plumbing, not conversation, so swallow it — but only while our
+      // own rename is in flight, so a manual `/rename` by the user still
+      // reaches the transcript. The note and the `session_info_update`
+      // frame are emitted back-to-back by omp, so the note always lands
+      // before the get_state round-trip this event triggers.
+      const entry = activeSessionId ? sessionRegistry.get(activeSessionId) : null;
+      if (entry && entry.autoRenameInFlight && STITLE.isAutoRenameNote(ev.text)) {
+        sessionRegistry.set(activeSessionId, { ...entry, autoRenameInFlight: false });
+        return;
+      }
       _pushAssistantNote(ev.text, true);
       notify();
       return;
@@ -1324,6 +1344,17 @@
     // response to key off. Re-fetch rather than duplicate _applyRpcState's
     // model/thinkingLevel/sessionName derivation here.
     if (type === "config_update" || type === "session_info_update") {
+      // `session_info_update` carries the title omp just set (our automatic
+      // `/rename`, or a manual one) — apply it to the tab right away so the
+      // rename lands even if the confirming get_state races a tab switch.
+      // `config_update` carries no title; both still re-fetch below.
+      if (type === "session_info_update" && activeSessionId && sessionRegistry.has(activeSessionId)) {
+        const title = STITLE.sessionTitleFromEvent(ev);
+        if (title) {
+          sessionRegistry.set(activeSessionId, { ...sessionRegistry.get(activeSessionId), name: title });
+          notify();
+        }
+      }
       _send({ type: "get_state" });
       return;
     }
@@ -1721,6 +1752,26 @@
     const current = activeSessionId ? sessionRegistry.get(activeSessionId) : null;
     if (rpcState.sessionFile && current && current.sessionFile !== rpcState.sessionFile) {
       sessionRegistry.set(activeSessionId, { ...current, sessionFile: rpcState.sessionFile });
+    }
+
+    // ── Auto-rename (src/app/session-title.js) ──────────────────────────
+    // RPC-mode omp never titles a session, so after the first completed
+    // exchange the app asks once: send the bare `/rename` builtin, which
+    // generates a title from the conversation, emits `session_info_update`
+    // (applied above), then prints an outcome note (swallowed above).
+    // Armed→in-flight flips on the send, so nothing re-triggers even if the
+    // model never produces a title. A confirming `sessionName` here also
+    // clears in-flight as a safety net: if omp ever rewords its notes so
+    // the swallow misses, the flag still settles and a later manual
+    // `/rename` note reaches the transcript.
+    if (activeSessionId && sessionRegistry.has(activeSessionId)) {
+      const entry = sessionRegistry.get(activeSessionId);
+      if (STITLE.shouldAutoRename(rpcState, entry.autoRenameArmed)) {
+        sessionRegistry.set(activeSessionId, { ...entry, autoRenameArmed: false, autoRenameInFlight: true });
+        _send({ type: "prompt", message: "/rename" });
+      } else if (entry.autoRenameInFlight && rpcState.sessionName) {
+        sessionRegistry.set(activeSessionId, { ...entry, autoRenameInFlight: false });
+      }
     }
 
     _refreshCtx();
@@ -2513,7 +2564,17 @@
         const wasActive = id === activeSessionId;
         // `sessionFile: null`: the respawn is a fresh conversation, not the
         // one the old incarnation ran.
-        sessionRegistry.set(id, { ...entry, profile: profileId, branch: null, sessionFile: null });
+        sessionRegistry.set(id, {
+          ...entry,
+          profile: profileId,
+          branch: null,
+          sessionFile: null,
+          // The respawn is a fresh conversation, so it earns a rename of
+          // its own; any in-flight `/rename` belonged to the killed
+          // incarnation and its note can never arrive.
+          autoRenameArmed: true,
+          autoRenameInFlight: false,
+        });
         if (wasActive) await _detachActiveSession();
         // After the detach, which nulls `activeSessionId` synchronously — so no
         // later `_saveCurrentSession` can re-add it. A resurrected snapshot
