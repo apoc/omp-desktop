@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Regression script for src/app/session-title.js — the pure gates, note
-// matcher, and title extractor behind the automatic omp session titling:
+// matcher, title extractor, manual-rename token, abort re-arm, and
+// refine-turn counter behind the automatic omp session titling:
 // the after-first-turn `/rename` and its later periodic refreshes.
 // Run: node test-session-title.mjs
 
@@ -161,6 +162,62 @@ check("a missing or non-string title yields null", () => {
   assert.equal(T.sessionTitleFromEvent({}), null);
   assert.equal(T.sessionTitleFromEvent({ title: 42 }), null);
   assert.equal(T.sessionTitleFromEvent(null), null);
+});
+
+
+// ── isManualRename ──────────────────────────────────────────────────────
+
+check("a bare or argued /rename is a manual rename", () => {
+  assert.equal(T.isManualRename("/rename"), true);
+  assert.equal(T.isManualRename("/rename Fix login bug"), true);
+  assert.equal(T.isManualRename("  /rename   My Title"), true);
+});
+
+check("a prefix, a different case, or a non-command is not a manual rename", () => {
+  // omp's builtin dispatch is case-sensitive, and a skill named
+  // /rename-files must not retire the automatic title.
+  assert.equal(T.isManualRename("/rename-files"), false);
+  assert.equal(T.isManualRename("/renamer do it"), false);
+  assert.equal(T.isManualRename("/RENAME"), false);
+  assert.equal(T.isManualRename("/Rename title"), false);
+  assert.equal(T.isManualRename("rename"), false);
+  assert.equal(T.isManualRename("/rename/"), false);
+});
+
+check("a non-string is not a manual rename", () => {
+  assert.equal(T.isManualRename(undefined), false);
+  assert.equal(T.isManualRename(null), false);
+});
+
+// ── shouldRearmAfterAbort ───────────────────────────────────────────────
+
+check("an abort before any title re-arms the one-shot", () => {
+  assert.equal(T.shouldRearmAfterAbort({ sessionName: "" }, "proj", "proj"), true);
+  assert.equal(T.shouldRearmAfterAbort(null, "new session", "new session"), true);
+});
+
+check("an abort after a title landed does not re-arm", () => {
+  assert.equal(
+    T.shouldRearmAfterAbort({ sessionName: "Fix login bug" }, "Fix login bug", "proj"),
+    false,
+  );
+  // session_info_update may have written the tab name before get_state
+  // reports sessionName.
+  assert.equal(T.shouldRearmAfterAbort({ sessionName: "" }, "Fix login bug", "proj"), false);
+  assert.equal(T.shouldRearmAfterAbort({ sessionName: "  " }, "proj", "proj"), false);
+});
+
+// ── countsAsRefineTurn ──────────────────────────────────────────────────
+
+check("a terminal or legacy agent_end counts toward the cadence", () => {
+  assert.equal(T.countsAsRefineTurn({ type: "agent_end" }), true);
+  assert.equal(T.countsAsRefineTurn({ type: "agent_end", isTerminal: true }), true);
+});
+
+check("a non-terminal agent_end is a scheduling pause, not a turn", () => {
+  assert.equal(T.countsAsRefineTurn({ type: "agent_end", isTerminal: false }), false);
+  assert.equal(T.countsAsRefineTurn({ type: "agent_start" }), false);
+  assert.equal(T.countsAsRefineTurn(null), false);
 });
 
 console.log(`ok — test-session-title.mjs (${passed} checks)`);

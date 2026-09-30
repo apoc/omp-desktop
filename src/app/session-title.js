@@ -6,7 +6,7 @@
 // (which generates a title from the conversation and ignores PI_NO_TITLE),
 // then renames the tab from the `session_info_update` frame and the
 // confirming `get_state`. The title is then refreshed from the newer
-// conversation every REFINE_EVERY_TURNS user turns, at most REFINE_MAX
+// conversation every REFINE_EVERY_TURNS terminal agent turns, at most REFINE_MAX
 // times — a bare `/rename` overwrites its own previous generated title
 // (omp's "user" source only shields against "auto" writes), but a
 // user-typed `/rename` stops all automatic renaming.
@@ -33,7 +33,7 @@
     return typeof rpcState.messageCount === "number" && rpcState.messageCount >= 2;
   }
 
-  // Refinement cadence: every REFINE_EVERY_TURNS completed user turns after
+  // Refinement cadence: every REFINE_EVERY_TURNS terminal agent turns after
   // a title was generated, at most REFINE_MAX refreshes per conversation.
   // 5 turns ≈ one tiny-model call per meaningful chunk of work, and omp
   // titles from the last 6 turns (REPLAN_TITLE_CONTEXT_TURN_LIMIT), so
@@ -72,9 +72,12 @@
    *  outcome notes — plumbing, not conversation, so live.js swallows it
    *  (once) while its own rename is in flight. A user-typed `/rename` never
    *  sets the in-flight flag, so its confirmation still reaches the
-   *  transcript. If omp ever rewords these, the failure mode is one visible
-   *  note, not a lost rename — the rename rides on `session_info_update`
-   *  and `get_state`, which are matched structurally, not by text. */
+   *  transcript. Not every run produces a note: abort and a superseded
+   *  generation (`!isCurrent()` or `title === undefined`) return silently.
+   *  live.js releases the in-flight flag on the abort response in that
+   *  case. A reworded note is still only one visible line — the rename
+   *  itself rides on `session_info_update` and `get_state`, matched
+   *  structurally, not by text. */
   function isAutoRenameNote(text) {
     if (typeof text !== "string") return false;
     const t = text.trim();
@@ -88,8 +91,42 @@
     return raw || null;
   }
 
+  /** After omp's `abort` response, whether the one-shot should be armed
+   *  again. Abort cancels title generation and the bare `/rename` then
+   *  returns with no note. Re-arm only when nothing has titled the session
+   *  yet: omp's `sessionName` is empty and the tab label is still the
+   *  folder fallback. A title that already landed (`sessionName`, or
+   *  `session_info_update` writing a different tab name before this
+   *  response) must not be retried; the refinement budget stays spent.
+   *  A generated title that equals the folder name looks untitled until
+   *  the next `get_state` reports `sessionName`, and `shouldAutoRename`
+   *  then no-ops. */
+  function shouldRearmAfterAbort(rpcState, tabName, untitledLabel) {
+    if (rpcState && rpcState.sessionName) return false;
+    return tabName === untitledLabel;
+  }
+
+  /** Whether `text` is a user-typed `/rename` (optional title arguments).
+   *  The leading token must be exactly `rename`: omp's builtin dispatch is
+   *  case-sensitive, and a skill or template named `/rename-files` must
+   *  not retire the automatic title. */
+  function isManualRename(text) {
+    if (typeof text !== "string") return false;
+    const tok = /^\/(\S*)/.exec(text.trim())?.[1];
+    return tok === "rename";
+  }
+
+  /** Whether an `agent_end` counts toward the refine cadence. Non-terminal
+   *  ends (`isTerminal: false`) are scheduling pauses — continuations,
+   *  queued follow-ups — not completed turns. A missing `isTerminal`
+   *  counts: older omp omitted the field and only emitted terminal ends. */
+  function countsAsRefineTurn(ev) {
+    return !!(ev && ev.type === "agent_end" && ev.isTerminal !== false);
+  }
+
   window.OMP_SESSION_TITLE = {
     shouldAutoRename, shouldRefineTitle, isAutoRenameNote, sessionTitleFromEvent,
+    isManualRename, shouldRearmAfterAbort, countsAsRefineTurn,
     REFINE_EVERY_TURNS, REFINE_MAX,
   };
 })();
