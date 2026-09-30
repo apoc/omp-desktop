@@ -2,15 +2,15 @@
 // Regression script for src/app/subagents.js — the subagent manager's
 // reducer over omp's RPC subagent frames, snapshot reconciliation, and the
 // grouping/formatting the manager pane renders from.
-// Run: node test-subagents.mjs
+// Run: node tests/test-subagents.mjs
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const __dir = dirname(fileURLToPath(import.meta.url));
-const src   = readFileSync(join(__dir, "src/app/subagents.js"), "utf8");
+const root  = join(dirname(fileURLToPath(import.meta.url)), "..");
+const src   = readFileSync(join(root, "src/app/subagents.js"), "utf8");
 const win   = {};
 // eslint-disable-next-line no-new-func
 new Function("window", src)(win);

@@ -3,15 +3,15 @@
 // machine (issue #19): which transitions are legal, what a failed
 // background check may and may not hide, when the tab-bar pill shows, and
 // which tabs a restart would interrupt.
-// Run: node test-updater.mjs  (or: npm run test:updater)
+// Run: node tests/test-updater.mjs  (or: npm run test:updater)
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const __dir = dirname(fileURLToPath(import.meta.url));
-const src   = readFileSync(join(__dir, "src/app/updater.js"), "utf8");
+const root  = join(dirname(fileURLToPath(import.meta.url)), "..");
+const src   = readFileSync(join(root, "src/app/updater.js"), "utf8");
 const win   = {};
 // eslint-disable-next-line no-new-func
 new Function("window", src)(win);

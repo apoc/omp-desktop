@@ -2,15 +2,15 @@
 // Regression script for src/app/scroll-pin.js — the chat "stick to bottom"
 // state machine behind issue #20 (chat force-scrolled on every streamed
 // update, no way to read history mid-run).
-// Run: node test-scroll-pin.mjs
+// Run: node tests/test-scroll-pin.mjs
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const __dir = dirname(fileURLToPath(import.meta.url));
-const src   = readFileSync(join(__dir, "src/app/scroll-pin.js"), "utf8");
+const root  = join(dirname(fileURLToPath(import.meta.url)), "..");
+const src   = readFileSync(join(root, "src/app/scroll-pin.js"), "utf8");
 const win   = {};
 // eslint-disable-next-line no-new-func
 new Function("window", src)(win);

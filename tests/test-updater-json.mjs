@@ -3,7 +3,7 @@
 // workflow maps signed release assets onto tauri-plugin-updater platform
 // keys, and the guards that keep a broken or mislabelled release from
 // publishing a feed.
-// Run: node test-updater-json.mjs  (or: npm run test:updater-json)
+// Run: node tests/test-updater-json.mjs  (or: npm run test:updater-json)
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -13,9 +13,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildPlatforms, changelogSection, keysFor, versionMismatch,
-} from "./.github/scripts/updater-json.mjs";
+} from "../.github/scripts/updater-json.mjs";
 
-const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), ".github/scripts/updater-json.mjs");
+const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "../.github/scripts/updater-json.mjs");
 
 let passed = 0;
 function check(label, fn) {

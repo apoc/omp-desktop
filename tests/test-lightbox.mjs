@@ -2,15 +2,15 @@
 // Regression script for src/app/lightbox.js — geometry behind the
 // attached-image viewer (issue #25: thumbnails too small to read, no way
 // to enlarge them).
-// Run: node test-lightbox.mjs
+// Run: node tests/test-lightbox.mjs
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const __dir = dirname(fileURLToPath(import.meta.url));
-const src   = readFileSync(join(__dir, "src/app/lightbox.js"), "utf8");
+const root  = join(dirname(fileURLToPath(import.meta.url)), "..");
+const src   = readFileSync(join(root, "src/app/lightbox.js"), "utf8");
 const win   = {};
 // eslint-disable-next-line no-new-func
 new Function("window", src)(win);

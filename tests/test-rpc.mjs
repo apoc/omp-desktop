@@ -14,7 +14,7 @@
  * `sanitize_frame`/`approval_tool_name` can be checked against real output
  * instead of assumption.
  *
- * Run: node test-rpc.mjs [--evidence]  OR  bun test-rpc.mjs [--evidence]
+ * Run: node tests/test-rpc.mjs [--evidence]  OR  bun tests/test-rpc.mjs [--evidence]
  */
 
 import { spawn } from "child_process";

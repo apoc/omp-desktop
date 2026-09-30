@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Regression script for src/app/keymap.js chord algebra.
 // No test framework, no bundler — zero dependencies beyond node:assert/strict.
-// Run: node test-keymap.mjs  (or: npm run test:keymap)
+// Run: node tests/test-keymap.mjs  (or: npm run test:keymap)
 //
 // The file is a browser IIFE that writes to `window.OMP_KEYMAP`.  Load it by
 // evaluating its source against a stub global; `detectMac()` tolerates a
@@ -12,8 +12,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const __dir = dirname(fileURLToPath(import.meta.url));
-const src   = readFileSync(join(__dir, "src/app/keymap.js"), "utf8");
+const root  = join(dirname(fileURLToPath(import.meta.url)), "..");
+const src   = readFileSync(join(root, "src/app/keymap.js"), "utf8");
 const win   = {};
 // eslint-disable-next-line no-new-func
 new Function("window", src)(win);

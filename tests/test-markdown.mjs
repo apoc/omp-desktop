@@ -5,7 +5,7 @@
 // <pre>/<code>/<kbd>/<script>, and javascript:-style link hrefs.
 // Loads the vendored marked + hljs and the setup file exactly as index.html
 // does, then checks that no rendered element or attribute comes from input.
-// Run: node test-markdown.mjs
+// Run: node tests/test-markdown.mjs
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -13,8 +13,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import vm from "node:vm";
 
-const __dir = dirname(fileURLToPath(import.meta.url));
-const load = (p) => readFileSync(join(__dir, "src", p), "utf8");
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const load = (p) => readFileSync(join(root, "src", p), "utf8");
 
 // decodeRefs feeds single `&…;` references through a <textarea>; this shim
 // decodes the same way for numeric and the few named references used below,

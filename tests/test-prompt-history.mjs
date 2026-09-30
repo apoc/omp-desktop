@@ -3,15 +3,15 @@
 // (issue #16): Arrow Up/Down recall stepping, transcript backfill on
 // session restore, and the caret guards that decide when Up/Down belong to
 // history vs. normal multi-line editing.
-// Run: node test-prompt-history.mjs
+// Run: node tests/test-prompt-history.mjs
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const __dir = dirname(fileURLToPath(import.meta.url));
-const src   = readFileSync(join(__dir, "src/app/prompt-history.js"), "utf8");
+const root  = join(dirname(fileURLToPath(import.meta.url)), "..");
+const src   = readFileSync(join(root, "src/app/prompt-history.js"), "utf8");
 const win   = {};
 // eslint-disable-next-line no-new-func
 new Function("window", src)(win);
@@ -20,7 +20,7 @@ const H = win.OMP_PROMPT_HISTORY;
 // Real constants.js, loaded the same way — not a synthetic prefix — so the
 // parity check below exercises the actual wrapper string live.js normalizes
 // against, not a stand-in that can't reproduce the real bug's shape.
-const constantsSrc = readFileSync(join(__dir, "src/app/constants.js"), "utf8");
+const constantsSrc = readFileSync(join(root, "src/app/constants.js"), "utf8");
 const constantsWin = {};
 new Function("window", constantsSrc)(constantsWin);
 const { INTENT_FRAMING, APPROVAL_PROMPT } = constantsWin;

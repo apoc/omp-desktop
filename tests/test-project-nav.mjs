@@ -2,15 +2,15 @@
 // Regression script for src/app/project-nav.js — project grouping and
 // focus-existing lookups behind the grouped tab bar and project sidebar
 // (issue #27).
-// Run: node test-project-nav.mjs
+// Run: node tests/test-project-nav.mjs
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const __dir = dirname(fileURLToPath(import.meta.url));
-const src   = readFileSync(join(__dir, "src/app/project-nav.js"), "utf8");
+const root  = join(dirname(fileURLToPath(import.meta.url)), "..");
+const src   = readFileSync(join(root, "src/app/project-nav.js"), "utf8");
 const win   = {};
 // eslint-disable-next-line no-new-func
 new Function("window", src)(win);

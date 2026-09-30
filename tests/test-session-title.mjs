@@ -3,15 +3,15 @@
 // matcher, title extractor, manual-rename token, abort re-arm, and
 // refine-turn counter behind the automatic omp session titling:
 // the after-first-turn `/rename` and its later periodic refreshes.
-// Run: node test-session-title.mjs
+// Run: node tests/test-session-title.mjs
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const __dir = dirname(fileURLToPath(import.meta.url));
-const src   = readFileSync(join(__dir, "src/app/session-title.js"), "utf8");
+const root  = join(dirname(fileURLToPath(import.meta.url)), "..");
+const src   = readFileSync(join(root, "src/app/session-title.js"), "utf8");
 const win   = {};
 // eslint-disable-next-line no-new-func
 new Function("window", src)(win);

@@ -3,15 +3,15 @@
 // of the desktop-native command list with omp's RPC get_available_commands /
 // available_commands_update (issue #8: `/` never listed real commands or
 // skills, only a static 12-entry desktop list).
-// Run: node test-slash-commands.mjs
+// Run: node tests/test-slash-commands.mjs
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const __dir = dirname(fileURLToPath(import.meta.url));
-const src   = readFileSync(join(__dir, "src/app/slash-commands.js"), "utf8");
+const root  = join(dirname(fileURLToPath(import.meta.url)), "..");
+const src   = readFileSync(join(root, "src/app/slash-commands.js"), "utf8");
 const win   = {};
 // eslint-disable-next-line no-new-func
 new Function("window", src)(win);

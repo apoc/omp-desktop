@@ -9,7 +9,7 @@ on:
     paths:
       - 'src-tauri/**'
       - 'src/**'
-      - 'test-*.mjs'
+      - 'tests/**'
       - 'package.json'
       - 'scripts/**'
       - '.github/scripts/**'

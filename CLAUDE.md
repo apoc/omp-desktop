@@ -14,20 +14,20 @@ Tauri 2 desktop shell for `omp` (oh-my-pi). React UI served from `src/` in `taur
 | Rust fmt | `cd src-tauri && cargo fmt` |
 | Rust lint (must stay clean) | `cd src-tauri && cargo +nightly clippy --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery -D warnings` |
 | Rust tests | `cd src-tauri && cargo test` |
-| All JS regression scripts | `npm test` — add a new `test-*.mjs` to its chain in `package.json` (not `test-rpc.mjs`, which needs a live omp) |
-| Probe omp RPC | `node test-rpc.mjs` |
-| Keymap chord regression | `node test-keymap.mjs` (or `npm run test:keymap`) |
-| Markdown XSS-escaping regression | `node test-markdown.mjs` (or `npm run test:markdown`) |
-| Chat scroll-pin regression | `node test-scroll-pin.mjs` (or `npm run test:scroll-pin`) |
-| Session-title auto-rename gates regression | `node test-session-title.mjs` (or `npm run test:session-title`) |
-| Slash-command palette regression | `node test-slash-commands.mjs` (or `npm run test:slash-commands`) |
-| Prompt history regression | `node test-prompt-history.mjs` (or `npm run test:prompt-history`) |
-| Subagent manager reducer regression | `node test-subagents.mjs` (or `npm run test:subagents`) |
-| Updater state regression | `node test-updater.mjs` (or `npm run test:updater`) |
-| Updater feed assembly regression | `node test-updater-json.mjs` (or `npm run test:updater-json`) |
-| Image viewer geometry regression | `node test-lightbox.mjs` (or `npm run test:lightbox`) |
-| Project navigation regression | `node test-project-nav.mjs` (or `npm run test:project-nav`) |
-| Empty-workspace backdrop regression | `node test-matrix-rain.mjs` (or `npm run test:matrix-rain`) |
+| All JS regression scripts | `npm test` — add a new `tests/test-*.mjs` to its chain in `package.json` (not `tests/test-rpc.mjs`, which needs a live omp) |
+| Probe omp RPC | `node tests/test-rpc.mjs` |
+| Keymap chord regression | `node tests/test-keymap.mjs` (or `npm run test:keymap`) |
+| Markdown XSS-escaping regression | `node tests/test-markdown.mjs` (or `npm run test:markdown`) |
+| Chat scroll-pin regression | `node tests/test-scroll-pin.mjs` (or `npm run test:scroll-pin`) |
+| Session-title auto-rename gates regression | `node tests/test-session-title.mjs` (or `npm run test:session-title`) |
+| Slash-command palette regression | `node tests/test-slash-commands.mjs` (or `npm run test:slash-commands`) |
+| Prompt history regression | `node tests/test-prompt-history.mjs` (or `npm run test:prompt-history`) |
+| Subagent manager reducer regression | `node tests/test-subagents.mjs` (or `npm run test:subagents`) |
+| Updater state regression | `node tests/test-updater.mjs` (or `npm run test:updater`) |
+| Updater feed assembly regression | `node tests/test-updater-json.mjs` (or `npm run test:updater-json`) |
+| Image viewer geometry regression | `node tests/test-lightbox.mjs` (or `npm run test:lightbox`) |
+| Project navigation regression | `node tests/test-project-nav.mjs` (or `npm run test:project-nav`) |
+| Empty-workspace backdrop regression | `node tests/test-matrix-rain.mjs` (or `npm run test:matrix-rain`) |
 
 `omp` must be on PATH (`%LOCALAPPDATA%\omp\omp.exe` on Win). CI and every release run the same suite (`.github/workflows/tests.yml`): `cargo test --locked` on win/linux/mac, plus `npm test`.
 
@@ -255,7 +255,7 @@ All non-trivial code **must** have test coverage before committing. This is not 
 ## CI / release
 
 - `.github/workflows/tests.yml` — the shared test gate, a reusable workflow (`workflow_call`): `cargo test --locked` on win/linux/mac, plus `npm test`. It is called by both workflows below, so CI and releases can't drift apart.
-- `.github/workflows/ci.yml` — runs `tests.yml` on every PR, and on pushes to master that touch `src-tauri/**`, `src/**`, `test-*.mjs`, `package.json`, `scripts/**`, `.github/scripts/**` or the workflows.
+- `.github/workflows/ci.yml` — runs `tests.yml` on every PR, and on pushes to master that touch `src-tauri/**`, `src/**`, `tests/**`, `package.json`, `scripts/**`, `.github/scripts/**` or the workflows.
 - `.github/workflows/release.yml` — `tests.yml` first; nothing builds unless it passes. Then a signed `tauri build` per platform, then one `updater-json` job that assembles `latest.json` via `.github/scripts/updater-json.mjs`, with the matching CHANGELOG section as notes. The rationale and the guards are documented in the workflow header and the script. Users see an update only once the draft is published. Actions minutes are limited: verify in-progress branches locally (`npm test`, `cargo test`, `npx tauri build --no-bundle --config src-tauri/tauri.dist.conf.json`); a dry run (`gh workflow run release.yml --ref <branch> -f tag=vX.Y.Z-rc.N`, then delete the draft) only when the user asks for one.
 
 ## Changelog workflow

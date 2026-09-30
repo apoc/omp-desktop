@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 // Regression script for src/app/matrix-rain.js — the empty workspace's
 // digital-rain backdrop and ASCII logo geometry.
-// Run: node test-matrix-rain.mjs
+// Run: node tests/test-matrix-rain.mjs
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const __dir = dirname(fileURLToPath(import.meta.url));
-const src   = readFileSync(join(__dir, "src/app/matrix-rain.js"), "utf8");
+const root  = join(dirname(fileURLToPath(import.meta.url)), "..");
+const src   = readFileSync(join(root, "src/app/matrix-rain.js"), "utf8");
 const win   = {};
 // eslint-disable-next-line no-new-func
 new Function("window", src)(win);
