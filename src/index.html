@@ -153,6 +153,11 @@
   <!-- Live data layer (must load before app-live.jsx) -->
   <script src="model-names.js"></script>
   <script src="adapter.js"></script>
+  <!-- Session-name tab rename: pure gate/note/title helpers for the
+       after-first-turn auto `/rename`. Dependency-free IIFE; live.js
+       reads window.OMP_SESSION_TITLE at its top-level init, so it must
+       load before live.js. -->
+  <script src="app/session-title.js"></script>
   <script src="live.js"></script>
 
   <!-- App root — wired to OMP_BRIDGE, no demo effects -->

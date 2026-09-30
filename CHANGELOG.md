@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A new conversation's tab is named after its folder at first, then renames itself to the conversation's generated title once the first exchange finishes (omp's RPC mode never auto-titles, so the app asks for one with `/rename` after the first turn); the title is then refreshed after 5 and 10 further turns to keep up with the work, then left alone, and a `/rename` you type yourself (`/rename Title` or `/rename:Title`) always wins. The project sidebar's single-tab card shows that name too. Resumed conversations keep their saved name. `/new` in the same tab drops the old title and earns a rename of its own (#13).
+
 ### Fixed
 
 - Release builds stamp every script and stylesheet URL with the app version (`?v=X.Y.Z`), so a webview that cached a previous version's files after an in-app update can no longer serve them: the WebView2 data folder survives the updater, and embedded assets carry no cache validators, which could leave an updated app running a mix of old and new frontend modules until the cache happened to evict.
