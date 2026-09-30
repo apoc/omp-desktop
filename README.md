@@ -1,353 +1,181 @@
-# Oh My Pi Desktop
+# OMP Desktop
 
-A Tauri 2 desktop shell for [oh-my-pi](https://github.com/can1357/oh-my-pi) (`omp`).
-Wraps the `omp --mode rpc` coding agent as a managed child process and serves the
-React UI as a connected, live interface — no browser, no Electron, ~8 MB binary.
+A native desktop app for [oh-my-pi](https://github.com/can1357/oh-my-pi) (`omp`), the terminal coding agent.
+Every tab runs its own `omp` process in RPC mode; the app shows what the agent is doing as it happens: streamed replies, tool calls, diffs, subagents, plans and what it costs.
+Built on Tauri 2 (Rust + the system webview). It doesn't bundle Electron, doesn't load anything from a CDN, and needs no browser.
+
+![OMP Desktop: project sidebar, a conversation with an edit diff, a test run and an approval prompt, and the ambient rail](screenshots/hero.webp)
+
+## Contents
+
+- [Features](#features)
+- [Install](#install)
+- [Usage](#usage)
+- [Development](#development)
+- [Architecture](#architecture)
+- [License](#license)
 
 ## Features
 
-**Chat & sessions**
-- Per-tab session isolation — each tab owns its own `omp --mode rpc` process
-- Full session snapshots: switch tabs, state is preserved including in-flight streams
-- `/new` command starts a fresh session (history kept on disk)
-- Conversation history panel (`Ctrl+H` / `⌘H` / `/history`) to browse, search, and resume past sessions (focuses the tab if the conversation is already open)
-- Project sidebar (`Ctrl+B` / `⌘B`): open tabs grouped by project and recently opened folders per profile; tabs on the same folder share one tab-bar chip with a dropdown
-- Model picker with two-view command bridge; cycle or pick directly from the status bar
-- Thinking-level control: cycle through `off / minimal / low / medium / high / xhigh` (per-model — omp picks the supported subset)
-- Streaming token display with tokens/sec sparkline and context-window gauge
+### Projects and tabs
 
-**Plan mode**
-- Activates a draft-before-write workflow entirely in the chat window
-- First message is wrapped in an intent framing prompt; subsequent sends steer the plan
-- Inline plan annotations: click any paragraph to leave a comment before approving
-- Approve button sends all annotations as a single feedback prompt and opens the kanban
-- Kanban panel auto-populates from the agent's `todo_write` tool calls (running / done)
+- **One tab = one agent.** Each tab is its own `omp` process, with its own working folder and profile. Switching tabs keeps in-flight turns streaming in the background.
+- **Project sidebar** (`Ctrl+B`): open tabs grouped by project, plus recently opened folders. Tabs on the same folder collapse into one tab-bar chip with a dropdown.
+- **Named conversations.** A new tab starts under its folder name and renames itself to the conversation's generated title once the first exchange ends. A `/rename` you type always wins.
+- **Conversation history** (`Ctrl+H`): search and resume saved sessions. If the conversation is already open in a tab, that tab is focused instead of opening it twice.
+- **Open with OMP Desktop.** Open a folder from Finder, Explorer or your Linux file manager, or run `omp-desktop /path/to/project`. If the app is already running, the folder opens as a new tab in the existing window.
+- **Welcome screen.** With no tab open, the app shows a welcome screen and doesn't run any agent until you open a project.
 
-**Tool cards**
-- Live streaming output for `eval` (JS/Python kernel) and `bash` tool calls
-- Syntax-highlighted code blocks (highlight.js, atom-one-dark) once a cell completes
-- Scrubbable unified diff viewer for `edit` calls with animated line reveal
-- Search preview, read summary, task board for the respective tools
-- Distinct icon + color per tool type: read, search, edit, bash, eval, task, debug, ask
+![Welcome screen with recent projects in the sidebar](screenshots/welcome.webp)
 
-**Minimap**
-- Dense cell grid (one cell per message) replacing the old bar stack — fits 200+ messages
-- Token heatmap: assistant cells brightness log-scaled by tokens used
-- Hover a cell → corresponding chat bubble highlights with an accent ring
-- Click a cell → chat scrolls smoothly to that message
-- Tooltip shows role, token count (in/out), tool name, duration, or message preview
+### Watching the agent work
 
-**Native shell**
-- Tauri 2, Rust backend, no Electron, no CDN dependencies
-- Frameless window with custom traffic-light / drag region on Windows and macOS
-- Native folder picker for opening projects
-- Strict CSP; asset protocol disabled; no shell plugin surface
+- **Tool cards** for every call: `read`, `grep`, `bash`, `eval` (JS/Python kernel cells), `edit`, `task` and more. Output streams live, code is syntax-highlighted, and edit diffs have a scrubber.
+- **Approvals.** Sessions start in `--approval-mode write`, so exec-tier tools ask first. Answer *Approve*, *Allow for this session* or *Always allow in this project*, and review or revoke the saved rules in the approval-rules panel.
+- **Ambient rail.** Shows the context-window gauge, cost, a tokens/sec sparkline, an agent radar of recent tool activity, and a minimap of the session. Click a minimap cell to jump to that message.
+- **Subagent manager.** Agents started by a `task` call appear in the rail as they run. Open the manager to get totals, a swimlane timeline, agents grouped by the task call that spawned them, and an inspector for each agent's assignment, tools, output and transcript.
 
-![Chat](screenshots/1.jpg)
-![Tools](screenshots/2.jpg)
-![Minimap](screenshots/3.jpg)
+![Subagent manager: four parallel scouts, their timeline and per-agent cost](screenshots/subagents.webp)
 
----
+### Plan mode
+
+Toggle plan mode (`Shift+Alt+P`, `/plan` or the composer pill) and the agent drafts a plan before touching any files. Click any block of the plan to comment on it; your comments go back with the next *send feedback*, and *approve* lets the agent start. The agent's todo list fills the kanban (`/todo`).
+
+![Plan mode with an inline comment on the approach](screenshots/plan-mode.webp)
+
+### Composer
+
+- `/` opens a palette with the desktop commands plus every omp slash command and skill discovered for the tab.
+- `@` autocompletes project file paths.
+- Attach images from a file picker or paste them from the clipboard. Click an attached image to view it full size.
+- Prompt history: `↑`/`↓` recalls earlier prompts, and `Ctrl+↑` opens a searchable picker.
+- Send while the agent is working to *steer* the current turn, or queue a follow-up with `Ctrl+Enter`.
+- Model picker and thinking level (`off · minimal · low · medium · high · xhigh`) are available from the composer, the status bar, or the keyboard.
+
+![Command bridge (Ctrl+K)](screenshots/command-bridge.webp)
+
+### Panels
+
+| | |
+|---|---|
+| **Changes**: `git status`/`git diff` for the tab's project, with per-file accept and reject | **Usage**: requests, cost, tokens and throughput for the last 24 h, by model, folder and agent type (from `omp stats`) |
+| ![Changes panel](screenshots/changes.webp) | ![Usage statistics](screenshots/usage.webp) |
+| **History**: saved conversations for the tab's profile, searchable and resumable | **Shortcuts** (`Ctrl+/`): every action with its chord; rebind, add a second chord, or reset |
+| ![Conversation history](screenshots/history.webp) | ![Keyboard shortcuts](screenshots/shortcuts.webp) |
+
+### Profiles, updates, look
+
+- **Profiles.** A tab can run under an omp profile (`omp --profile <id>`) with its own auth, sessions, settings and caches. Create, rename and switch profiles from the title bar, and tick one as the startup default. A new profile boots far enough to run `/login`.
+- **In-app updates.** The app checks the signed release feed 15 s after launch and every 6 h after that. Windows, macOS and the Linux AppImage install updates themselves and relaunch. `.deb`/`.rpm` and source builds show a notice with a link to the release instead.
+- **Tweaks panel** (status bar): theme (`aurora`, `phosphor`, `daylight`), density, accent colour, mono chat font, font size, layout (`rail`, `split`, `focus`) and prompt-history size.
+
+| phosphor | daylight |
+|---|---|
+| ![Phosphor theme](screenshots/theme-phosphor.webp) | ![Daylight theme](screenshots/theme-daylight.webp) |
+
+### Security
+
+- Agent output is rendered as Markdown, with any raw HTML escaped. Links open in your system browser, and `javascript:`/`data:` links are rendered as plain text.
+- Release builds use a strict Content Security Policy: no inline scripts, no `eval`, the asset protocol off and the shell plugin removed.
+- Tokens, API keys and auth headers are redacted from agent output and logs.
+- Closing a tab or quitting kills the agent's whole process tree, so no orphaned subagents or tool processes are left behind.
+
+## Install
+
+### Requirements
+
+`omp` must be installed and on your `PATH` (on Windows it is usually `%LOCALAPPDATA%\omp\omp.exe`). The app is tested with omp 18.4. On macOS, GUI apps get a minimal `PATH`, so the app also looks in Homebrew, `~/.local/bin` and `~/.cargo/bin`.
+
+### Download
+
+Grab the latest build from [Releases](https://github.com/apoc/omp-desktop/releases/latest):
+
+| Platform | Package |
+|---|---|
+| Windows x64 | `*_x64-setup.exe` (NSIS) or `*_x64_en-US.msi` |
+| macOS Apple Silicon / Intel | `*_aarch64.dmg` / `*_x64.dmg` |
+| Linux x64 | `*.AppImage`, `*.deb`, `*.rpm` |
+
+The installers are not code-signed yet (no Authenticode signature, no Apple notarisation), so SmartScreen and Gatekeeper will warn the first time you run the app. Updates are still verified against the app's own minisign key.
+
+## Usage
+
+Open a folder with the `+` button (or `Ctrl+T`), from the sidebar's recent projects, or with your OS's "Open with". Then talk to the agent. Conversations are stored by omp itself, per profile, so the history panel also lists sessions you started in a terminal.
+
+### Keyboard shortcuts
+
+On macOS, `Ctrl+K`, `Ctrl+H`, `Ctrl+/`, `Ctrl+B`, `Ctrl+T`, `Ctrl+W` and `Ctrl+↑` also work with `⌘`. All shortcuts can be rebound in `Ctrl+/`. Your overrides are stored in `<app config>/keybindings.json`, and omp's own `~/.omp/agent/keybindings.yml` is used as the base layer.
+
+| Action | Default |
+|---|---|
+| Command bridge | `Ctrl+K` |
+| Conversation history | `Ctrl+H` |
+| Keyboard shortcuts | `Ctrl+/` |
+| Toggle project sidebar | `Ctrl+B` |
+| New tab / close tab | `Ctrl+T` / `Ctrl+W` |
+| Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
+| Prompt history picker | `Ctrl+↑` |
+| Interrupt the turn | `Esc` |
+| Cycle thinking level | `Shift+Tab` |
+| Cycle model / pick model | `Ctrl+P` (`Ctrl+Shift+P` back) / `Alt+M` |
+| Toggle plan mode | `Shift+Alt+P` |
+| Queue a follow-up | `Ctrl+Enter` or `Ctrl+Q` |
+
+The changes, approval-rules, usage, kanban, compact, export and update-check actions have no default chord. You can bind one in the shortcuts screen.
+
+### Slash commands
+
+The desktop adds `/plan`, `/steer`, `/compact`, `/new`, `/history`, `/branch`, `/model`, `/thinking`, `/login`, `/todo`, `/export`, `/shortcuts` and `/check-updates`. Everything else omp offers (`/rename`, `/mcp`, `/skill:<name>`, …) shows up in the same palette.
+
+## Development
+
+| Tool | Version |
+|---|---|
+| [Rust](https://rustup.rs/) | stable |
+| [Node.js](https://nodejs.org/) | 18+ |
+| Tauri 2 system dependencies | see [Tauri prerequisites](https://tauri.app/start/prerequisites/) (WebKitGTK 4.1 on Linux, WebView2 on Windows) |
+
+```bash
+git clone https://github.com/apoc/omp-desktop
+cd omp-desktop
+npm install            # Tauri CLI only
+npm run dev            # serves src/ as is; JSX is compiled in the webview by Babel
+npm run build          # precompiles src/ into dist/ and bundles installers
+```
+
+There is no bundler. In dev, `src/index.html` loads every script in dependency order and `@babel/standalone` transpiles the JSX in the page. Release builds embed `dist/`, written by `scripts/build-frontend.mjs`: the JSX is compiled ahead of time with the same vendored Babel, and React's production build is used.
+
+| Check | Command |
+|---|---|
+| All JS regression scripts (+ `dist/` build) | `npm test` |
+| Rust tests | `cd src-tauri && cargo test --locked` |
+| Rust lint (must stay clean) | `cd src-tauri && cargo +nightly clippy --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery -D warnings` |
+| Probe omp's RPC surface directly | `node tests/test-rpc.mjs` |
+
+CI and every release run the same suite: `cargo test` on Windows, Linux and macOS, plus `npm test`.
+Contributor rules (script load order, the IIFE rule, CSP constraints, clone discipline in Rust, the changelog workflow) are in [`CLAUDE.md`](CLAUDE.md). User-facing changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────┐
-│  Tauri WebView  (src/)                              │
-│                                                     │
-│  app-live.jsx ──► OMP_BRIDGE ──► live.js            │
-│       │                │                            │
-│  React state    RPC event handlers                  │
-│  (messages,     (turn, message, tool,               │
-│   model, ctx,    extension_ui, sparkline)           │
-│   kanban…)             │                            │
-│                  adapter.js (pure transforms)       │
-└────────────────────────┬────────────────────────────┘
-                         │  Tauri IPC (invoke / events)
-┌────────────────────────▼────────────────────────────┐
-│  Rust  (src-tauri/src/)                             │
-│                                                     │
-│  AgentBridge                                        │
-│    spawn  omp --mode rpc                            │
-│    stdin  ◄── send_command (JSON lines)             │
-│    stdout ──► agent://line events (JSON lines)      │
-│    kill   on drop / stop_session / hot-reload         │
-└────────────────────────┬────────────────────────────┘
-                         │  stdin / stdout pipes
-┌────────────────────────▼────────────────────────────┐
-│  omp  (oh-my-pi coding agent)                       │
-│    JSON-line RPC protocol                           │
-│    streams AgentSessionEvents to stdout             │
-└─────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+  subgraph Webview["Webview (src/)"]
+    UI["React UI<br/>app-live.jsx · design/"] <--> Bridge["live.js<br/>OMP_BRIDGE · per-tab state"]
+  end
+  subgraph Rust["Rust (src-tauri/)"]
+    AB["AgentBridge<br/>one child per tab"]
+    Svc["profiles · recent projects · approval rules<br/>keybindings · git workspace · stats · updater"]
+  end
+  Bridge -- "invoke send_command" --> AB
+  AB -- "agent://line/{id} events" --> Bridge
+  Bridge -- invoke --> Svc
+  AB -- "stdin / stdout (JSON lines)" --> OMP["omp --mode rpc<br/>(rpc-ui when supported)"]
 ```
 
----
+- **Rust** (`src-tauri/src/`): `agent/` spawns and supervises one `omp` per tab. That covers process groups and job objects, so a tab's whole tree dies with it; bounded stdout/stderr readers; and a per-session journal that replays what a background tab missed. Around it are small modules for profiles, recent projects, approval rules, keybindings, the git working tree, `omp stats`, saved sessions, OS folder-open requests and the updater.
+- **Bridge** (`src/live.js`): all the RPC traffic. It keeps a registry of tabs, snapshots each tab's live state when you switch away, and exposes `window.OMP_BRIDGE` to React. `src/adapter.js` holds the pure transforms from RPC shapes to UI shapes.
+- **UI** (`src/app-live.jsx`, `src/app/`, `src/design/`): React 19 without a bundler. Pure logic (keymap, project navigation, subagent reducer, updater state, session-title gates, …) lives in plain `src/app/*.js` modules, which the regression scripts in `tests/` load directly.
 
-## Requirements
+## License
 
-| Tool | Version |
-|------|---------|
-| [Rust](https://rustup.rs/) | stable (1.77+) |
-| [Node.js](https://nodejs.org/) | 18+ |
-| [Tauri CLI](https://tauri.app/start/prerequisites/) | 2.x (`npm install`) |
-| [oh-my-pi](https://github.com/can1357/oh-my-pi) | 14.8+ (`omp` in PATH) |
-
-`omp` must be reachable as `omp` on your `PATH`. On Windows it is typically
-installed at `%LOCALAPPDATA%\omp\omp.exe` and added to PATH by the installer.
-
----
-
-## Getting Started
-
-```bash
-# Clone
-git clone https://github.com/apoc/omp-desktop
-cd omp-desktop
-
-# Install Tauri CLI (dev dependency only)
-npm install
-
-# Dev mode — hot-reloads frontend, rebuilds Rust on backend changes
-npm run dev
-
-# Production build — compiles the JSX ahead of time into dist/ and embeds that
-npm run build
-```
-
-Dev mode auto-opens the WebView DevTools in debug builds.
-
----
-
-## Project Structure
-
-```
-omp-desktop/
-├── src/                        # Frontend (served by Tauri asset server)
-│   ├── index.html              # Entry point — declares script load order
-│   ├── app-live.jsx            # React root: state + handlers + render
-│   ├── live.js                 # Tauri IPC bridge + OMP_BRIDGE + OMP_DATA
-│   ├── adapter.js              # Pure RPC→UI data transforms (no side effects)
-│   ├── model-names.js          # Model ID → display name lookup table
-│   ├── platform.css            # Tauri-native overrides (no padding/shadow/radius)
-│   ├── react.development.js    # React 19 dev build (`tauri dev` / src/; generated by scripts/vendor-react.mjs)
-│   ├── react-dom.development.js
-│   ├── react.production.js     # React 19 minified production build (dist/: `npm run build`, CI releases)
-│   ├── react-dom.production.js
-│   ├── babel.min.js            # @babel/standalone for JSX transform
-│   ├── marked.min.js           # Markdown renderer
-│   ├── highlight.min.js        # Syntax highlighting (atom-one-dark theme)
-│   ├── highlight-theme.css
-│   │
-│   ├── app/                    # App-root helpers (extracted from app-live.jsx)
-│   │   ├── constants.js        # TWEAK_DEFAULTS, NULL_MODEL, framing strings
-│   │   └── use-bridge-snapshot.jsx  # Custom hooks: bridge subscription, theme, ⌘K
-│   │
-│   └── design/                 # UI components, split by domain
-│       ├── ui/
-│       │   ├── icons.jsx           # OMP Icon Pack v1 + TOOL_META
-│       │   ├── sparks.jsx          # Sparkline, TokenGauge, ActivityRadar
-│       │   ├── markdown.jsx        # MarkdownContent (marked + hljs)
-│       │   └── plan-annotations.jsx # AnnotablePlan + CommentForm
-│       ├── chat/
-│       │   ├── user-bubble.jsx
-│       │   ├── assistant-bubble.jsx # AssistantBubble + InlinePlan
-│       │   ├── eval-cell.jsx        # Syntax-highlighted kernel cell
-│       │   ├── tool-card.jsx        # ToolCard + ScrubbableDiff
-│       │   ├── ask-bubble.jsx       # Interactive extension_ui_request prompts
-│       │   └── chat-view.jsx        # Auto-scroll wiring + bubble routing
-│       ├── tweaks/
-│       │   ├── style.js             # __TWEAKS_STYLE template
-│       │   ├── use-tweaks.js        # useTweaks hook
-│       │   ├── panel.jsx            # TweaksPanel + TweakSection + TweakRow
-│       │   └── controls.jsx         # Slider/Toggle/Radio/Select/etc.
-│       ├── layout/                  # CSS by visual layer (chained @import)
-│       │   ├── _index.css
-│       │   ├── chrome.css           # App + window chrome + Tabs
-│       │   ├── stage.css            # Stage layout + session column
-│       │   ├── chat.css             # Chat surface, inline plan, tool cards
-│       │   ├── composer.css         # Composer + slash palette
-│       │   ├── rail.css             # Status bar + ambient rail + minimap
-│       │   └── overlays.css         # ⌘K bridge + kanban + plan annotations
-│       ├── chrome.jsx               # WindowChrome, TabBar, StatusBar, AmbientRail, SessionMinimap
-│       ├── composer.jsx             # Composer + CommandBridge (⌘K palette)
-│       ├── panels.jsx               # PlanKanban (kanban view)
-│       ├── history-modal.jsx        # Conversation history modal & session resume
-│       ├── layout.css               # Single @import → layout/_index.css
-│       └── styles.css               # Visual tokens (colours, spacing, type)
-│
-├── src-tauri/                  # Rust backend
-│   ├── src/
-│   │   ├── main.rs             # Binary entry point
-│   │   ├── lib.rs              # Tauri setup, command registration
-│   │   ├── git.rs              # Git helpers (current branch lookup)
-│   │   ├── git_watcher.rs      # Filesystem HEAD watcher → git-branch-changed events
-│   │   ├── saved_sessions/     # On-disk session history listing
-│   │   │   ├── mod.rs
-│   │   │   └── tests.rs
-│   │   └── agent/              # AgentBridge module
-│   │       ├── mod.rs              # Public surface: AgentBridge struct + impl
-│   │       ├── inner.rs            # BridgeInner per-session record
-│   │       ├── spawn.rs            # spawn_omp + Windows CREATE_NO_WINDOW flag
-│   │       └── reader.rs           # stdout/stderr reader threads, read_until_capped
-│   ├── Cargo.toml
-│   ├── tauri.conf.json         # Window config + strict CSP
-│   └── capabilities/
-│       └── default.json        # Tauri capability grants
-│
-├── docs/
-│   └── plans/                  # Design documents
-├── screenshots/                # README assets
-├── test-rpc.mjs                # Dev utility: probe omp RPC directly (Node/Bun)
-├── .gitattributes
-├── .gitignore
-├── README.md
-├── CLAUDE.md
-└── package.json
-```
-
----
-
-## RPC Protocol
-
-The frontend communicates with `omp` exclusively through the Tauri IPC bridge.
-`live.js` sends JSON commands via `invoke("send_command", { sessionId, json })` and
-`agent://line` events emitted by the Rust stdout reader.
-
-### Commands sent (stdin → omp)
-
-| Command | When |
-|---------|------|
-| `get_state` | On `ready`, after each `turn_end` |
-| `get_messages` | On `ready` |
-| `get_available_models` | On `ready` |
-| `prompt` | User sends a message |
-| `abort` | User clicks abort |
-| `set_model` | User picks a model in ⌘K bridge |
-| `cycle_model` | User clicks `/model` command |
-| `cycle_thinking_level` | User cycles thinking in composer / `/thinking` |
-| `compact` | User runs `/compact` |
-| `export_html` | User runs `/export` |
-| `get_session_stats` | After each `turn_end` |
-| `new_session` | User runs `/new` |
-| `follow_up` | User sends a message while idle |
-| `steer` | User sends a message mid-turn |
-| `extension_ui_response` | Auto-cancel for interactive UI requests |
-
-### Events received (stdout → frontend)
-
-| Event | Handler |
-|-------|---------|
-| `ready` | Bootstraps initial data fetches |
-| `turn_start` / `turn_end` | Streaming state, TPS calculation, cost accumulation |
-| `message_start` | Creates user/assistant bubbles; stamps model name |
-| `message_update` | Updates streaming bubble from accumulated content |
-| `message_end` | Finalises bubble (`streaming: false`) |
-| `tool_execution_start` | Creates running tool card |
-| `tool_execution_end` | Finalises tool card with result/diff/output |
-| `tool_execution_update` | Live-updates a running tool card's streamed output |
-| `extension_ui_request` | Interactive types auto-cancelled; others ignored |
-| `agent_start` / `agent_end` | Re-fetches session state |
-
----
-
-## Key Design Decisions
-
-**`omp --mode rpc` not `omp --rpc`** — `--rpc` is not a valid flag; omp falls through to
-interactive TUI mode and outputs ANSI escape codes instead of JSON. Confirmed from source.
-
-**Blank line = skip, not EOF** — The Rust stdout reader originally used `_ => break` for
-both empty lines and IO errors; one blank line from omp killed the reader thread silently.
-Now `Ok("") => continue`, `Err(_) => break`.
-
-**`AgentBridge` kills child on drop** — Stores `Child` alongside stdin. `drop`, `stop_inner`,
-and the beginning of `start` all call `child.kill() + child.wait()` so hot-reloads and
-tab closes leave no orphaned `omp` processes.
-
-**Event delegation for window controls** — `WindowChrome` is painted by React after
-`DOMContentLoaded`. `querySelector` at that point finds nothing. All window control
-clicks are caught by a single delegated listener on `document`.
-
-**`set_model` response must be handled** — Without it, `state.model` stays stale. The next
-`turn_start` calls `notify()` which pushes the old model back to React, reverting the
-display mid-turn. The response is now handled and calls `notify()` immediately.
-
-**Model list above commands in ⌘K bridge** — With 8 command rows, the model section was
-below `max-height: 60vh` and invisible without scrolling. Models now render first.
-
----
-
-## Tauri Commands
-
-| Command | Signature | Description |
-|---------|-----------|-------------|
-| `start_session`   | `(sessionId: String, cwd: String, resume: Option<String>) → Result<()>` | Spawn omp for a new tab session (`cwd: ""` = omp default; `resume` replays a saved session id) |
-| `stop_session`    | `(sessionId: String) → ()`                       | Kill that tab's omp process and reap it off-thread |
-| `send_command`    | `(sessionId: String, json: String) → Result<()>`| Write a JSON line to that session's omp stdin |
-| `session_status`  | `(sessionId: String) → Option<String>`           | Returns cached startup error if the last `start_session` failed |
-| `open_project`    | `() → Result<Option<String>>`                   | Native folder picker dialog |
-| `list_saved_sessions` | `(cwd: Option<String>) → Result<Vec<SavedSession>>` | Lists persisted sessions from `~/.omp/agent/sessions` for the history panel |
-| `start_git_watch` | `(sessionId: String, path: String) → Option<String>` | Arms a HEAD filesystem watcher for a tab; returns the current branch |
-| `stop_git_watch`  | `(sessionId: String) → ()`                       | Stops that tab's HEAD watcher |
-| `open_url_external` | `(url: String) → Result<(), String>`           | Opens a URL in the system browser (OAuth flows) |
-
----
-
-## Frontend State Flow
-
-```
-omp stdout
-  └─► agent://line Tauri event
-        └─► handleLine(rawLine)
-              ├─► _handleResponse(resp)   — RPC responses
-              │     ├── get_state         → _applyRpcState() → notify()
-              │     ├── get_available_models → state.models → notify()
-              │     ├── set_model         → state.model + current flags → notify()
-              │     └── cycle_model       → state.model + thinkingLevel → notify()
-              └─► _handleEvent(ev)        — AgentSessionEvents
-                    ├── turn_start/end    → isStreaming, TPS, cost
-                    ├── message_*         → streamingBubble lifecycle
-                    ├── tool_execution_*  → tool cards
-                    └── extension_ui_request → auto-cancel interactive
-
-notify()
-  ├─► subscribers (OMP_BRIDGE.onUpdate callbacks)
-  │     └─► React setState calls in app-live.jsx
-  └─► window.OMP_DATA sync (for components reading globals directly)
-```
-
----
-
-## Tweaks
-
-Open the Tweaks panel (the floating panel in the bottom-right) to adjust:
-
-| Setting | Options |
-|---------|---------|
-| Theme | aurora · phosphor · daylight |
-| Density | cozy · compact · dense |
-| Accent colour | 6 presets + custom |
-| Mono chat font | toggle |
-| Layout | rail · split · focus |
-
----
-
-## Development Notes
-
-**`test-rpc.mjs`** — Standalone Bun/Node script that spawns `omp --mode rpc` directly
-and exercises the protocol. Useful for verifying RPC behaviour without the full UI.
-
-**No CDN dependencies** — React 19, ReactDOM, and Babel standalone are bundled locally
-under `src/`. The app works fully offline.
-
-**`dist/`** — Generated by `npm run build` (`scripts/build-frontend.mjs`): `src/` with every
-`.jsx` compiled ahead of time and the production React build, so release builds skip
-Babel's in-browser compile (~1.5 s at startup). `npm run dev` serves `src/` directly.
-
-**`src/design/`** — Modified copy of the original `design/` prototype. The original
-`design/` directory is excluded from the repo (`.gitignore`); `src/design/` is committed
-and is the authoritative source. Do not regenerate from `design/` — that would overwrite
-the live-wiring changes.
-
-**Windows 11 target** — Uses `color-mix(in oklab, …)` which requires WebView2 ≥ 101
-(Windows 11 default). The frameless window (`decorations: false`) relies on DWM for
-corner rounding.
+[MIT](LICENSE)
