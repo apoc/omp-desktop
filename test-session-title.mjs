@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Regression script for src/app/session-title.js — the pure gate, note
-// matcher, and title extractor behind the after-first-turn auto `/rename`
-// that renames a fresh tab from its omp session name.
+// Regression script for src/app/session-title.js — the pure gates, note
+// matcher, and title extractor behind the automatic omp session titling:
+// the after-first-turn `/rename` and its later periodic refreshes.
 // Run: node test-session-title.mjs
 
 import assert from "node:assert/strict";
@@ -75,8 +75,49 @@ check("a null snapshot never fires", () => {
   assert.equal(T.shouldAutoRename(null, true, OK), false);
 });
 
-// ── isAutoRenameNote ────────────────────────────────────────────────────
 
+// ── shouldRefineTitle ───────────────────────────────────────────────────
+
+check("the refresher fires at the cadence with budget left", () => {
+  assert.equal(T.shouldRefineTitle({ isStreaming: false, sessionName: "Old Title" }, T.REFINE_EVERY_TURNS, 2, OK), true);
+});
+
+check("the refresher fires on an already-titled session (refreshing is the point)", () => {
+  // Deliberate asymmetry with shouldAutoRename, which skips titled sessions.
+  assert.equal(T.shouldRefineTitle({ isStreaming: false, sessionName: "Whatever" }, 7, 1, OK), true);
+});
+
+check("turns below the cadence never refine", () => {
+  assert.equal(T.shouldRefineTitle({ isStreaming: false, sessionName: "X" }, T.REFINE_EVERY_TURNS - 1, 2, OK), false);
+});
+
+check("a spent budget never refines, however old the title", () => {
+  assert.equal(T.shouldRefineTitle({ isStreaming: false, sessionName: "X" }, 99, 0, OK), false);
+});
+
+check("a missing or non-positive budget never refines", () => {
+  assert.equal(T.shouldRefineTitle({ isStreaming: false, sessionName: "X" }, 99, undefined, OK), false);
+  assert.equal(T.shouldRefineTitle({ isStreaming: false, sessionName: "X" }, 99, -1, OK), false);
+});
+
+check("the refresher never fires mid-turn", () => {
+  assert.equal(T.shouldRefineTitle({ isStreaming: true, sessionName: "X" }, 99, 2, OK), false);
+});
+
+check("a failed last turn never refines", () => {
+  assert.equal(T.shouldRefineTitle({ isStreaming: false, sessionName: "X" }, 99, 2, false), false);
+});
+
+check("a null snapshot never refines", () => {
+  assert.equal(T.shouldRefineTitle(null, 99, 2, OK), false);
+});
+
+check("the cadence and budget are exported positive numbers", () => {
+  assert.ok(Number.isInteger(T.REFINE_EVERY_TURNS) && T.REFINE_EVERY_TURNS > 0);
+  assert.ok(Number.isInteger(T.REFINE_MAX) && T.REFINE_MAX > 0);
+});
+
+// ── isAutoRenameNote ────────────────────────────────────────────────────
 // omp's exact outcome strings, verbatim from slash-commands/
 // builtin-lifecycle.ts (rename handle) — paraphrased fixtures would let an
 // omp rewording slip past the prefix matcher unnoticed.
