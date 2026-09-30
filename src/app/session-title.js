@@ -11,13 +11,16 @@
 (function () {
   /** Whether this `get_state` snapshot should fire the automatic `/rename`
    *  for a fresh tab: the tab is still armed (fresh — not a resume — and the
-   *  send happens at most once per arming), the session is idle (never
-   *  mid-turn), the first exchange is fully persisted (`messageCount >= 2`
-   *  = user + assistant), and omp has not titled the session yet. An empty
-   *  `sessionName` counts as untitled, same as the tab-name write in
-   *  `_applyRpcState`. */
-  function shouldAutoRename(rpcState, armed) {
-    if (!armed || !rpcState) return false;
+   *  send happens at most once per arming), no assistant turn has ended in
+   *  error/abort (`lastTurnOk` — omp counts error/aborted assistant
+   *  messages in `messageCount`, so without this a failed first exchange,
+   *  e.g. a fresh profile before `/login`, would silently spend the
+   *  one-shot), the session is idle (never mid-turn), the first exchange is
+   *  fully persisted (`messageCount >= 2` = user + assistant), and omp has
+   *  not titled the session yet. An empty `sessionName` counts as untitled,
+   *  same as the tab-name write in `_applyRpcState`. */
+  function shouldAutoRename(rpcState, armed, lastTurnOk) {
+    if (!armed || !lastTurnOk || !rpcState) return false;
     if (rpcState.sessionName) return false;
     if (rpcState.isStreaming) return false;
     return typeof rpcState.messageCount === "number" && rpcState.messageCount >= 2;

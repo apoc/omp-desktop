@@ -76,6 +76,7 @@
   let turnStartTime   = null;
   let activityLog     = [];           // [{ts, toolName}], pruned to 60s
   let lastSeq         = 0;   // highest journal seq processed for the active session — see _dispatchEnvelope
+  let lastTurnOk      = true; // last assistant message_end was not error/aborted — a failed first exchange must not spend the one-shot
   let _replayBuffer   = null; // null = live dispatch; [] = buffering during a replay (see _switchToSession)
   let _msgSeq = 0;  // monotonic counter — stable React keys for message bubbles
   // Whether the manager is inspecting an agent — decides the RPC subagent
@@ -541,6 +542,7 @@
       subagentTranscripts: {},
     });
     streamingBubble = null;
+    lastTurnOk  = true;
     pendingAskBubbles = [];
     _disarmAskFlush();
     activeToolCards = new Map();
@@ -574,6 +576,10 @@
       sessionCost:   state.sessionCost,
       currentTps:    state.currentTps,
       exitReason:    state.exitReason,
+      // Last-turn outcome for the auto-rename gate (see _applyRpcState):
+      // survives tab switches so a snapshot-restored session does not
+      // forget a failed first exchange and re-arm the one-shot.
+      lastTurnOk,
       subagents:     state.subagents,
       // volatile vars
       streamingBubble,
@@ -613,6 +619,7 @@
     turnStartTime   = snap.turnStartTime;
     activityLog     = snap.activityLog;
     lastSeq         = snap.lastSeq ?? 0;
+    lastTurnOk      = snap.lastTurnOk ?? true;
     return true;
   }
 
@@ -913,6 +920,21 @@
    *  master's `openSession`) run during PR #4 review remediation. */
   function _tabNameFor(cwd, fallback) {
     return cwd ? cwd.replace(/\\/g, "/").split("/").pop() || cwd : fallback;
+  }
+
+  /** A user-typed `/rename` supersedes our pending automatic one (omp bumps
+   *  `titleRevision`, so the backgrounded auto-generation silently drops —
+   *  its note can never arrive). Clearing the in-flight flag on send keeps
+   *  the note-swallow gate exact: without it, the user's own `Session
+   *  renamed to X.` confirmation — and, after an abort stranded the flag,
+   *  any later one — would be swallowed. */
+  function _disarmAutoRename(text) {
+    if (!activeSessionId) return;
+    const entry = sessionRegistry.get(activeSessionId);
+    if (!entry || !entry.autoRenameInFlight) return;
+    if (isSlashCommand(state.commands, text) && text.trim().toLowerCase().startsWith("/rename")) {
+      sessionRegistry.set(activeSessionId, { ...entry, autoRenameInFlight: false });
+    }
   }
 
   /** Spawn omp for `cwd` (optionally resuming a saved session), register the
@@ -1324,10 +1346,12 @@
     if (type === "command_output") {
       // Our automatic `/rename` prints its outcome as a builtin note; that
       // is plumbing, not conversation, so swallow it — but only while our
-      // own rename is in flight, so a manual `/rename` by the user still
-      // reaches the transcript. The note and the `session_info_update`
-      // frame are emitted back-to-back by omp, so the note always lands
-      // before the get_state round-trip this event triggers.
+      // own rename is in flight. A superseded auto-rename stays silent on
+      // omp's side (titleRevision) and `_disarmAutoRename` clears the flag
+      // when the user types their own `/rename`, so the only note that can
+      // match here is the automatic one's. The note and the
+      // `session_info_update` frame are emitted back-to-back by omp, so the
+      // note always lands before the get_state round-trip it triggers.
       const entry = activeSessionId ? sessionRegistry.get(activeSessionId) : null;
       if (entry && entry.autoRenameInFlight && STITLE.isAutoRenameNote(ev.text)) {
         sessionRegistry.set(activeSessionId, { ...entry, autoRenameInFlight: false });
@@ -1570,6 +1594,12 @@
 
     if (type === "message_end") {
       const msg = ev.message;
+      // Auto-rename gate input: an assistant turn ending in error/aborted
+      // still lands in omp's messageCount, so the gate needs the outcome,
+      // not just the count.
+      if (msg?.role === "assistant") {
+        lastTurnOk = msg.stopReason !== "error" && msg.stopReason !== "aborted";
+      }
       const usage = msg?.usage;
       const tokens = usage ? ((usage.input ?? 0) + (usage.output ?? 0)) : null;
       if (streamingBubble && msg) {
@@ -1760,13 +1790,15 @@
     // generates a title from the conversation, emits `session_info_update`
     // (applied above), then prints an outcome note (swallowed above).
     // Armed→in-flight flips on the send, so nothing re-triggers even if the
-    // model never produces a title. A confirming `sessionName` here also
-    // clears in-flight as a safety net: if omp ever rewords its notes so
-    // the swallow misses, the flag still settles and a later manual
-    // `/rename` note reaches the transcript.
+    // model never produces a title; `lastTurnOk` keeps a failed or aborted
+    // first exchange from silently spending the one-shot (omp counts
+    // error/aborted assistant messages in messageCount). A confirming
+    // `sessionName` here also clears in-flight as a safety net: if omp ever
+    // rewords its notes so the swallow misses, the flag still settles and a
+    // later manual `/rename` note reaches the transcript.
     if (activeSessionId && sessionRegistry.has(activeSessionId)) {
       const entry = sessionRegistry.get(activeSessionId);
-      if (STITLE.shouldAutoRename(rpcState, entry.autoRenameArmed)) {
+      if (STITLE.shouldAutoRename(rpcState, entry.autoRenameArmed, lastTurnOk)) {
         sessionRegistry.set(activeSessionId, { ...entry, autoRenameArmed: false, autoRenameInFlight: true });
         _send({ type: "prompt", message: "/rename" });
       } else if (entry.autoRenameInFlight && rpcState.sessionName) {
@@ -2016,7 +2048,7 @@
     // common case and stays a plain fire-and-forget send.
     send(text, images) {
       const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [] };
-      state.messages = [...state.messages, userMsg];
+      _disarmAutoRename(text);
       _recordPrompt(text);
       notify();
       if (isSlashCommand(state.commands, text)) {
@@ -2048,7 +2080,7 @@
     // (app-live.jsx) should each have to know and check for themselves.
     followUp(text, images) {
       const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [], pendingEcho: true };
-      state.messages = [...state.messages, userMsg];
+      _disarmAutoRename(text);
       _recordPrompt(text);
       notify();
       if (isSlashCommand(state.commands, text)) {
@@ -2059,7 +2091,7 @@
     },
     steer(text, images) {
       const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [], pendingEcho: true };
-      state.messages = [...state.messages, userMsg];
+      _disarmAutoRename(text);
       _recordPrompt(text);
       notify();
       if (isSlashCommand(state.commands, text)) {
@@ -2562,16 +2594,17 @@
         // user just picked) and re-creates the very snapshot
         // `_killSessionProcess` just deleted.
         const wasActive = id === activeSessionId;
-        // `sessionFile: null`: the respawn is a fresh conversation, not the
-        // one the old incarnation ran.
+        // Fresh conversation: the killed incarnation's generated title
+        // belongs to a transcript that is gone, so the label falls back to
+        // the folder and the new conversation earns a rename of its own.
+        // Any in-flight `/rename` belonged to the killed incarnation and
+        // its note can never arrive.
         sessionRegistry.set(id, {
           ...entry,
           profile: profileId,
           branch: null,
           sessionFile: null,
-          // The respawn is a fresh conversation, so it earns a rename of
-          // its own; any in-flight `/rename` belonged to the killed
-          // incarnation and its note can never arrive.
+          name: _tabNameFor(entry.path, entry.name),
           autoRenameArmed: true,
           autoRenameInFlight: false,
         });

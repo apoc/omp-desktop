@@ -27,47 +27,64 @@ function check(label, fn) {
   passed++;
 }
 
-// ── shouldAutoRename ──────────────────────────────────────────────────────
+const OK = true;
 
 check("an armed idle tab with a finished exchange and no title renames", () => {
-  assert.equal(T.shouldAutoRename({ isStreaming: false, messageCount: 2 }, true), true);
+  assert.equal(T.shouldAutoRename({ isStreaming: false, messageCount: 2 }, true, OK), true);
 });
 
 check("an unarmed tab never renames, however complete its state", () => {
-  assert.equal(T.shouldAutoRename({ isStreaming: false, messageCount: 9 }, false), false);
+  assert.equal(T.shouldAutoRename({ isStreaming: false, messageCount: 9 }, false, OK), false);
+});
+
+check("a failed or aborted last turn never spends the one-shot", () => {
+  // omp counts error/aborted assistant messages in messageCount, so without
+  // this a failed first exchange (fresh profile before /login, provider
+  // outage, Esc) would burn the auto-rename silently.
+  assert.equal(T.shouldAutoRename({ isStreaming: false, messageCount: 2 }, true, false), false);
 });
 
 check("the trigger never fires mid-turn", () => {
-  assert.equal(T.shouldAutoRename({ isStreaming: true, messageCount: 5 }, true), false);
+  assert.equal(T.shouldAutoRename({ isStreaming: true, messageCount: 5 }, true, OK), false);
 });
 
 check("one message (user turn not yet answered) is not a completed exchange", () => {
-  assert.equal(T.shouldAutoRename({ isStreaming: false, messageCount: 1 }, true), false);
+  assert.equal(T.shouldAutoRename({ isStreaming: false, messageCount: 1 }, true, OK), false);
 });
 
 check("a session omp already titled is left alone", () => {
   assert.equal(
-    T.shouldAutoRename({ isStreaming: false, messageCount: 4, sessionName: "Fix login bug" }, true),
+    T.shouldAutoRename({ isStreaming: false, messageCount: 4, sessionName: "Fix login bug" }, true, OK),
     false,
   );
 });
 
+check("an empty sessionName counts as untitled and fires", () => {
+  assert.equal(
+    T.shouldAutoRename({ isStreaming: false, messageCount: 2, sessionName: "" }, true, OK),
+    true,
+  );
+});
+
 check("a missing or non-numeric messageCount never fires", () => {
-  assert.equal(T.shouldAutoRename({ isStreaming: false }, true), false);
-  assert.equal(T.shouldAutoRename({ isStreaming: false, messageCount: "2" }, true), false);
+  assert.equal(T.shouldAutoRename({ isStreaming: false }, true, OK), false);
+  assert.equal(T.shouldAutoRename({ isStreaming: false, messageCount: "2" }, true, OK), false);
 });
 
 check("a null snapshot never fires", () => {
-  assert.equal(T.shouldAutoRename(null, true), false);
+  assert.equal(T.shouldAutoRename(null, true, OK), false);
 });
 
-// ── isAutoRenameNote ──────────────────────────────────────────────────────
+// ── isAutoRenameNote ────────────────────────────────────────────────────
 
+// omp's exact outcome strings, verbatim from slash-commands/
+// builtin-lifecycle.ts (rename handle) — paraphrased fixtures would let an
+// omp rewording slip past the prefix matcher unnoticed.
 check("omp's four bare-/rename outcome notes all match", () => {
   for (const text of [
-    "Session renamed to Fix login bug",
-    "Could not generate a session title from the conversation.",
-    "Session name not changed: a user-set name takes precedence.",
+    "Session renamed to Fix login bug.",
+    "Could not generate a session title. Use /rename <title> to set one.",
+    "Session name not changed (a user-set name takes precedence).",
     "Rename failed: model unavailable",
   ]) {
     assert.equal(T.isAutoRenameNote(text), true, text);
