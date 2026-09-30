@@ -922,25 +922,48 @@
     return cwd ? cwd.replace(/\\/g, "/").split("/").pop() || cwd : fallback;
   }
 
+  /** Registry fields for a fresh conversation on an existing tab. The
+   *  previous transcript is gone, so the label falls back to the folder and
+   *  auto-rename starts over. `sessionFile` is cleared too: `resumeSession`
+   *  matches on it, and would otherwise focus this tab for a conversation
+   *  it no longer runs. Shared by in-process `new_session` and profile
+   *  respawn. */
+  function _freshConversationFields(entry) {
+    return {
+      name: _tabNameFor(entry.path, entry.name),
+      sessionFile: null,
+      autoRenameArmed: true,
+      autoRenameInFlight: false,
+      autoRenameTurns: 0,
+      autoRenameLeft: 0,
+    };
+  }
+
+
   /** A user-typed `/rename` supersedes our pending automatic one (omp bumps
    *  `titleRevision`, so the backgrounded auto-generation silently drops —
    *  its note can never arrive). Clearing the in-flight flag on send keeps
    *  the note-swallow gate exact: without it, the user's own `Session
    *  renamed to X.` confirmation — and, after an abort stranded the flag,
-   *  any later one — would be swallowed. */
+   *  any later one — would be swallowed. Also disarms the one-shot if it
+   *  has not fired yet: a `/rename` during the first turn lands before the
+   *  auto-send, and a confirming `get_state` can still see an empty
+   *  `sessionName` and fire our own `/rename`, which supersedes the user's. */
   function _disarmAutoRename(text) {
     if (!activeSessionId) return;
     const entry = sessionRegistry.get(activeSessionId);
     if (!entry) return;
-    // No-op unless something is still pending: an in-flight auto-rename
-    // whose note swallow must be released, or refinement budget that a
-    // manual title must retire.
-    if (!entry.autoRenameInFlight && !(entry.autoRenameLeft > 0)) return;
+    // No-op unless a manual title still has something to retire: the
+    // one-shot (armed, not yet sent), an in-flight auto-rename whose note
+    // swallow must be released, or refinement budget.
+    if (!entry.autoRenameArmed && !entry.autoRenameInFlight && !(entry.autoRenameLeft > 0)) return;
     if (!isSlashCommand(state.commands, text) || !text.trim().toLowerCase().startsWith("/rename")) return;
-    // A manual rename wins permanently: clear any pending in-flight swallow
-    // and zero the refinement budget, so a later automatic refresh can
-    // never overwrite the title the user typed.
-    sessionRegistry.set(activeSessionId, { ...entry, autoRenameInFlight: false, autoRenameLeft: 0 });
+    // A manual rename wins permanently: cancel the one-shot, release any
+    // pending note swallow, and zero the refinement budget, so a later
+    // automatic refresh can never overwrite the title the user typed.
+    sessionRegistry.set(activeSessionId, {
+      ...entry, autoRenameArmed: false, autoRenameInFlight: false, autoRenameLeft: 0,
+    });
   }
 
   /** Spawn omp for `cwd` (optionally resuming a saved session), register the
@@ -1295,8 +1318,17 @@
       }
 
     } else if (command === "new_session") {
-      // New session started — clear local state and re-fetch
+      // Fresh conversation in this process. `_resetSessionVars` only clears
+      // the live transcript; the registry still holds the previous
+      // incarnation's generated title and rename budget, and `_applyRpcState`
+      // will not clear a name when the new session is untitled. Same reset
+      // as a profile respawn — otherwise `/new` keeps the old title and
+      // never re-arms, and leftover budget retitles the new transcript.
       _resetSessionVars();
+      if (activeSessionId && sessionRegistry.has(activeSessionId)) {
+        const entry = sessionRegistry.get(activeSessionId);
+        sessionRegistry.set(activeSessionId, { ...entry, ..._freshConversationFields(entry) });
+      }
       _initFetch();
       notify();
 
@@ -1826,15 +1858,14 @@
     // agent_end; our own `/rename` prompts are builtins and never count)
     // the title is refreshed while `autoRenameLeft` lasts — and each
     // refresh rides the same in-flight/note machinery as the initial one.
-    // Nothing else may clear in-flight. Its lifecycle is the send's:
-    // every bare `/rename` ends in exactly one outcome note that the
-    // swallow consumes, and a user-typed `/rename` supersedes ours
-    // silently on omp's side while `_disarmAutoRename` releases the flag
-    // at send time and zeroes the budget (manual titles are never
-    // overwritten). A previous version also cleared it on any confirming
-    // `sessionName` — a race: the next turn's `agent_start` get_state
-    // answers with the OLD title while our background generation runs,
-    // released the flag early, and the note then reached the transcript.
+    // Nothing in this get_state path may clear in-flight. A previous
+    // version cleared it on any confirming `sessionName` — a race: the
+    // next turn's `agent_start` get_state answers with the OLD title while
+    // our background generation runs, released the flag early, and the note
+    // then reached the transcript. The flag is released only by the outcome
+    // note, by `_disarmAutoRename` (which also retires an armed one-shot and
+    // the refinement budget), or by a fresh conversation (`new_session` /
+    // profile respawn).
     if (activeSessionId && sessionRegistry.has(activeSessionId)) {
       const entry = sessionRegistry.get(activeSessionId);
       if (STITLE.shouldAutoRename(rpcState, entry.autoRenameArmed, lastTurnOk)) {
@@ -2099,6 +2130,7 @@
     // common case and stays a plain fire-and-forget send.
     send(text, images) {
       const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [] };
+      state.messages = [...state.messages, userMsg];
       _disarmAutoRename(text);
       _recordPrompt(text);
       notify();
@@ -2131,6 +2163,7 @@
     // (app-live.jsx) should each have to know and check for themselves.
     followUp(text, images) {
       const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [], pendingEcho: true };
+      state.messages = [...state.messages, userMsg];
       _disarmAutoRename(text);
       _recordPrompt(text);
       notify();
@@ -2142,6 +2175,7 @@
     },
     steer(text, images) {
       const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [], pendingEcho: true };
+      state.messages = [...state.messages, userMsg];
       _disarmAutoRename(text);
       _recordPrompt(text);
       notify();
@@ -2645,23 +2679,14 @@
         // user just picked) and re-creates the very snapshot
         // `_killSessionProcess` just deleted.
         const wasActive = id === activeSessionId;
-        // Fresh conversation: the killed incarnation's generated title
-        // belongs to a transcript that is gone, so the label falls back to
-        // the folder and the new conversation earns a rename of its own.
-        // Any in-flight `/rename` belonged to the killed incarnation and
-        // its note can never arrive.
+        // Fresh conversation: folder label and a new auto-rename, same as
+        // `new_session` (`_freshConversationFields`). The killed process
+        // will not deliver an in-flight `/rename` note.
         sessionRegistry.set(id, {
           ...entry,
           profile: profileId,
           branch: null,
-          sessionFile: null,
-          name: _tabNameFor(entry.path, entry.name),
-          autoRenameArmed: true,
-          autoRenameInFlight: false,
-          // Fresh conversation: stale refinement budget/counters would
-          // refresh the title against a transcript that no longer exists.
-          autoRenameTurns: 0,
-          autoRenameLeft: 0,
+          ..._freshConversationFields(entry),
         });
         if (wasActive) await _detachActiveSession();
         // After the detach, which nulls `activeSessionId` synchronously — so no

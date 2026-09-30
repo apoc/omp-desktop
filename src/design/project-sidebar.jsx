@@ -45,6 +45,12 @@ function ProjectSidebar({
           const expanded = multi && !collapsed[group.key];
           const containsActive = group.tabs.some(t => t.id === activeId);
           const profile = profileLabel(group.profile);
+          // Single-tab cards show the conversation title, which ellipsizes.
+          // The tooltip keeps the full title plus the folder path; multi-tab
+          // project rows still tip the path (member rows tip each tab name).
+          const cardTip = multi
+            ? (group.path || group.name)
+            : [group.tabs[0].name, group.path].filter(Boolean).join("\n");
           return (
             <React.Fragment key={group.key}>
               {/* A multi-tab project row is only highlighted through its
@@ -58,7 +64,7 @@ function ProjectSidebar({
                     <Icon name="chevR" size={10} />
                   </button>
                 ) : <span className="psb-chev-spacer" />}
-                <button className="psb-main" title={group.path || group.name}
+                <button className="psb-main" title={cardTip}
                   onClick={() => onSelectTab(groupTarget(group, activeId))}>
                   <Icon name="folder" size={11} color={containsActive ? "var(--accent)" : "var(--fg-4)"} />
                   <span className="psb-name">{multi ? group.name : group.tabs[0].name}</span>

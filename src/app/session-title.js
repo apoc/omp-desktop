@@ -23,7 +23,9 @@
    *  one-shot), the session is idle (never mid-turn), the first exchange is
    *  fully persisted (`messageCount >= 2` = user + assistant), and omp has
    *  not titled the session yet. An empty `sessionName` counts as untitled,
-   *  same as the tab-name write in `_applyRpcState`. */
+   *  same as the tab-name write in `_applyRpcState`. A user-typed `/rename`
+   *  disarms this one-shot upstream, so it does not race a manual rename
+   *  that has not yet set `sessionName`. */
   function shouldAutoRename(rpcState, armed, lastTurnOk) {
     if (!armed || !lastTurnOk || !rpcState) return false;
     if (rpcState.sessionName) return false;
@@ -46,8 +48,8 @@
    *  as `shouldAutoRename` — an error/abort turn would only pollute the
    *  title context), and no turn is mid-flight. Unlike the initial rename
    *  this deliberately fires on an already-titled session: refreshing is
-   *  the point. A user-typed `/rename` zeroes the budget upstream, so a
-   *  manual title is never overwritten. */
+   *  the point. A user-typed `/rename` disarms the one-shot and zeroes the
+   *  budget upstream, so a manual title is never overwritten. */
   function shouldRefineTitle(rpcState, turnsSinceRename, refinementsLeft, lastTurnOk) {
     if (!rpcState || !lastTurnOk) return false;
     if (!(refinementsLeft > 0)) return false;

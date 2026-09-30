@@ -19,6 +19,7 @@ Tauri 2 desktop shell for `omp` (oh-my-pi). React UI served from `src/` in `taur
 | Keymap chord regression | `node test-keymap.mjs` (or `npm run test:keymap`) |
 | Markdown XSS-escaping regression | `node test-markdown.mjs` (or `npm run test:markdown`) |
 | Chat scroll-pin regression | `node test-scroll-pin.mjs` (or `npm run test:scroll-pin`) |
+| Session-title auto-rename gates regression | `node test-session-title.mjs` (or `npm run test:session-title`) |
 | Slash-command palette regression | `node test-slash-commands.mjs` (or `npm run test:slash-commands`) |
 | Prompt history regression | `node test-prompt-history.mjs` (or `npm run test:prompt-history`) |
 | Subagent manager reducer regression | `node test-subagents.mjs` (or `npm run test:subagents`) |
