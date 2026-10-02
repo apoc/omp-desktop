@@ -201,31 +201,28 @@
     if (text[end] === "\n") end += 1;
     return (text.slice(0, start) + text.slice(end)).trimEnd();
   }
+  // `text` without its last line when `test` matches that line.
+  function _dropLastLineIf(text, test) {
+    const lastLine = text.lastIndexOf("\n") + 1;
+    return test(text.slice(lastLine)) ? text.slice(0, lastLine).trimEnd() : text;
+  }
   // A finished bash call's output for the clipboard: the result text minus
   // the model-facing notices omp appends to it — the auto-background note,
   // exit code, wall time, the raw-output artifact footer — which omp's own
   // TUI strips the same way (stripBashNotices, packages/tui/src/tools/bash.ts).
   // omp reports silence as "(no output)".
-  function _bashOutputText(result) {
-    const details = result?.details;
-    let text = _resultText(result);
+  function _bashOutputText(text, details) {
     // The background note's wording is omp's and may change: match its
     // last line by the job-id prefix only.
     const jobId = details?.async?.state === "running" ? details.async.jobId : null;
-    if (jobId) {
-      const lastLine = text.lastIndexOf("\n") + 1;
-      if (text.startsWith(`Backgrounded as job ${jobId}`, lastLine)) text = text.slice(0, lastLine).trimEnd();
-    }
+    if (jobId) text = _dropLastLineIf(text, line => line.startsWith(`Backgrounded as job ${jobId}`));
     if (Number.isInteger(details?.exitCode)) {
       text = _stripNotice(text, `Command exited with code ${details.exitCode}`);
     }
     if (typeof details?.wallTimeMs === "number") {
       text = _stripNotice(text, `Wall time: ${(details.wallTimeMs / 1000).toFixed(2)} seconds`);
     }
-    const lastLine = text.lastIndexOf("\n") + 1;
-    if (/^\[raw output: artifact:\/\/\d+\]$/.test(text.slice(lastLine))) {
-      text = text.slice(0, lastLine).trimEnd();
-    }
+    text = _dropLastLineIf(text, line => /^\[raw output: artifact:\/\/\d+\]$/.test(line));
     return text === "(no output)" ? "" : text;
   }
   // ── tool_execution_start → running tool card ──────────────────────────────
@@ -294,7 +291,7 @@
     if (card.tool === "bash") {
       const text = _resultText(event.result);
       if (text) extra.output = _bashLines(text);
-      const clip = _bashOutputText(event.result);
+      const clip = _bashOutputText(text, details);
       if (clip) extra.outputText = clip;
     }
     if (card.tool === "eval" && details?.cells) {
@@ -366,7 +363,7 @@
       }));
     }
     if (card.tool === "bash") {
-      const text = pr.content?.[0]?.text ?? "";
+      const text = _resultText(pr);
       if (text) extra.output = _bashLines(text);
     }
     if (card.tool === "task" && details.progress?.length) {

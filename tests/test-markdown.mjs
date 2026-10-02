@@ -161,7 +161,7 @@ check("HTML inside a code span stays escaped code", () => {
 
 check("fenced code is highlighted and escaped", () => {
   const html = marked.parse('```js\nconst a = "<b>";\n```');
-  assert.match(html, /^<pre class="code-block"><code class="hljs language-js"><span class="hljs-keyword">const<\/span>/);
+  assert.match(html, /^<pre class="code-block copy-host"><code class="hljs language-js"><span class="hljs-keyword">const<\/span>/);
   assert.ok(html.includes("&lt;b&gt;"), html);
 });
 

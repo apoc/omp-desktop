@@ -93,7 +93,7 @@
         // onClick (copyCodeBlockClick, ui/copy-button.jsx) copies the
         // sibling <code>'s textContent; its icon and label are CSS, so the
         // button adds no text to a manual selection.
-        return '<pre class="code-block"><code class="hljs' + cls + '">' +
+        return '<pre class="code-block copy-host"><code class="hljs' + cls + '">' +
                highlighted + '</code>' +
                '<button class="copy-btn is-floating" type="button" aria-label="Copy code" title="Copy code"></button>' +
                '</pre>';

@@ -2,7 +2,7 @@
    (design/subagents/). The pane *is* the tweaks `layout: "split"` column,
    so opening/closing it goes through setTweak and persists like any other
    layout choice. Owns: which agent is inspected, the list filter, the RPC
-   subscription level that follows inspection, jump-to-task-call and copy. */
+   subscription level that follows inspection, and jump-to-task-call. */
 
 function useSubagentManager({ bridge, layout, setTweak, activeSessionId, subagents, messages, setHoveredMsgIdx }) {
   const paneOpen = layout === "split";
@@ -51,8 +51,7 @@ function useSubagentManager({ bridge, layout, setTweak, activeSessionId, subagen
   return {
     paneOpen, selected, select: setSelectedId, filter, setFilter,
     level: window.OMP_SUBAGENTS.subscriptionLevelFor({ inspecting }),
-    // Resolves true once the text is on the clipboard (ui/copy-button.jsx).
-    open, closePane, togglePane, jumpToCall, copy: window.copyText,
+    open, closePane, togglePane, jumpToCall,
   };
 }
 

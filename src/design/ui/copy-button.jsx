@@ -2,8 +2,8 @@
 
    - copyText(text): clipboard write, resolves true/false (never rejects).
    - CopyButton: React button for blocks the app renders itself (assistant
-     message, tool output, eval cells, diffs). `getText` runs on click, so a
-     large output is not joined on every render.
+     message, tool output, eval cells, diffs); nothing while `text` is empty.
+   - CopyHost: a block with a floating CopyButton in its top-right corner.
    - copyCodeBlockClick: delegated click handler for the buttons
      marked-setup.js puts in fenced code blocks. Those come out of a
      `dangerouslySetInnerHTML` string, so they carry no handler of their own
@@ -29,7 +29,7 @@ function copyText(text) {
 
 /** `className` adds placement: `is-floating` (top-right of a `.copy-host`
  *  block, on hover) or a surface's own class. */
-function CopyButton({ getText, label, className }) {
+function CopyButton({ text, label, className }) {
   // An object, not a string: a repeat click re-creates it, which restarts
   // the reset timer below instead of letting the first click's run out.
   const [flash, setFlash] = React.useState(null);
@@ -40,12 +40,22 @@ function CopyButton({ getText, label, className }) {
   }, [flash]);
   const onClick = (e) => {
     e.stopPropagation();
-    copyText(getText()).then((ok) => setFlash({ ok }));
+    copyText(text).then((ok) => setFlash({ ok }));
   };
+  if (!text) return null;
   const state = flash ? (flash.ok ? " is-copied" : " is-failed") : "";
   return (
     <button type="button" className={`copy-btn${className ? " " + className : ""}${state}`}
       aria-label={label} title={label} onClick={onClick} />
+  );
+}
+
+function CopyHost({ text, label, children }) {
+  return (
+    <div className="copy-host">
+      {children}
+      <CopyButton className="is-floating" text={text} label={label} />
+    </div>
   );
 }
 
@@ -60,11 +70,11 @@ function copyCodeBlockClick(e) {
   if (!code) return;
   e.stopPropagation();
   copyText(code.textContent).then((ok) => {
-    btn.classList.remove("is-copied", "is-failed");
-    btn.classList.add(ok ? "is-copied" : "is-failed");
+    btn.classList.toggle("is-copied", ok);
+    btn.classList.toggle("is-failed", !ok);
     clearTimeout(_copyFlashTimers.get(btn));
     _copyFlashTimers.set(btn, setTimeout(() => btn.classList.remove("is-copied", "is-failed"), COPY_FLASH_MS));
   });
 }
 
-Object.assign(window, { copyText, CopyButton, copyCodeBlockClick });
+Object.assign(window, { copyText, CopyButton, CopyHost, copyCodeBlockClick });

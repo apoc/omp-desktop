@@ -143,17 +143,17 @@ const SaTranscript = React.memo(function SaTranscript({ transcript, onRefresh })
 
 /** Keyed by agent id in SubagentPane, so tab/copied state start fresh per agent.
  *  `callId` is the main-chat task call (the root agent's, for nested agents). */
-function SubagentInspector({ agent, callId, now, level, transcript, onBack, onLoadTranscript, onJumpToCall, onCopy }) {
+function SubagentInspector({ agent, callId, now, level, transcript, onBack, onLoadTranscript, onJumpToCall }) {
   const [tab, setTab] = React.useState("activity");
   const p = agent.progress;
-  // Which footer copy button just succeeded — onCopy resolves true/false.
+  // Which footer copy button just succeeded — copyText resolves true/false.
   const [copied, setCopied] = React.useState(null);
   React.useEffect(() => {
     if (!copied) return undefined;
     const id = setTimeout(() => setCopied(null), 1200);
     return () => clearTimeout(id);
   }, [copied]);
-  const copy = (key, text) => Promise.resolve(onCopy(text)).then(ok => ok && setCopied(key));
+  const copy = (key, text) => window.copyText(text).then(ok => ok && setCopied(key));
   // Entering the transcript tab loads it when absent or after a failure;
   // an already-loaded one waits for an explicit refresh.
   React.useEffect(() => {

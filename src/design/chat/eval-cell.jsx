@@ -4,7 +4,7 @@
    mid-stream produces malformed spans, so we stay with plain monospace
    until status flips to complete or error. */
 
-const { CopyButton: _EvalCopy } = window;
+const { CopyHost: _EvalCopyHost } = window;
 
 function EvalCell({ cell }) {
   const done = cell.status === "complete" || cell.status === "error";
@@ -28,21 +28,19 @@ function EvalCell({ cell }) {
         }
       </div>
       {cell.code && (
-        <div className="copy-host">
+        <_EvalCopyHost label="Copy code" text={done ? cell.code.trimEnd() : ""}>
           {codeHtml
             ? <pre className="eval-code selectable"><code className={`hljs language-${lang}`}
                 dangerouslySetInnerHTML={{ __html: codeHtml }} /></pre>
             : <pre className="eval-code selectable mono">{cell.code.trimEnd()}</pre>}
-          {done && <_EvalCopy className="is-floating" label="Copy code" getText={() => cell.code.trimEnd()} />}
-        </div>
+        </_EvalCopyHost>
       )}
       {cell.output && (
-        <div className="copy-host">
+        <_EvalCopyHost label="Copy output" text={done ? cell.output.trimEnd() : ""}>
           <pre className={`eval-output selectable mono${cell.status === "error" ? " eval-error" : ""}`}>
             {cell.output.trimEnd()}
           </pre>
-          {done && <_EvalCopy className="is-floating" label="Copy output" getText={() => cell.output.trimEnd()} />}
-        </div>
+        </_EvalCopyHost>
       )}
     </div>
   );

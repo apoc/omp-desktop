@@ -577,7 +577,6 @@ function App() {
                   onLoadTranscript={id => bridge?.loadSubagentTranscript(id)}
                   onClose={subagentUi.closePane}
                   onJumpToCall={subagentUi.jumpToCall}
-                  onCopy={subagentUi.copy}
                 />
               )}
 
