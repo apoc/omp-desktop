@@ -218,6 +218,54 @@
 }
 .tool-bash > div { line-height: 1.55; }
 
+/* ── Copy buttons (#33, ui/copy-button.jsx) ─────────────────────────
+   Icon and label are pseudo-elements, so a button adds no text to a manual
+   selection; marked-setup.js emits the same markup for code blocks. */
+.copy-btn {
+  --copy-icon: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><rect x='5' y='5' width='8' height='8' rx='1'/><path d='M3 10V4a1 1 0 0 1 1-1h6'/></svg>");
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 20px; min-width: 20px; padding: 0 4px;
+  border: 1px solid var(--line-bright); border-radius: 4px;
+  background: var(--bg-elevated); color: var(--fg-3);
+  font: 500 10px/1 var(--font-mono);
+  cursor: pointer; user-select: none;
+  transition: opacity 0.1s, color 0.1s;
+}
+.copy-btn::before {
+  content: ""; flex: none; width: 11px; height: 11px;
+  background: currentColor;
+  -webkit-mask: var(--copy-icon) center / contain no-repeat;
+  mask: var(--copy-icon) center / contain no-repeat;
+}
+.copy-btn:hover, .copy-btn:focus-visible { color: var(--fg); }
+.copy-btn.is-copied {
+  --copy-icon: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M3 8l3 3 7-7'/></svg>");
+  color: var(--accent);
+}
+.copy-btn.is-copied::after { content: "copied"; }
+.copy-btn.is-failed { color: var(--rose); }
+.copy-btn.is-failed::after { content: "copy failed"; }
+
+/* Floating: top-right of its block. In-flow ones sit in a header row.
+   Every copy button shows while its block is hovered (or it has focus,
+   or is flashing its result). Plan blocks ignore the pointer
+   (overlays.css), so they reveal it on the block's own hover and hand the
+   button the pointer back. A block still streaming has no button. */
+.copy-host, .md-content .code-block { position: relative; }
+.copy-btn.is-floating { position: absolute; top: 6px; right: 14px; z-index: 1; }
+.copy-btn.ass-copy { margin-left: auto; }
+.copy-btn.is-floating, .copy-btn.ass-copy, .copy-btn.diff-copy { opacity: 0; }
+.copy-host:hover > .copy-btn,
+.code-block:hover > .copy-btn,
+.plan-block:hover .code-block > .copy-btn,
+.row.assistant:hover .copy-btn.ass-copy,
+.diff-wrap:hover .copy-btn.diff-copy,
+.copy-btn:focus-visible,
+.copy-btn.is-copied,
+.copy-btn.is-failed { opacity: 1; }
+.plan-block-body .copy-btn { pointer-events: auto; }
+.md-streaming .copy-btn { display: none; }
+
 
 /* ── Eval cells ────────────────────────────────────────────────────── */
 .tool-eval { display: flex; flex-direction: column; border-top: 1px solid var(--line); }

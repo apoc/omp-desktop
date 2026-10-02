@@ -4,6 +4,8 @@
    mid-stream produces malformed spans, so we stay with plain monospace
    until status flips to complete or error. */
 
+const { CopyButton: _EvalCopy } = window;
+
 function EvalCell({ cell }) {
   const done = cell.status === "complete" || cell.status === "error";
   const lang = cell.language === "py" ? "python" : "javascript";
@@ -26,15 +28,21 @@ function EvalCell({ cell }) {
         }
       </div>
       {cell.code && (
-        codeHtml
-          ? <pre className="eval-code selectable"><code className={`hljs language-${lang}`}
-              dangerouslySetInnerHTML={{ __html: codeHtml }} /></pre>
-          : <pre className="eval-code selectable mono">{cell.code.trimEnd()}</pre>
+        <div className="copy-host">
+          {codeHtml
+            ? <pre className="eval-code selectable"><code className={`hljs language-${lang}`}
+                dangerouslySetInnerHTML={{ __html: codeHtml }} /></pre>
+            : <pre className="eval-code selectable mono">{cell.code.trimEnd()}</pre>}
+          {done && <_EvalCopy className="is-floating" label="Copy code" getText={() => cell.code.trimEnd()} />}
+        </div>
       )}
       {cell.output && (
-        <pre className={`eval-output selectable mono${cell.status === "error" ? " eval-error" : ""}`}>
-          {cell.output.trimEnd()}
-        </pre>
+        <div className="copy-host">
+          <pre className={`eval-output selectable mono${cell.status === "error" ? " eval-error" : ""}`}>
+            {cell.output.trimEnd()}
+          </pre>
+          {done && <_EvalCopy className="is-floating" label="Copy output" getText={() => cell.output.trimEnd()} />}
+        </div>
       )}
     </div>
   );

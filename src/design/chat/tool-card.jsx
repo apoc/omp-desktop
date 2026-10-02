@@ -1,7 +1,7 @@
 /* chat/tool-card.jsx — Linear/Raycast-style card for one tool call,
    plus ScrubbableDiff (shown for `edit` tools with a parsed diff). */
 
-const { Icon: _TC_Icon, TOOL_META: _TC_TOOL_META, EvalCell: _TC_EvalCell } = window;
+const { Icon: _TC_Icon, TOOL_META: _TC_TOOL_META, EvalCell: _TC_EvalCell, CopyButton: _TC_Copy } = window;
 
 function ScrubbableDiff({ msg }) {
   const total = msg.diff.length;
@@ -37,6 +37,7 @@ function ScrubbableDiff({ msg }) {
           <span style={{ color: "var(--diff-add-fg)" }}>+{msg.adds}</span>
           <span style={{ color: "var(--diff-rm-fg)" }}>−{msg.rems}</span>
         </span>
+        {msg.diffText && <_TC_Copy className="diff-copy" label="Copy diff" getText={() => msg.diffText} />}
       </div>
       <div className="diff-body mono">
         <div className="diff-lines">
@@ -208,11 +209,15 @@ function ToolCard({ msg, idx, highlighted, onInspectSubagent }) {
         )}
 
         {msg.tool === "bash" && msg.output && (
-          <pre className="tool-bash mono selectable">
-            {msg.output.map((l, i) => (
-              <div key={i} style={{ color: `var(--${l.color})` }}>{l.line}</div>
-            ))}
-          </pre>
+          <div className="copy-host">
+            <pre className="tool-bash mono selectable">
+              {msg.output.map((l, i) => (
+                <div key={i} style={{ color: `var(--${l.color})` }}>{l.line}</div>
+              ))}
+            </pre>
+            {/* The whole output, not just the lines shown above. */}
+            {msg.outputText && <_TC_Copy className="is-floating" label="Copy output" getText={() => msg.outputText} />}
+          </div>
         )}
 
         {msg.tool === "eval" && msg.cells && (

@@ -1,7 +1,7 @@
 /* chat/assistant-bubble.jsx — assistant block (text + plan + thoughts) +
    InlinePlan (mini-plan rendered inline in the first plan reply). */
 
-const { Icon: _ChatIcon, MarkdownContent: _ChatMd, AnnotablePlan: _ChatAP } = window;
+const { Icon: _ChatIcon, MarkdownContent: _ChatMd, AnnotablePlan: _ChatAP, CopyButton: _ChatCopy } = window;
 
 function InlinePlan({ plan }) {
   return (
@@ -37,7 +37,14 @@ function InlinePlan({ plan }) {
   );
 }
 
+// The message's raw markdown, one text block after another — what the
+// model wrote, code fences and line breaks included. A live message can
+// carry an empty text block (a turn that went straight to a tool call).
+const _copyBlocks = (msg) => (msg.blocks ?? []).filter((b) => b.type === "text" && b.text?.trim());
+const _messageText = (msg) => _copyBlocks(msg).map((b) => b.text).join("\n\n");
+
 function AssistantBubble({ msg, idx, highlighted, annotable, annotations, onAnnotate }) {
+  const copyable = !msg.streaming && _copyBlocks(msg).length > 0;
   return (
     <div className={`row assistant fade-up${highlighted ? " mm-hot" : ""}`} data-msg-idx={idx}>
       <div className="ass-rail">
@@ -53,6 +60,9 @@ function AssistantBubble({ msg, idx, highlighted, annotable, annotations, onAnno
               <_ChatIcon name="thinking" size={10} />
               thinking
             </span>
+          )}
+          {copyable && (
+            <_ChatCopy className="ass-copy" label="Copy message" getText={() => _messageText(msg)} />
           )}
         </div>
         {msg.thought && (

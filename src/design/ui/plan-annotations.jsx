@@ -3,7 +3,7 @@
    so each top-level token (paragraph, heading, list) becomes its own
    commentable block. */
 
-const { Icon: _PA_Icon } = window;
+const { Icon: _PA_Icon, copyCodeBlockClick: _PA_CopyClick } = window;
 
 // paragraphs / headings / lists of the streamed plan before sending feedback.
 function segmentPlan(text) {
@@ -72,6 +72,7 @@ const AnnotablePlan = ({ text, annotations, onAnnotate }) => {
           <div key={block.index}
             className={`plan-block${isOpen ? " is-selected" : ""}${ann ? " has-comment" : ""}`}>
             <div className="plan-block-body md-content selectable"
+              onClick={_PA_CopyClick}
               dangerouslySetInnerHTML={{ __html: block.html }} />
             {!isHr && (
               <button className="plan-block-add" title={ann ? "edit comment" : "add comment"}

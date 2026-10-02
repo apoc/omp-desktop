@@ -53,11 +53,13 @@ const renderers = {
 };
 
 // Everything the renderers themselves emit. Any other tag, or an attribute
-// outside this list, can only have come from the input.
+// outside this list, can only have come from the input. `button` and
+// `aria-label` are the code-block copy button (issue #33).
 const TAGS = new Set(["p", "br", "strong", "em", "code", "pre", "span", "a", "ul", "ol", "li",
   "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "table", "thead", "tbody", "tr",
-  "th", "td", "del", "input", "img"]);
-const ATTRS = new Set(["class", "href", "title", "align", "start", "type", "checked", "disabled", "src", "alt"]);
+  "th", "td", "del", "input", "img", "button"]);
+const ATTRS = new Set(["class", "href", "title", "align", "start", "type", "checked", "disabled", "src", "alt",
+  "aria-label"]);
 function liveMarkup(html) {
   const bad = [];
   for (const [tag, name, attrs] of html.matchAll(/<\/?([a-zA-Z][\w-]*)([^>]*)>/g)) {
@@ -161,6 +163,31 @@ check("fenced code is highlighted and escaped", () => {
   const html = marked.parse('```js\nconst a = "<b>";\n```');
   assert.match(html, /^<pre class="code-block"><code class="hljs language-js"><span class="hljs-keyword">const<\/span>/);
   assert.ok(html.includes("&lt;b&gt;"), html);
+});
+
+// The copy button (ui/copy-button.jsx) copies the block's <code> textContent,
+// so that text must be the fence content exactly: highlight.js may only add
+// tags around it, and the button must sit outside the <code>.
+const textOf = (html) => html.replace(/<[^>]*>/g, "")
+  .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+  .replace(/&amp;/g, "&");
+const FENCE = 'const a = "<b>" && b < c;\n\n\tif (x) {\n    return `${a}&amp;`;\n\t}\n// trailing  spaces  ';
+for (const [mode, render] of Object.entries(renderers)) {
+  for (const lang of ["js", "", "not-a-language"]) {
+    check(`code block (${mode}, lang "${lang}") carries one copy button and copies the fence verbatim`, () => {
+      const html = render("```" + lang + "\n" + FENCE + "\n```");
+      const code = /<code class="hljs[^"]*">([\s\S]*)<\/code>/.exec(html);
+      assert.ok(code, html);
+      assert.equal(textOf(code[1]), FENCE);
+      assert.equal(html.match(/<button /g)?.length, 1, html);
+      assert.match(html, /<\/code><button class="copy-btn is-floating" type="button" aria-label="Copy code" title="Copy code"><\/button><\/pre>/);
+    });
+  }
+}
+
+check("a copy button in the input renders as text, not as a button", () => {
+  const md = 'a <button class="copy-btn is-floating" type="button"></button> b';
+  for (const render of Object.values(renderers)) assert.ok(!render(md).includes("<button"), render(md));
 });
 
 check("query-string links keep legacy-looking & sequences literal", () => {

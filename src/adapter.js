@@ -175,6 +175,59 @@
     }
     return prev.concat(next);
   }
+  // Bash output → the card's colored display lines: the last 20, the same
+  // tail while streaming and once finished.
+  function _bashLines(text) {
+    return text.split("\n").slice(-20).map(line => ({
+      line,
+      color: /^[✓✔]|^PASS|\bpassed\b/.test(line) ? "accent"
+           : /^[✗✘]|^FAIL|^Error|\bfailed\b/.test(line) ? "rose"
+           : "fg-3",
+    }));
+  }
+  // A tool result's text content, as the model received it.
+  function _resultText(result) {
+    return (Array.isArray(result?.content) ? result.content : [])
+      .filter(b => b?.type === "text" && typeof b.text === "string")
+      .map(b => b.text).join("\n");
+  }
+  // Cut the last occurrence of `notice`, with one newline on each side.
+  // Mirrors omp's stripTrailingNotice (packages/tui/src/tools/output-meta.ts).
+  function _stripNotice(text, notice) {
+    let start = text.lastIndexOf(notice);
+    if (start === -1) return text;
+    let end = start + notice.length;
+    if (text[start - 1] === "\n") start -= 1;
+    if (text[end] === "\n") end += 1;
+    return (text.slice(0, start) + text.slice(end)).trimEnd();
+  }
+  // A finished bash call's output for the clipboard: the result text minus
+  // the model-facing notices omp appends to it — the auto-background note,
+  // exit code, wall time, the raw-output artifact footer — which omp's own
+  // TUI strips the same way (stripBashNotices, packages/tui/src/tools/bash.ts).
+  // omp reports silence as "(no output)".
+  function _bashOutputText(result) {
+    const details = result?.details;
+    let text = _resultText(result);
+    // The background note's wording is omp's and may change: match its
+    // last line by the job-id prefix only.
+    const jobId = details?.async?.state === "running" ? details.async.jobId : null;
+    if (jobId) {
+      const lastLine = text.lastIndexOf("\n") + 1;
+      if (text.startsWith(`Backgrounded as job ${jobId}`, lastLine)) text = text.slice(0, lastLine).trimEnd();
+    }
+    if (Number.isInteger(details?.exitCode)) {
+      text = _stripNotice(text, `Command exited with code ${details.exitCode}`);
+    }
+    if (typeof details?.wallTimeMs === "number") {
+      text = _stripNotice(text, `Wall time: ${(details.wallTimeMs / 1000).toFixed(2)} seconds`);
+    }
+    const lastLine = text.lastIndexOf("\n") + 1;
+    if (/^\[raw output: artifact:\/\/\d+\]$/.test(text.slice(lastLine))) {
+      text = text.slice(0, lastLine).trimEnd();
+    }
+    return text === "(no output)" ? "" : text;
+  }
   // ── tool_execution_start → running tool card ──────────────────────────────
   // Verified fields: ev.toolName, ev.toolCallId, ev.args (object), ev.intent
   function buildToolStartCard(event, time) {
@@ -222,6 +275,7 @@
       if (diffStr) {
         const parsed = _parseUnifiedDiff(diffStr);
         extra.diff = parsed;
+        extra.diffText = diffStr;
         extra.adds = parsed.filter(l => l.kind === "add").length;
         extra.rems = parsed.filter(l => l.kind === "rem").length;
       } else {
@@ -233,13 +287,15 @@
         extra.target = details.perFileResults.map(r => r.path).join(", ");
       }
     }
-    if (card.tool === "bash" && details?.output) {
-      extra.output = String(details.output).split("\n").slice(0, 20).map(line => ({
-        line,
-        color: /^[✓✔]|^PASS|\bpassed\b/.test(line) ? "accent"
-             : /^[✗✘]|^FAIL|^Error|\bfailed\b/.test(line) ? "rose"
-             : "fg-3",
-      }));
+    // omp's BashToolDetails carries no output; the result content does. The
+    // card keeps showing it as streamed (the last update already carries the
+    // whole text, notices included, so the exit code stays visible); the
+    // copy button takes the full output without the notices (issue #33).
+    if (card.tool === "bash") {
+      const text = _resultText(event.result);
+      if (text) extra.output = _bashLines(text);
+      const clip = _bashOutputText(event.result);
+      if (clip) extra.outputText = clip;
     }
     if (card.tool === "eval" && details?.cells) {
       extra.cells = details.cells.map(c => ({
@@ -311,14 +367,7 @@
     }
     if (card.tool === "bash") {
       const text = pr.content?.[0]?.text ?? "";
-      if (text) {
-        extra.output = text.split("\n").slice(-20).map(line => ({
-          line,
-          color: /^[✓✔]|^PASS|\bpassed\b/.test(line) ? "accent"
-               : /^[✗✘]|^FAIL|^Error|\bfailed\b/.test(line) ? "rose"
-               : "fg-3",
-        }));
-      }
+      if (text) extra.output = _bashLines(text);
     }
     if (card.tool === "task" && details.progress?.length) {
       const existingByIdx = new Map((card.subagents ?? []).map(s => [s.index, s]));

@@ -88,8 +88,15 @@
           highlighted = escapeHtml(code);
         }
         const cls = language ? ' language-' + escapeHtml(language) : '';
+        // Copy button (issue #33): plain markup, no handler — the release
+        // CSP forbids inline ones. The markdown container's delegated
+        // onClick (copyCodeBlockClick, ui/copy-button.jsx) copies the
+        // sibling <code>'s textContent; its icon and label are CSS, so the
+        // button adds no text to a manual selection.
         return '<pre class="code-block"><code class="hljs' + cls + '">' +
-               highlighted + '</code></pre>';
+               highlighted + '</code>' +
+               '<button class="copy-btn is-floating" type="button" aria-label="Copy code" title="Copy code"></button>' +
+               '</pre>';
       },
       link({ href, title, tokens, text, autolink }) {
         // Only these schemes can ever be a legitimate chat/diff/plan

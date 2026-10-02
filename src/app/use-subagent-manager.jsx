@@ -48,15 +48,11 @@ function useSubagentManager({ bridge, layout, setTweak, activeSessionId, subagen
     flashRef.current = setTimeout(() => setHoveredMsgIdx(h => (h === idx ? null : h)), 1600);
   };
 
-  /** Resolves true once the text is on the clipboard. */
-  const copy = text => (navigator.clipboard
-    ? navigator.clipboard.writeText(text).then(() => true, err => { console.warn("[subagents] copy failed:", err); return false; })
-    : Promise.resolve(false));
-
   return {
     paneOpen, selected, select: setSelectedId, filter, setFilter,
     level: window.OMP_SUBAGENTS.subscriptionLevelFor({ inspecting }),
-    open, closePane, togglePane, jumpToCall, copy,
+    // Resolves true once the text is on the clipboard (ui/copy-button.jsx).
+    open, closePane, togglePane, jumpToCall, copy: window.copyText,
   };
 }
 
