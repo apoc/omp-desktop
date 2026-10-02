@@ -1,3 +1,4 @@
+use crate::child_path::apply_child_path;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command, Stdio};
@@ -20,7 +21,7 @@ const CANDIDATES: &[&str] = if cfg!(windows) {
 
 /// Build a `Command` for candidate binary `name` with every cross-cutting
 /// concern any bare invocation of omp needs applied uniformly: the
-/// GUI-launcher PATH augmentation ([`apply_omp_path`]), the
+/// launcher-PATH augmentation ([`apply_child_path`]), the
 /// profile-env-var strip ([`sanitize_child_env`] — without it an
 /// inherited `OMP_PROFILE`/`PI_PROFILE` silently redirects the child to
 /// one named profile's tree instead of whatever this call intends), an
@@ -50,7 +51,7 @@ const CANDIDATES: &[&str] = if cfg!(windows) {
 fn omp_command(name: &str) -> Command {
     let mut cmd = Command::new(name);
     cmd.stdin(Stdio::null());
-    apply_omp_path(&mut cmd);
+    apply_child_path(&mut cmd);
     sanitize_child_env(&mut cmd);
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -96,64 +97,6 @@ pub fn spawn_candidate_output<S: AsRef<std::ffi::OsStr>>(
     }
     Err(last_err.unwrap_or_else(|| "no omp candidates configured".to_string()))
 }
-
-// ── PATH resolution ────────────────────────────────────────────────────────
-
-/// Directories where `omp` is commonly installed but which GUI launchers
-/// (Finder, Dock, `.desktop` files) omit from the minimal PATH they hand a
-/// bundled app. A Finder-launched `.app` gets only `/usr/bin:/bin:/usr/sbin:/sbin`,
-/// whereas `tauri dev` inherits the terminal's full PATH — which is why omp
-/// resolves in dev but not in a shipped bundle. Appended (not prepended) so a
-/// user's own PATH entry still wins when present.
-#[cfg(not(windows))]
-const EXTRA_PATH_DIRS: &[&str] = &[
-    "/opt/homebrew/bin", // Apple-silicon Homebrew
-    "/opt/homebrew/sbin",
-    "/usr/local/bin", // Intel Homebrew / manual installs
-    "/usr/local/sbin",
-];
-
-/// Build a PATH that augments `current` with the common install dirs so a
-/// GUI-launched bundle can still find omp. Entries are de-duplicated with
-/// order preserved; inherited entries come first. Pure over its inputs so it
-/// can be unit-tested without touching the process environment.
-#[cfg(not(windows))]
-fn augmented_path(current: Option<&str>, home: Option<&str>) -> String {
-    let mut out: Vec<String> = Vec::new();
-    let mut add = |dir: &str| {
-        if !dir.is_empty() && !out.iter().any(|e| e == dir) {
-            out.push(dir.to_string());
-        }
-    };
-    if let Some(cur) = current {
-        for dir in cur.split(':') {
-            add(dir);
-        }
-    }
-    for dir in EXTRA_PATH_DIRS {
-        add(dir);
-    }
-    if let Some(h) = home.filter(|h| !h.is_empty()) {
-        add(&format!("{h}/.local/bin"));
-        add(&format!("{h}/.cargo/bin"));
-    }
-    out.join(":")
-}
-
-/// Override the child command's PATH so bare-name omp resolution succeeds even
-/// when the parent process was handed a stripped-down GUI PATH. On Unix,
-/// `Command` searches the PATH configured on the command itself, so this makes
-/// the extra dirs effective for program lookup. No-op on Windows, where the
-/// GUI-PATH problem does not apply the same way and omp resolution is unchanged.
-#[cfg(not(windows))]
-fn apply_omp_path(cmd: &mut Command) {
-    let current = std::env::var("PATH").ok();
-    let home = std::env::var("HOME").ok();
-    cmd.env("PATH", augmented_path(current.as_deref(), home.as_deref()));
-}
-
-#[cfg(windows)]
-fn apply_omp_path(_cmd: &mut Command) {}
 
 // ── omp --help probe ────────────────────────────────────────────────────────
 
@@ -548,55 +491,6 @@ mod tests {
         assert!(help_text_supports_rpc_ui(
             "supported modes: rpc-ui, rpc, text"
         ));
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn augmented_path_appends_homebrew_when_missing() {
-        // The Finder/Dock minimal PATH lacks Homebrew — the reported bug.
-        let out = super::augmented_path(Some("/usr/bin:/bin:/usr/sbin:/sbin"), None);
-        let dirs: Vec<&str> = out.split(':').collect();
-        assert!(
-            dirs.contains(&"/usr/bin"),
-            "inherited entries preserved: {out}"
-        );
-        assert!(
-            dirs.contains(&"/opt/homebrew/bin"),
-            "homebrew appended: {out}"
-        );
-        // Inherited entries must come before the appended ones.
-        assert!(
-            dirs.iter().position(|d| *d == "/usr/bin")
-                < dirs.iter().position(|d| *d == "/opt/homebrew/bin"),
-            "inherited PATH must precede extra dirs: {out}"
-        );
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn augmented_path_dedupes_existing_extra_dir() {
-        // A user who already has /opt/homebrew/bin must not get it twice.
-        let out = super::augmented_path(Some("/opt/homebrew/bin:/usr/bin"), None);
-        let count = out.split(':').filter(|d| *d == "/opt/homebrew/bin").count();
-        assert_eq!(count, 1, "no duplicate homebrew entry: {out}");
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn augmented_path_includes_home_relative_dirs() {
-        let out = super::augmented_path(Some("/usr/bin"), Some("/home/dev"));
-        let dirs: Vec<&str> = out.split(':').collect();
-        assert!(dirs.contains(&"/home/dev/.local/bin"), "{out}");
-        assert!(dirs.contains(&"/home/dev/.cargo/bin"), "{out}");
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn augmented_path_handles_absent_inherited_path() {
-        // No PATH in the environment at all — still yields the extra dirs.
-        let out = super::augmented_path(None, None);
-        assert!(out.split(':').any(|d| d == "/opt/homebrew/bin"), "{out}");
-        assert!(out.contains('/'), "{out}");
     }
 
     #[test]

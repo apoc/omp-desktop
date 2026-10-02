@@ -6,6 +6,7 @@
 
 mod agent;
 mod approval;
+mod child_path;
 mod external_open;
 mod files;
 mod git;

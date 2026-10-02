@@ -23,6 +23,7 @@
 //! APIs, and `git add` / `git checkout` / `git reset` already implement
 //! safe, atomic index and worktree mutation.
 
+use crate::child_path::apply_child_path;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -158,11 +159,14 @@ fn weakly_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
 ///   index refresh `git status` would otherwise perform). Mutating commands
 ///   still take the locks they genuinely require, so this is safe to apply
 ///   uniformly.
+/// - [`apply_child_path`] — a per-user `git` (winget `--scope user`, scoop)
+///   is on the user PATH, which an MSI-update relaunch doesn't carry (#34).
 ///
 /// Every `git` invocation in this module goes through here. Subcommand-level
 /// flags (`--no-ext-diff`, `--cached`, …) stay at their call sites.
 fn git(work_dir: &Path) -> Command {
     let mut cmd = Command::new("git");
+    apply_child_path(&mut cmd);
     cmd.current_dir(work_dir)
         .args(["--literal-pathspecs", "--no-optional-locks"]);
     cmd

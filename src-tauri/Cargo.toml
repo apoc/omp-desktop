@@ -30,6 +30,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
+# Machine/user PATH for omp and git children (`child_path.rs`, #34). Already
+# in the tree via reqwest → hyper-util.
+windows-registry = "0.6"
 
 # Folder "Open with" on Windows/Linux launches the executable with the path
 # in argv; this forwards it to the already-running instance instead of

@@ -3779,6 +3779,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "windows-registry",
  "windows-sys 0.61.2",
 ]
 
