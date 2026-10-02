@@ -104,6 +104,36 @@
     return recents.filter(r => findProjectTab(tabs, r.path, profile, null) === null);
   }
 
+  /** History-panel filter chips (issue #35): one per distinct folder among
+   *  `sessions` (saved-session rows, one profile's, newest first),
+   *  `[{ key, path, name, parent, sessions }]`, `key` being the folder's
+   *  `normPath` — "" for sessions with no recorded cwd, named after their
+   *  `project_name` — and `sessions` its rows in input order, so the chip's
+   *  count and its filter are one grouping. `activeCwd`'s project leads even
+   *  without a saved session; the rest follow their newest session. `parent`
+   *  is set only when another chip has the same name; it is one level up, so
+   *  two folders whose parents share a name too still look alike — the chip's
+   *  tooltip has the full path. */
+  function sessionProjects(sessions, activeCwd) {
+    const projects = new Map();
+    const projectOf = (path, fallbackName = "") => {
+      const key = normPath(path);
+      let project = projects.get(key);
+      if (!project) {
+        project = { key, path, name: path ? basename(path) : fallbackName, parent: "", sessions: [] };
+        projects.set(key, project);
+      }
+      return project;
+    };
+    if (activeCwd) projectOf(activeCwd);
+    for (const s of sessions) projectOf(s.cwd || "", s.project_name || "").sessions.push(s);
+    const list = [...projects.values()];
+    const nameCounts = new Map();
+    for (const p of list) nameCounts.set(p.name, (nameCounts.get(p.name) || 0) + 1);
+    for (const p of list) if (nameCounts.get(p.name) > 1) p.parent = parentName(p.path);
+    return list;
+  }
+
   window.OMP_PROJECT_NAV = {
     normPath,
     basename,
@@ -115,5 +145,6 @@
     findProjectTab,
     findConversationTab,
     recentRows,
+    sessionProjects,
   };
 })();

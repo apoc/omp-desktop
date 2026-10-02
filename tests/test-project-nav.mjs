@@ -154,4 +154,40 @@ check("recentRows drops projects open in the same profile only", () => {
   assert.deepEqual(N.recentRows(recents, tabs, "default").map(r => r.path), ["/closed", "/other-profile"]);
 });
 
+// ── sessionProjects (history filter, #35) ─────────────────────────────────
+
+const saved = cwd => ({ cwd, project_name: cwd ? N.basename(cwd) : "Default" });
+
+check("every distinct folder gets a chip with its sessions, in order of its newest session", () => {
+  // Input order differs from both name and count order, so neither sort passes.
+  const rows = [saved("C:\\c"), saved("c:/a/"), saved("C:\\b"), saved("C:\\a"), saved("C:\\A")];
+  const chips = N.sessionProjects(rows, null);
+  assert.deepEqual(chips.map(c => [c.name, c.sessions.length]), [["c", 1], ["a", 3], ["b", 1]]);
+  assert.equal(chips[1].key, N.normPath("C:\\a"));
+  // The chip's rows are its filter: the same objects, in input order.
+  assert.ok(chips[1].sessions.every((s, i) => s === [rows[1], rows[3], rows[4]][i]));
+});
+
+check("the active project leads, and keeps a chip without saved sessions", () => {
+  assert.deepEqual(
+    N.sessionProjects([saved("/x"), saved("/y")], "/y/").map(c => [c.name, c.sessions.length]),
+    [["y", 1], ["x", 1]],
+  );
+  assert.deepEqual(N.sessionProjects([saved("/x")], "/new").map(c => [c.name, c.sessions.length]), [["new", 0], ["x", 1]]);
+});
+
+check("POSIX folders differing only in case stay separate chips", () => {
+  assert.equal(N.sessionProjects([saved("/Home/x"), saved("/home/x")], null).length, 2);
+});
+
+check("sessions without a cwd share one chip named by the backend", () => {
+  const chips = N.sessionProjects([saved(""), saved(undefined)], null);
+  assert.deepEqual(chips.map(c => [c.key, c.name, c.sessions.length]), [["", "Default", 2]]);
+});
+
+check("only same-named chips carry their parent folder", () => {
+  const chips = N.sessionProjects([saved("/w/app"), saved("/v/app"), saved("/w/lib")], null);
+  assert.deepEqual(chips.map(c => c.parent), ["w", "v", ""]);
+});
+
 console.log(`project-nav: ${passed} checks passed`);

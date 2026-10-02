@@ -4,6 +4,7 @@
    ═════════════════════════════════════════════════════════════════════ */
 
 const { Icon } = window;
+const { sessionProjects } = window.OMP_PROJECT_NAV;
 
 function formatRelativeTime(ts) {
   if (!ts) return "—";
@@ -21,7 +22,7 @@ function formatRelativeTime(ts) {
 function HistoryModal({ open, onClose, onResume, activeCwd }) {
   const [sessions, setSessions]       = React.useState([]);
   const [loading, setLoading]         = React.useState(false);
-  const [filterScope, setFilterScope] = React.useState("all"); // 'all' | 'current'
+  const [filterKey, setFilterKey]     = React.useState(null); // null = all, else a project key
   const [query, setQuery]             = React.useState("");
   const [activeIdx, setActiveIdx]     = React.useState(0);
   const inputRef                      = React.useRef(null);
@@ -51,19 +52,15 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
     }
   }, [open, fetchSessions]);
 
-  // Normalize path for comparison
-  const normPath = p => (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  const currentProjectName = activeCwd
-    ? normPath(activeCwd).split("/").pop() || "current"
-    : "current";
+  // One chip per project among the listed sessions (#35). A key that left the
+  // list on a refresh falls back to "all" rather than an empty filter.
+  const projects = React.useMemo(() => sessionProjects(sessions, activeCwd), [sessions, activeCwd]);
+  const activeProject = projects.find(p => p.key === filterKey) || null;
+  const activeKey = activeProject ? activeProject.key : null;
 
   // Filtered session list
   const filtered = React.useMemo(() => {
-    let list = sessions;
-    if (filterScope === "current" && activeCwd) {
-      const activeNorm = normPath(activeCwd);
-      list = list.filter(s => normPath(s.cwd) === activeNorm);
-    }
+    const list = activeProject ? activeProject.sessions : sessions;
     if (!query.trim()) return list;
     const q = query.toLowerCase().trim();
     return list.filter(s =>
@@ -72,7 +69,7 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
       (s.cwd && s.cwd.toLowerCase().includes(q)) ||
       (s.preview && s.preview.toLowerCase().includes(q))
     );
-  }, [sessions, filterScope, activeCwd, query]);
+  }, [sessions, activeProject, query]);
 
   // Keep activeIdx in bounds
   const clampedIdx = filtered.length > 0
@@ -113,8 +110,6 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
 
   if (!open) return null;
 
-  const currentCount = sessions.filter(s => activeCwd && normPath(s.cwd) === normPath(activeCwd)).length;
-
   return (
     <div className="bridge-scrim" onClick={onClose} style={{ paddingTop: "8vh" }}>
       <div className="bridge slide-in" onClick={e => e.stopPropagation()} style={{ width: "min(740px, calc(100vw - 32px))", maxHeight: "80vh" }}>
@@ -140,31 +135,29 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
           <span className="kbd">esc</span>
         </div>
 
-        {/* Scope bar */}
+        {/* Scope bar: one chip per project, scrolling past ~2 rows */}
         <div style={{
-          display: "flex", alignItems: "center", gap: 8,
+          display: "flex", alignItems: "flex-start", gap: 8,
           padding: "6px 14px",
           borderBottom: "1px solid var(--line)",
           background: "var(--bg-surface)",
           fontSize: "var(--d-text-xs)",
         }}>
-          <span className="mono" style={{ color: "var(--fg-4)", marginRight: 4 }}>filter:</span>
-          <button
-            className={`btn ${filterScope === "all" ? "accent outlined" : "ghost"}`}
-            style={{ height: 22, padding: "0 8px", fontSize: "var(--d-text-xs)" }}
-            onClick={() => { setFilterScope("all"); setActiveIdx(0); }}>
-            All Projects ({sessions.length})
-          </button>
-          {activeCwd && (
-            <button
-              className={`btn ${filterScope === "current" ? "accent outlined" : "ghost"}`}
-              style={{ height: 22, padding: "0 8px", fontSize: "var(--d-text-xs)" }}
-              onClick={() => { setFilterScope("current"); setActiveIdx(0); }}>
-              {currentProjectName} ({currentCount})
-            </button>
-          )}
-          <div style={{ flex: 1 }} />
-          <span className="mono" style={{ color: "var(--fg-4)" }}>
+          <span className="mono" style={{ color: "var(--fg-4)", marginRight: 4, lineHeight: "22px" }}>filter:</span>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, flex: 1, minWidth: 0, maxHeight: 74, overflowY: "auto" }}>
+            {/* key null = "all"; "*" cannot be the normPath of a cwd */}
+            {[{ key: null, path: "", name: "All Projects", parent: "", sessions }, ...projects].map(p => (
+              <button
+                key={p.key ?? "*"}
+                className={`btn ${activeKey === p.key ? "accent outlined" : "ghost"}`}
+                style={{ height: 22, padding: "0 8px", fontSize: "var(--d-text-xs)" }}
+                title={p.path || undefined}
+                onClick={() => { setFilterKey(p.key); setActiveIdx(0); }}>
+                {p.name}{p.parent && <span style={{ color: "var(--fg-4)" }}> · {p.parent}</span>} ({p.sessions.length})
+              </button>
+            ))}
+          </div>
+          <span className="mono" style={{ color: "var(--fg-4)", lineHeight: "22px", flexShrink: 0 }}>
             {filtered.length} {filtered.length === 1 ? "session" : "sessions"}
           </span>
         </div>

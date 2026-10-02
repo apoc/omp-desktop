@@ -90,10 +90,12 @@
        before it. -->
   <script src="app/lightbox.js"></script>
 
-  <!-- Project navigation (issue #27): pure tab grouping/lookup helpers.
-       Dependency-free IIFE; design/chrome.jsx, design/tab-group-chip.jsx
-       and design/project-sidebar.jsx destructure window.OMP_PROJECT_NAV at
-       top level and live.js calls it, so it must load before all of them. -->
+  <!-- Project navigation (issue #27): pure tab grouping/lookup helpers, plus
+       the history panel's per-project filter chips (#35). Dependency-free
+       IIFE; design/chrome.jsx, design/tab-group-chip.jsx,
+       design/project-sidebar.jsx and design/history-modal.jsx destructure
+       window.OMP_PROJECT_NAV at top level and live.js calls it, so it must
+       load before all of them. -->
   <script src="app/project-nav.js"></script>
 
   <!-- Empty-workspace backdrop: pure digital-rain + ASCII logo geometry.
