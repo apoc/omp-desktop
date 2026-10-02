@@ -78,8 +78,10 @@ check("input.hint is folded in front of the description; subcommands aren't carr
     rpc({ name: "bare" }),
   ]);
   assert.equal(withBoth.hint, "<plan|scan>  scan things");
+  assert.equal(withBoth.description, "scan things"); // kept apart for the mid-prompt skill matcher
   assert.equal(withBoth.subcommands, undefined);
   assert.equal(hintOnly.hint, "[model]");
+  assert.equal(hintOnly.description, "");
   assert.equal(descOnly.hint, "show current model");
   assert.equal(neither.hint, "");
 });
@@ -225,7 +227,7 @@ check("a case-exact typed command reaches an RPC entry that differs from a deskt
   ]));
   const out = S.slashMenu(withCollision, "/Plan do the thing");
   assert.deepEqual(out, []); // non-desktop -> omp runs it, popup gets out of the way
-  assert.equal(S.isSlashCommand(withCollision, "/Plan do the thing"), true);
+  assert.equal(S.isCommandInvocation(withCollision, "/Plan do the thing"), true);
   // Typing the desktop-cased version still reaches the desktop command.
   assert.deepEqual(S.slashMenu(withCollision, "/plan do the thing").map(c => c.name), ["plan"]);
 });
@@ -278,17 +280,110 @@ check("insertText produces '/name ' with a trailing space for the caret", () => 
   assert.equal(S.insertText({ name: "security" }), "/security ");
 });
 
-// ── isSlashCommand ────────────────────────────────────────────────────────
+// ── midPromptSlashToken (#30) ─────────────────────────────────────────────
 
-check("isSlashCommand is true only for a known name/alias, not just a leading slash", () => {
-  assert.equal(S.isSlashCommand(cmds, "/plan"), true);
-  assert.equal(S.isSlashCommand(cmds, "/plan draft the auth rework"), true);
-  assert.equal(S.isSlashCommand(cmds, "/SECURITY scan"), true); // case-insensitive
-  assert.equal(S.isSlashCommand(cmds, "/etc/nginx.conf is wrong"), false); // path, not a command
-  assert.equal(S.isSlashCommand(cmds, "/not-a-real-command"), false);
-  assert.equal(S.isSlashCommand(cmds, "no leading slash"), false);
-  assert.equal(S.isSlashCommand(cmds, ""), false);
-  assert.equal(S.isSlashCommand(cmds, null), false);
+const tok = (text, caret = text.length) => S.midPromptSlashToken(text, caret);
+
+check("a /token after prompt text is found up to the caret", () => {
+  assert.deepEqual(tok("review this /sk"), { start: 12, end: 15, query: "sk" });
+  assert.deepEqual(tok("review this /"), { start: 12, end: 13, query: "" });
+  // Caret inside a draft: only the text before it counts.
+  assert.deepEqual(tok("review /sk and more", 10), { start: 7, end: 10, query: "sk" });
+  // Prose on an earlier line makes a line-leading slash mid-prompt.
+  assert.deepEqual(tok("first line\n/sk"), { start: 11, end: 14, query: "sk" });
+});
+
+check("a leading slash is not mid-prompt (slashMenu owns it)", () => {
+  assert.equal(tok("/sk"), null);
+  assert.equal(tok("   /sk"), null);
+  assert.equal(tok("\n\n/sk"), null);
+});
+
+check("a slash glued to a word, a path's later segments, or a finished token is no token", () => {
+  assert.equal(tok("and/or"), null);
+  assert.equal(tok("see /tmp/fo"), null);
+  assert.equal(tok("see https://x"), null);
+  assert.equal(tok("x /sk "), null);
+  assert.equal(tok("no slash"), null);
+  assert.equal(tok(null, 0), null);
+  assert.equal(tok("x /sk", 99), null);
+});
+
+// ── skillMenu (#30, omp's midPromptSkillTokenMatches + ranking) ───────────
+
+const withSkills = S.mergeSlashCommands(S.LOCAL_COMMANDS, S.adaptAvailableCommands([
+  rpc({ name: "skill:humanizer", source: "skill" }),
+  rpc({ name: "skill:research-last30days", source: "skill" }),
+  rpc({ name: "skill:review-pr", source: "skill" }),
+  rpc({ name: "skill:review", source: "skill" }),
+  rpc({ name: "skill:code-review", source: "skill", description: "Review a diff" }),
+  rpc({ name: "security" }),
+  rpc({ name: "skeleton", source: "file" }),
+]));
+const skills = (q) => S.skillMenu(withSkills, q).map(c => c.name);
+
+check("a bare '/' or a prefix of 'skill:' lists every skill — and only skills", () => {
+  const all = ["skill:humanizer", "skill:research-last30days", "skill:review-pr", "skill:review", "skill:code-review"];
+  assert.deepEqual(skills(""), all);
+  assert.deepEqual(skills("sk"), all); // not `skeleton`: no command but skills mid-prompt
+  assert.deepEqual(skills("SKILL:"), all);
+});
+
+check("a bare-name or hyphen-segment prefix finds the skill", () => {
+  assert.deepEqual(skills("hum"), ["skill:humanizer"]);
+  assert.deepEqual(skills("last"), ["skill:research-last30days"]);
+  assert.deepEqual(skills("code"), ["skill:code-review"]);
+});
+
+check("a whole bare name or segment ranks before a mere prefix; ties keep received order", () => {
+  // review: exact for skill:review and the code-review segment, prefix for review-pr.
+  assert.deepEqual(skills("review"), ["skill:review", "skill:code-review", "skill:review-pr"]);
+  assert.deepEqual(skills("rev"), ["skill:review-pr", "skill:review", "skill:code-review"]);
+});
+
+check("stray prose and non-skill commands close the popup", () => {
+  assert.deepEqual(skills("tmp"), []);
+  assert.deepEqual(skills("sec"), []); // `security` is never offered mid-prompt
+  assert.deepEqual(skills("umanizer"), []); // inside a segment, not at its start
+});
+
+check("an explicit skill: query matches the full name fuzzily", () => {
+  assert.deepEqual(skills("skill:hmnz"), ["skill:humanizer"]);
+  assert.deepEqual(skills("skill:review-pr"), ["skill:review-pr"]);
+});
+
+// ── isCommandInvocation ───────────────────────────────────────────────────
+
+check("a leading command counts only for a known name/alias, not just a leading slash", () => {
+  assert.equal(S.isCommandInvocation(cmds, "/plan"), true);
+  assert.equal(S.isCommandInvocation(cmds, "/plan draft the auth rework"), true);
+  assert.equal(S.isCommandInvocation(cmds, "/SECURITY scan"), true); // case-insensitive
+  assert.equal(S.isCommandInvocation(cmds, "/etc/nginx.conf is wrong"), false); // path, not a command
+  assert.equal(S.isCommandInvocation(cmds, "/not-a-real-command"), false);
+  assert.equal(S.isCommandInvocation(cmds, "no leading slash"), false);
+  assert.equal(S.isCommandInvocation(cmds, ""), false);
+  assert.equal(S.isCommandInvocation(cmds, null), false);
+});
+
+check("a known skill token anywhere in the draft counts, as omp invokes it (#30)", () => {
+  const inv = (t) => S.isCommandInvocation(withSkills, t);
+  assert.equal(inv("review this change /skill:code-review"), true);
+  assert.equal(inv("review /skill:code-review focus on auth"), true);
+  assert.equal(inv("first line\n/skill:humanizer"), true);
+  assert.equal(inv("  /skill:review x"), true); // leading form, after whitespace
+});
+
+check("a skill token omp would not invoke does not count", () => {
+  const inv = (t) => S.isCommandInvocation(withSkills, t);
+  assert.equal(inv("x /skill:nope"), false); // unknown skill
+  assert.equal(inv("x /skill:Code-Review"), false); // omp matches names exactly
+  assert.equal(inv("x /skill:code-reviewer"), false); // longer token, not the skill
+  assert.equal(inv("a/skill:code-review"), false); // not a separate token
+  assert.equal(inv("/etc/x /skill:code-review"), false); // draft starts with another /token
+  assert.equal(inv("! ls /skill:code-review"), false); // local execution
+  assert.equal(inv("$ echo /skill:code-review"), false);
+  assert.equal(inv("$$ echo /skill:code-review"), false);
+  assert.equal(inv("${x} /skill:code-review"), true); // `${` is not the shell sigil
 });
 
 console.log(`\n${passed} checks passed.`);

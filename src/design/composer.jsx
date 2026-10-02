@@ -5,7 +5,7 @@
 const { Icon } = window;
 const { parseMentionQuery, applyMention } = window.OMP_MENTIONS;
 const { prepareImage, imageFilesFromTransfer, imageFilesFromClipboardAsync, toDataUrl, MAX_ATTACHMENTS } = window.OMP_IMAGES;
-const { isDesktop, slashMenu, matchesQuery, insertText: slashInsertText } = window.OMP_SLASH;
+const { isDesktop, slashMenu, midPromptSlashToken, skillMenu, matchesQuery, insertText: slashInsertText } = window.OMP_SLASH;
 const {
   entryOf: draftEntryOf, updateEntry: updateDraftEntry, pruneEntries: pruneDrafts, DRAFT_IDLE, recallInDraft,
   normalizePaste, shouldCollapsePaste, collapsePaste, pastesIn, expandPastes, inlinePaste,
@@ -70,6 +70,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   const [mentionItems, setMentionItems]         = React.useState([]);
   const [mentionActiveIdx, setMentionActiveIdx] = React.useState(0);
   const [mentionDismissedKey, setMentionDismissedKey] = React.useState(null);
+  const [slashDismissedKey, setSlashDismissedKey]     = React.useState(null);
   const mentionListRef = React.useRef(null);
   const mentionReqRef  = React.useRef(0);
 
@@ -88,6 +89,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
     setActiveIdx(0);
     setMentionItems([]);
     setMentionDismissedKey(null);
+    setSlashDismissedKey(null);
   }, [sessionId]);
 
   // Debounced fetch — keyed on the query text, not the caret, so moving
@@ -123,8 +125,23 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   // arguments are typed after a non-desktop (RPC) command, slashMenu
   // returns [] — that command runs inside omp, not here, so the popup
   // gets out of the way and Enter sends the literal text as a prompt.
-  const filtered = slashMenu(cmds, text);
-  const showSlash = filtered.length > 0 && !showMention;
+  //
+  // Mid-prompt (#30): a `/token` ending at the caret after other prompt
+  // text lists matching skills, by omp's own editor rules (see
+  // slash-commands.js). It wins over the leading-command popup, as in omp
+  // ("/plan do /sk"); when no skill matches, the leading popup applies as
+  // before. Escape dismisses only that token, like the @ list — never the
+  // draft, which here is the user's prose.
+  const slashRange = React.useMemo(() => midPromptSlashToken(text, caret), [text, caret]);
+  const slashKey   = slashRange ? `${slashRange.start}:${slashRange.query}` : null;
+  // A dismissal belongs to one token: once there is none (sent, deleted,
+  // caret moved off it), forget it, or the same offset and query in a later
+  // message would never open the list — same rule as the @ list.
+  React.useEffect(() => { if (!slashRange) setSlashDismissedKey(null); }, [slashRange === null]);
+  const skillHits  = slashRange && slashDismissedKey !== slashKey ? skillMenu(cmds, slashRange.query) : [];
+  const midSlash   = skillHits.length > 0;
+  const filtered   = midSlash ? skillHits : slashMenu(cmds, text);
+  const showSlash  = filtered.length > 0 && !showMention;
 
   // Keep activeIdx in bounds; auto-select when single result
   const clampedIdx = showSlash ? Math.min(activeIdx, filtered.length - 1) : 0;
@@ -213,6 +230,14 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   }, [promptInsert?.nonce]);
 
   const execCmd = (cmd) => {
+    // A mid-prompt skill pick replaces only its `/token` with
+    // `/skill:name `; the prose around it stays, and omp passes it to the
+    // skill as arguments on send.
+    if (midSlash) {
+      spliceDraft(slashRange, slashInsertText(cmd));
+      setActiveIdx(0);
+      return;
+    }
     // A non-desktop (RPC) command has no handler in app-live.jsx's
     // handleCommand — it runs inside omp. Insert `/name ` and leave focus
     // in the composer instead of firing it immediately: the user adds
@@ -227,6 +252,20 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
     setActiveIdx(0);
     setMentionDismissedKey(null);
     onPick?.(cmd);
+  };
+
+  // Replace `range` (an @mention or mid-prompt `/token`) with `insert` and
+  // put the caret right after it.
+  const spliceDraft = (range, insert) => {
+    const { text: nextText, caret: nextCaret } = applyMention(text, range, insert);
+    setText(nextText);
+    setCaret(nextCaret);
+    requestAnimationFrame(() => {
+      const ta = taRef.current;
+      if (!ta) return;
+      ta.selectionStart = ta.selectionEnd = nextCaret;
+      ta.focus();
+    });
   };
 
   // The '@' itself is part of `insertText`, not just a display trigger:
@@ -251,16 +290,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   const pickMention = (item) => {
     if (!item || !mentionRange) return;
     const canStayOpen = item.isDir && !/[\s@]/.test(item.path);
-    const insertText = canStayOpen ? `@${item.path}/` : `@${item.path} `;
-    const { text: nextText, caret: nextCaret } = applyMention(text, mentionRange, insertText);
-    setText(nextText);
-    setCaret(nextCaret);
-    requestAnimationFrame(() => {
-      const ta = taRef.current;
-      if (!ta) return;
-      ta.selectionStart = ta.selectionEnd = nextCaret;
-      ta.focus();
-    });
+    spliceDraft(mentionRange, canStayOpen ? `@${item.path}/` : `@${item.path} `);
   };
 
   // The long pastes still collapsed in the draft, for the chip strip.
@@ -311,6 +341,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
     // its decrement still lands later.
     updateDraft(sessionId, d => (d.pendingImages ? { ...DRAFT_IDLE, pendingImages: d.pendingImages } : DRAFT_IDLE));
     setMentionDismissedKey(null);
+    setSlashDismissedKey(null);
     requestAnimationFrame(() => taRef.current?.focus());
   };
   const send = () => sendWith(onSend);
@@ -405,7 +436,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
     if (showSlash) {
       if (e.key === "ArrowDown")  { e.preventDefault(); setActiveIdx(i => Math.min(i + 1, filtered.length - 1)); return; }
       if (e.key === "ArrowUp")    { e.preventDefault(); setActiveIdx(i => Math.max(i - 1, 0)); return; }
-      if (e.key === "Escape")     { e.preventDefault(); setText(""); return; }
+      if (e.key === "Escape")     { e.preventDefault(); if (midSlash) setSlashDismissedKey(slashKey); else setText(""); return; }
       if (e.key === "Tab")        { e.preventDefault(); setActiveIdx(i => (i + 1) % filtered.length); return; }
     }
     // Prompt-history recall (issue #16) — only when neither popup owns the

@@ -12,7 +12,7 @@
 (function () {
   "use strict";
   const { timeNow } = window;
-  const { LOCAL_COMMANDS, adaptAvailableCommands, mergeSlashCommands, isSlashCommand } = window.OMP_SLASH;
+  const { LOCAL_COMMANDS, adaptAvailableCommands, mergeSlashCommands, isCommandInvocation } = window.OMP_SLASH;
   const SUB = window.OMP_SUBAGENTS;
   const STITLE = window.OMP_SESSION_TITLE;
 
@@ -972,8 +972,8 @@
    *  auto-send, and a confirming `get_state` can still see an empty
    *  `sessionName` and fire our own `/rename`, which supersedes the user's.
    *  Matched on the command name alone (`STITLE.isManualRename`), not on
-   *  `isSlashCommand`: that one tokenises up to whitespace, so it misses
-   *  `/rename:Title`, which omp still runs as a rename. */
+   *  `isCommandInvocation`: that one tokenises up to whitespace, so it
+   *  misses `/rename:Title`, which omp still runs as a rename. */
   function _disarmAutoRename(text) {
     if (!activeSessionId) return;
     const entry = sessionRegistry.get(activeSessionId);
@@ -2222,15 +2222,15 @@
     // bubble needs the same tag, or the next get_messages merge (tab
     // switch) gives its slot to a later, unrelated turn instead of keeping
     // it in place. Only tracked via the extra id-correlated round trip for
-    // a recognized command — an ordinary prompt is the overwhelmingly
-    // common case and stays a plain fire-and-forget send.
+    // a recognized command or skill invocation — an ordinary prompt is the
+    // overwhelmingly common case and stays a plain fire-and-forget send.
     send(text, images) {
       const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [] };
       state.messages = [...state.messages, userMsg];
       _disarmAutoRename(text);
       _recordPrompt(text);
       notify();
-      if (isSlashCommand(state.commands, text)) {
+      if (isCommandInvocation(state.commands, text)) {
         _sendWithResponse({ type: "prompt", message: text, images: images ?? [] })
           .then((data) => {
             if (data?.agentInvoked === false) {
@@ -2253,20 +2253,21 @@
     // the tail by the time its message_start echo arrives. The echo
     // handler reconciles by content match instead of assuming it's last.
     //
-    // Both also route a real slash command through `prompt` with the
-    // matching `streamingBehavior` instead of their own dedicated RPC
-    // command: omp's `steer`/`follow_up` frames skip command dispatch
-    // entirely (only `prompt` runs it), so a command sent mid-stream
-    // through the dedicated frame would just reach the model as literal
-    // text — this is the transport's problem, not something callers
-    // (app-live.jsx) should each have to know and check for themselves.
+    // Both also route a real slash command — or a skill invocation, even
+    // mid-prompt (#30) — through `prompt` with the matching
+    // `streamingBehavior` instead of their own dedicated RPC command: omp's
+    // `steer`/`follow_up` frames skip command and skill dispatch entirely
+    // (only `prompt` runs it), so a command sent mid-stream through the
+    // dedicated frame would just reach the model as literal text — this is
+    // the transport's problem, not something callers (app-live.jsx) should
+    // each have to know and check for themselves.
     followUp(text, images) {
       const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [], pendingEcho: true };
       state.messages = [...state.messages, userMsg];
       _disarmAutoRename(text);
       _recordPrompt(text);
       notify();
-      if (isSlashCommand(state.commands, text)) {
+      if (isCommandInvocation(state.commands, text)) {
         _send({ type: "prompt", message: text, images: images ?? [], streamingBehavior: "followUp" });
       } else {
         _send({ type: "follow_up", message: text, images: images ?? [] });
@@ -2278,7 +2279,7 @@
       _disarmAutoRename(text);
       _recordPrompt(text);
       notify();
-      if (isSlashCommand(state.commands, text)) {
+      if (isCommandInvocation(state.commands, text)) {
         _send({ type: "prompt", message: text, images: images ?? [], streamingBehavior: "steer" });
       } else {
         _send({ type: "steer", message: text, images: images ?? [] });

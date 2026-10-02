@@ -11,6 +11,8 @@
       is dropped rather than carried as unused data. These commands run
       inside omp: picking one inserts `/name ` into the composer and the
       sent prompt is executed by omp itself.
+   A `/` typed after other prompt text offers skills only (#30, same rules
+   as omp's editor) — see "Mid-prompt skills" below.
    ═════════════════════════════════════════════════════════════════════ */
 (function () {
   const DESKTOP = "desktop";
@@ -85,6 +87,9 @@
       out.push({
         name,
         hint:    [inputHint, description].filter(Boolean).join("  "),
+        // Kept on its own as well: the mid-prompt skill matcher searches
+        // the description, not the argument syntax folded into `hint`.
+        description,
         icon:    style.icon,
         group:   style.group,
         source,
@@ -164,12 +169,152 @@
   // absolute path or URL path ("/etc/nginx.conf is wrong"); only a real
   // command should skip plan framing or route through a different send
   // path while streaming.
-  function isSlashCommand(cmds, text) {
+  function isLeadingCommand(cmds, text) {
     if (typeof text !== "string" || !text.startsWith("/")) return false;
     // Same token definition as slashMenu's own regex — one leading `/`,
     // then everything up to the first whitespace run.
     const token = /^\/(\S*)/.exec(text)[1];
     return !!findExact(cmds, token);
+  }
+
+  // ── Mid-prompt skills (#30) ───────────────────────────────────────────
+  // A `/token` after other prompt text is a skill lookup, the way omp's own
+  // editor treats it (packages/tui/src/autocomplete.ts, prompt/skill-tokens.ts,
+  // coding-agent/src/extensibility/skills.ts `parseSkillInvocation`). Only
+  // skills are offered there — omp runs no other command mid-prompt — and
+  // omp invokes the first `/skill:<name>` token, passing the prose around it
+  // as the skill's arguments.
+
+  const SKILL_NS = "skill:";
+
+  // The `/token` the caret ends, when prompt text precedes it: a `/` at the
+  // start of a line or after whitespace, then non-space, non-`/` chars up to
+  // the caret (omp's `findTrailingSlashCommandStart` + `hasPromptTextBeforeSlash`).
+  // A slash with nothing but whitespace before it is the leading command,
+  // `slashMenu`'s job. Shaped like `parseMentionQuery`'s range so the same
+  // `applyMention` splice replaces it.
+  function midPromptSlashToken(text, caret) {
+    if (typeof text !== "string" || typeof caret !== "number") return null;
+    if (caret < 0 || caret > text.length) return null;
+    const before = text.slice(0, caret);
+    const m = /(?:^|\s)\/([^\s/]*)$/.exec(before);
+    if (!m) return null;
+    const start = m.index + m[0].indexOf("/");
+    if (before.slice(0, start).trim() === "") return null;
+    return { start, end: caret, query: m[1] };
+  }
+
+  // omp's ranked subsequence score (100/80/60/40−gaps·5, 0 = no match).
+  function subsequenceScore(q, target) {
+    if (q.length === 0) return 1;
+    if (target === q) return 100;
+    if (target.startsWith(q)) return 80;
+    if (target.includes(q)) return 60;
+    let qi = 0;
+    let gaps = 0;
+    let last = -1;
+    for (let ti = 0; ti < target.length && qi < q.length; ti++) {
+      if (q[qi] === target[ti]) {
+        if (last >= 0 && ti - last > 1) gaps++;
+        last = ti;
+        qi++;
+      }
+    }
+    return qi === q.length ? Math.max(1, 40 - gaps * 5) : 0;
+  }
+
+  function textMatchScore(q, target) {
+    if (q.length === 0) return 1;
+    if (q === target) return 1000;
+    if (target.startsWith(q)) return 900;
+    return subsequenceScore(q, target);
+  }
+
+  // A prefix of the bare skill name or of one of its hyphen-separated
+  // segments (`hum` → humanizer, `last` → research-last30days); 1000 when
+  // the query is the whole name or segment.
+  function bareNameTier(q, bare) {
+    if (q.length === 0) return 0;
+    if (q === bare) return 1000;
+    if (bare.startsWith(q)) return 900;
+    let from = 0;
+    for (;;) {
+      const dash = bare.indexOf("-", from);
+      if (dash === -1 || dash + 1 >= bare.length) return 0;
+      from = dash + 1;
+      if (bare.startsWith(q, from)) {
+        const end = bare.indexOf("-", from);
+        return q.length === (end === -1 ? bare.length : end) - from ? 1000 : 900;
+      }
+    }
+  }
+
+  // omp's `midPromptSkillTokenMatches`: strict enough that a stray `/word`
+  // in running prose closes the popup instead of fuzzy-matching something.
+  function skillTokenMatches(q, lowerName, lowerDesc) {
+    if (SKILL_NS.startsWith(q)) return true;
+    if (q.startsWith(SKILL_NS)) {
+      return textMatchScore(q, lowerName) > 0 || (!!lowerDesc && textMatchScore(q, lowerDesc) > 0);
+    }
+    return bareNameTier(q, lowerName.slice(SKILL_NS.length)) > 0;
+  }
+
+  // Skills for a mid-prompt `/query`, best first. Ranked like omp: the
+  // stronger of the full-name and bare-name scores, or half the description
+  // subsequence score; ties keep the received order.
+  function skillMenu(cmds, query) {
+    const q = lc(query);
+    const ranked = [];
+    for (const c of cmds) {
+      if (typeof c.name !== "string" || !c.name.startsWith(SKILL_NS)) continue;
+      const lowerName = lc(c.name);
+      const lowerDesc = lc(c.description);
+      if (!skillTokenMatches(q, lowerName, lowerDesc)) continue;
+      const nameScore = q.length === 0
+        ? 950
+        : Math.max(textMatchScore(q, lowerName), bareNameTier(q, lowerName.slice(SKILL_NS.length)));
+      const descScore = lowerDesc ? subsequenceScore(q, lowerDesc) * 0.5 : 0;
+      const score = Math.max(nameScore, descScore);
+      if (score > 0) ranked.push({ c, score });
+    }
+    return ranked.sort((a, b) => b.score - a.score).map((r) => r.c);
+  }
+
+  // omp's `allowsSkillTokens` local-execution check: a draft starting with
+  // `!`, or `$`/`$$` followed by whitespace or nothing, is consumed verbatim.
+  function startsWithLocalExecution(t) {
+    if (t.startsWith("!")) return true;
+    if (!t.startsWith("$") || t[1] === "{") return false;
+    const next = t[t[1] === "$" ? 2 : 1];
+    return next === undefined || /[ \t\r\n]/.test(next);
+  }
+
+  const SKILL_TOKEN_RE = /(^|\s)\/skill:([^\s/]+(?:\/[^\s/]+)?)(?=\s|$)/;
+
+  // Whether omp will invoke a skill for `text` (`parseSkillInvocation` +
+  // `allowsSkillTokens`): a leading `/skill:<name>`, or else the first
+  // mid-prompt `/skill:<name>` token unless the draft starts with another
+  // `/command` or a local-execution sigil — and only for a skill the session
+  // actually lists, matched exactly as omp does.
+  function invokesSkill(cmds, text) {
+    if (typeof text !== "string") return false;
+    const t = text.trimStart();
+    let name;
+    if (t.startsWith("/skill:")) {
+      name = /^\/skill:(\S*)/.exec(t)[1];
+    } else {
+      if (t.startsWith("/") || startsWithLocalExecution(t)) return false;
+      name = SKILL_TOKEN_RE.exec(text)?.[2];
+    }
+    return !!name && cmds.some((c) => c.name === SKILL_NS + name);
+  }
+
+  // Whether `text` must reach omp's command dispatch — sent as an RPC
+  // `prompt` even mid-stream (omp's `steer`/`follow_up` skip it) and left
+  // out of plan-mode framing: a known leading command, or a skill
+  // invocation anywhere in the draft.
+  function isCommandInvocation(cmds, text) {
+    return isLeadingCommand(cmds, text) || invokesSkill(cmds, text);
   }
 
   window.OMP_SLASH = {
@@ -178,8 +323,10 @@
     adaptAvailableCommands,
     mergeSlashCommands,
     slashMenu,
+    midPromptSlashToken,
+    skillMenu,
     matchesQuery,
     insertText,
-    isSlashCommand,
+    isCommandInvocation,
   };
 })();

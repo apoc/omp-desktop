@@ -26,7 +26,7 @@ const {
   useBridgeSnapshot, useThemeEffect, useSubagentManager, useUpdater, timeNow,
   useKeymap, useKeymapDispatch, ShortcutsModal,
 } = window;
-const { isSlashCommand } = window.OMP_SLASH;
+const { isCommandInvocation } = window.OMP_SLASH;
 const { recentRows } = window.OMP_PROJECT_NAV;
 const {
   entryOf, updateEntry, pruneEntries,
@@ -192,8 +192,10 @@ function App() {
     // a command — it just becomes ordinary prose. Checked against the real
     // command list, not just "starts with /": plan-mode prose routinely
     // starts with a path ("/etc/nginx.conf is wrong"), which both
-    // plan-mode rewrites below would otherwise skip by mistake.
-    const isCmd = isSlashCommand(data.commands, msg);
+    // plan-mode rewrites below would otherwise skip by mistake. A skill
+    // invoked mid-prompt ("review this /skill:code-review", #30) counts as
+    // a command too: it is sent as typed, like a leading `/skill:x`.
+    const isCmd = isCommandInvocation(data.commands, msg);
     if (plan.mode && !isCmd) {
       if (hasAnnotations) {
         // Feedback with block comments — always takes priority over intent framing
