@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 
 const root  = join(dirname(fileURLToPath(import.meta.url)), "..");
 const src   = readFileSync(join(root, "src/app/project-nav.js"), "utf8");
-const win   = {};
+const win   = { DEFAULT_PROFILE_ID: "default" }; // app/constants.js
 // eslint-disable-next-line no-new-func
 new Function("window", src)(win);
 const N = win.OMP_PROJECT_NAV;
@@ -188,6 +188,47 @@ check("sessions without a cwd share one chip named by the backend", () => {
 check("only same-named chips carry their parent folder", () => {
   const chips = N.sessionProjects([saved("/w/app"), saved("/v/app"), saved("/w/lib")], null);
   assert.deepEqual(chips.map(c => c.parent), ["w", "v", ""]);
+});
+
+// ── tabLayout / restoreSpec (reopen tabs on relaunch, #17) ───────────────
+
+check("tabLayout keeps tab order and points at the active tab", () => {
+  const tabs = [
+    tab("a", "/a", { sessionFile: "/s/a.jsonl", name: "Fix login" }),
+    tab("b", "", { profile: "work", sessionFile: null }),
+  ];
+  assert.deepEqual(N.tabLayout(tabs, "b"), {
+    tabs: [
+      { path: "/a", profile: "default", sessionFile: "/s/a.jsonl", name: "Fix login" },
+      { path: "", profile: "work", sessionFile: null, name: "b" },
+    ],
+    active: 1,
+  });
+});
+
+check("tabLayout has no active index without an active tab", () => {
+  assert.equal(N.tabLayout([tab("a", "/a")], null).active, null);
+  assert.equal(N.tabLayout([tab("a", "/a")], "closed").active, null);
+});
+
+check("tabLayout is insensitive to per-tab state that a relaunch cannot restore", () => {
+  const idle = tab("a", "/a", { branch: "main", runState: "idle" });
+  const busy = tab("a", "/a", { branch: "dev", runState: "running" });
+  assert.equal(JSON.stringify(N.tabLayout([idle], "a")), JSON.stringify(N.tabLayout([busy], "a")));
+});
+
+check("restoreSpec resumes a conversation under its saved label", () => {
+  const spec = N.restoreSpec({ path: "/a", profile: "work", sessionFile: "/s/a.jsonl", name: "Fix login" });
+  assert.deepEqual(spec, { cwd: "/a", resume: "/s/a.jsonl", name: "Fix login", profile: "work" });
+});
+
+check("restoreSpec leaves an unlabeled conversation's name to the spawn's fallback", () => {
+  assert.equal(N.restoreSpec({ path: "/a", sessionFile: "/s/a.jsonl", name: null }).name, null);
+});
+
+check("restoreSpec opens a fresh, unnamed tab on the folder when there is no conversation", () => {
+  const spec = N.restoreSpec({ path: "/a", profile: null, sessionFile: null, name: "Old title" });
+  assert.deepEqual(spec, { cwd: "/a", resume: null, name: null, profile: "default" });
 });
 
 console.log(`project-nav: ${passed} checks passed`);

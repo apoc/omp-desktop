@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
 // ── atomic write ────────────────────────────────────────────────────────────
@@ -112,6 +113,24 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
             Err(err)
         }
     }
+}
+
+/// Read `path` as JSON for disposable data (recent projects, open tabs):
+/// `NotFound` reads as `T::default()`, and so does anything else (IO error,
+/// malformed JSON) after logging it — the next write replaces the bad file.
+pub fn read_or_default<T: DeserializeOwned + Default>(path: &Path) -> T {
+    let parsed = match fs::read(path) {
+        Err(e) if e.kind() == ErrorKind::NotFound => return T::default(),
+        Err(e) => Err(e.to_string()),
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string()),
+    };
+    parsed.unwrap_or_else(|e| {
+        eprintln!(
+            "[omp-desktop] {} unreadable, reading as empty: {e}",
+            path.display()
+        );
+        T::default()
+    })
 }
 
 /// Remove leftover `<base_name>.*.tmp` files in `dir` — the residue of a
@@ -570,6 +589,20 @@ mod tests {
         ));
         fs::create_dir_all(&dir).expect("create unique test dir");
         dir
+    }
+
+    #[test]
+    fn read_or_default_reads_missing_and_malformed_files_as_default() {
+        let dir = unique_test_dir("read_or_default");
+        let path = dir.join("data.json");
+        assert_eq!(read_or_default::<Vec<u32>>(&path), Vec::<u32>::new());
+
+        fs::write(&path, b"{ not json").expect("write");
+        assert_eq!(read_or_default::<Vec<u32>>(&path), Vec::<u32>::new());
+
+        fs::write(&path, b"[1, 2]").expect("write");
+        assert_eq!(read_or_default::<Vec<u32>>(&path), vec![1, 2]);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

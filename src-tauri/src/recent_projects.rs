@@ -15,8 +15,6 @@
 //! leak into another profile's sidebar and a profile deleted from the menu
 //! leaves only inert entries behind.
 
-use std::fs;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -95,19 +93,9 @@ impl RecentProjectsStore {
         })
     }
 
-    /// `NotFound` ⇒ empty. Anything else (IO error, malformed JSON) is
-    /// logged and also read as empty: the data is disposable, and the next
-    /// write overwrites the bad file.
+    /// Missing or unreadable ⇒ empty (see [`json_store::read_or_default`]).
     fn read(&self) -> RecentFile {
-        let parsed = match fs::read(&self.path) {
-            Err(e) if e.kind() == ErrorKind::NotFound => return RecentFile::default(),
-            Err(e) => Err(e.to_string()),
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string()),
-        };
-        parsed.unwrap_or_else(|e| {
-            eprintln!("[omp-desktop] recent-projects.json unreadable, starting empty: {e}");
-            RecentFile::default()
-        })
+        json_store::read_or_default(&self.path)
     }
 
     /// Locked read-modify-write; returns `profile`'s list after `f`.
@@ -175,6 +163,7 @@ fn entries_for(file: RecentFile, profile: &str) -> Vec<RecentProject> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);

@@ -158,6 +158,21 @@
   let activeSessionId  = null;
   let activeListeners  = [];          // unlisten functions for current session
 
+  // ── Open-tab layout (issue #17) ───────────────────────────────────────────
+  // Kept equal to the open tabs in `open-tabs.json` (src-tauri/src/open_tabs.rs)
+  // so the next launch reopens them; see CLAUDE.md "Reopening tabs on
+  // relaunch". Disarmed until the startup restore settled (`_restoreOpenTabs`).
+  // `_layoutKey` is the JSON of the last layout queued (or adopted at
+  // startup); `_layoutPending` the newest one not yet handed to a write —
+  // one write runs at a time and only the newest layout is written next.
+  let _layoutArmed   = false;
+  let _layoutKey     = null;
+  let _layoutPending = null;
+  let _layoutWriting = false;
+  // Last `session-<ms>` id handed out: two tabs started within one
+  // millisecond (a restore spawns back to back) must still differ.
+  let _lastSessionMs = 0;
+
   // ── ID-keyed response correlation ─────────────────────────────────────────
   // Used by _sendWithResponse to correlate commands that need a typed reply.
   const _pendingResponses = new Map(); // id → { resolve, reject }
@@ -526,6 +541,40 @@
     window.OMP_DATA.planMeta  = state.planMeta;
     window.OMP_DATA.ctx       = state.ctx;
     window.OMP_DATA.activity  = state.activity;
+
+    _persistLayout();
+  }
+
+  function _layoutNow() {
+    return window.OMP_PROJECT_NAV.tabLayout([...sessionRegistry.values()], activeSessionId);
+  }
+
+  /** Write the open-tab layout if it changed since the last one (see
+   *  `_layoutArmed`). Hooked into `notify`, which every registry,
+   *  conversation and active-tab change already goes through; the layout is
+   *  a few short strings per tab, so building its key each time is cheap.
+   *  Latest wins: layouts superseded while a write runs (cycling through
+   *  tabs) are never written. A failed write is logged (`_invokeSafe`) and
+   *  not retried until the layout changes again — retrying on every
+   *  `notify` would spin on a broken disk. */
+  function _persistLayout() {
+    if (!_layoutArmed) return;
+    const layout = _layoutNow();
+    const key = JSON.stringify(layout);
+    if (key === _layoutKey) return;
+    _layoutKey = key;
+    _layoutPending = layout;
+    if (!_layoutWriting) void _flushLayout();
+  }
+
+  async function _flushLayout() {
+    _layoutWriting = true;
+    while (_layoutPending) {
+      const layout = _layoutPending;
+      _layoutPending = null;
+      await _invokeSafe("open_tabs_save", { layout });
+    }
+    _layoutWriting = false;
   }
 
   // Reset all per-session volatile state (called before loading a new session)
@@ -1017,17 +1066,26 @@
 
   /** Spawn omp for `cwd` (optionally resuming a saved session), register the
    *  tab, wire the git-branch watcher, and activate it. Shared by
-   *  `openSession` (new project tab) and `resumeSession` (resume from disk)
-   *  so the git-watch/listener wiring only lives in one place.
+   *  `openSession` (new project tab), `resumeSession` (resume from disk) and
+   *  the startup restore (`_restoreOpenTabs`) so the git-watch/listener
+   *  wiring only lives in one place. The restore opts out of the two side
+   *  effects meant for a user's open: `activate: false` leaves the tab in
+   *  the background (its frames are journaled until it is activated), and
+   *  `remember: false` leaves the recent-projects order alone — reopening
+   *  what was already open is not a new use of the folder. A resumed
+   *  conversation is styled cyan and, unnamed, falls back to "resumed"
+   *  rather than "new session" when it has no folder.
    *
    *  This function is side-effectful (Tauri IPC invoke, event listeners) and
    *  not unit-tested directly; its one pure decision (the `tabName`
    *  derivation) now lives in, and is proven by, `_tabNameFor`. */
   async function _startProjectSession(cwd, {
-    resume = null, name = null, color = "var(--lilac)", profile,
+    resume = null, name = null, profile, activate = true, remember = true,
   }) {
-    const id = `session-${Date.now()}`;
-    const tabName = name || _tabNameFor(cwd, "new session");
+    _lastSessionMs = Math.max(Date.now(), _lastSessionMs + 1);
+    const id = `session-${_lastSessionMs}`;
+    const tabName = name || _tabNameFor(cwd, resume ? "resumed" : "new session");
+    const color = resume ? "var(--cyan)" : "var(--lilac)";
     // Register in tab list before starting omp so the tab shows immediately.
     // Register with null branch — chip hidden until git resolves.
     sessionRegistry.set(id, {
@@ -1081,9 +1139,9 @@
       throw e;
     }
     // Only a folder that actually spawned is remembered.
-    if (cwd) void _touchRecent(cwd, profile);
-    // Activate
-    await _switchToSession(id);
+    if (cwd && remember) void _touchRecent(cwd, profile);
+    if (activate) await _switchToSession(id);
+    else notify(); // tab list changed
     return id;
   }
 
@@ -1182,6 +1240,67 @@
       console.error("[live] failed to listen for folder-open requests:", e);
     }
     void _drainExternalOpens();
+  }
+
+  /** Reopen the tabs that were open when the app last ran (issue #17), in
+   *  their saved order and profiles, then arm `_persistLayout`.
+   *
+   *  Activation is decided after each spawn (several IPC round-trips)
+   *  against the then-active tab, so a tab the user opened or picked
+   *  meanwhile keeps the focus. Tabs that fail to reopen are reported, not
+   *  retried; when the tabs are exactly what the restore produced, arming
+   *  adopts the layout as already written, so the file keeps them until the
+   *  first real change (#34). Details: CLAUDE.md "Reopening tabs on
+   *  relaunch". */
+  async function _restoreOpenTabs() {
+    const notes = [];
+    const restored = []; // ids this restore registered, in order
+    let autoActive = null; // the restored tab this restore activated
+    try {
+      const saved = await _invokeSafe("open_tabs_load", undefined, null);
+      if (!saved) return;
+      if (saved.skipped.length > 0) {
+        notes.push(
+          "**Could not reopen tabs whose folder no longer exists:**\n\n" +
+          saved.skipped.map(p => `- \`${p}\``).join("\n"),
+        );
+      }
+      for (const [i, tab] of saved.tabs.entries()) {
+        const { cwd, ...opts } = window.OMP_PROJECT_NAV.restoreSpec(tab);
+        let id;
+        try {
+          id = await _startProjectSession(cwd, { ...opts, activate: false, remember: false });
+        } catch (e) {
+          console.error(`[live] reopening tab '${cwd}' failed:`, e);
+          notes.push(`**Could not reopen ${tab.name || cwd || "a tab"}:** ${String(e?.message ?? e)}`);
+          continue;
+        }
+        restored.push(id);
+        if (activeSessionId === null || (i === saved.active && activeSessionId === autoActive)) {
+          // The bridge entry point: it skips a tab closed or respawning
+          // since the spawn resolved. Guarded so a failed switch cannot
+          // abort the loop and leave the rest of the saved tabs unopened.
+          try {
+            await window.OMP_BRIDGE.activateSession(id);
+          } catch (e) {
+            console.error(`[live] activating restored tab '${id}' failed:`, e);
+          }
+          if (activeSessionId === id) autoActive = id;
+        }
+      }
+    } finally {
+      if (notes.length > 0) {
+        // `localOnly`: the active tab's first `get_messages` may still be
+        // in flight, and its merge keeps only local-only notes.
+        if (activeSessionId) for (const note of notes) _pushAssistantNote(note, true);
+        else workspaceNotes = [...workspaceNotes, ...notes];
+      }
+      const untouched = activeSessionId === autoActive
+        && [...sessionRegistry.keys()].join("\n") === restored.join("\n");
+      _layoutKey = untouched ? JSON.stringify(_layoutNow()) : null;
+      _layoutArmed = true;
+      notify();
+    }
   }
 
   // ── RPC line handler ──────────────────────────────────────────────────────
@@ -2692,10 +2811,8 @@
         await window.OMP_BRIDGE.activateSession(open);
         return open;
       }
-      const cwd = session.cwd || "";
-      const name = session.title || _tabNameFor(cwd, "resumed");
-      return _startProjectSession(cwd, {
-        resume: session.path, name, color: "var(--cyan)", profile,
+      return _startProjectSession(session.cwd || "", {
+        resume: session.path, name: session.title, profile,
       });
     },
 
@@ -3030,19 +3147,22 @@
   if (window.__TAURI__) {
     document.documentElement.classList.add("tauri-native");
 
-    // No tab at launch: `lib.rs::setup` spawns nothing, and the UI shows its
-    // empty state until a folder is opened. Load the persisted profile list
-    // + ticked default first — with no tab to inherit from, it decides the
-    // profile of the first tab and whose recent projects are listed
-    // (`_refreshProfiles` syncs them).
+    // No tab at launch: `lib.rs::setup` spawns nothing. Load the persisted
+    // profile list + ticked default first — with no tab to inherit from, it
+    // decides the profile of the first tab and whose recent projects are
+    // listed (`_refreshProfiles` syncs them).
     //
-    // OS folder-open requests are drained only after that: a cold-start
-    // "Open with" is already queued in Rust, and opening it early would
-    // spawn under the provisional built-in profile instead of the ticked
-    // startup one. `.finally`, not `.then`: a failed list must not disable
-    // folder opens.
+    // Then reopen the tabs of the previous run (`_restoreOpenTabs`), and
+    // only after that drain OS folder-open requests: a cold-start "Open
+    // with" is already queued in Rust, and opening it early would spawn
+    // under the provisional built-in profile instead of the ticked startup
+    // one — and it should end up the active tab, not be buried under the
+    // restored ones. `.finally`, not `.then`: a failed list or restore must
+    // not disable folder opens.
     _refreshProfiles()
       .catch(e => console.error("[live] startup profile load failed:", e))
+      .then(() => _restoreOpenTabs())
+      .catch(e => console.error("[live] restoring the open tabs failed:", e))
       .finally(_setupExternalOpens);
 
     if (document.readyState === "loading") {

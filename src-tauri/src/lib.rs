@@ -15,6 +15,7 @@ mod json_store;
 mod keybindings;
 mod model_usage;
 mod navigation_guard;
+mod open_tabs;
 mod profiles;
 mod recent_projects;
 mod saved_sessions;
@@ -698,6 +699,24 @@ async fn recent_projects_remove(
     with_blocking(&recents, move |s| s.remove(&key, &path)).await
 }
 
+/// The open-tab layout saved by the previous run (issue #17), minus tabs
+/// whose folder is gone — see `open_tabs::restorable`.
+#[tauri::command]
+async fn open_tabs_load(
+    tabs: State<'_, Arc<open_tabs::OpenTabsStore>>,
+) -> Result<open_tabs::Restore, String> {
+    with_blocking(&tabs, |s| Ok(s.load())).await
+}
+
+/// Replace the saved open-tab layout.
+#[tauri::command]
+async fn open_tabs_save(
+    layout: open_tabs::Layout,
+    tabs: State<'_, Arc<open_tabs::OpenTabsStore>>,
+) -> Result<(), String> {
+    with_blocking(&tabs, move |s| s.save(&layout)).await
+}
+
 /// `profile`'s most recently used model keys (`provider/modelId`), newest
 /// first, from omp's own `agent.db` — the model picker's `recent` group.
 /// Empty when the database or its table can't be read.
@@ -765,6 +784,10 @@ fn setup(app: &tauri::App) {
     // Recently opened projects: <app_config_dir>/recent-projects.json.
     app.manage(Arc::new(recent_projects::RecentProjectsStore::new(
         config_dir.join("recent-projects.json"),
+    )));
+    // Open-tab layout for the next launch: <app_config_dir>/open-tabs.json.
+    app.manage(Arc::new(open_tabs::OpenTabsStore::new(
+        config_dir.join("open-tabs.json"),
     )));
 
     // A cold start *is* how Windows and Linux file managers open a
@@ -868,6 +891,8 @@ pub fn run() {
             recent_projects_list,
             recent_projects_touch,
             recent_projects_remove,
+            open_tabs_load,
+            open_tabs_save,
             model_usage_list,
             app_update_check,
             app_update_install,

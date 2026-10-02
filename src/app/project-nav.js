@@ -1,5 +1,6 @@
 // Project navigation (issue #27): pure grouping/lookup helpers over the
-// tab list, shared by the grouped tab bar, the project sidebar and live.js.
+// tab list, shared by the grouped tab bar, the project sidebar and live.js,
+// plus the open-tab layout live.js persists and restores (issue #17).
 //
 // Exposes `window.OMP_PROJECT_NAV`; wrapped as an IIFE per the project rule
 // for plain <script> tags (see CLAUDE.md "IIFE rule").
@@ -10,6 +11,7 @@
 // against its own omp tree. Pathless tabs (a resumed session with no
 // recorded cwd) never group.
 (function () {
+  const { DEFAULT_PROFILE_ID } = window; // app/constants.js
   const RUN_STATE_RANK = { idle: 0, running: 1, "waiting-user": 2, failed: 3 };
 
   /** Comparable form of a folder path: forward slashes, no trailing slash
@@ -134,6 +136,40 @@
     return list;
   }
 
+  /** What a relaunch needs to reopen `tabs` (issue #17), in tab order: each
+   *  tab's folder, profile, conversation file and label, plus the index of
+   *  the active tab (`null` when none is). The shape `open_tabs_save`
+   *  takes; equal tab sets yield equal JSON, so it doubles as the change key. */
+  function tabLayout(tabs, activeId) {
+    const active = tabs.findIndex(t => t.id === activeId);
+    return {
+      tabs: tabs.map(t => ({
+        path: t.path || "",
+        profile: t.profile ?? null,
+        sessionFile: t.sessionFile || null,
+        name: t.name || null,
+      })),
+      active: active < 0 ? null : active,
+    };
+  }
+
+  /** `_startProjectSession` arguments reopening saved tab `tab`: a
+   *  conversation resumes under its saved label; a tab without one is a
+   *  fresh tab on its folder, unnamed (a saved label would be the title of
+   *  a conversation no longer there). Fallback names and styling are
+   *  `_startProjectSession`'s, as for any other open. */
+  function restoreSpec(tab) {
+    const resume = tab.sessionFile || null;
+    return {
+      cwd: tab.path || "",
+      resume,
+      name: (resume && tab.name) || null,
+      // No saved profile is the built-in one: the tab must record the
+      // profile its process actually runs under.
+      profile: tab.profile || DEFAULT_PROFILE_ID,
+    };
+  }
+
   window.OMP_PROJECT_NAV = {
     normPath,
     basename,
@@ -146,5 +182,7 @@
     findConversationTab,
     recentRows,
     sessionProjects,
+    tabLayout,
+    restoreSpec,
   };
 })();
