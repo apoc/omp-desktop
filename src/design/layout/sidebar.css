@@ -44,6 +44,7 @@
 }
 /* Not a `.btn`: no global focus ring otherwise (same as .profile-item). */
 .psb-main:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; border-radius: var(--r-1); }
+.psb-editing { cursor: default; }
 .psb-name {
   flex: 1; min-width: 0;
   font-family: var(--font-mono); font-size: var(--d-text-sm);

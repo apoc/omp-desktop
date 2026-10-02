@@ -149,9 +149,17 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
     ta.style.height = `${Math.min(ta.scrollHeight, 320)}px`;
   }, [text]);
 
-  // Restore focus when the agent finishes streaming and the textarea re-enables.
+  // Restore focus when the agent finishes streaming and the textarea
+  // re-enables — unless the user is typing somewhere else by then (an
+  // inline tab rename, #32, commits on blur; the ⌘K input): taking focus
+  // from it would commit a half-typed name or drop the keystrokes.
   React.useEffect(() => {
-    if (!isStreaming) requestAnimationFrame(() => taRef.current?.focus());
+    if (isStreaming) return;
+    requestAnimationFrame(() => {
+      const el = document.activeElement;
+      if (el && el !== taRef.current && window.OMP_KEYMAP?.isTypingTarget(el)) return;
+      taRef.current?.focus();
+    });
   }, [isStreaming]);
 
   // Shared by the inline `/` popup's non-desktop pick and the ⌘K bridge's

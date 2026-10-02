@@ -7,7 +7,7 @@
    `OMP_PROJECT_NAV.groupTabs` (app/project-nav.js); this file only renders.
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon } = window;
+const { Icon, RenameField } = window;
 const { groupTarget, groupRunState } = window.OMP_PROJECT_NAV;
 
 /** A tab's (or group's) run-state dot; nothing while idle. Shared by the
@@ -20,8 +20,10 @@ function TabRunDot({ state }) {
   return <span className={`tab-run-dot ${state}`} title={title} />;
 }
 
-function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewInProject }) {
+function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewInProject, onRename }) {
   const [open, setOpen] = React.useState(false);
+  // Member tab whose name is being edited inline (#32).
+  const [renaming, setRenaming] = React.useState(null);
   const rootRef    = React.useRef(null);
   const triggerRef = React.useRef(null);
 
@@ -77,11 +79,26 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
         <div className="tab-group-pop" role="menu" onClick={e => e.stopPropagation()}>
           {group.tabs.map(t => (
             <div key={t.id} className={`tab-group-row ${t.id === activeId ? "active" : ""}`} role="none">
-              <button className="tab-group-item" role="menuitem"
-                onClick={() => { onSelect(t.id); close(); }}>
-                <span className="tab-group-dot"><TabRunDot state={t.runState} /></span>
-                <span className="tab-name" title={t.name}>{t.name}</span>
-              </button>
+              {renaming === t.id ? (
+                <span className="tab-group-item tab-group-editing">
+                  <span className="tab-group-dot"><TabRunDot state={t.runState} /></span>
+                  <RenameField value={t.name}
+                    onCommit={name => { setRenaming(null); onRename(t.id, name); }}
+                    onCancel={() => setRenaming(null)} />
+                </span>
+              ) : (
+                <button className="tab-group-item" role="menuitem"
+                  onClick={() => { onSelect(t.id); close(); }}>
+                  <span className="tab-group-dot"><TabRunDot state={t.runState} /></span>
+                  <span className="tab-name" title={t.name}>{t.name}</span>
+                </button>
+              )}
+              {onRename && renaming !== t.id && (
+                <button className="tab-close" title="rename conversation"
+                  onClick={() => { onSelect(t.id); setRenaming(t.id); }}>
+                  <Icon name="edit" size={9} />
+                </button>
+              )}
               {/* Stays open: the rest of the group is still listed, and when
                   fewer than two tabs remain the whole chip unmounts. */}
               <button className="tab-close" title="close tab" onClick={() => onClose?.(t.id)}>

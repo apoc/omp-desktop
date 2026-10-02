@@ -211,6 +211,18 @@
   max-width: 200px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Inline conversation-name editor (#32): tab bar, group popover, sidebar. */
+.rename-field {
+  flex: 1; min-width: 0; height: 20px;
+  padding: 0 5px;
+  background: var(--bg-surface);
+  border: 1px solid var(--accent); border-radius: var(--r-1);
+  color: var(--fg); font-family: var(--font-mono); font-size: var(--d-text-sm);
+}
+.rename-field:focus { outline: none; }
+/* Same footprint as the .tab-name it replaces. */
+.tab-rename { flex: none; width: 200px; }
+.tab-group-editing { cursor: default; }
 .tab-profile {
   /* `.chip` is inline-flex, on which `text-overflow` is inert - the label
      would hard-clip mid-glyph at max-width instead of ellipsizing. Single

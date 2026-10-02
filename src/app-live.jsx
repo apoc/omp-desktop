@@ -334,6 +334,9 @@ function App() {
 
   // Close tab → kills that session's omp process; bridge updates tab list
   const handleCloseTab = id => { bridge?.closeSession(id); };
+  // Manual rename (#32): omp's `/rename <title>` via the bridge, which
+  // activates a background tab first and keeps the transcript clean.
+  const handleRenameTab = (id, title) => { bridge?.renameSession(id, title); };
 
   // ── Project navigation (#27) ──────────────────────────────────────────────
   const showSidebar   = t.sidebar ?? true;
@@ -479,6 +482,7 @@ function App() {
             onSelect={handleSelectTab}
             onNew={handleNewProject}
             onClose={handleCloseTab}
+            onRename={handleRenameTab}
             onNewInProject={handleNewInProject}
             sidebarOpen={showSidebar}
             onToggleSidebar={toggleSidebar}
@@ -498,6 +502,7 @@ function App() {
                 profileLabel={profileLabel}
                 onSelectTab={handleSelectTab}
                 onCloseTab={handleCloseTab}
+                onRenameTab={handleRenameTab}
                 onNewInProject={handleNewInProject}
                 onOpenRecent={handleOpenRecent}
                 onForgetRecent={handleForgetRecent}

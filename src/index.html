@@ -136,6 +136,10 @@
   <!-- Per-tab profile selector — chrome.jsx destructures window.ProfileMenu
        at top level, so this must load before it. -->
   <script type="text/babel" src="design/profile-menu.jsx"></script>
+  <!-- Inline conversation-name editor (#32) — tab-group-chip.jsx, chrome.jsx
+       and project-sidebar.jsx destructure window.RenameField at top level,
+       so this must load before all three. -->
+  <script type="text/babel" src="design/rename-field.jsx"></script>
   <!-- Grouped tab-bar chip (#27) — chrome.jsx destructures
        window.TabGroupChip / window.TabRunDot at top level, so this must load
        before it. -->

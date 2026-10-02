@@ -139,9 +139,38 @@
     return !!(ev && ev.type === "agent_end" && ev.isTerminal !== false);
   }
 
+  /** A title the user typed for the manual rename action (#32), as the
+   *  `/rename` command that sets it and the confirmation note omp prints
+   *  for it; null when nothing is left after cleaning. Cleaning mirrors
+   *  omp's `SessionManager.#cleanTitle` (control characters to spaces,
+   *  space runs collapsed, trimmed) so the args omp parses back out of the
+   *  command are exactly `title`, and the note — `Session renamed to
+   *  ${args}.` in the rename builtin — matches byte for byte. live.js
+   *  swallows exactly that note; refusals and errors stay visible. */
+  function manualRename(raw) {
+    if (typeof raw !== "string") return null;
+    const title = raw
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+      .replace(/ +/g, " ")
+      .trim();
+    if (!title) return null;
+    return { title, command: `/rename ${title}`, note: `Session renamed to ${title}.` };
+  }
+
+  /** `notes` (the tab's pending manual-rename confirmations) without the
+   *  first entry equal to `text`, or null when `text` is not pending.
+   *  One entry per in-flight rename: two renames to the same title expect
+   *  two notes, and each swallow or settle removes exactly one. */
+  function dropPendingNote(notes, text) {
+    const idx = Array.isArray(notes) ? notes.indexOf(text) : -1;
+    if (idx === -1) return null;
+    return [...notes.slice(0, idx), ...notes.slice(idx + 1)];
+  }
+
   window.OMP_SESSION_TITLE = {
     shouldAutoRename, shouldRefineTitle, isAutoRenameNote, sessionTitleFromEvent,
     isManualRename, isRenameStateStale, shouldRearmAfterAbort, countsAsRefineTurn,
+    manualRename, dropPendingNote,
     REFINE_EVERY_TURNS, REFINE_MAX,
   };
 })();

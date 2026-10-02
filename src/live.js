@@ -180,14 +180,26 @@
       if (timeout > 0) {
         timer = setTimeout(() => {
           _pendingResponses.delete(id);
-          reject(new Error(`Command '${cmd.type}' timed out after ${timeout}ms`));
+          const err = new Error(`Command '${cmd.type}' timed out after ${timeout}ms`);
+          err.timedOut = true; // the response may still be owed (journal replay)
+          reject(err);
         }, timeout);
       }
       _pendingResponses.set(id, {
         resolve(data) { clearTimeout(timer); resolve(data); },
         reject(err)   { clearTimeout(timer); reject(err);   },
       });
-      _send({ ...cmd, id });
+      // A failed hand-off (the tab's process is gone) never produces a
+      // response; reject now instead of waiting out the timeout. Logged
+      // like `_send`'s failures, since several callers swallow rejections.
+      window.__TAURI__.core
+        .invoke("send_command", { sessionId: activeSessionId, json: JSON.stringify({ ...cmd, id }) })
+        .catch(e => {
+          console.error("[live] send error:", e);
+          if (!_pendingResponses.has(id)) return;
+          _pendingResponses.get(id).reject(e instanceof Error ? e : new Error(String(e)));
+          _pendingResponses.delete(id);
+        });
     });
   }
 
@@ -1454,6 +1466,15 @@
       // the old one). The full list of releases is next to the send, in
       // `_applyRpcState`.
       const entry = activeSessionId ? sessionRegistry.get(activeSessionId) : null;
+      // The rename action's own confirmation (#32): the tab label already
+      // says it. One pending note per in-flight `renameSession`, matched
+      // exactly, so a typed `/rename`'s note and every refusal or error
+      // still reach the transcript.
+      const rest = STITLE.dropPendingNote(entry?.renameNotes, ev.text);
+      if (rest) {
+        sessionRegistry.set(activeSessionId, { ...entry, renameNotes: rest });
+        return;
+      }
       if (entry && entry.autoRenameInFlight && STITLE.isAutoRenameNote(ev.text)) {
         sessionRegistry.set(activeSessionId, { ...entry, autoRenameInFlight: false });
         return;
@@ -2257,6 +2278,55 @@
         _send({ type: "prompt", message: text, images: images ?? [], streamingBehavior: "steer" });
       } else {
         _send({ type: "steer", message: text, images: images ?? [] });
+      }
+    },
+    /** Manual rename from the tab bar or sidebar (#32): omp's own
+     *  `/rename <title>` builtin, so the name is stored as user-set and
+     *  survives resume, and — exactly like a typed `/rename` — retires
+     *  automatic titling for good. Sent as a plain `prompt`: omp runs a
+     *  builtin before its streaming check, so this works mid-turn too.
+     *  Unlike a typed one it leaves no trace in the transcript (no user
+     *  bubble, no prompt-history entry, confirmation note swallowed); the
+     *  tab label updates from `session_info_update`. A background tab is
+     *  activated first, since only the active tab's frames are processed.
+     *  Resolves true once omp confirmed the rename.
+     *
+     *  Not unit-tested as a whole: it is activation, IPC and registry
+     *  side effects end to end. The pure parts are (`manualRename`,
+     *  `dropPendingNote` in test-session-title.mjs); the rest was
+     *  live-tested in the dev app — active and background tab, mid-turn,
+     *  persistence across close + resume, a dead process. */
+    async renameSession(id, rawTitle) {
+      const rename = STITLE.manualRename(rawTitle);
+      if (!rename || !sessionRegistry.has(id)) return false;
+      if (id !== activeSessionId) await window.OMP_BRIDGE.activateSession(id);
+      if (id !== activeSessionId || !sessionRegistry.has(id)) {
+        console.warn(`[live] rename of '${id}' dropped — the tab could not be activated`);
+        return false;
+      }
+      _disarmAutoRename(rename.command);
+      const entry = sessionRegistry.get(id);
+      sessionRegistry.set(id, { ...entry, renameNotes: [...(entry.renameNotes ?? []), rename.note] });
+      let timedOut = false;
+      try {
+        await _sendWithResponse({ type: "prompt", message: rename.command }, 15000);
+        return true;
+      } catch (e) {
+        timedOut = !!e?.timedOut;
+        if (activeSessionId === id) {
+          _pushAssistantNote(`Rename failed: ${e?.message ?? e}`, true);
+          notify();
+        }
+        return false;
+      } finally {
+        // omp prints the note before the response, so on a settled outcome
+        // it has been swallowed already if it was printed at all: drop the
+        // expectation so a later identical note is not eaten. Not after a
+        // timeout — the user may have switched away right after the send,
+        // and the frames then arrive through journal replay on return.
+        const cur = sessionRegistry.get(id);
+        const rest = timedOut ? null : STITLE.dropPendingNote(cur?.renameNotes, rename.note);
+        if (rest) sessionRegistry.set(id, { ...cur, renameNotes: rest });
       }
     },
     setModel(model)    { _send({ type: "set_model", provider: model.provider, modelId: model.id }); },

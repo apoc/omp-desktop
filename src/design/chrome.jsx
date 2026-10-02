@@ -6,7 +6,7 @@
    - Ambient rail: TokenGauge, ActivityRadar, subagents card, Minimap
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot } = window;
+const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot, RenameField } = window;
 const { groupTabs } = window.OMP_PROJECT_NAV;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` — same
@@ -83,7 +83,7 @@ function WindowChrome({
 
 // ── Project tabs ─────────────────────────────────────────────────────
 function TabBar({
-  projects, activeId, onSelect, onClose, onNew, onHistory, onNewInProject,
+  projects, activeId, onSelect, onClose, onRename, onNew, onHistory, onNewInProject,
   sidebarOpen, onToggleSidebar,
   profiles = [], appVersion, updateVersion, onUpdate, onCheckUpdate,
 }) {
@@ -93,6 +93,8 @@ function TabBar({
   // profile list has loaded.
   const profileLabel = id =>
     id === DEFAULT_PROFILE_ID ? null : (profiles.find(p => p.id === id)?.name ?? id);
+  // Tab whose name is being edited inline (#32); double-click enters it.
+  const [renaming, setRenaming] = React.useState(null);
   return (
     <div className="tabs">
       <button className={`tab-add ${sidebarOpen ? "on" : ""}`}
@@ -113,6 +115,7 @@ function TabBar({
               onSelect={onSelect}
               onClose={onClose}
               onNewInProject={onNewInProject}
+              onRename={onRename}
             />
           );
         }
@@ -130,11 +133,19 @@ function TabBar({
             // and Linux primary-selection paste from firing on the tab.
             onClick={e => (e.button === 1 ? onClose?.(p.id) : onSelect(p.id))}
             onMouseDown={e => { if (e.button === 1) e.preventDefault(); }}
-            onAuxClick={e => { if (e.button === 1) { e.preventDefault(); onClose?.(p.id); } }}>
+            onAuxClick={e => { if (e.button === 1) { e.preventDefault(); onClose?.(p.id); } }}
+            // The first click of the pair already selected the tab.
+            onDoubleClick={e => { if (onRename && !e.target.closest(".tab-close")) setRenaming(p.id); }}>
             <span className="tab-bar-mark" style={{ background: active ? p.color : "transparent" }} />
             <Icon name="folder" size={11} color={active ? p.color : "var(--fg-4)"} />
             <TabRunDot state={p.runState} />
-            <span className="tab-name" title={p.name}>{p.name}</span>
+            {renaming === p.id ? (
+              <RenameField className="tab-rename" value={p.name}
+                onCommit={name => { setRenaming(null); onRename(p.id, name); }}
+                onCancel={() => setRenaming(null)} />
+            ) : (
+              <span className="tab-name" title={`${p.name}\ndouble-click to rename`}>{p.name}</span>
+            )}
             {profile && (
               <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
             )}

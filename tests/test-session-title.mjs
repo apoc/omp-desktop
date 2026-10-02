@@ -241,4 +241,73 @@ check("a non-terminal agent_end is a scheduling pause, not a turn", () => {
   assert.equal(T.countsAsRefineTurn(null), false);
 });
 
+// ── manualRename ────────────────────────────────────────────────────────
+
+// What omp's rename builtin prints for a command: parseSlashCommand's args
+// (sliced after the first whitespace or `:`, then String#trim) run through
+// SessionManager.#cleanTitle — ported from oh-my-pi
+// slash-commands/helpers/parse.ts, session/session-manager.ts and
+// builtin-lifecycle.ts. The swallow in live.js is an exact string match, so
+// any drift between our title and omp's would leak the note.
+function ompNoteFor(command) {
+  const body = command.slice(1);
+  const ws = body.search(/\s/), colon = body.indexOf(":");
+  const sep = ws === -1 ? colon : colon === -1 ? ws : Math.min(ws, colon);
+  const args = body.slice(sep + 1).trim();
+  const title = args.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/ +/g, " ").trim();
+  return { name: body.slice(0, sep), title, note: `Session renamed to ${args}.` };
+}
+
+check("a typed title becomes the /rename command and omp's exact confirmation", () => {
+  const r = T.manualRename("Fix login bug");
+  assert.deepEqual(r, {
+    title: "Fix login bug",
+    command: "/rename Fix login bug",
+    note: "Session renamed to Fix login bug.",
+  });
+  assert.equal(T.isManualRename(r.command), true);
+});
+
+check("pasted line breaks, tabs and space runs collapse the way omp cleans them", () => {
+  assert.equal(T.manualRename("  Fix\n\tlogin\r\n   bug \u0085 ").title, "Fix login bug");
+});
+
+check("the confirmation matches what omp would print for awkward titles", () => {
+  for (const raw of [
+    "plain", "  padded  ", "multi\nline\ttitle", "\u00a0nbsp edges\u00a0",
+    ":colon first", "/slash first", "inner\u00a0 \u00a0nbsp", "emoji 🚀 title", "x\u009fy",
+  ]) {
+    const r = T.manualRename(raw);
+    const omp = ompNoteFor(r.command);
+    assert.equal(omp.name, "rename", raw);
+    assert.equal(omp.title, r.title, raw);
+    assert.equal(omp.note, r.note, raw);
+  }
+});
+
+check("a blank, control-only or non-string title is no rename", () => {
+  assert.equal(T.manualRename(""), null);
+  assert.equal(T.manualRename("   "), null);
+  assert.equal(T.manualRename("\n\t\u0000"), null);
+  assert.equal(T.manualRename(undefined), null);
+  assert.equal(T.manualRename(42), null);
+});
+
+// ── dropPendingNote ─────────────────────────────────────────────────────
+
+check("a pending confirmation is consumed exactly once", () => {
+  const notes = ["Session renamed to A.", "Session renamed to B.", "Session renamed to A."];
+  assert.deepEqual(T.dropPendingNote(notes, "Session renamed to A."),
+    ["Session renamed to B.", "Session renamed to A."]);
+  assert.deepEqual(notes.length, 3, "the registry's array is not mutated");
+});
+
+check("a note nobody is waiting for is not swallowed", () => {
+  // A typed `/rename X`, a refusal, or an error line must reach the transcript.
+  assert.equal(T.dropPendingNote(["Session renamed to A."], "Session renamed to B."), null);
+  assert.equal(T.dropPendingNote(["Session renamed to A."], "Session name not changed (a user-set name takes precedence)."), null);
+  assert.equal(T.dropPendingNote([], "Session renamed to A."), null);
+  assert.equal(T.dropPendingNote(undefined, "Session renamed to A."), null);
+});
+
 console.log(`ok — test-session-title.mjs (${passed} checks)`);

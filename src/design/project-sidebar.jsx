@@ -9,7 +9,7 @@
    are real buttons, so every action is keyboard-reachable.
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TabRunDot } = window;
+const { Icon, TabRunDot, RenameField } = window;
 const { groupTabs, groupRunState, groupTarget, basename, parentName } = window.OMP_PROJECT_NAV;
 
 // Same guard as chrome.jsx's copy: the registry may not be loaded.
@@ -19,12 +19,26 @@ function sidebarHint(actionId, fallback) {
 
 function ProjectSidebar({
   tabs, activeId, recents, profileLabel,
-  onSelectTab, onCloseTab, onNewInProject, onOpenRecent, onForgetRecent, onOpenFolder, onHide,
+  onSelectTab, onCloseTab, onRenameTab, onNewInProject, onOpenRecent, onForgetRecent, onOpenFolder, onHide,
 }) {
   // Group keys the user folded. Not persisted: tab ids (and so pathless
   // groups' keys) don't survive a restart anyway.
   const [collapsed, setCollapsed] = React.useState({});
   const toggle = key => setCollapsed(c => ({ ...c, [key]: !c[key] }));
+  // Tab whose name is being edited inline (#32). Starting selects it, the
+  // same as the first click of a double-click does.
+  const [renaming, setRenaming] = React.useState(null);
+  const startRename = id => { onSelectTab(id); setRenaming(id); };
+  const renameField = t => (
+    <RenameField value={t.name}
+      onCommit={name => { setRenaming(null); onRenameTab(t.id, name); }}
+      onCancel={() => setRenaming(null)} />
+  );
+  const renameButton = t => (
+    <button className="psb-act" title="rename conversation" onClick={() => startRename(t.id)}>
+      <Icon name="edit" size={10} />
+    </button>
+  );
   const groups = groupTabs(tabs);
   const hideHint = sidebarHint("desktop.sidebar.toggle", "Ctrl+B");
 
@@ -64,16 +78,24 @@ function ProjectSidebar({
                     <Icon name="chevR" size={10} />
                   </button>
                 ) : <span className="psb-chev-spacer" />}
-                <button className="psb-main" title={cardTip}
-                  onClick={() => onSelectTab(groupTarget(group, activeId))}>
-                  <Icon name="folder" size={11} color={containsActive ? "var(--accent)" : "var(--fg-4)"} />
-                  <span className="psb-name">{multi ? group.name : group.tabs[0].name}</span>
-                  {profile && (
-                    <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
-                  )}
-                  <TabRunDot state={groupRunState(group.tabs)} />
-                  {multi && <span className="tab-count psb-count">{group.tabs.length}</span>}
-                </button>
+                {!multi && renaming === group.tabs[0].id ? (
+                  <div className="psb-main psb-editing">
+                    <Icon name="folder" size={11} color={containsActive ? "var(--accent)" : "var(--fg-4)"} />
+                    {renameField(group.tabs[0])}
+                  </div>
+                ) : (
+                  <button className="psb-main" title={cardTip}
+                    onClick={() => onSelectTab(groupTarget(group, activeId))}
+                    onDoubleClick={() => { if (!multi) startRename(group.tabs[0].id); }}>
+                    <Icon name="folder" size={11} color={containsActive ? "var(--accent)" : "var(--fg-4)"} />
+                    <span className="psb-name">{multi ? group.name : group.tabs[0].name}</span>
+                    {profile && (
+                      <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
+                    )}
+                    <TabRunDot state={groupRunState(group.tabs)} />
+                    {multi && <span className="tab-count psb-count">{group.tabs.length}</span>}
+                  </button>
+                )}
                 <span className="psb-actions">
                   {group.path && (
                     <button className="psb-act" title="new conversation here"
@@ -81,6 +103,7 @@ function ProjectSidebar({
                       <Icon name="plus" size={10} />
                     </button>
                   )}
+                  {!multi && renaming !== group.tabs[0].id && renameButton(group.tabs[0])}
                   {!multi && (
                     <button className="psb-act" title="close tab" onClick={() => onCloseTab(group.tabs[0].id)}>
                       <Icon name="close" size={9} />
@@ -90,11 +113,17 @@ function ProjectSidebar({
               </div>
               {expanded && group.tabs.map(t => (
                 <div key={t.id} className={`psb-row psb-tab ${t.id === activeId ? "active" : ""}`}>
-                  <button className="psb-main" title={t.name} onClick={() => onSelectTab(t.id)}>
-                    <span className="psb-name">{t.name}</span>
-                    <TabRunDot state={t.runState} />
-                  </button>
+                  {renaming === t.id ? (
+                    <div className="psb-main psb-editing">{renameField(t)}</div>
+                  ) : (
+                    <button className="psb-main" title={t.name} onClick={() => onSelectTab(t.id)}
+                      onDoubleClick={() => startRename(t.id)}>
+                      <span className="psb-name">{t.name}</span>
+                      <TabRunDot state={t.runState} />
+                    </button>
+                  )}
                   <span className="psb-actions">
+                    {renaming !== t.id && renameButton(t)}
                     <button className="psb-act" title="close tab" onClick={() => onCloseTab(t.id)}>
                       <Icon name="close" size={9} />
                     </button>
