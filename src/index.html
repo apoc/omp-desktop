@@ -101,6 +101,12 @@
        window.OMP_MATRIX at top level, so it must load before it. -->
   <script src="app/matrix-rain.js"></script>
 
+  <!-- Per-tab composer draft + plan-mode state (issue #28): pure map and
+       transition helpers. Dependency-free IIFE; design/composer.jsx and
+       app-live.jsx destructure window.OMP_SESSION_UI at top level, so it
+       must load before both. -->
+  <script src="app/session-ui.js"></script>
+
   <!-- Design components (unchanged — from src/design/ copy) -->
   <script src="design/tweaks/style.js"></script>
   <script src="design/tweaks/use-tweaks.js"></script>

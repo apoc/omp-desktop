@@ -6,6 +6,9 @@ const { Icon } = window;
 const { parseMentionQuery, applyMention } = window.OMP_MENTIONS;
 const { prepareImage, imageFilesFromTransfer, imageFilesFromClipboardAsync, toDataUrl, MAX_ATTACHMENTS } = window.OMP_IMAGES;
 const { isDesktop, slashMenu, matchesQuery, insertText: slashInsertText } = window.OMP_SLASH;
+const {
+  entryOf: draftEntryOf, updateEntry: updateDraftEntry, pruneEntries: pruneDrafts, DRAFT_IDLE, recallInDraft,
+} = window.OMP_SESSION_UI;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` (display
 // logic lives there so chrome.jsx's ⌘K/history hints can reuse it too,
@@ -23,33 +26,36 @@ function hintKeyFor(actionId, fallback) {
 }
 
 // ── The composer (input + plan/steer modes + send) ────────────────────
-function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert }) {
-  const [text, setText]       = React.useState("");
+function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert }) {
+  // Drafts are per tab (issue #28). The composer stays mounted across tab
+  // switches and keeps one draft per session id (app/session-ui.js
+  // DRAFT_IDLE): text, pending image attachments (sent alongside the next
+  // message), collapsed pastes, the prompt-history recall position, and the
+  // count of image preparations still in flight — sendWith blocks while
+  // that is nonzero, so a fast Enter can't race ahead of a paste/pick and
+  // ship the image on the *next* message.
+  // Everything below reads and writes the active tab's entry, except an
+  // image preparation landing after a switch: it goes back to the tab it
+  // was started in.
+  const [drafts, setDrafts] = React.useState({});
+  const draft = draftEntryOf(drafts, sessionId, DRAFT_IDLE);
+  const { text, attachments, pendingImages } = draft;
+  const updateDraft = (id, fn) => setDrafts(m => updateDraftEntry(m, id, DRAFT_IDLE, fn));
+  // Any text edit ends a prompt-history recall; only the recall step itself
+  // (onKey) writes `historyNav` alongside the text.
+  const setText = (next) => updateDraft(sessionId, d => ({ ...d, text: next, historyNav: null }));
+  // Open tab ids, also read when an image preparation lands: a tab closed
+  // meanwhile must not get its entry back.
+  const sessionIdsRef = React.useRef(sessionIds);
+  sessionIdsRef.current = sessionIds;
+  React.useEffect(() => { setDrafts(m => pruneDrafts(m, sessionIds)); }, [sessionIds]);
   const [activeIdx, setActiveIdx] = React.useState(0);
   const taRef   = React.useRef(null);
-  // Prompt-history recall (issue #16, Arrow Up/Down) — position kept in a
-  // ref (not state) since it never drives a render on its own, only via
-  // the setText calls that already re-render. Invalidated at the call
-  // site in onKey below (not here) whenever `text` no longer equals the
-  // entry it last recalled — covers every way the draft can change out
-  // from under it: a tab switch (promptHistory itself changes), the
-  // history list shrinking under an active limit change, or any
-  // programmatic edit that bypasses onChange (paste-token collapse,
-  // @-mention pick, ⌘K draft insert). A dedicated per-tab reset effect
-  // would only cover the first case.
-  const historyNavRef = React.useRef(window.OMP_PROMPT_HISTORY.IDLE);
+  // Prompt-history recall (issue #16, Arrow Up/Down): the recall position
+  // and the stashed unsent draft live in the tab's draft entry
+  // (`historyNav`, null = idle), so a recall started in one tab can never
+  // restore that stash into another. onKey steps it via recallInDraft.
   const listRef = React.useRef(null);
-  // paste blocks: id → raw content; collapsed in textarea as [paste #N +K lines]
-  const pasteBlocksRef   = React.useRef(new Map());
-  const pasteCounterRef  = React.useRef(0);
-  // Pending image attachments (icon-picked or pasted), sent alongside the
-  // next message. Cleared on send. { id, name, image: ImageContent, src }[]
-  const [attachments, setAttachments] = React.useState([]);
-  // Count of prepareImage() calls still in flight — sendWith blocks while
-  // this is nonzero so a fast Enter/click can't race ahead of an
-  // in-progress paste/pick and send the text without its image (the image
-  // would then land, orphaned, on the *next* message instead).
-  const [pendingImages, setPendingImages] = React.useState(0);
   const attachCounterRef = React.useRef(0);
   const fileInputRef     = React.useRef(null);
 
@@ -70,9 +76,23 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
   const mentionKey    = mentionRange ? `${mentionRange.start}:${mentionRange.query}` : null;
   const showMention   = mentionRange !== null && mentionItems.length > 0 && mentionDismissedKey !== mentionKey;
 
+  // A tab switch swaps the draft under the textarea: the caret, the slash
+  // selection and the mention list (fetched from the other tab's project)
+  // all described the previous tab. A layout effect, so nothing flashes
+  // against the new draft; setting the textarea's value has already put
+  // the native caret at its end. The mention fetch below re-runs on the
+  // switch for the same reason.
+  React.useLayoutEffect(() => {
+    setCaret(text.length);
+    setActiveIdx(0);
+    setMentionItems([]);
+    setMentionDismissedKey(null);
+  }, [sessionId]);
+
   // Debounced fetch — keyed on the query text, not the caret, so moving
-  // the caret within an unchanged token never re-fires it. A monotonic
-  // request id drops a response that lands after a newer query fired.
+  // the caret within an unchanged token never re-fires it, and on the tab,
+  // whose project the list comes from. A monotonic request id drops a
+  // response that lands after a newer query fired.
   React.useEffect(() => {
     // No active token — also forget any Escape-dismissal recorded for a
     // token that no longer exists, and invalidate any request already in
@@ -94,7 +114,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
       if (mentionReqRef.current === myReq) { setMentionItems(items); setMentionActiveIdx(0); }
     }, 60);
     return () => clearTimeout(timer);
-  }, [mentionRange?.query, mentionRange !== null]);
+  }, [mentionRange?.query, mentionRange !== null, sessionId]);
 
   // Derive slash state inline — no useEffect, no stale flicker. Suppressed
   // while the mention menu is showing: both can't render in the same
@@ -173,7 +193,6 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
   React.useEffect(() => {
     if (!promptInsert) return;
     replaceDraft(promptInsert.text);
-    historyNavRef.current = window.OMP_PROMPT_HISTORY.IDLE;
   }, [promptInsert?.nonce]);
 
   const execCmd = (cmd) => {
@@ -187,11 +206,9 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
       replaceDraft(slashInsertText(cmd));
       return;
     }
-    setText("");
+    updateDraft(sessionId, d => ({ ...d, text: "", pastes: DRAFT_IDLE.pastes, pasteCounter: 0 }));
     setActiveIdx(0);
     setMentionDismissedKey(null);
-    pasteBlocksRef.current.clear();
-    pasteCounterRef.current = 0;
     onPick?.(cmd);
   };
 
@@ -232,7 +249,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
   // Expand [paste #N +K lines] tokens back to their real content before sending.
   const expandPastes = (txt) =>
     txt.replace(/\[paste #(\d+) \+\d+ lines?\]/g, (match, id) =>
-      pasteBlocksRef.current.get(Number(id)) ?? match);
+      draft.pastes[id] ?? match);
 
   // Route a completed draft through the full send pipeline. `dispatcher` is
   // either `onSend` (normal) or `onFollowUp` (follow-up); both get the same
@@ -253,12 +270,13 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     if (!canSend) return;
     const images = attachments.map(a => a.image);
     dispatcher(expandPastes(text.trim()), images);
-    setText("");
-    historyNavRef.current = window.OMP_PROMPT_HISTORY.IDLE;
+    // Back to an empty draft: text, attachments and collapsed pastes all
+    // went out with this message, and the reset ends any prompt-history
+    // recall. The in-flight image count is kept: an async-clipboard paste
+    // can have queued its increment after the render this send read, and
+    // its decrement still lands later.
+    updateDraft(sessionId, d => (d.pendingImages ? { ...DRAFT_IDLE, pendingImages: d.pendingImages } : DRAFT_IDLE));
     setMentionDismissedKey(null);
-    pasteBlocksRef.current.clear();
-    pasteCounterRef.current = 0;
-    setAttachments([]);
     requestAnimationFrame(() => taRef.current?.focus());
   };
   const send = () => sendWith(onSend);
@@ -270,11 +288,19 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
   // rest of this paste/pick silently (the user can always attach the
   // dropped ones separately).
   const addFiles = async (fileList) => {
+    // The tab this paste/pick belongs to: preparation is async, and the
+    // result must not land in whichever tab is active by then.
+    const target = sessionId;
     const files = Array.from(fileList || []).filter(f => f.type.startsWith("image/"));
     const room  = MAX_ATTACHMENTS - attachments.length;
     if (files.length === 0 || room <= 0) return;
     const slice = files.slice(0, room);
-    setPendingImages(n => n + slice.length);
+    // Counted only while the tab is open: a paste resolved through the
+    // async clipboard path may land after its tab closed.
+    setDrafts(m => (sessionIdsRef.current?.includes(target)
+      ? updateDraftEntry(m, target, DRAFT_IDLE, d => ({ ...d, pendingImages: d.pendingImages + slice.length }))
+      : m));
+    let ok = [];
     try {
       const prepared = await Promise.all(slice.map(async (file) => {
         try {
@@ -284,16 +310,23 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
           return null; // undecodable file — drop, don't block the rest of the batch
         }
       }));
-      const ok = prepared.filter(Boolean);
-      // Cap against the latest `prev`, not the `attachments` this call closed
-      // over — a concurrent addFiles (fast double-paste) may have already
-      // appended by the time this resolves.
-      if (ok.length > 0) setAttachments(prev => [...prev, ...ok].slice(0, MAX_ATTACHMENTS));
+      ok = prepared.filter(Boolean);
     } finally {
-      setPendingImages(n => n - slice.length);
+      // Cap against the latest entry, not the `attachments` this call closed
+      // over — a concurrent addFiles (fast double-paste) may have already
+      // appended by the time this resolves. A tab closed meanwhile is left
+      // without an entry rather than given one back.
+      setDrafts(m => (sessionIdsRef.current?.includes(target)
+        ? updateDraftEntry(m, target, DRAFT_IDLE, d => ({
+          ...d,
+          attachments: ok.length > 0 ? [...d.attachments, ...ok].slice(0, MAX_ATTACHMENTS) : d.attachments,
+          pendingImages: d.pendingImages - slice.length,
+        }))
+        : m));
     }
   };
-  const removeAttachment = (id) => setAttachments(prev => prev.filter(a => a.id !== id));
+  const removeAttachment = (attId) =>
+    updateDraft(sessionId, d => ({ ...d, attachments: d.attachments.filter(a => a.id !== attId) }));
 
   // Collapse long pastes into a token so the textarea stays navigable.
   // Threshold: more than 5 lines OR more than 500 characters. An image on
@@ -322,14 +355,13 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
     const lines = raw.split("\n");
     if (lines.length <= 5 && raw.length <= 500) return; // short — let browser handle normally
     e.preventDefault();
-    const id    = ++pasteCounterRef.current;
-    pasteBlocksRef.current.set(id, raw);
+    const id    = draft.pasteCounter + 1;
     const token = `[paste #${id} +${lines.length} line${lines.length === 1 ? "" : "s"}]`;
     const ta    = taRef.current;
     const start = ta ? ta.selectionStart : text.length;
     const end   = ta ? ta.selectionEnd   : text.length;
     const next  = text.slice(0, start) + token + text.slice(end);
-    setText(next);
+    updateDraft(sessionId, d => ({ ...d, text: next, pastes: { ...d.pastes, [id]: raw }, pasteCounter: id }));
     // Reposition cursor after the token on next frame (state not flushed yet).
     requestAnimationFrame(() => {
       if (!taRef.current) return;
@@ -366,31 +398,20 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
       const start = ta ? ta.selectionStart : text.length;
       const end   = ta ? ta.selectionEnd   : text.length;
       const H = window.OMP_PROMPT_HISTORY;
-      // A recall position is only meaningful while the draft still equals
-      // what it last set — invalidate rather than trust a stale index:
-      // covers the history list shrinking under an in-progress recall (a
-      // lowered tweaks-panel limit, which would otherwise hand `step` an
-      // out-of-range index and read `undefined`), a tab switch (a fresh
-      // `promptHistory` swapped in under an unrelated index), and any
-      // programmatic edit that bypasses onChange's own reset (paste-token
-      // collapse, @-mention pick, ⌘K draft insert).
-      if (historyNavRef.current.index >= 0 && promptHistory[historyNavRef.current.index] !== text) {
-        historyNavRef.current = H.IDLE;
-      }
       const eligible = dir < 0 ? H.caretOnFirstLine(text, start, end) : H.caretOnLastLine(text, start, end);
-      if (eligible) {
-        const result = H.step(historyNavRef.current, promptHistory, dir, text);
-        if (result) {
-          e.preventDefault();
-          historyNavRef.current = result.nav;
-          setText(result.text);
-          requestAnimationFrame(() => {
-            const el = taRef.current;
-            if (!el) return;
-            el.selectionStart = el.selectionEnd = result.text.length;
-          });
-          return;
-        }
+      // recallInDraft (app/session-ui.js) also drops a recall position the
+      // text has drifted from — a lowered tweaks-panel limit, a paste-token
+      // collapse — instead of trusting a stale index.
+      const next = eligible ? recallInDraft(draft, promptHistory, dir, H.step) : null;
+      if (next) {
+        e.preventDefault();
+        updateDraft(sessionId, d => ({ ...d, text: next.text, historyNav: next.historyNav }));
+        requestAnimationFrame(() => {
+          const el = taRef.current;
+          if (!el) return;
+          el.selectionStart = el.selectionEnd = next.text.length;
+        });
+        return;
       }
     }
     // followUp must be checked before the plain-Enter branch: `ctrl+enter` is
@@ -487,7 +508,7 @@ function Composer({ onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenMod
                   : (microcopy?.paletteTip ?? `what should we ship?  ·  / for commands${bridgeHint ? `  ·  ${bridgeHint} for the bridge` : ""}`)
             }
             value={text}
-            onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart); historyNavRef.current = window.OMP_PROMPT_HISTORY.IDLE; }}
+            onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart); }}
             onSelect={(e) => setCaret(e.target.selectionStart)}
             onKeyDown={onKey}
             onPaste={onPaste}

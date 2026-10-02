@@ -28,6 +28,10 @@ const {
 } = window;
 const { isSlashCommand } = window.OMP_SLASH;
 const { recentRows } = window.OMP_PROJECT_NAV;
+const {
+  entryOf, updateEntry, pruneEntries,
+  PLAN_IDLE, togglePlan, enterPlan, approvePlan, annotatePlan, markPlanSent,
+} = window.OMP_SESSION_UI;
 
 function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
@@ -44,14 +48,9 @@ function App() {
   const [promptHistoryOpen, setPromptHistoryOpen] = React.useState(false);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [planOpen,    setPlanOpen]    = React.useState(false);
-  const [planMode,    setPlanMode]    = React.useState(false);
-  const planStartedRef = React.useRef(false); // true after first send in plan mode
-  const [planAnnotations, setPlanAnnotations] = React.useState({});
-  const handleAnnotate = React.useCallback((idx, value) => setPlanAnnotations(prev => {
-    const next = { ...prev };
-    if (value === null) delete next[idx]; else next[idx] = value;
-    return next;
-  }), []);
+  // Plan mode is per tab (issue #28; app/session-ui.js): one entry per
+  // session id, read through `plan` and written through `updatePlan` below.
+  const [plans, setPlans] = React.useState({});
 
   // Cross-component highlight: hovering a minimap cell lights up the
   // matching chat bubble; clicking scrolls to it.
@@ -137,6 +136,22 @@ function App() {
   // usage-stats panel's header label, instead of a second copy.
   const activeProfileId    = activeProject.id ? activeProject.profile : noTabProfileId;
   const activeProfileLabel = profiles.find(p => p.id === activeProfileId)?.name ?? activeProfileId;
+  // The tab being rendered owns the plan state: keyed on `activeProject.id`
+  // for the same reason as `handleSelectProfile` below, and "" with no tab
+  // open, which `updateEntry` ignores.
+  const planKey = activeProject.id;
+  const plan    = entryOf(plans, planKey, PLAN_IDLE);
+  const updatePlan = React.useCallback(
+    fn => setPlans(m => updateEntry(m, planKey, PLAN_IDLE, fn)), [planKey]);
+  const handleAnnotate = React.useCallback(
+    (idx, value) => updatePlan(p => annotatePlan(p, idx, value)), [updatePlan]);
+  // Tab ids, for dropping the per-tab state of closed tabs (here and in
+  // the composer's drafts). live.js rebuilds `sessions` on every snapshot,
+  // streaming deltas included, so the list is memoised on the ids' content:
+  // the prune effects run only when a tab opens or closes.
+  const sessionIdsKey = sessions.map(s => s.id).join("\0");
+  const sessionIds = React.useMemo(() => (sessionIdsKey ? sessionIdsKey.split("\0") : []), [sessionIdsKey]);
+  React.useEffect(() => { setPlans(m => pruneEntries(m, sessionIds)); }, [sessionIds]);
   // Profile chip text for a tab/project: none for the built-in profile (same
   // expression as TabBar's own copy, which labels the tab bar).
   const profileLabel = id =>
@@ -168,7 +183,7 @@ function App() {
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleSend = (text, images) => {
-    const hasAnnotations = Object.keys(planAnnotations).length > 0;
+    const hasAnnotations = Object.keys(plan.annotations).length > 0;
     if (!text.trim() && !hasAnnotations && !(images && images.length > 0)) return;
     let msg = text.trim();
     // A slash command (typed by hand, or inserted by picking a non-desktop
@@ -179,10 +194,10 @@ function App() {
     // starts with a path ("/etc/nginx.conf is wrong"), which both
     // plan-mode rewrites below would otherwise skip by mistake.
     const isCmd = isSlashCommand(data.commands, msg);
-    if (planMode && !isCmd) {
+    if (plan.mode && !isCmd) {
       if (hasAnnotations) {
         // Feedback with block comments — always takes priority over intent framing
-        const lineComments = Object.entries(planAnnotations)
+        const lineComments = Object.entries(plan.annotations)
           .sort(([a], [b]) => Number(a) - Number(b))
           .map(([, { raw, comment }]) => {
             const quoted = raw.split('\n').map(l => `> ${l}`).join('\n');
@@ -190,16 +205,15 @@ function App() {
           }).join('\n\n');
         const parts = ['Line comments:\n' + lineComments, text.trim()].filter(Boolean);
         msg = parts.join('\n\n');
-        setPlanAnnotations({});
-        planStartedRef.current = true; // annotations imply plan is already in progress
-      } else if (!planStartedRef.current) {
+        updatePlan(markPlanSent); // annotations imply plan is already in progress; spends them
+      } else if (!plan.started) {
         // First clean send — wrap in intent framing. trimEnd() matters for an
         // image-only send (empty text): INTENT_FRAMING's template ends in a
         // literal "\n\n" that .trim() on the intent argument never touches,
         // and the server's message_start echo arrives already .trim()med
         // (live.js) — an untrimmed local echo would fail that dedup compare
         // and double-render the bubble.
-        planStartedRef.current = true;
+        updatePlan(markPlanSent);
         msg = INTENT_FRAMING(text.trim()).trimEnd();
       }
     }
@@ -237,11 +251,7 @@ function App() {
 
   // Extracted so both the global keymap handler and the composer prop share
   // the same implementation (plan §7: "extract into a togglePlanMode callback").
-  const togglePlanMode = () => {
-    const next = !planMode;
-    setPlanMode(next);
-    if (!next) planStartedRef.current = false;
-  };
+  const togglePlanMode = () => updatePlan(togglePlan);
 
   // Composer-scoped follow-up: the composer owns the draft text. Re-trim
   // here (mirrors handleSend's `msg = text.trim()`) — expandPastes runs
@@ -266,7 +276,7 @@ function App() {
   const handlePickHistoryPrompt = (text) => setPromptInsert({ text, nonce: Date.now() });
 
   const handleCommand = c => {
-    if      (c.name === "plan")      { setPlanMode(true); planStartedRef.current = false; }
+    if      (c.name === "plan")      { updatePlan(enterPlan); }
     else if (c.name === "todo")      { setPlanOpen(true); }
     else if (c.name === "compact")   { bridge?.compact(); }
     else if (c.name === "export")    { bridge?.exportHtml(); }
@@ -291,10 +301,8 @@ function App() {
   };
 
   const handleApprovePlan = () => {
-    setPlanAnnotations({});
+    updatePlan(approvePlan);
     bridge?.followUp(APPROVAL_PROMPT);
-    setPlanMode(false);
-    planStartedRef.current = false;
     setPlanOpen(true);
   };
 
@@ -503,8 +511,8 @@ function App() {
                   <EmptyWorkspace notes={workspaceNotes} />
                 ) : (<>
                   <ChatView key={activeSessionId} messages={messages}
-                    planMode={planMode}
-                    annotations={planAnnotations}
+                    planMode={plan.mode}
+                    annotations={plan.annotations}
                     onAnnotate={handleAnnotate}
                     onAskAnswer={handleAskAnswer}
                     onConfirmAsk={handleConfirmAsk}
@@ -515,8 +523,10 @@ function App() {
                     onInspectSubagent={subagentUi.open}
                   />
                   <Composer
+                    sessionId={planKey}
+                    sessionIds={sessionIds}
                     onSend={handleSend}
-                    planMode={planMode}
+                    planMode={plan.mode}
                     onTogglePlan={togglePlanMode}
                     onOpenCmd={() => openBridge("commands")}
                     onOpenModel={() => openBridge("models")}
@@ -526,7 +536,7 @@ function App() {
                     isStreaming={streaming}
                     onAbort={handleAbort}
                     onApprove={handleApprovePlan}
-                    annotationCount={Object.keys(planAnnotations).length}
+                    annotationCount={Object.keys(plan.annotations).length}
                     microcopy={data.microcopy}
                     onPick={handleCommand}
                     onFollowUp={handleFollowUp}
