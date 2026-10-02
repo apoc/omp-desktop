@@ -496,6 +496,22 @@
       .map(n => String(n).padStart(2, "0")).join(":");
   }
 
+  // ── Model picker: recently used group (#11) ───────────────────────────────
+  /** The `models` named by `keys` (omp's `provider/modelId` MRU, newest
+   *  first), in key order, at most `limit`. Keys whose model isn't in
+   *  `models` — no longer available, or filtered out — are skipped, so every
+   *  entry is pickable and a filtered list still fills up to `limit`. */
+  function pickRecentModels(models, keys, limit) {
+    const byKey = new Map(models.map(m => [`${m.provider}/${m.id}`, m]));
+    const picked = [];
+    for (const key of keys) {
+      if (picked.length >= limit) break;
+      const m = byKey.get(key);
+      if (m) picked.push(m);
+    }
+    return picked;
+  }
+
   // ── Exports ───────────────────────────────────────────────────────────────
   Object.assign(window, {
     normalizeToolName,
@@ -513,6 +529,7 @@
     updateToolCard,
     adaptAgentMessages,
     adaptUserContent,
+    pickRecentModels,
     timeNow,
   });
 })();

@@ -614,6 +614,7 @@ function App() {
         onInsertDraft={handleInsertDraft}
         loginProviders={loginProviders}
         currentModelId={model.id}
+        profileId={activeProfileId}
       />
 
       {planOpen && (

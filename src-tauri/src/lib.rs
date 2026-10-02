@@ -13,6 +13,7 @@ mod git;
 mod git_watcher;
 mod json_store;
 mod keybindings;
+mod model_usage;
 mod navigation_guard;
 mod profiles;
 mod recent_projects;
@@ -697,6 +698,21 @@ async fn recent_projects_remove(
     with_blocking(&recents, move |s| s.remove(&key, &path)).await
 }
 
+/// `profile`'s most recently used model keys (`provider/modelId`), newest
+/// first, from omp's own `agent.db` — the model picker's `recent` group.
+/// Empty when the database or its table can't be read.
+#[tauri::command]
+async fn model_usage_list(
+    profile: Option<String>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+    app: AppHandle,
+) -> Result<Vec<String>, String> {
+    let profile = store.resolve_owned(profile)?;
+    tauri::async_runtime::spawn_blocking(move || model_usage::recent_for(&app, profile.as_deref()))
+        .await
+        .map_err(|e| format!("join error: {e}"))
+}
+
 /// Ask the release feed for a newer version — see `updater::check`.
 /// `None` means up to date.
 #[tauri::command]
@@ -852,6 +868,7 @@ pub fn run() {
             recent_projects_list,
             recent_projects_touch,
             recent_projects_remove,
+            model_usage_list,
             app_update_check,
             app_update_install,
         ])

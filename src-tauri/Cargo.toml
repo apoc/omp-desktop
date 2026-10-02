@@ -22,6 +22,9 @@ notify = "8"
 gix = "0.87"
 open = { version = "5", features = ["shellexecute-on-windows"] }
 sha2 = "0.11"
+# Read-only access to omp's own `agent.db` (model MRU for the picker, #11).
+# `bundled` compiles SQLite in, so no system library is needed on any OS.
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

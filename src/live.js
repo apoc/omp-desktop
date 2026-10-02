@@ -2330,6 +2330,14 @@
       if (rest) sessionRegistry.set(id, { ...cur, renameNotes: rest });
     },
     setModel(model)    { _send({ type: "set_model", provider: model.provider, modelId: model.id }); },
+    /** Model keys (`provider/modelId`) `profile` used most recently, newest
+     *  first: omp's own MRU table in its `agent.db` (#11), so switches made
+     *  in the terminal UI count too. `[]` when unreadable or when `profile`
+     *  is no longer listed. The picker passes the profile it tags the
+     *  result with: `_activeProfileId()` falls back to the startup profile
+     *  while `activeSessionId` is null (a profile respawn's detach), which
+     *  would read one profile's list under another's tag. */
+    recentModels(profile = _activeProfileId()) { return _invokeSafe("model_usage_list", { profile }, []); },
     cycleModel()       { _send({ type: "cycle_model" }); },
     cycleThinking()    { _send({ type: "cycle_thinking_level" }); },
     compact() {

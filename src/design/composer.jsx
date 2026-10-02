@@ -643,12 +643,27 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
 // ── ⌘K Command bridge — two views: commands → model picker ────────────
 //
 //  commands view  — lists all slash-commands; /model drills into picker
-//  models view    — filterable model list; Esc returns to commands
+//  models view    — filterable model list, the profile's most recently used
+//                   models (omp's own MRU, #11) first; Esc returns to commands
 //
-function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, onPickLogin, onInsertDraft, loginProviders, initialView = "commands" }) {
+
+// Recently used models pinned above the full list (#11).
+const RECENT_MODEL_LIMIT = 5;
+
+function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, profileId, onPickLogin, onInsertDraft, loginProviders, initialView = "commands" }) {
   const [q, setQ]       = React.useState("");
   const [view, setView] = React.useState("commands");
   const inputRef = React.useRef(null);
+  // omp's MRU is per profile (each has its own agent.db), so the list is
+  // fetched *for* `profileId` and tagged with it, and only shown while that
+  // is still the active tab's profile — a tab switch or a profile respawn
+  // never shows another profile's order, not even until the refetch lands.
+  // Refetched on every entry into the models view and on a profile change
+  // while open: omp records a switch the moment it happens (here, in
+  // another tab, or in its terminal UI). A response for a profile left
+  // meanwhile is dropped (`live`).
+  const [recent, setRecent] = React.useState({ profileId: null, keys: [] });
+  const recentKeys = recent.profileId === profileId ? recent.keys : [];
 
   React.useEffect(() => {
     if (open) {
@@ -657,6 +672,15 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, onP
       setTimeout(() => inputRef.current?.focus(), 30);
     }
   }, [open]);
+
+  React.useEffect(() => {
+    if (!open || view !== "models") return undefined;
+    let live = true;
+    window.OMP_BRIDGE?.recentModels?.(profileId).then((keys) => {
+      if (live && Array.isArray(keys)) setRecent({ profileId, keys });
+    });
+    return () => { live = false; };
+  }, [open, view, profileId]);
 
   React.useEffect(() => {
     const onKey = (e) => {
@@ -677,6 +701,22 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, onP
   // ── Model picker view ──────────────────────────────────────────────
   if (view === "models") {
     const modelHits = models.filter((m) => !q || fil(m.name) || fil(m.id));
+    const recentHits = window.pickRecentModels(modelHits, recentKeys, RECENT_MODEL_LIMIT);
+    const modelRow = (m, group) => (
+      <button key={`${group}:${m.provider}/${m.id}`}
+        className={`bridge-row ${m.id === currentModelId ? "active" : ""}`}
+        onClick={() => { onPickModel(m); onClose(); }}>
+        <span className="bridge-glyph">
+          {m.id === currentModelId
+            ? <Icon name="check" size={10} color="var(--accent)" />
+            : <Icon name="bolt"  size={10} color="var(--cyan)" />}
+        </span>
+        <span style={{ color: m.id === currentModelId ? "var(--accent)" : "var(--fg)" }}>{m.name}</span>
+        <span className="mono" style={{ color: "var(--fg-4)" }}>{m.id}</span>
+        <span style={{ color: "var(--fg-3)" }}>· {m.note}</span>
+        <span className="chip muted" style={{ marginLeft: "auto" }}>{m.latency}ms</span>
+      </button>
+    );
     return (
       <div className="bridge-scrim" onClick={onClose}>
         <div className="bridge slide-in" onClick={(e) => e.stopPropagation()}>
@@ -693,9 +733,15 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, onP
             <span className="kbd">esc</span>
           </div>
           <div className="bridge-body">
+            {recentHits.length > 0 && (
+              <div className="bridge-group">
+                <div className="bridge-group-head mono">recently used</div>
+                {recentHits.map((m) => modelRow(m, "recent"))}
+              </div>
+            )}
             <div className="bridge-group">
               <div className="bridge-group-head mono" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                switch model
+                all models
                 <span style={{ color: "var(--fg-4)" }}>
                   tauri:{window.__TAURI__ ? "✓" : "✗"}
                   · connected:{window.OMP_BRIDGE?.isConnected ? "✓" : "✗"}
@@ -706,21 +752,7 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, onP
                   refresh
                 </button>
               </div>
-              {modelHits.map((m) => (
-                <button key={m.id}
-                  className={`bridge-row ${m.id === currentModelId ? "active" : ""}`}
-                  onClick={() => { onPickModel(m); onClose(); }}>
-                  <span className="bridge-glyph">
-                    {m.id === currentModelId
-                      ? <Icon name="check" size={10} color="var(--accent)" />
-                      : <Icon name="bolt"  size={10} color="var(--cyan)" />}
-                  </span>
-                  <span style={{ color: m.id === currentModelId ? "var(--accent)" : "var(--fg)" }}>{m.name}</span>
-                  <span className="mono" style={{ color: "var(--fg-4)" }}>{m.id}</span>
-                  <span style={{ color: "var(--fg-3)" }}>· {m.note}</span>
-                  <span className="chip muted" style={{ marginLeft: "auto" }}>{m.latency}ms</span>
-                </button>
-              ))}
+              {modelHits.map((m) => modelRow(m, "all"))}
               {modelHits.length === 0 && <div className="bridge-empty">no models found</div>}
             </div>
           </div>
