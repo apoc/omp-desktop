@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-02
+
 ### Fixed
 
 - The prompt box and plan mode belong to each tab instead of being shared by all of them (#28). Switching projects no longer carries over a half-typed message (which Enter would then send to the other project), its attached images or collapsed pastes, plan mode, or plan comments. Each tab keeps its own until you come back; an image still being prepared when you switch lands in the tab it was pasted into.
