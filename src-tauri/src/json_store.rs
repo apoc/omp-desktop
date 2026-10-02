@@ -591,16 +591,13 @@ mod tests {
     /// now-dead pid — a pid guaranteed not to belong to any live process
     /// (barring extremely unlikely pid reuse in the instant between wait
     /// and use, which every test in this module tolerates the same way any
-    /// real caller would).
+    /// real caller would). Unix-only, like its one caller: liveness of a
+    /// lock owner's pid is only probed there.
+    #[cfg(unix)]
     fn spawn_and_reap_dead_pid() -> u32 {
-        let mut cmd = if cfg!(windows) {
-            let mut c = std::process::Command::new("cmd");
-            c.args(["/C", "exit"]);
-            c
-        } else {
-            std::process::Command::new("true")
-        };
-        let mut child = cmd.spawn().expect("spawn short-lived helper process");
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn short-lived helper process");
         let pid = child.id();
         child.wait().expect("wait for short-lived helper process");
         pid

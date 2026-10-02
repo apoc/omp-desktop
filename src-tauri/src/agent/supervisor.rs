@@ -81,7 +81,7 @@ impl ProcessSupervisor {
     /// Windows counterpart of the Unix `prepare` — no pre-spawn setup is
     /// needed, since job-object assignment happens after `.spawn()`.
     #[cfg(windows)]
-    pub(super) fn prepare(_cmd: &mut Command) {}
+    pub(super) const fn prepare(_cmd: &mut Command) {}
 
     /// Attach supervision to a just-spawned child. Must be called *after*
     /// `.spawn()`.

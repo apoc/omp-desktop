@@ -68,8 +68,7 @@ impl OpenProjectState {
     pub fn take_pending(&self) -> Vec<String> {
         self.pending
             .lock()
-            .map(|mut pending| std::mem::take(&mut *pending))
-            .unwrap_or_default()
+            .map_or_default(|mut pending| std::mem::take(&mut *pending))
     }
 }
 

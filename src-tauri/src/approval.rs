@@ -287,7 +287,7 @@ impl RuleBook {
         });
         let rules: Vec<Rule> = raw
             .and_then(|bytes| serde_json::from_slice::<ProjectRulesFile>(&bytes).ok())
-            .map(|file| {
+            .map_or_default(|file| {
                 file.rules
                     .into_iter()
                     .map(|r| Rule {
@@ -296,8 +296,7 @@ impl RuleBook {
                         granted_at: r.granted_at,
                     })
                     .collect()
-            })
-            .unwrap_or_default();
+            });
 
         let out = f(&rules);
         if let Ok(mut cache) = self.project_rules.lock() {
