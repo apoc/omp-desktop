@@ -2,7 +2,8 @@
 // Regression script for src/app/session-ui.js — the per-tab composer draft
 // and plan-mode state of issue #28: one tab's plan mode, plan comments,
 // draft or prompt-history recall must never show up in another tab, and
-// closed tabs leave nothing behind.
+// closed tabs leave nothing behind. Also the draft's collapsed long pastes
+// (#31): what a send puts on the wire, and what a chip's "expand" inlines.
 // Run: node tests/test-session-ui.mjs
 
 import assert from "node:assert/strict";
@@ -157,6 +158,92 @@ check("a recall position past a shrunken history restarts instead of reading pas
 check("nothing to recall leaves the draft alone", () => {
   assert.equal(S.recallInDraft(typed("x"), [], -1, step), null);
   assert.equal(S.recallInDraft(typed("x"), ["h"], +1, step), null);
+});
+
+// ── Collapsed pastes (#31) ───────────────────────────────────────────────
+
+const lines = n => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n");
+// Merges an edit's patch the way composer.jsx does.
+const collapse = (d, raw, start, end) => {
+  const { patch, caret } = S.collapsePaste(d, raw, start, end);
+  return { draft: { ...d, ...patch }, caret };
+};
+
+check("a long paste collapses at the selection and a send restores it byte for byte", () => {
+  const raw = `${lines(20)}\n`;
+  const { draft, caret } = collapse(typed("see SELECTED here"), raw, 4, 12);
+  assert.equal(draft.text, "see [paste #1 +20 lines] here");
+  assert.equal(caret, "see [paste #1 +20 lines]".length);
+  assert.equal(S.expandPastes(draft.text, draft.pastes), `see ${raw} here`);
+});
+
+check("collapse thresholds: more than 5 lines or more than 500 characters", () => {
+  assert.equal(S.shouldCollapsePaste(lines(5)), false);
+  assert.equal(S.shouldCollapsePaste(`${lines(5)}\n`), false, "a final newline is not a sixth line");
+  assert.equal(S.shouldCollapsePaste(lines(6)), true);
+  assert.equal(S.shouldCollapsePaste("x".repeat(500)), false);
+  assert.equal(S.shouldCollapsePaste("x".repeat(501)), true);
+  assert.equal(collapse(DRAFT_IDLE, "x".repeat(600), 0, 0).draft.text, "[paste #1 +1 line]");
+});
+
+check("Windows and old-Mac line endings become the textarea's LF", () => {
+  assert.equal(S.normalizePaste("a\r\nb\rc\n"), "a\nb\nc\n");
+  // Six CRLF lines are six lines, and collapse like it.
+  assert.equal(S.shouldCollapsePaste(S.normalizePaste(lines(6).replaceAll("\n", "\r\n"))), true);
+});
+
+check("each new paste gets its own id, and the strip lists each still-referenced one once", () => {
+  let d = collapse(typed("a  b"), lines(6), 1, 1).draft;
+  d = collapse(d, lines(7), d.text.length, d.text.length).draft;
+  d = { ...d, text: `${d.text} [paste #1 +6 lines] [paste #9 +3 lines]` };
+  assert.deepEqual(S.pastesIn(d.text, d.pastes), [
+    { id: "1", text: lines(6), lines: 6 },
+    { id: "2", text: lines(7), lines: 7 },
+  ]);
+  const withoutFirst = d.text.replaceAll("[paste #1 +6 lines]", "");
+  assert.deepEqual(S.pastesIn(withoutFirst, d.pastes).map(p => p.id), ["2"], "a deleted token drops its chip");
+});
+
+check("expanding one paste inlines every copy of it and leaves the others collapsed", () => {
+  let d = collapse(typed("x  y"), lines(6), 1, 1).draft;           // x[paste #1]  y
+  d = collapse(d, lines(8), d.text.length, d.text.length).draft;   // …y[paste #2]
+  d = { ...d, text: `${d.text} [paste #2 +8 lines]`, historyNav: { index: 0, stash: "" } };
+  const r = S.inlinePaste(d, "2");
+  const head = "x[paste #1 +6 lines]  y";
+  assert.equal(r.patch.text, `${head}${lines(8)} ${lines(8)}`);
+  assert.equal(r.caret, head.length + lines(8).length, "caret ends the first inlined copy");
+  assert.deepEqual(Object.keys(r.patch.pastes), ["1"]);
+  assert.equal(r.patch.historyNav, null, "an edit ends a prompt-history recall");
+  assert.equal(S.expandPastes(r.patch.text, r.patch.pastes), `x${lines(6)}  y${lines(8)} ${lines(8)}`);
+});
+
+check("a paste edit keeps a concurrent image preparation, and ends a history recall", () => {
+  const att = [{ id: 1 }];
+  const busy = { ...typed("ab"), attachments: att, pendingImages: 2, historyNav: { index: 0, stash: "" } };
+  const collapsed = { ...busy, ...S.collapsePaste(busy, lines(6), 1, 1).patch };
+  assert.equal(collapsed.pendingImages, 2);
+  assert.equal(collapsed.attachments, att);
+  assert.equal(collapsed.historyNav, null);
+  const inlined = { ...collapsed, ...S.inlinePaste(collapsed, "1").patch };
+  assert.equal(inlined.pendingImages, 2);
+  assert.equal(inlined.attachments, att);
+});
+
+check("an empty line before the final newline still counts", () => {
+  assert.equal(collapse(DRAFT_IDLE, `${"x".repeat(600)}\n\n`, 0, 0).draft.text, "[paste #1 +2 lines]");
+});
+
+check("expanding a paste the text no longer refers to does nothing", () => {
+  const d = collapse(typed(""), lines(6), 0, 0).draft;
+  assert.equal(S.inlinePaste({ ...d, text: "gone" }, "1"), null);
+  assert.equal(S.inlinePaste(d, "7"), null);
+});
+
+check("pasted text is inserted literally, never re-scanned or read as a replacement pattern", () => {
+  const tricky = "keep [paste #1 +6 lines] and $& and $1\n".repeat(6);
+  const d = collapse(typed(""), tricky, 0, 0).draft;
+  assert.equal(S.expandPastes(d.text, d.pastes), tricky);
+  assert.equal(S.inlinePaste(d, "1").patch.text, tricky);
 });
 
 // ── Plan transitions (same semantics as before the per-tab split) ────────

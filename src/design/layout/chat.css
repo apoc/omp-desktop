@@ -107,7 +107,13 @@
 .user-text {
   font-size: var(--d-text);
   color: var(--fg);
-  text-wrap: pretty;
+  /* A prompt is plain text, not markdown: keep its line breaks (a pasted
+     log or stack trace would otherwise run together, #31). No
+     `text-wrap: pretty` here: in WebKit it breaks preserved lines short
+     of the shrink-to-fit bubble's own max-content width, wrapping lines
+     that fit. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* ── Inline plan (assistant's first reply) ──────────────────────────── */

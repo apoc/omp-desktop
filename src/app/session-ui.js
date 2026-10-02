@@ -110,9 +110,103 @@
     return result && { ...draft, text: result.text, historyNav: result.nav };
   }
 
+  // ── Collapsed pastes (#31) ───────────────────────────────────────────
+  // A long paste goes into the textarea as a `[paste #N +K lines]` token;
+  // its text waits in `draft.pastes[N]` until the send expands it.
+  // `pasteCounter` keeps ids unique within one draft.
+
+  const PASTE_TOKEN_RE = /\[paste #(\d+) \+\d+ lines?\]/g;
+  const PASTE_MAX_LINES = 5;
+  const PASTE_MAX_CHARS = 500;
+
+  /** Clipboard text in the form a textarea value holds: the browser turns
+   *  every CRLF/CR into LF on its own insert, so a collapsed paste must
+   *  too, or inlining it later would change the draft under React. */
+  function normalizePaste(raw) {
+    return raw.replace(/\r\n?/g, "\n");
+  }
+
+  /** Lines as the user sees them: a final newline ends the last line, it
+   *  doesn't open another one. */
+  function pasteLineCount(raw) {
+    // Counted, not split: the chip strip recounts every collapsed paste on
+    // each keystroke, and a pasted log can run to thousands of lines.
+    let lines = 1;
+    for (let i = raw.indexOf("\n"); i !== -1 && i < raw.length - 1; i = raw.indexOf("\n", i + 1)) lines++;
+    return lines;
+  }
+
+  function shouldCollapsePaste(raw) {
+    return raw.length > PASTE_MAX_CHARS || pasteLineCount(raw) > PASTE_MAX_LINES;
+  }
+
+  // The two draft edits below return `{ patch, caret }`: `patch` holds
+  // only the fields the edit owns, so a caller merges it onto the latest
+  // draft (`{ ...d, ...patch }`) without overwriting an image preparation
+  // queued in the same tick. Both are edits, so both end a history recall.
+
+  /** Puts `raw` into the draft as a new token over the selection
+   *  `start`..`end`, with the caret after the token. */
+  function collapsePaste(draft, raw, start, end) {
+    const id = draft.pasteCounter + 1;
+    const lines = pasteLineCount(raw);
+    const token = `[paste #${id} +${lines} line${lines === 1 ? "" : "s"}]`;
+    return {
+      patch: {
+        text: draft.text.slice(0, start) + token + draft.text.slice(end),
+        pastes: { ...draft.pastes, [id]: raw },
+        pasteCounter: id,
+        historyNav: null,
+      },
+      caret: start + token.length,
+    };
+  }
+
+  /** The collapsed pastes `text` still refers to, in order of first
+   *  appearance, once each: `{ id, text, lines }`. A token whose paste is
+   *  unknown (typed by hand, or left from a sent message) is plain text. */
+  function pastesIn(text, pastes) {
+    const seen = new Set();
+    const out = [];
+    for (const [, id] of text.matchAll(PASTE_TOKEN_RE)) {
+      const raw = pastes[id];
+      if (raw === undefined || seen.has(id)) continue;
+      seen.add(id);
+      out.push({ id, text: raw, lines: pasteLineCount(raw) });
+    }
+    return out;
+  }
+
+  /** `text` with every known token replaced by its paste — what a send
+   *  puts on the wire. One pass: a paste that itself contains token-shaped
+   *  text is not expanded again. */
+  function expandPastes(text, pastes) {
+    return text.replace(PASTE_TOKEN_RE, (token, id) => pastes[id] ?? token);
+  }
+
+  /** Turns paste `id` back into editable text in the draft, at every token
+   *  that refers to it, with the caret at the end of the first inlined
+   *  copy; null when the draft holds no such token. */
+  function inlinePaste(draft, id) {
+    const raw = draft.pastes[id];
+    if (raw === undefined) return null;
+    let caret = -1;
+    // `offset` indexes the original text, and nothing before the first
+    // token of `id` changes, so it holds in the result too.
+    const text = draft.text.replace(PASTE_TOKEN_RE, (token, tokenId, offset) => {
+      if (tokenId !== id) return token;
+      if (caret < 0) caret = offset + raw.length;
+      return raw;
+    });
+    if (caret < 0) return null;
+    const { [id]: _inlined, ...pastes } = draft.pastes;
+    return { patch: { text, pastes, historyNav: null }, caret };
+  }
+
   window.OMP_SESSION_UI = {
     entryOf, updateEntry, pruneEntries,
     PLAN_IDLE, togglePlan, enterPlan, approvePlan, annotatePlan, markPlanSent,
     DRAFT_IDLE, recallInDraft,
+    normalizePaste, shouldCollapsePaste, collapsePaste, pastesIn, expandPastes, inlinePaste,
   };
 })();

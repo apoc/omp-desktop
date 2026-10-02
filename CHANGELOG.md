@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Rename a conversation from the tab bar or the project sidebar (#32): double-click a tab or a sidebar row, or use the pencil on a sidebar row or in a grouped tab's dropdown, then type the name and press Enter (Escape cancels). The name is saved with the conversation, so it survives a restart or resume, and from then on the automatic title never overwrites it. It works while the agent is running too, and leaves nothing in the chat. Typing `/rename <title>` still works the same way.
 - Copy buttons on agent output (#33). Hover an assistant message, a code block, a bash output, an eval cell's code or output, or an edit's diff, and click the copy icon to put its raw text on the clipboard: a message copies as the markdown the agent wrote, a code block as the exact fence content, and a bash output in full — including lines scrolled out of the card, without omp's wall-time and exit-code notes. The button briefly shows "copied".
 
+### Fixed
+
+- Pasted text stays readable (#31). A sent message keeps its line breaks instead of running them together into one line. A long paste (more than 5 lines or 500 characters) still goes into the prompt box as a `[paste #N +K lines]` placeholder, but a chip above the box now shows it: click the chip to read the pasted text, or "expand" to turn it back into editable text in the prompt. Once a draft is taller than the prompt box, it scrolls instead of hiding the rest.
+
 ## [0.4.2] - 2026-10-02
 
 ### Fixed

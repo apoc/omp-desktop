@@ -16,7 +16,9 @@
   margin-bottom: 6px;
 }
 
-.attach-strip { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px 8px; }
+/* Image attachments, and the collapsed-paste chips (#31) under the same layout. */
+.attach-strip, .paste-strip { padding: 0 2px 8px; }
+.attach-strip, .paste-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .attach-chip { position: relative; width: 48px; height: 48px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line-bright); flex: none; }
 .attach-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
 .attach-remove {
@@ -28,6 +30,30 @@
   color: var(--fg-2); cursor: pointer;
 }
 .attach-remove:hover { color: var(--rose); background: color-mix(in oklab, var(--rose) 15%, color-mix(in oklab, var(--bg-elevated) 70%, black)); }
+
+/* Collapsed long pastes (#31): a chip per token, plus the open one's text. */
+.paste-chip {
+  display: flex; align-items: stretch;
+  border: 1px solid var(--line-bright); border-radius: 6px;
+  background: var(--bg-elevated);
+  font-size: var(--d-text-xs); overflow: hidden;
+}
+.paste-chip.open { border-color: color-mix(in oklab, var(--accent) 45%, var(--line-bright)); }
+.paste-chip button { border: none; background: none; color: var(--fg-2); cursor: pointer; font: inherit; }
+.paste-chip button:hover { background: var(--bg-hover); color: var(--fg); }
+.paste-chip button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.paste-chip-label { display: flex; align-items: center; gap: 5px; padding: 3px 6px; }
+.paste-chip-meta { color: var(--fg-4); }
+.paste-chip .paste-chip-expand { padding: 3px 8px; border-left: 1px solid var(--line); color: var(--accent); }
+.paste-preview {
+  margin: 6px 0 0;
+  max-height: 240px; overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg-input);
+  font-size: var(--d-text-xs); color: var(--fg-2);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
 
 .composer-row {
   display: flex; align-items: flex-end; gap: 6px;

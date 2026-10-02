@@ -8,6 +8,7 @@ const { prepareImage, imageFilesFromTransfer, imageFilesFromClipboardAsync, toDa
 const { isDesktop, slashMenu, matchesQuery, insertText: slashInsertText } = window.OMP_SLASH;
 const {
   entryOf: draftEntryOf, updateEntry: updateDraftEntry, pruneEntries: pruneDrafts, DRAFT_IDLE, recallInDraft,
+  normalizePaste, shouldCollapsePaste, collapsePaste, pastesIn, expandPastes, inlinePaste,
 } = window.OMP_SESSION_UI;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` (display
@@ -142,11 +143,19 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
     el?.scrollIntoView({ block: "nearest" });
   }, [mentionActiveIdx, showMention]);
 
+  // Grow with the text up to the CSS max-height, then scroll: hidden
+  // overflow past it would leave the rest of a long draft unreachable.
   React.useEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
+    // Read before the writes below, while style is still clean. Measure
+    // without the last pass's scrollbar, whose width would change wrapping.
+    const max = parseFloat(getComputedStyle(ta).maxHeight) || Infinity;
     ta.style.height = "auto";
-    ta.style.height = `${Math.min(ta.scrollHeight, 320)}px`;
+    ta.style.overflowY = "hidden";
+    const full = ta.scrollHeight;
+    ta.style.height = `${Math.min(full, max)}px`;
+    if (full > max) ta.style.overflowY = "auto";
   }, [text]);
 
   // Restore focus when the agent finishes streaming and the textarea
@@ -254,10 +263,27 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
     });
   };
 
-  // Expand [paste #N +K lines] tokens back to their real content before sending.
-  const expandPastes = (txt) =>
-    txt.replace(/\[paste #(\d+) \+\d+ lines?\]/g, (match, id) =>
-      draft.pastes[id] ?? match);
+  // The long pastes still collapsed in the draft, for the chip strip.
+  const collapsed = React.useMemo(() => pastesIn(text, draft.pastes), [text, draft.pastes]);
+
+  // Applies a paste edit from session-ui.js and puts the caret where it
+  // says, once the new text has rendered.
+  const applyPasteEdit = (r) => {
+    updateDraft(sessionId, d => ({ ...d, ...r.patch }));
+    setCaret(r.caret);
+    requestAnimationFrame(() => {
+      const ta = taRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = r.caret;
+    });
+  };
+
+  // A chip's "expand": the paste becomes editable text again.
+  const expandPaste = (id) => {
+    const r = inlinePaste(draft, id);
+    if (r) applyPasteEdit(r);
+  };
 
   // Route a completed draft through the full send pipeline. `dispatcher` is
   // either `onSend` (normal) or `onFollowUp` (follow-up); both get the same
@@ -277,7 +303,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
       : (text.trim() || attachments.length > 0 || (planMode && annotationCount > 0));
     if (!canSend) return;
     const images = attachments.map(a => a.image);
-    dispatcher(expandPastes(text.trim()), images);
+    dispatcher(expandPastes(text.trim(), draft.pastes), images);
     // Back to an empty draft: text, attachments and collapsed pastes all
     // went out with this message, and the reset ends any prompt-history
     // recall. The in-flight image count is kept: an async-clipboard paste
@@ -336,13 +362,14 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   const removeAttachment = (attId) =>
     updateDraft(sessionId, d => ({ ...d, attachments: d.attachments.filter(a => a.id !== attId) }));
 
-  // Collapse long pastes into a token so the textarea stays navigable.
-  // Threshold: more than 5 lines OR more than 500 characters. An image on
-  // the clipboard is attached in every case; it only short-circuits the
-  // text handling below when there's no accompanying text to preserve.
+  // Collapse long pastes (session-ui.js shouldCollapsePaste) into a token
+  // so the textarea stays navigable; the chip strip above shows and
+  // expands them. An image on the clipboard is attached in every case; it
+  // only short-circuits the text handling below when there's no
+  // accompanying text to preserve.
   const onPaste = (e) => {
     const imageFiles = imageFilesFromTransfer(e.clipboardData);
-    const raw = e.clipboardData?.getData("text/plain") ?? "";
+    const raw = normalizePaste(e.clipboardData?.getData("text/plain") ?? "");
     if (imageFiles.length > 0) {
       addFiles(imageFiles);
       // Some sources (spreadsheet cells, rich-text apps) put a rendered
@@ -360,23 +387,12 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
       // works this resolves to zero files and is a no-op.
       imageFilesFromClipboardAsync().then((files) => { if (files.length > 0) addFiles(files); });
     }
-    const lines = raw.split("\n");
-    if (lines.length <= 5 && raw.length <= 500) return; // short — let browser handle normally
+    if (!shouldCollapsePaste(raw)) return; // short — let browser handle normally
     e.preventDefault();
-    const id    = draft.pasteCounter + 1;
-    const token = `[paste #${id} +${lines.length} line${lines.length === 1 ? "" : "s"}]`;
     const ta    = taRef.current;
     const start = ta ? ta.selectionStart : text.length;
     const end   = ta ? ta.selectionEnd   : text.length;
-    const next  = text.slice(0, start) + token + text.slice(end);
-    updateDraft(sessionId, d => ({ ...d, text: next, pastes: { ...d.pastes, [id]: raw }, pasteCounter: id }));
-    // Reposition cursor after the token on next frame (state not flushed yet).
-    requestAnimationFrame(() => {
-      if (!taRef.current) return;
-      const pos = start + token.length;
-      taRef.current.selectionStart = taRef.current.selectionEnd = pos;
-      setCaret(pos);
-    });
+    applyPasteEdit(collapsePaste(draft, raw, start, end));
   };
 
   const onKey = (e) => {
@@ -488,6 +504,9 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
           ))}
         </div>
       )}
+
+      {/* Keyed by tab: an open preview is that tab's, not the next one's. */}
+      <PasteStrip key={sessionId} pastes={collapsed} onExpand={expandPaste} />
 
       <div className="composer-row">
         <button className="btn icon ghost" title="attach image" onClick={() => fileInputRef.current?.click()}>
