@@ -190,16 +190,13 @@
         reject(err)   { clearTimeout(timer); reject(err);   },
       });
       // A failed hand-off (the tab's process is gone) never produces a
-      // response; reject now instead of waiting out the timeout. Logged
-      // like `_send`'s failures, since several callers swallow rejections.
-      window.__TAURI__.core
-        .invoke("send_command", { sessionId: activeSessionId, json: JSON.stringify({ ...cmd, id }) })
-        .catch(e => {
-          console.error("[live] send error:", e);
-          if (!_pendingResponses.has(id)) return;
-          _pendingResponses.get(id).reject(e instanceof Error ? e : new Error(String(e)));
-          _pendingResponses.delete(id);
-        });
+      // response; reject now instead of waiting out the timeout. Still
+      // logged, since several callers swallow rejections.
+      _invokeSend({ ...cmd, id }).catch(e => {
+        _logSendError(e);
+        _pendingResponses.get(id)?.reject(e instanceof Error ? e : new Error(String(e)));
+        _pendingResponses.delete(id);
+      });
     });
   }
 
@@ -2018,10 +2015,17 @@
   // ── Send a command to the active session's omp ────────────────────────────
   function _send(cmd) {
     if (!window.__TAURI__ || !activeSessionId) return;
-    window.__TAURI__.core
-      .invoke("send_command", { sessionId: activeSessionId, json: JSON.stringify(cmd) })
-      .catch(e => console.error("[live] send error:", e));
+    _invokeSend(cmd).catch(_logSendError);
   }
+
+  // The `send_command` hand-off to the active tab, shared by `_send` and
+  // `_sendWithResponse`; callers check the connection and handle failure.
+  function _invokeSend(cmd) {
+    return window.__TAURI__.core
+      .invoke("send_command", { sessionId: activeSessionId, json: JSON.stringify(cmd) });
+  }
+
+  function _logSendError(e) { console.error("[live] send error:", e); }
 
   // Project path (cwd) of the active tab, or null for a pathless tab (a
   // resumed session with no recorded cwd) — used to scope project-level
@@ -2289,7 +2293,6 @@
      *  bubble, no prompt-history entry, confirmation note swallowed); the
      *  tab label updates from `session_info_update`. A background tab is
      *  activated first, since only the active tab's frames are processed.
-     *  Resolves true once omp confirmed the rename.
      *
      *  Not unit-tested as a whole: it is activation, IPC and registry
      *  side effects end to end. The pure parts are (`manualRename`,
@@ -2298,36 +2301,32 @@
      *  persistence across close + resume, a dead process. */
     async renameSession(id, rawTitle) {
       const rename = STITLE.manualRename(rawTitle);
-      if (!rename || !sessionRegistry.has(id)) return false;
+      if (!rename || !sessionRegistry.has(id)) return;
       if (id !== activeSessionId) await window.OMP_BRIDGE.activateSession(id);
       if (id !== activeSessionId || !sessionRegistry.has(id)) {
         console.warn(`[live] rename of '${id}' dropped — the tab could not be activated`);
-        return false;
+        return;
       }
       _disarmAutoRename(rename.command);
       const entry = sessionRegistry.get(id);
       sessionRegistry.set(id, { ...entry, renameNotes: [...(entry.renameNotes ?? []), rename.note] });
-      let timedOut = false;
       try {
         await _sendWithResponse({ type: "prompt", message: rename.command }, 15000);
-        return true;
       } catch (e) {
-        timedOut = !!e?.timedOut;
         if (activeSessionId === id) {
           _pushAssistantNote(`Rename failed: ${e?.message ?? e}`, true);
           notify();
         }
-        return false;
-      } finally {
-        // omp prints the note before the response, so on a settled outcome
-        // it has been swallowed already if it was printed at all: drop the
-        // expectation so a later identical note is not eaten. Not after a
-        // timeout — the user may have switched away right after the send,
-        // and the frames then arrive through journal replay on return.
-        const cur = sessionRegistry.get(id);
-        const rest = timedOut ? null : STITLE.dropPendingNote(cur?.renameNotes, rename.note);
-        if (rest) sessionRegistry.set(id, { ...cur, renameNotes: rest });
+        // Keep the expectation: the user may have switched away right after
+        // the send, and the frames then arrive through journal replay.
+        if (e?.timedOut) return;
       }
+      // omp prints the note before the response, so on a settled outcome it
+      // has been swallowed already if it was printed at all: drop the
+      // expectation so a later identical note is not eaten.
+      const cur = sessionRegistry.get(id);
+      const rest = STITLE.dropPendingNote(cur?.renameNotes, rename.note);
+      if (rest) sessionRegistry.set(id, { ...cur, renameNotes: rest });
     },
     setModel(model)    { _send({ type: "set_model", provider: model.provider, modelId: model.id }); },
     cycleModel()       { _send({ type: "cycle_model" }); },

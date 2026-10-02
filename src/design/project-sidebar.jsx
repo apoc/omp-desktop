@@ -31,8 +31,8 @@ function ProjectSidebar({
   const startRename = id => { onSelectTab(id); setRenaming(id); };
   const renameField = t => (
     <RenameField value={t.name}
-      onCommit={name => { setRenaming(null); onRenameTab(t.id, name); }}
-      onCancel={() => setRenaming(null)} />
+      onCommit={name => onRenameTab(t.id, name)}
+      onClose={() => setRenaming(null)} />
   );
   const renameButton = t => (
     <button className="psb-act" title="rename conversation" onClick={() => startRename(t.id)}>
@@ -59,6 +59,8 @@ function ProjectSidebar({
           const expanded = multi && !collapsed[group.key];
           const containsActive = group.tabs.some(t => t.id === activeId);
           const profile = profileLabel(group.profile);
+          const editing = !multi && renaming === group.tabs[0].id;
+          const folderIcon = <Icon name="folder" size={11} color={containsActive ? "var(--accent)" : "var(--fg-4)"} />;
           // Single-tab cards show the conversation title, which ellipsizes.
           // The tooltip keeps the full title plus the folder path; multi-tab
           // project rows still tip the path (member rows tip each tab name).
@@ -78,16 +80,16 @@ function ProjectSidebar({
                     <Icon name="chevR" size={10} />
                   </button>
                 ) : <span className="psb-chev-spacer" />}
-                {!multi && renaming === group.tabs[0].id ? (
+                {editing ? (
                   <div className="psb-main psb-editing">
-                    <Icon name="folder" size={11} color={containsActive ? "var(--accent)" : "var(--fg-4)"} />
+                    {folderIcon}
                     {renameField(group.tabs[0])}
                   </div>
                 ) : (
                   <button className="psb-main" title={cardTip}
                     onClick={() => onSelectTab(groupTarget(group, activeId))}
                     onDoubleClick={() => { if (!multi) startRename(group.tabs[0].id); }}>
-                    <Icon name="folder" size={11} color={containsActive ? "var(--accent)" : "var(--fg-4)"} />
+                    {folderIcon}
                     <span className="psb-name">{multi ? group.name : group.tabs[0].name}</span>
                     {profile && (
                       <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
@@ -103,7 +105,7 @@ function ProjectSidebar({
                       <Icon name="plus" size={10} />
                     </button>
                   )}
-                  {!multi && renaming !== group.tabs[0].id && renameButton(group.tabs[0])}
+                  {!multi && !editing && renameButton(group.tabs[0])}
                   {!multi && (
                     <button className="psb-act" title="close tab" onClick={() => onCloseTab(group.tabs[0].id)}>
                       <Icon name="close" size={9} />

@@ -3,12 +3,12 @@
 
    Swapped in for a tab's (or sidebar row's) label while renaming. Enter
    or leaving the field commits, Escape cancels; an empty or unchanged
-   name is a cancel. The caller sends the rename
-   (`OMP_BRIDGE.renameSession`) and unmounts the field either way — the
-   label updates once omp confirms.
+   name is a cancel. `onCommit(name)` sends the rename
+   (`OMP_BRIDGE.renameSession`); `onClose` follows every outcome and
+   unmounts the field — the label updates once omp confirms.
    ═════════════════════════════════════════════════════════════════════ */
 
-function RenameField({ value, onCommit, onCancel, className = "" }) {
+function RenameField({ value, onCommit, onClose }) {
   const [draft, setDraft] = React.useState(value);
   const inputRef = React.useRef(null);
   // Exactly one outcome per edit: Enter unmounts the field, which can
@@ -17,15 +17,18 @@ function RenameField({ value, onCommit, onCancel, className = "" }) {
   // Read at unmount, after the closures of the first render went stale.
   const latest = React.useRef(null);
 
+  // Reads only refs, so the first render's copy (the unmount below) is as
+  // current as any. "Unchanged" is judged after omp's own cleaning, so a
+  // whitespace-only edit is no rename either.
   const finish = commit => {
     if (done.current) return;
     done.current = true;
-    const { draft: text, value: current, onCommit: commitFn, onCancel: cancelFn } = latest.current;
-    const next = text.trim();
-    if (commit && next && next !== current) commitFn(next);
-    else cancelFn();
+    const l = latest.current;
+    const next = window.OMP_SESSION_TITLE.manualRename(l.draft)?.title;
+    if (commit && next && next !== l.value) l.onCommit(next);
+    l.onClose();
   };
-  latest.current = { draft, value, onCommit, onCancel, finish };
+  latest.current = { draft, value, onCommit, onClose };
 
   React.useEffect(() => {
     inputRef.current?.focus();
@@ -34,7 +37,7 @@ function RenameField({ value, onCommit, onCancel, className = "" }) {
     // the tab folded into a group chip: that is leaving the field too, so
     // commit like a blur. Otherwise the parent's edit state would linger
     // and reopen the field whenever the row came back.
-    return () => latest.current.finish(true);
+    return () => finish(true);
   }, []);
 
   // The field sits inside clickable rows and tabs: keep its clicks (caret
@@ -43,7 +46,7 @@ function RenameField({ value, onCommit, onCancel, className = "" }) {
   const stop = e => e.stopPropagation();
   return (
     <input ref={inputRef}
-      className={`rename-field ${className}`}
+      className="rename-field"
       value={draft}
       aria-label="conversation name"
       spellCheck={false}

@@ -140,9 +140,9 @@ function TabBar({
             <Icon name="folder" size={11} color={active ? p.color : "var(--fg-4)"} />
             <TabRunDot state={p.runState} />
             {renaming === p.id ? (
-              <RenameField className="tab-rename" value={p.name}
-                onCommit={name => { setRenaming(null); onRename(p.id, name); }}
-                onCancel={() => setRenaming(null)} />
+              <RenameField value={p.name}
+                onCommit={name => onRename(p.id, name)}
+                onClose={() => setRenaming(null)} />
             ) : (
               <span className="tab-name" title={`${p.name}\ndouble-click to rename`}>{p.name}</span>
             )}

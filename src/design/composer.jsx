@@ -157,7 +157,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
     if (isStreaming) return;
     requestAnimationFrame(() => {
       const el = document.activeElement;
-      if (el && el !== taRef.current && window.OMP_KEYMAP?.isTypingTarget(el)) return;
+      if (el && window.OMP_KEYMAP?.isTypingTarget(el)) return;
       taRef.current?.focus();
     });
   }, [isStreaming]);

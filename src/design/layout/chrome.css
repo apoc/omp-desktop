@@ -164,14 +164,15 @@
 .profile-del-spacer { width: 24px; flex: none; }
 .profile-sep { height: 1px; margin: 4px 2px; background: var(--line); }
 .profile-form { display: flex; align-items: center; gap: 4px; padding: 2px 4px 4px; }
-.profile-input {
+/* Shared by the inline conversation-name editor (#32) below. */
+.profile-input, .rename-field {
   flex: 1; min-width: 0;
   padding: 5px 7px;
   background: var(--bg-surface);
   border: 1px solid var(--line-bright); border-radius: var(--r-1);
   color: var(--fg); font-family: var(--font-mono); font-size: var(--d-text-sm);
 }
-.profile-input:focus { outline: none; border-color: var(--accent); }
+.profile-input:focus, .rename-field:focus { outline: none; border-color: var(--accent); }
 .profile-hint { padding: 4px 8px 5px; font-size: var(--d-text-xs); color: var(--fg-4); }
 .profile-hint.err { color: var(--rose); }
 
@@ -212,16 +213,9 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* Inline conversation-name editor (#32): tab bar, group popover, sidebar. */
-.rename-field {
-  flex: 1; min-width: 0; height: 20px;
-  padding: 0 5px;
-  background: var(--bg-surface);
-  border: 1px solid var(--accent); border-radius: var(--r-1);
-  color: var(--fg); font-family: var(--font-mono); font-size: var(--d-text-sm);
-}
-.rename-field:focus { outline: none; }
-/* Same footprint as the .tab-name it replaces. */
-.tab-rename { flex: none; width: 200px; }
+.rename-field { height: 20px; padding: 0 5px; border-color: var(--accent); }
+/* In the tab bar: same footprint as the .tab-name it replaces. */
+.tab > .rename-field { flex: none; width: 200px; }
 .tab-group-editing { cursor: default; }
 .tab-profile {
   /* `.chip` is inline-flex, on which `text-overflow` is inert - the label

@@ -83,8 +83,8 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
                 <span className="tab-group-item tab-group-editing">
                   <span className="tab-group-dot"><TabRunDot state={t.runState} /></span>
                   <RenameField value={t.name}
-                    onCommit={name => { setRenaming(null); onRename(t.id, name); }}
-                    onCancel={() => setRenaming(null)} />
+                    onCommit={name => onRename(t.id, name)}
+                    onClose={() => setRenaming(null)} />
                 </span>
               ) : (
                 <button className="tab-group-item" role="menuitem"
