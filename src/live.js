@@ -2616,6 +2616,25 @@
       notify();
     },
 
+    /** The inspector's message box: send a running subagent a message as
+     *  its user. omp holds the reply until the agent accepted it (queued
+     *  into its turn, or a new turn started) and runs slash commands and
+     *  prompt templates inside the agent. Rejects with omp's reason
+     *  (`Subagent not running: …`, `Subagent refused the message: …`).
+     *  The message itself joins the agent's event stream on delivery
+     *  (`summarizeEvent`'s `user` line). */
+    async steerSubagent(agentId, text) {
+      await _sendWithResponse({ type: "steer_subagent", subagentId: agentId, message: text });
+    },
+    /** Hard-stop a running subagent: the parent gets an aborted result for
+     *  it and its own turn goes on. `false` when it was no longer running,
+     *  so a repeat is harmless; the record ends with omp's `aborted`
+     *  lifecycle frame, never locally. */
+    async cancelSubagent(agentId) {
+      const data = await _sendWithResponse({ type: "cancel_subagent", subagentId: agentId });
+      return data?.cancelled === true;
+    },
+
     // ── Login ─────────────────────────────────────────────────────────────────
 
     /** Returns the list of OAuth providers and their current auth status. */

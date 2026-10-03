@@ -116,6 +116,26 @@ check("events are summarized; bookkeeping events are dropped; stream is capped",
   assert.equal(s.byId.A.stream.at(-1).text, "249");
 });
 
+check("only messages a person sent the agent show as user lines", () => {
+  const user = (attribution, content) => evt("A", { type: "message_end", message: { role: "user", attribution, content } });
+  let s = fold([life("A", "started")]);
+  s = fold([
+    user("agent", [{ type: "text", text: "the task prompt" }]),   // omp's own: assignment, reminders
+    user(undefined, "no attribution"),
+    user("user", [{ type: "text", text: " focus on tests " }, { type: "image", data: "x" }]),
+    user("user", "a plain string"),
+    user("user", "   "),
+    evt("A", { type: "message_start", message: { role: "user", attribution: "user", content: "start only" } }),
+  ], s);
+  assert.deepEqual(s.byId.A.stream.map(l => [l.kind, l.text]), [["user", "focus on tests"], ["user", "a plain string"]]);
+});
+
+check("blockText: string or block content, text blocks only, untrimmed", () => {
+  assert.equal(S.blockText(" s "), " s ");
+  assert.equal(S.blockText([{ type: "text", text: "  indented" }, { type: "image", data: "x" }, { type: "text", text: "b" }]), "  indented\nb");
+  assert.equal(S.blockText(undefined), "");
+});
+
 check("events for unknown agents are ignored", () => {
   const s = fold([evt("Z", { type: "tool_execution_start", toolName: "read" })]);
   assert.deepEqual(s.order, []);

@@ -586,6 +586,8 @@ function App() {
                   level={subagentUi.level}
                   transcript={subagentUi.selected ? subagentTranscripts[subagentUi.selected.id] : null}
                   onLoadTranscript={id => bridge?.loadSubagentTranscript(id)}
+                  onSteer={(id, text) => bridge?.steerSubagent(id, text)}
+                  onStop={id => bridge?.cancelSubagent(id)}
                   onClose={subagentUi.closePane}
                   onJumpToCall={subagentUi.jumpToCall}
                 />

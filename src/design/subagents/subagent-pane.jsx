@@ -102,7 +102,7 @@ function SaAgentRow({ agent: a, depth, now, onSelect }) {
 
 function SubagentPane({
   state, filter, onFilter, selected, onSelect, level,
-  transcript, onLoadTranscript, onClose, onJumpToCall,
+  transcript, onLoadTranscript, onClose, onJumpToCall, onSteer, onStop,
 }) {
   const all = _SAP.listAgents(state);
   const t = _SAP.totals(all);
@@ -128,7 +128,7 @@ function SubagentPane({
         <_SAP_Inspector key={selected.id}
           agent={selected} callId={_SAP.rootCallIdOf(state, selected)} now={now} level={level} transcript={transcript}
           onBack={() => onSelect(null)} onLoadTranscript={onLoadTranscript}
-          onJumpToCall={onJumpToCall} />
+          onJumpToCall={onJumpToCall} onSteer={onSteer} onStop={onStop} />
       ) : (
         <div className="sa-pane-body">
           {t.total === 0 ? (
