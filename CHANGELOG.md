@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- OMP Desktop now requires omp 18.4.9 or newer. A tab started against an older omp does not start; its note names the installed and the required version, and an `omp update` takes effect for the next tab without restarting the app. Upcoming features (queued-message controls, steering subagents) rely on RPC commands that older omp versions lack.
+
+### Fixed
+
+- A tab that fails to start — omp too old or not on `PATH`, or its profile deleted meanwhile — now says why, in the current tab or on the empty workspace, when it was opened with `+`, from a recent project or from the history panel. Before, nothing happened.
+
 ## [0.5.0] - 2026-10-03
 
 ### Added

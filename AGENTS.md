@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Tauri 2 desktop shell for `omp` (oh-my-pi). React UI served from `src/` in `tauri dev` (**no bundler** — JSX is transpiled in-browser by `@babel/standalone`) and from the precompiled `dist/` in release builds (see *Release frontend*). Rust backend spawns `omp --mode rpc` per tab.
+Tauri 2 desktop shell for `omp` (oh-my-pi). React UI served from `src/` in `tauri dev` (**no bundler** — JSX is transpiled in-browser by `@babel/standalone`) and from the precompiled `dist/` in release builds (see *Release frontend*). Rust backend spawns `omp --mode rpc-ui` per tab.
 
 ## Commands
 
@@ -34,6 +34,8 @@ Tauri 2 desktop shell for `omp` (oh-my-pi). React UI served from `src/` in `taur
 
 `omp` must be on PATH (`%LOCALAPPDATA%\omp\omp.exe` on Win). CI and every release run the same suite (`.github/workflows/tests.yml`): `cargo test --locked` on win/linux/mac, plus `npm test`.
 
+**omp version floor.** `MIN_OMP_VERSION` in `src-tauri/src/agent/spawn.rs` is the only omp version knowledge in the app: `spawn_omp` runs `omp --version` and refuses an older omp with a message naming both versions, or unreadable output with one quoting it and the required version; either is cached in `last_errors` like any spawn failure, and the bridge's `openSession`/`openProject`/`resumeSession` file it as a note (`_openReported`). Only a pass is remembered, so an `omp update` takes effect without an app restart. A change that starts using an RPC command, event or `get_state` field from a newer omp release raises the constant in the same commit (plus a CHANGELOG line); no code branches on the omp version or keeps a fallback for an omp below the floor. Finding a command's first release in omp's repo: `git log --reverse --format=%h -S '"<command>"' -- packages/coding-agent/src/modes/rpc`, then `git tag --contains <sha> --sort=v:refname` (first line; plain `--contains` sorts `v18.4.10` before `v18.4.9`). State fields are unquoted (`-S 'isSettled:'`), and agent-core events live outside `modes/rpc`, so widen the path for those.
+
 ## Architecture
 
 Three layers:
@@ -41,7 +43,7 @@ Three layers:
 1. **Rust (`src-tauri/src/`)** — `agent/` module:
    - `mod.rs` — `AgentBridge` public API (start/stop/send/last_error).
    - `inner.rs` — `BridgeInner` per-session: generation token, `Arc<Mutex<ChildStdin>>`, child handle.
-   - `spawn.rs` — `spawn_omp` candidate resolution + Win `CREATE_NO_WINDOW`.
+   - `spawn.rs` — `spawn_omp` candidate resolution, the omp version floor (`MIN_OMP_VERSION`), Win `CREATE_NO_WINDOW`.
    - `reader.rs` — stdout/stderr threads + bounded `read_until_capped` (16 MiB).
 
    `AgentBridge` = `HashMap<session_id, BridgeInner>`. Per-session stdin lock so writes don't serialise through the map. Reader emits `agent://line/{id}` per stdout line, `agent://exit/{id}` (empty payload = clean, non-empty = reason) — except a startup death before any frame ever arrived, where the reader substitutes a bounded stderr tail (`reader::StderrTail`) for the empty payload so a silent crash isn't read as a clean exit; also cached in `last_errors` so a background tab's death is visible from `session_status` without waiting for a switch. Tauri commands in `lib.rs`: `start_session`, `stop_session`, `send_command`, `session_status`, `open_project`, `take_pending_open_projects`. `Drop` + `stop_session` kill children — no orphans on hot-reload.
@@ -198,7 +200,7 @@ Trigger: 6th major component in one file, or 4th unrelated concern in one Rust m
 
 ## Things easy to break
 
-- `omp --mode rpc`, **not** `omp --rpc` (latter falls through to TUI, floods stdout with ANSI).
+- `omp --mode rpc-ui`, **not** `omp --rpc` (latter falls through to TUI, floods stdout with ANSI).
 - Blank-line stdout: `agent/reader.rs` distinguishes EOF (`(0,_)`) from blank lines and strips CR/LF. Don't revert to `reader.lines()` with blanket `_ => break` — silently kills reader on first blank line.
 - Window controls use document-level click delegation (React may mount before or after `DOMContentLoaded` — after in `tauri dev`, before in release `dist/`); a `querySelector` in `_setupWindowChrome` would be timing-dependent.
 - `set_model` response **must** call `notify()` immediately, else next `turn_start` re-emits stale `state.model` and UI reverts.

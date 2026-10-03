@@ -1145,6 +1145,30 @@
     return id;
   }
 
+  /** Tell the user an open failed, where they are looking: the active tab,
+   *  or the empty workspace when none is open. `_startProjectSession` has
+   *  already rolled the tab back. Local-only: omp holds no turn for the note,
+   *  so the next `get_messages` merge must keep it in place. */
+  function _reportOpenFailure(e) {
+    const note = `**Could not open project:** ${String(e?.message ?? e)}`;
+    if (activeSessionId) _pushAssistantNote(note, true);
+    else workspaceNotes = [...workspaceNotes, note];
+    notify();
+  }
+
+  /** `_startProjectSession` for an open the user asked for (`+`, a recent
+   *  project, a saved conversation): a refused spawn — an omp below the
+   *  version floor, omp missing from PATH, a dangling profile — is reported
+   *  before the rejection reaches app-live.jsx, whose handlers only log it. */
+  async function _openReported(cwd, opts) {
+    try {
+      return await _startProjectSession(cwd, opts);
+    } catch (e) {
+      _reportOpenFailure(e);
+      throw e;
+    }
+  }
+
   // ── OS folder-open requests ───────────────────────────────────────────────
   // "Open with OMP Desktop" on a folder in Finder, Explorer or a Linux file
   // manager. Each platform hands the request to the Rust side through its
@@ -1167,11 +1191,7 @@
       // thing left is telling the user: the OS has no UI to report into and
       // silently ignoring a double-clicked folder looks like a hang.
       console.error(`[live] folder open failed for '${path}':`, e);
-      const note = `**Could not open project:** ${String(e?.message ?? e)}`;
-      if (activeSessionId) _pushAssistantNote(note);
-      else workspaceNotes = [...workspaceNotes, note];
-      notify();
-      return;
+      _reportOpenFailure(e);
     }
   }
 
@@ -2708,14 +2728,14 @@
      *  explicit. With no tab open there is nothing to inherit, so the ticked
      *  default profile applies. Returns the new session id, or rejects if
      *  the resolved profile no longer exists on the backend (unlisted by
-     *  another window, or a hand-edited profiles.json) — no tab is left
-     *  registered when that happens.
+     *  another window, or a hand-edited profiles.json) or omp refuses to
+     *  start — no tab is left registered, and a note says why.
      *
      *  `profile` overrides the inherited one — "new conversation in this
      *  project" passes the project's own profile, which need not be the
      *  active tab's. Always spawns: `+`/`Ctrl+T` mean a *new* tab. */
     async openSession(cwd, profile = _activeProfileId()) {
-      return _startProjectSession(cwd, { profile });
+      return _openReported(cwd, { profile });
     },
 
     /** Open project folder `path` (a recent-projects row) under the active
@@ -2732,7 +2752,7 @@
         await window.OMP_BRIDGE.activateSession(id);
         return id;
       }
-      return _startProjectSession(path, { profile });
+      return _openReported(path, { profile });
     },
 
     /** Drop `path` from the active profile's recent projects. */
@@ -2811,7 +2831,7 @@
         await window.OMP_BRIDGE.activateSession(open);
         return open;
       }
-      return _startProjectSession(session.cwd || "", {
+      return _openReported(session.cwd || "", {
         resume: session.path, name: session.title, profile,
       });
     },
