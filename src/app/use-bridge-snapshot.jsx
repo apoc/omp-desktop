@@ -26,6 +26,8 @@ function useBridgeSnapshot(bridge, setters) {
       setters.setPromptHistory(snap.promptHistory ?? []);
       setters.setSubagents(snap.subagents);
       setters.setSubagentTranscripts(snap.subagentTranscripts ?? {});
+      setters.setQueue(snap.queue);
+      setters.setQueueSending(snap.queueSending);
       setters.setProfiles(snap.profiles ?? []);
       setters.setStartupProfileId(snap.startupProfileId ?? _UB_DEFAULT_PROFILE_ID);
       setters.setRecentProjects(snap.recentProjects ?? []);

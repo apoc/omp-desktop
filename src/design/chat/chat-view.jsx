@@ -130,6 +130,19 @@ function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, 
     if (pinnedRef.current) stickToBottom(el);
   }, [messages]);
 
+  // The composer below grows and shrinks on its own (the queue strip, image
+  // attachments, a growing draft), which shortens this view from below
+  // with no scroll event and no new message: keep a pinned view on the
+  // latest line through that. `stickToBottom` reads refs only, so the
+  // first render's copy stays valid.
+  React.useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return undefined;
+    const ro = new ResizeObserver(() => { if (pinnedRef.current) stickToBottom(el); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // Only the last completed assistant message is annotatable in plan mode
   let lastAsstIdx = -1;
   if (planMode) {

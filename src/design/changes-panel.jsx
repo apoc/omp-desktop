@@ -18,20 +18,13 @@ const STATUS_KIND_META = {
   Untracked: { label: "U", color: "var(--fg-3)" },
 };
 
-// Longest-backtick-run fence: a fixed ```diff fence lets diff CONTENT that
-// contains its own (space-prefixed, unchanged-context) fence syntax close
-// the outer fence early, so anything after gets parsed as raw Markdown/HTML
-// instead of a code block — a real markdown-injection/XSS vector for this
-// component's dangerouslySetInnerHTML-based renderer. Fencing with a
-// backtick run longer than any run in the content is always safe.
-// Proven with an eval-kernel cell (2/2 cases: naive concat lets an embedded
-// ``` context line precede the appended closing fence; fenceDiff's fence is
-// provably longer than every backtick run in the content).
-function fenceDiff(content) {
-  const longest = (content.match(/`+/g) ?? []).reduce((n, r) => Math.max(n, r.length), 0);
-  const fence = "`".repeat(Math.max(3, longest + 1));
-  return `${fence}diff\n${content}\n${fence}`;
-}
+// Longest-backtick-run fence (app/marked-setup.js `fenceCode`): a fixed
+// ```diff fence lets diff CONTENT that contains its own (space-prefixed,
+// unchanged-context) fence syntax close the outer fence early, so anything
+// after gets parsed as raw Markdown/HTML instead of a code block — a real
+// markdown-injection/XSS vector for this component's
+// dangerouslySetInnerHTML-based renderer.
+const { fenceCode: _CP_fenceCode } = window.OMP_MARKDOWN;
 
 // Mounted only while open (app-live.jsx gates on `changesOpen`), so
 // there is no `open` prop and no early return for it: mount is open,
@@ -90,12 +83,12 @@ function ChangesPanel({ onClose }) {
   // recover it from afterwards.
   // Proven with an eval-kernel cell (2/2 cases: Untracked/Added/Renamed
   // kinds require confirmation, Modified/Deleted kinds proceed unconfirmed).
-  // fenceDiff scans the whole diff (up to the 256 KiB server-side cap) for
+  // The fence scans the whole diff (up to the 256 KiB server-side cap) for
   // backtick runs. Keyed on the content so it runs once per loaded diff
   // rather than on every render (selection change, diffLoading toggle,
   // parent re-render).
   const fencedDiff = React.useMemo(
-    () => fenceDiff(diff?.content || ""),
+    () => _CP_fenceCode(diff?.content || "", "diff"),
     [diff?.content],
   );
 

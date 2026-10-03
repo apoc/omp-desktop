@@ -31,7 +31,9 @@
 
   <!-- Markdown + syntax highlighting — must load before design components.
        marked-setup.js wires marked to hljs and escapes raw HTML / unsafe
-       link schemes; it needs both libs defined, so it comes right after. -->
+       link schemes; it needs both libs defined, so it comes right after.
+       It also defines window.OMP_MARKDOWN (fenceCode), which
+       changes-panel.jsx destructures at top level. -->
   <script src="marked.min.js"></script>
   <script src="highlight.min.js"></script>
   <script src="app/marked-setup.js"></script>
@@ -109,6 +111,13 @@
        must load before both. -->
   <script src="app/session-ui.js"></script>
 
+  <!-- Steer / follow-up queue strip: pure helpers over omp's queue
+       snapshot. IIFE; its refusal note calls window.OMP_MARKDOWN
+       (marked-setup.js, above). design/queue-strip.jsx destructures
+       window.OMP_QUEUE at top level and live.js reads it at its own
+       top-level init, so it must load before both. -->
+  <script src="app/message-queue.js"></script>
+
   <!-- Design components (unchanged — from src/design/ copy) -->
   <script src="design/tweaks/style.js"></script>
   <script src="design/tweaks/use-tweaks.js"></script>
@@ -137,8 +146,10 @@
   <script type="text/babel" src="design/subagents/subagent-pane.jsx"></script>
   <script type="text/babel" src="design/subagents/subagent-rail-card.jsx"></script>
   <script type="text/babel" src="design/mention-menu.jsx"></script>
-  <!-- Collapsed-paste chips + preview (#31), rendered by composer.jsx. -->
+  <!-- Collapsed-paste chips + preview (#31), and the steer / follow-up queue
+       strip; composer.jsx renders both by their global names. -->
   <script type="text/babel" src="design/paste-strip.jsx"></script>
+  <script type="text/babel" src="design/queue-strip.jsx"></script>
   <script type="text/babel" src="design/composer.jsx"></script>
   <!-- Per-tab profile selector — chrome.jsx destructures window.ProfileMenu
        at top level, so this must load before it. -->

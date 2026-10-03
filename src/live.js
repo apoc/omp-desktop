@@ -15,6 +15,7 @@
   const { LOCAL_COMMANDS, adaptAvailableCommands, mergeSlashCommands, isCommandInvocation } = window.OMP_SLASH;
   const SUB = window.OMP_SUBAGENTS;
   const STITLE = window.OMP_SESSION_TITLE;
+  const QUEUE = window.OMP_QUEUE;
 
   // ── Safe defaults so design components never crash on missing fields ──────
   const DEFAULT_DATA = {
@@ -64,6 +65,11 @@
     // agentId → { status, messages, nextByte, error } from get_subagent_messages.
     // Ephemeral: dropped on tab switch (not snapshotted) and refetched on demand.
     subagentTranscripts: {},
+    // omp's steer / follow-up queue (app/message-queue.js), replaced by
+    // every `queue_update` and `get_state` — never edited locally.
+    queue:          QUEUE.EMPTY_QUEUE,
+    // Steers / follow-ups sent but not yet acknowledged ("sending" rows).
+    queueSending:   [],
   };
 
   let streamingBubble = null;
@@ -305,6 +311,8 @@
       sparkline:       state.sparkline,
       subagents:           state.subagents,
       subagentTranscripts: state.subagentTranscripts,
+      queue:           state.queue,
+      queueSending:    state.queueSending,
       // Tab list — derived from session registry, not per-session state.
       // runState: active tab reads live state; background tabs read their
       // cached snapshot (never activated yet = "idle" defaults).
@@ -351,6 +359,15 @@
     } catch (err) {
       return { ok: false, error: String(err?.message ?? err) };
     }
+  }
+
+  // What the user typed for a `/skill:` call, from its `skill-prompt`
+  // message's details (omp's `buildSkillPromptMessage`): `prompt` is the
+  // draft as sent, else the invocation is rebuilt from name and args.
+  function _skillPromptText(details) {
+    if (typeof details?.prompt === "string" && details.prompt) return details.prompt;
+    const args = typeof details?.args === "string" && details.args ? ` ${details.args}` : "";
+    return `/skill:${details?.name ?? ""}${args}`;
   }
 
   // Build an ask bubble. The four `extension_ui_request` methods differ only
@@ -577,6 +594,17 @@
     _layoutWriting = false;
   }
 
+  // The active tab's omp process is gone (the exit listener, or a startup
+  // death found by session_status). A dead process sends no terminal frames
+  // and answers no get_subagents: end its live agents here (outcome
+  // unknown) or they tick forever. Its queue died with it, and no send to
+  // it will be acknowledged.
+  function _endDeadProcessState() {
+    state.subagents = SUB.mergeSnapshots(state.subagents, []);
+    state.queue = QUEUE.EMPTY_QUEUE;
+    state.queueSending = [];
+  }
+
   // Reset all per-session volatile state (called before loading a new session)
   function _resetSessionVars() {
     Object.assign(state, {
@@ -598,6 +626,8 @@
       exitReason:    null,
       subagents:           SUB.emptySubagents(),
       subagentTranscripts: {},
+      queue:         QUEUE.EMPTY_QUEUE,
+      queueSending:  [],
     });
     streamingBubble = null;
     lastTurnOk  = true;
@@ -639,6 +669,8 @@
       // forget a failed first exchange and re-arm the one-shot.
       lastTurnOk,
       subagents:     state.subagents,
+      queue:         state.queue,
+      queueSending:  state.queueSending,
       // volatile vars
       streamingBubble,
       activeToolCards: new Map(activeToolCards),
@@ -670,6 +702,8 @@
       exitReason:    snap.exitReason ?? null,
       subagents:     snap.subagents ?? SUB.emptySubagents(),
       subagentTranscripts: {},
+      queue:         snap.queue ?? QUEUE.EMPTY_QUEUE,
+      queueSending:  snap.queueSending ?? [],
     });
     streamingBubble = snap.streamingBubble;
     activeToolCards = snap.activeToolCards;
@@ -748,9 +782,7 @@
       if (reason) {
         _pushAssistantNote(_exitNote(reason, sessionRegistry.get(id)?.profile));
       }
-      // A dead process sends no terminal frames and answers no get_subagents:
-      // end its live agents here (outcome unknown) or they tick forever.
-      state.subagents = SUB.mergeSnapshots(state.subagents, []);
+      _endDeadProcessState();
       notify();
     });
     if (_switchGen !== myGen) {
@@ -820,7 +852,7 @@
         _notedStartupErrors.add(id);
         console.warn(`[live] session '${id}' startup error: ${startupError}`);
         _pushAssistantNote(_exitNote(startupError, sessionRegistry.get(id)?.profile));
-        state.subagents = SUB.mergeSnapshots(state.subagents, []); // died in the background — see the exit listener
+        _endDeadProcessState(); // died in the background — see the exit listener
       }
     } catch (e) {
       console.warn(`[live] session_status query failed:`, e);
@@ -1437,20 +1469,17 @@
       // indices are rebuilt so in-flight tool_execution_update events keep
       // landing on the right array slot.
       //
-      // A still-`pendingEcho` bubble (queued follow-up/steer, see
-      // OMP_BRIDGE.followUp/.steer) is also kept in place rather than
-      // consuming a `pending` slot — omp hasn't persisted it yet, so
-      // `completed` doesn't contain it; treating it as an ordinary text
-      // entry here would misalign every slot after it (the next persisted
-      // turn would be substituted into its place, and the last real turn
-      // would then find nothing left and be dropped). Same reasoning for
-      // `localOnly` (see _pushAssistantNote) — a command_output note has
-      // no persisted turn either, ever, not just "not yet".
+      // A `localOnly` entry (see _pushAssistantNote) is also kept in place
+      // rather than consuming a `pending` slot: a command_output note has no
+      // persisted turn, so treating it as an ordinary text entry here would
+      // misalign every slot after it (the next persisted turn would be
+      // substituted into its place, and the last real turn would then find
+      // nothing left and be dropped).
       const pending = [...completed];
       const merged = [];
       for (const m of state.messages) {
         if (m.streaming) continue; // streaming bubble handled separately below
-        if (m.kind === "tool" || m.kind === "ask" || m.kind === "compact" || m.pendingEcho || m.localOnly) {
+        if (m.kind === "tool" || m.kind === "ask" || m.kind === "compact" || m.localOnly) {
           merged.push(m);
         } else if (pending.length > 0) {
           merged.push(pending.shift());
@@ -1580,6 +1609,14 @@
 
     if (type === "available_commands_update") {
       _applyCommands(ev.commands);
+      return;
+    }
+
+    // omp's whole steer / follow-up queue (app/message-queue.js); the strip
+    // above the composer renders exactly this.
+    if (type === "queue_update") {
+      const next = QUEUE.fromSnapshot(ev, state.queue);
+      if (next !== state.queue) { state.queue = next; notify(); }
       return;
     }
 
@@ -1784,28 +1821,27 @@
       const msg  = ev.message;
       const role = msg?.role;
 
-      if (role === "user") {
+      // A `/skill:` call reaches the model as a `skill-prompt` custom
+      // message whose text is the whole skill file; what the user typed is
+      // in `details.prompt`, which omp's own transcript shows too.
+      // get_messages never returns custom messages, so that bubble is
+      // `localOnly` for its merge.
+      const skill = role === "custom" && msg.customType === "skill-prompt" && msg.attribution === "user";
+      if (role === "user" || skill) {
         const blocks = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: String(msg.content ?? "") }];
-        const { text, images } = window.adaptUserContent(blocks);
+        const { text: typed, images } = window.adaptUserContent(blocks);
+        const text = skill ? _skillPromptText(msg.details) : typed;
         if (text || images.length > 0) {
-          // A follow-up's or steer's optimistic bubble (see OMP_BRIDGE.followUp
-          // / .steer) is tagged `pendingEcho` and may no longer be the tail by
-          // the time omp echoes it back — omp holds a follow-up until the agent
-          // would otherwise stop, and defers a steer until the current turn's
-          // tool batch finishes, so any tool card/assistant turn in between
-          // appends after it. Reconcile against the oldest matching pending
-          // bubble wherever it is instead of only checking the tail, or a
-          // duplicate is appended.
-          const pendingIdx = state.messages.findIndex(m => m.kind === "user" && m.pendingEcho && m.text === text);
-          if (pendingIdx !== -1) {
-            const next = state.messages.slice();
-            next[pendingIdx] = { ...next[pendingIdx], pendingEcho: false };
-            state.messages = next;
+          // `send` shows its prompt right away, so its echo finds that
+          // bubble at the tail. Steers and follow-ups only appear here, when
+          // omp hands them to the model: tagged `echo`, so the scroll pin
+          // (app/scroll-pin.js) does not pull a reader down to them, and so
+          // two identical steers delivered back to back both show.
+          const last = state.messages[state.messages.length - 1];
+          if (last?.kind === "user" && !last.echo && last.text === text) {
+            if (skill && !last.localOnly) state.messages = [...state.messages.slice(0, -1), { ...last, localOnly: true }];
           } else {
-            const last = state.messages[state.messages.length - 1];
-            if (!(last?.kind === "user" && last.text === text)) {
-              state.messages = [...state.messages, { kind: "user", time, text, images }];
-            }
+            state.messages = [...state.messages, { kind: "user", time, text, images, echo: true, ...(skill ? { localOnly: true } : {}) }];
           }
           notify();
         }
@@ -2022,6 +2058,9 @@
       state.messages = state.messages.filter(m => !m.streaming);
     }
     state.thinkingLevel = rpcState.thinkingLevel ?? "auto";
+    // The queue as of this get_state; later `queue_update`s follow it in
+    // the same stream, so the last one written wins.
+    state.queue = QUEUE.fromSnapshot(rpcState.queuedMessages, state.queue);
 
     if (rpcState.model) {
       state.model = {
@@ -2350,6 +2389,56 @@
     ));
   }
 
+  // ── Steer / follow-up sends (app/message-queue.js) ────────────────────────
+  let _queueSendSeq = 0;
+
+  /** Hand a steer (`kind` "steering") or follow-up ("followUp") to omp via
+   *  `send`, the id-correlated RPC call. No transcript bubble: omp holds a
+   *  follow-up until the agent would otherwise stop and a steer until the
+   *  current tool batch ends, and may drop either from its queue (✕), so
+   *  the message shows in the queue strip — first as a "sending" row until
+   *  omp acknowledges it, then from omp's own queue — and joins the
+   *  transcript as its `message_start` echo when the model gets it.
+   *  A refusal files a note that carries the text, which has already left
+   *  the composer. A timeout only drops the row: omp may still admit the
+   *  message (an image being prepared), and its `queue_update` shows it.
+   *
+   *  Side-effectful end to end (IPC, both tab stores); the row and note
+   *  shapes are pure and tested in test-message-queue.mjs. */
+  function _sendQueued(kind, text, images, send) {
+    const origin = activeSessionId;
+    if (!origin) return;
+    const id = ++_queueSendSeq;
+    _disarmAutoRename(text);
+    _recordPrompt(text);
+    state.queueSending = [...state.queueSending, QUEUE.sendingEntry(id, kind, text, images.length, state.queue, state.queueSending)];
+    notify();
+    send().then(() => _dropSending(origin, id), e => {
+      if (!e?.timedOut) {
+        const reason = e?.message ?? String(e);
+        // Responses are only dispatched for the active tab, so a refusal
+        // reaching us for another one is a failed hand-off racing a switch.
+        if (origin === activeSessionId) _pushAssistantNote(QUEUE.failureNote(kind, reason, text), true);
+        else console.warn(`[live] ${kind} for '${origin}' not sent: ${reason}`);
+      }
+      _dropSending(origin, id);
+    });
+  }
+
+  /** Remove a "sending" row from its tab, wherever that tab's state lives
+   *  now: the live `state` if it is active, its snapshot otherwise — and
+   *  both while a switch away from it is under way (the snapshot is taken
+   *  before `activeSessionId` moves). */
+  function _dropSending(sessionId, id) {
+    const without = list => list.filter(s => s.id !== id);
+    const snap = sessionSnapshots.get(sessionId);
+    if (snap?.queueSending) snap.queueSending = without(snap.queueSending);
+    if (sessionId === activeSessionId) {
+      state.queueSending = without(state.queueSending);
+      notify();
+    }
+  }
+
   // ── OMP_BRIDGE public API ─────────────────────────────────────────────────
   window.OMP_BRIDGE = {
     get isConnected() { return !!window.__TAURI__ && !!activeSessionId; },
@@ -2386,43 +2475,46 @@
     // switch, and the abort response is what releases a cancelled
     // auto-rename. See `_releaseAutoRenameAfterAbort`.
     abort()            { _send({ type: "abort" }); },
-    // Both tagged `pendingEcho`: omp doesn't inject a follow-up until the
-    // agent would otherwise stop, and defers a steer until the current
-    // turn's tool batch finishes — so either bubble is usually no longer
-    // the tail by the time its message_start echo arrives. The echo
-    // handler reconciles by content match instead of assuming it's last.
-    //
-    // Both also route a real slash command — or a skill invocation, even
+    // Both route a real slash command — or a skill invocation, even
     // mid-prompt (#30) — through `prompt` with the matching
     // `streamingBehavior` instead of their own dedicated RPC command: omp's
     // `steer`/`follow_up` frames skip command and skill dispatch entirely
     // (only `prompt` runs it), so a command sent mid-stream through the
     // dedicated frame would just reach the model as literal text — this is
     // the transport's problem, not something callers (app-live.jsx) should
-    // each have to know and check for themselves.
+    // each have to know and check for themselves. See `_sendQueued` for
+    // how the message shows until omp delivers it.
     followUp(text, images) {
-      const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [], pendingEcho: true };
-      state.messages = [...state.messages, userMsg];
-      _disarmAutoRename(text);
-      _recordPrompt(text);
-      notify();
-      if (isCommandInvocation(state.commands, text)) {
-        _send({ type: "prompt", message: text, images: images ?? [], streamingBehavior: "followUp" });
-      } else {
-        _send({ type: "follow_up", message: text, images: images ?? [] });
-      }
+      const imgs = images ?? [];
+      _sendQueued("followUp", text, imgs, isCommandInvocation(state.commands, text)
+        ? () => _sendWithResponse({ type: "prompt", message: text, images: imgs, streamingBehavior: "followUp" })
+        : () => _sendWithResponse({ type: "follow_up", message: text, images: imgs }));
     },
     steer(text, images) {
-      const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [], pendingEcho: true };
-      state.messages = [...state.messages, userMsg];
-      _disarmAutoRename(text);
-      _recordPrompt(text);
-      notify();
-      if (isCommandInvocation(state.commands, text)) {
-        _send({ type: "prompt", message: text, images: images ?? [], streamingBehavior: "steer" });
-      } else {
-        _send({ type: "steer", message: text, images: images ?? [] });
-      }
+      const imgs = images ?? [];
+      _sendQueued("steering", text, imgs, isCommandInvocation(state.commands, text)
+        ? () => _sendWithResponse({ type: "prompt", message: text, images: imgs, streamingBehavior: "steer" })
+        : () => _sendWithResponse({ type: "steer", message: text, images: imgs }));
+    },
+    /** ✕ / ✎ on a queue-strip row (`queue`: "steering" | "followUp"):
+     *  `true` once omp removed the message, `false` when it was no longer
+     *  pending — already delivered, or a steer the model already took,
+     *  which stays listed until the transcript records it. Rejects only
+     *  when the request itself fails. The row goes away with omp's next
+     *  `queue_update`, never locally; omp removes the *first* match, and
+     *  repeating the call would remove the next duplicate. The default
+     *  (long) timeout: a reply held back by a tab switch is replayed on the
+     *  way back, and ✎ only restores the text once it is seen. */
+    async removeQueuedMessage(text, queue) {
+      const data = await _sendWithResponse({ type: "remove_queued_message", message: text, queue });
+      return data?.removed === true;
+    },
+    /** ↑ on a follow-up row: move it to the end of the steering queue.
+     *  While idle (e.g. after an abort) omp starts a turn with it right
+     *  away. Same result contract as `removeQueuedMessage`. */
+    async promoteQueuedMessage(text) {
+      const data = await _sendWithResponse({ type: "promote_queued_message", message: text });
+      return data?.promoted === true;
     },
     /** Manual rename from the tab bar or sidebar (#32): omp's own
      *  `/rename <title>` builtin, so the name is stored as user-set and

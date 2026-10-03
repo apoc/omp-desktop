@@ -30,15 +30,17 @@
     return dist <= REPIN_SLACK_PX ? true : pinned;
   }
 
-  // An explicit "take me to the latest" moment: a new user message becomes
-  // the tail (sending, steering, queueing a follow-up), or the transcript
-  // was reset to empty (`/new`, a profile switch respawning the tab) — a
-  // leftover unpinned state must not strand "Jump to latest" over a blank
-  // chat or a fresh session.
+  // An explicit "take me to the latest" moment: the user's own message
+  // becomes the tail (sending a prompt), or the transcript was reset to
+  // empty (`/new`, a profile switch respawning the tab) — a leftover
+  // unpinned state must not strand "Jump to latest" over a blank chat or a
+  // fresh session. A steer or follow-up joins the transcript later, when
+  // omp hands it to the model (live.js tags that bubble `echo`): the user
+  // may be reading history by then, so it must not move them.
   function shouldRepin(prevLastId, messages) {
     if (!messages.length) return true;
     const last = messages[messages.length - 1];
-    return last?.kind === "user" && last._id != null && last._id !== prevLastId;
+    return last?.kind === "user" && !last.echo && last._id != null && last._id !== prevLastId;
   }
 
   window.OMP_SCROLL_PIN = { nextPinned, shouldRepin };

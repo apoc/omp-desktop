@@ -64,6 +64,10 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "abort",
     "follow_up",
     "steer",
+    // Queue strip above the composer: edit omp's pending steer/follow-up
+    // queue, which `queue_update` and `get_state.queuedMessages` report.
+    "remove_queued_message",
+    "promote_queued_message",
     "set_model",
     "cycle_model",
     "cycle_thinking_level",

@@ -185,6 +185,15 @@ for (const [mode, render] of Object.entries(renderers)) {
   }
 }
 
+check("fenceCode: content with its own fences stays one code block", () => {
+  const body = "x\n```\n<img src=x onerror=alert(1)>\n````\ny";
+  const html = marked.parse(ctx.OMP_MARKDOWN.fenceCode(body, "diff"));
+  assert.equal(html.match(/<pre[ >]/g)?.length, 1, html);
+  assert.ok(!html.includes("<img"), html);
+  const code = /<code class="hljs[^"]*">([\s\S]*)<\/code>/.exec(html);
+  assert.equal(textOf(code[1]), body);
+});
+
 check("a copy button in the input renders as text, not as a button", () => {
   const md = 'a <button class="copy-btn is-floating" type="button"></button> b';
   for (const render of Object.values(renderers)) assert.ok(!render(md).includes("<button"), render(md));

@@ -10,6 +10,7 @@ const {
   entryOf: draftEntryOf, updateEntry: updateDraftEntry, pruneEntries: pruneDrafts, DRAFT_IDLE, recallInDraft,
   normalizePaste, shouldCollapsePaste, collapsePaste, pastesIn, expandPastes, inlinePaste,
 } = window.OMP_SESSION_UI;
+const { restoredDraft: restoredQueueDraft } = window.OMP_QUEUE;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` (display
 // logic lives there so chrome.jsx's ⌘K/history hints can reuse it too,
@@ -27,7 +28,7 @@ function hintKeyFor(actionId, fallback) {
 }
 
 // ── The composer (input + plan/steer modes + send) ────────────────────
-function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert }) {
+function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued }) {
   // Drafts are per tab (issue #28). The composer stays mounted across tab
   // switches and keeps one draft per session id (app/session-ui.js
   // DRAFT_IDLE): text, pending image attachments (sent alongside the next
@@ -49,6 +50,11 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   // meanwhile must not get its entry back.
   const sessionIdsRef = React.useRef(sessionIds);
   sessionIdsRef.current = sessionIds;
+  const updateOpenDraft = (id, fn) => setDrafts(m => (sessionIdsRef.current?.includes(id)
+    ? updateDraftEntry(m, id, DRAFT_IDLE, fn)
+    : m));
+  const sessionIdRef = React.useRef(sessionId);
+  sessionIdRef.current = sessionId;
   React.useEffect(() => { setDrafts(m => pruneDrafts(m, sessionIds)); }, [sessionIds]);
   const [activeIdx, setActiveIdx] = React.useState(0);
   const taRef   = React.useRef(null);
@@ -344,6 +350,20 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
     setSlashDismissedKey(null);
     requestAnimationFrame(() => taRef.current?.focus());
   };
+
+  // ✎ on a queued message (QueueStrip): omp removes it first, and only a
+  // confirmed removal puts its text back — into the tab it was queued
+  // from, ahead of anything typed there since. omp's queue does not hand
+  // back attached images.
+  const editQueued = async (row) => {
+    const target = sessionId;
+    const removed = await onRemoveQueued(row.text, row.kind);
+    if (removed) {
+      updateOpenDraft(target, d => ({ ...d, text: restoredQueueDraft(row.text, d.text), historyNav: null }));
+      if (sessionIdRef.current === target) requestAnimationFrame(() => taRef.current?.focus());
+    }
+    return removed;
+  };
   const send = () => sendWith(onSend);
 
   // Pick, downscale/re-encode and queue image files as pending attachments.
@@ -362,9 +382,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
     const slice = files.slice(0, room);
     // Counted only while the tab is open: a paste resolved through the
     // async clipboard path may land after its tab closed.
-    setDrafts(m => (sessionIdsRef.current?.includes(target)
-      ? updateDraftEntry(m, target, DRAFT_IDLE, d => ({ ...d, pendingImages: d.pendingImages + slice.length }))
-      : m));
+    updateOpenDraft(target, d => ({ ...d, pendingImages: d.pendingImages + slice.length }));
     let ok = [];
     try {
       const prepared = await Promise.all(slice.map(async (file) => {
@@ -381,13 +399,11 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
       // over — a concurrent addFiles (fast double-paste) may have already
       // appended by the time this resolves. A tab closed meanwhile is left
       // without an entry rather than given one back.
-      setDrafts(m => (sessionIdsRef.current?.includes(target)
-        ? updateDraftEntry(m, target, DRAFT_IDLE, d => ({
-          ...d,
-          attachments: ok.length > 0 ? [...d.attachments, ...ok].slice(0, MAX_ATTACHMENTS) : d.attachments,
-          pendingImages: d.pendingImages - slice.length,
-        }))
-        : m));
+      updateOpenDraft(target, d => ({
+        ...d,
+        attachments: ok.length > 0 ? [...d.attachments, ...ok].slice(0, MAX_ATTACHMENTS) : d.attachments,
+        pendingImages: d.pendingImages - slice.length,
+      }));
     }
   };
   const removeAttachment = (attId) =>
@@ -522,6 +538,13 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
           listRef={mentionListRef}
         />
       )}
+
+      {/* Keyed by tab, like the paste strip: a pending action or notice
+          belongs to the tab it was taken in. */}
+      <QueueStrip key={`queue-${sessionId}`} queue={queue} sending={queueSending}
+        onRemove={row => onRemoveQueued(row.text, row.kind)}
+        onPromote={row => onPromoteQueued(row.text)}
+        onEdit={editQueued} />
 
       {attachments.length > 0 && (
         <div className="attach-strip">

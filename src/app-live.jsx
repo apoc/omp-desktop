@@ -80,6 +80,10 @@ function App() {
   // on-demand agent transcripts.
   const [subagents,           setSubagents]           = React.useState(() => window.OMP_SUBAGENTS.emptySubagents());
   const [subagentTranscripts, setSubagentTranscripts] = React.useState({});
+  // omp's steer / follow-up queue + this tab's unacknowledged sends
+  // (app/message-queue.js), rendered by the composer's queue strip.
+  const [queue,        setQueue]        = React.useState(() => window.OMP_QUEUE.EMPTY_QUEUE);
+  const [queueSending, setQueueSending] = React.useState([]);
 
   // ── Tab list — driven by bridge session registry ──────────────────────────
   // Each entry: { id, name, path, color, branch }
@@ -108,7 +112,7 @@ function App() {
     setModelState, setThinkingLevel,
     setSessions, setActiveSessionId, setProfiles, setStartupProfileId, setRecentProjects,
     setNoTabProfileId, setWorkspaceNotes,
-    setPromptHistory, setSubagents, setSubagentTranscripts,
+    setPromptHistory, setSubagents, setSubagentTranscripts, setQueue, setQueueSending,
   });
   useThemeEffect(t);
   React.useEffect(() => {
@@ -258,10 +262,11 @@ function App() {
   // Composer-scoped follow-up: the composer owns the draft text. Re-trim
   // here (mirrors handleSend's `msg = text.trim()`) — expandPastes runs
   // after the composer's own trim and can reintroduce leading/trailing
-  // whitespace from the raw pasted content, which would otherwise mismatch
-  // the RPC echo's always-trimmed text (adaptUserContent) and duplicate
-  // the bubble instead of reconciling it (see OMP_BRIDGE.followUp).
+  // whitespace from the raw pasted content.
   const handleFollowUp = (text, images) => { bridge?.followUp(text.trim(), images); };
+  // Queue strip actions: resolve `true` once omp edited its queue.
+  const handleRemoveQueued  = (text, kind) => bridge?.removeQueuedMessage(text, kind);
+  const handlePromoteQueued = text => bridge?.promoteQueuedMessage(text);
 
   // CommandBridge (⌘K) picking a non-desktop (RPC) command — no local
   // handler exists for it, unlike handleCommand's desktop entries. It has
@@ -550,6 +555,10 @@ function App() {
                     draftInsert={draftInsert}
                     promptHistory={promptHistory}
                     promptInsert={promptInsert}
+                    queue={queue}
+                    queueSending={queueSending}
+                    onRemoveQueued={handleRemoveQueued}
+                    onPromoteQueued={handlePromoteQueued}
                   />
                 </>)}
                 <StatusBar
