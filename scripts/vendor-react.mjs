@@ -2,7 +2,7 @@
 // Regenerates the React globals in src/, in both builds:
 //
 // React 19 no longer publishes UMD builds, and the app loads React through
-// plain <script> tags (no bundler — see CLAUDE.md), so the globals are
+// plain <script> tags (no bundler — see AGENTS.md), so the globals are
 // built here from the official npm packages, once, at vendoring time:
 //
 //   bun scripts/vendor-react.mjs 19.3.0

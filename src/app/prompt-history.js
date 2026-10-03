@@ -1,7 +1,7 @@
 // Per-tab prompt history (issue #16): pure list/navigation helpers.
 //
 // Exposes `window.OMP_PROMPT_HISTORY`; wrapped as an IIFE per the project
-// rule for plain <script> tags (see CLAUDE.md "IIFE rule").
+// rule for plain <script> tags (see AGENTS.md "IIFE rule").
 //
 // Lists are newest-first arrays of prompt strings. Nothing here persists:
 // `live.js` keeps one list per tab in memory, filled as the user sends and

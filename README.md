@@ -153,7 +153,7 @@ There is no bundler. In dev, `src/index.html` loads every script in dependency o
 | Probe omp's RPC surface directly | `node tests/test-rpc.mjs` |
 
 CI and every release run the same suite: `cargo test` on Windows, Linux and macOS, plus `npm test`.
-Contributor rules (script load order, the IIFE rule, CSP constraints, clone discipline in Rust, the changelog workflow) are in [`CLAUDE.md`](CLAUDE.md). User-facing changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+Contributor rules (script load order, the IIFE rule, CSP constraints, clone discipline in Rust, the changelog workflow) are in [`AGENTS.md`](AGENTS.md). User-facing changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Architecture
 

@@ -3,7 +3,7 @@
 // plus the open-tab layout live.js persists and restores (issue #17).
 //
 // Exposes `window.OMP_PROJECT_NAV`; wrapped as an IIFE per the project rule
-// for plain <script> tags (see CLAUDE.md "IIFE rule").
+// for plain <script> tags (see AGENTS.md "IIFE rule").
 //
 // A "tab" is a snapshot `sessions` entry: `{id, name, path, profile, color,
 // runState, sessionFile}`. A project is identified by (profile, folder): the

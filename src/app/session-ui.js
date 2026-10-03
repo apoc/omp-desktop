@@ -4,7 +4,7 @@
 // a plain object keyed by session id, and switching tabs swaps entries.
 //
 // Exposes `window.OMP_SESSION_UI`; wrapped as an IIFE per the project rule
-// for plain <script> tags (see CLAUDE.md "IIFE rule"). Pure, so the
+// for plain <script> tags (see AGENTS.md "IIFE rule"). Pure, so the
 // isolation and transition rules are testable (test-session-ui.mjs).
 (function () {
   // ── Generic per-tab map ──────────────────────────────────────────────

@@ -1,7 +1,7 @@
 // Empty-workspace backdrop: pure "digital rain" + ASCII logo geometry.
 //
 // Exposes `window.OMP_MATRIX`; wrapped as an IIFE per the project rule for
-// plain <script> tags (see CLAUDE.md "IIFE rule"). The canvas, timing and
+// plain <script> tags (see AGENTS.md "IIFE rule"). The canvas, timing and
 // colours live in design/empty-workspace.jsx; everything here is pure so
 // the fit/step rules are testable (test-matrix-rain.mjs).
 (function () {

@@ -1,7 +1,7 @@
 // Keyboard shortcut registry, chord algebra, and dispatch helpers.
 //
 // Exposes `window.OMP_KEYMAP`; wrapped as an IIFE per the project rule for
-// plain <script> tags (see CLAUDE.md "IIFE rule").
+// plain <script> tags (see AGENTS.md "IIFE rule").
 //
 // This file has no dependencies and must load before any Babel file that
 // references OMP_KEYMAP (currently: composer.jsx, use-keymap.jsx, and
