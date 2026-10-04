@@ -31,14 +31,18 @@
 
   <!-- Markdown + syntax highlighting — must load before design components.
        marked-setup.js wires marked to hljs and escapes raw HTML / unsafe
-       link schemes; it needs both libs defined, so it comes right after. -->
+       link schemes; it needs both libs defined, so it comes right after.
+       It also defines window.OMP_MARKDOWN (fenceCode), which
+       changes-panel.jsx destructures at top level. -->
   <script src="marked.min.js"></script>
   <script src="highlight.min.js"></script>
   <script src="app/marked-setup.js"></script>
 
   <!-- App constants. Dependency-free IIFE, loaded before the design
-       components because composer.jsx and chat/ask-bubble.jsx call its
-       isSubmitEnter helper (and app-live.jsx destructures the rest). -->
+       components: profile-menu.jsx, chrome.jsx and thinking-menu.jsx
+       destructure DEFAULT_PROFILE_ID / THINKING_LEVELS at top level,
+       composer.jsx and chat/ask-*.jsx call its isSubmitEnter helper,
+       and app-live.jsx destructures the rest. -->
   <script src="app/constants.js"></script>
   <!-- Keymap registry + chord algebra. Dependency-free IIFE; must load before
        any Babel file (composer.jsx, use-keymap.jsx, shortcuts-modal.jsx). -->
@@ -79,8 +83,9 @@
        its own top-level init, so this must load before both. -->
   <script src="app/subagents.js"></script>
 
-  <!-- In-app updater state (issue #19): pure reducer + selectors.
-       Dependency-free IIFE; design/update-modal.jsx and
+  <!-- In-app updater state (issue #19): pure reducer + selectors. IIFE;
+       busyTabCount looks up window.OMP_TURN_STATUS (app/turn-status.js,
+       loaded later) at call time only. design/update-modal.jsx and
        app/use-updater.jsx read window.OMP_UPDATER. -->
   <script src="app/updater.js"></script>
 
@@ -104,16 +109,47 @@
   <script src="app/matrix-rain.js"></script>
 
   <!-- Per-tab composer draft + plan-mode state (issue #28): pure map and
-       transition helpers. Dependency-free IIFE; design/composer.jsx and
-       app-live.jsx destructure window.OMP_SESSION_UI at top level, so it
-       must load before both. -->
+       transition helpers. Dependency-free IIFE; design/composer.jsx,
+       app/use-goal-mode.jsx and app-live.jsx destructure
+       window.OMP_SESSION_UI at top level, so it must load before them. -->
   <script src="app/session-ui.js"></script>
+
+  <!-- Steer / follow-up queue strip: pure helpers over omp's queue
+       snapshot. IIFE; its refusal note calls window.OMP_MARKDOWN
+       (marked-setup.js, above). design/queue-strip.jsx destructures
+       window.OMP_QUEUE at top level and live.js reads it at its own
+       top-level init, so it must load before both. -->
+  <script src="app/message-queue.js"></script>
+
+  <!-- omp's ask dialog (set_ask_dialog): request parsing, pick rules and
+       the `answers` reply. Dependency-free IIFE; design/chat/ask-dialog.jsx
+       and ask-bubble.jsx destructure window.OMP_ASK_DIALOG at top level and
+       live.js reads it at its top-level init, so it must load before them. -->
+  <script src="app/ask-dialog.js"></script>
+
+  <!-- Conversation tree (prompt-cache navigator): pure model over the Rust
+       `conversation_tree` payload. IIFEs; conversation-tree-graph.js (the
+       entry index and lane layout, window.OMP_CONV_GRAPH) must precede
+       conversation-tree.js, which destructures it at load. window.OMP_CONV_TREE
+       is called at render time by app/use-conversation-tree.jsx. -->
+  <script src="app/conversation-tree-graph.js"></script>
+  <script src="app/conversation-tree.js"></script>
+
+  <!-- omp's goal mode: pure state/row/strip helpers. Dependency-free IIFE;
+       design/chat/goal-row.jsx, design/goal-strip.jsx and
+       app/use-goal-mode.jsx destructure window.OMP_GOAL at top level and
+       live.js reads it at its top-level init, so it must load before all
+       of them. -->
+  <script src="app/goal.js"></script>
 
   <!-- Design components (unchanged — from src/design/ copy) -->
   <script src="design/tweaks/style.js"></script>
   <script src="design/tweaks/use-tweaks.js"></script>
   <script type="text/babel" src="design/tweaks/panel.jsx"></script>
   <script type="text/babel" src="design/tweaks/controls.jsx"></script>
+  <!-- Outside-click / Escape dismissal shared by the dropdown menus
+       (profile-menu.jsx, tab-group-chip.jsx, thinking-menu.jsx). -->
+  <script src="design/ui/use-popover-dismiss.js"></script>
   <script type="text/babel" src="design/ui/icons.jsx"></script>
   <!-- Copy buttons (issue #33); markdown.jsx, plan-annotations.jsx and the
        chat/ components destructure its exports at top level. -->
@@ -127,18 +163,31 @@
   <script type="text/babel" src="design/chat/eval-cell.jsx"></script>
   <script type="text/babel" src="design/chat/assistant-bubble.jsx"></script>
   <script type="text/babel" src="design/chat/tool-card.jsx"></script>
+  <!-- ask-bubble.jsx destructures window.AskDialog at top level. -->
+  <script type="text/babel" src="design/chat/ask-dialog.jsx"></script>
   <script type="text/babel" src="design/chat/ask-bubble.jsx"></script>
+  <!-- chat-view.jsx destructures window.RetryRow and window.GoalRow at top level. -->
+  <script type="text/babel" src="design/chat/retry-row.jsx"></script>
+  <script type="text/babel" src="design/chat/goal-row.jsx"></script>
   <script type="text/babel" src="design/chat/chat-view.jsx"></script>
-  <!-- Subagent manager UI. bits → inspector → pane (destructures the
-       inspector) → rail card; all before chrome.jsx, whose AmbientRail
-       destructures SubagentRailCard at top level. -->
+  <!-- Subagent manager UI. bits → controls → inspector (destructures the
+       controls) → pane (destructures the inspector) → rail card; all before
+       chrome.jsx, whose AmbientRail destructures SubagentRailCard at top level. -->
   <script type="text/babel" src="design/subagents/subagent-bits.jsx"></script>
+  <script type="text/babel" src="design/subagents/subagent-controls.jsx"></script>
   <script type="text/babel" src="design/subagents/subagent-inspector.jsx"></script>
   <script type="text/babel" src="design/subagents/subagent-pane.jsx"></script>
   <script type="text/babel" src="design/subagents/subagent-rail-card.jsx"></script>
   <script type="text/babel" src="design/mention-menu.jsx"></script>
-  <!-- Collapsed-paste chips + preview (#31), rendered by composer.jsx. -->
+  <!-- Collapsed-paste chips + preview (#31), the steer / follow-up queue
+       strip, and the thinking pill's level menu (#10); composer.jsx renders
+       all three by their global names. -->
   <script type="text/babel" src="design/paste-strip.jsx"></script>
+  <script type="text/babel" src="design/queue-strip.jsx"></script>
+  <script type="text/babel" src="design/thinking-menu.jsx"></script>
+  <!-- Goal strip above the composer: app/use-goal-mode.jsx destructures
+       window.GoalStrip at top level and hands it to composer.jsx as an element. -->
+  <script type="text/babel" src="design/goal-strip.jsx"></script>
   <script type="text/babel" src="design/composer.jsx"></script>
   <!-- Per-tab profile selector — chrome.jsx destructures window.ProfileMenu
        at top level, so this must load before it. -->
@@ -166,9 +215,25 @@
   <script type="text/babel" src="design/prompt-history-modal.jsx"></script>
   <script type="text/babel" src="design/shortcuts-modal.jsx"></script>
   <script type="text/babel" src="design/update-modal.jsx"></script>
+  <!-- Conversation tree pane: rows (formatters, graph, meter) → detail
+       footer → pane; the detail and the pane destructure the earlier
+       files' window exports at top level, so keep this order. -->
+  <script type="text/babel" src="design/conversation-tree-rows.jsx"></script>
+  <script type="text/babel" src="design/conversation-tree-detail.jsx"></script>
+  <script type="text/babel" src="design/conversation-tree.jsx"></script>
 
   <!-- Live data layer (must load before app-live.jsx) -->
   <script src="model-names.js"></script>
+  <!-- Run state and turn outcome: pure helpers over omp's prompt_result /
+       session_settled / agent_end frames. Dependency-free IIFE; adapter.js
+       calls window.OMP_TURN_STATUS and live.js reads it at its top-level
+       init, so it must load before both. -->
+  <script src="app/turn-status.js"></script>
+  <!-- get_messages merge over a tab's live transcript. Dependency-free IIFE;
+       adapter.js calls window.OMP_TRANSCRIPT.tsOf inside adaptAgentMessages
+       and live.js destructures it at its top-level init, so it must load
+       before both. -->
+  <script src="app/transcript-merge.js"></script>
   <script src="adapter.js"></script>
   <!-- Session-name tab rename: pure gate/note/title helpers for the
        after-first-turn auto `/rename`. Dependency-free IIFE; live.js
@@ -183,6 +248,11 @@
   <script type="text/babel" src="app/use-keymap.jsx"></script>
   <script type="text/babel" src="app/use-subagent-manager.jsx"></script>
   <script type="text/babel" src="app/use-updater.jsx"></script>
+  <!-- Goal mode in the composer; destructures window.GoalStrip,
+       window.OMP_SESSION_UI, window.OMP_GOAL and window.OMP_TURN_STATUS
+       at top level. -->
+  <script type="text/babel" src="app/use-goal-mode.jsx"></script>
+  <script type="text/babel" src="app/use-conversation-tree.jsx"></script>
 
   <script type="text/babel" src="app-live.jsx"></script>
 </body>

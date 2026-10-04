@@ -4,10 +4,12 @@
      output     — progress.recentOutput plus the `subagent_event` stream
                   (populated only while the RPC subscription is "events")
      transcript — the agent's persisted session, via `get_subagent_messages`
-   Transcript loading is owned by the caller (`transcript` / `onLoadTranscript`). */
+   Transcript loading is owned by the caller (`transcript` / `onLoadTranscript`).
+   SubagentControls (message it, stop it) sits above the footer while the agent runs. */
 
 const { Icon: _SAI_Icon, OMP_SUBAGENTS: _SAI, SaToolChip: _SAI_ToolChip, SaStatusChip: _SAI_StatusChip,
-  SaContextTube: _SAI_Tube, SaGlyph: _SAI_Glyph, saHueStyle: _SAI_hue, saModelName: _SAI_model } = window;
+  SaContextTube: _SAI_Tube, SaGlyph: _SAI_Glyph, saHueStyle: _SAI_hue, saModelName: _SAI_model,
+  SubagentControls: _SAI_Controls } = window;
 
 function SaMetric({ k, v }) {
   return <div className="sa-stat"><span className="sa-stat-k">{k}</span><span className="sa-stat-v" title={String(v)}>{v}</span></div>;
@@ -71,6 +73,11 @@ function SaActivity({ agent: a, now }) {
   );
 }
 
+const saStreamText = l => (l.kind === "tool" ? `→ ${l.tool} ${l.text}`
+  : l.kind === "error" ? `✗ ${l.tool}: ${l.text}`
+  : l.kind === "user" ? `you › ${l.text}`
+  : l.text);
+
 function SaOutput({ agent: a, level }) {
   const lines = [...(a.progress?.recentOutput ?? [])].reverse();
   return (
@@ -89,11 +96,7 @@ function SaOutput({ agent: a, level }) {
           <div className="sa-empty">{level === "events" ? "Waiting for events…" : "Events stream while an agent is inspected."}</div>
         ) : (
           <div className="sa-out selectable">
-            {a.stream.map((l, i) => (
-              <div key={i} className={`ta-stream-line ${l.kind}`}>
-                {l.kind === "tool" ? `→ ${l.tool} ${l.text}` : l.kind === "error" ? `✗ ${l.tool}: ${l.text}` : l.text}
-              </div>
-            ))}
+            {a.stream.map((l, i) => <div key={i} className={`ta-stream-line ${l.kind}`}>{saStreamText(l)}</div>)}
           </div>
         )}
       </div>
@@ -127,7 +130,7 @@ const SaTranscript = React.memo(function SaTranscript({ transcript, onRefresh })
           <span className={`sa-msg-role ${m.role}`}>{m.role === "toolResult" ? `result · ${m.toolName}` : m.role}</span>
           {m.role === "toolResult" ? (
             <div className={`sa-msg-result${m.isError ? " err" : ""}`}>
-              {saBlocks(m.content).filter(b => b.type === "text").map(b => b.text).join("\n").split("\n").slice(0, 4).join("\n")}
+              {_SAI.blockText(m.content).split("\n").slice(0, 4).join("\n")}
             </div>
           ) : saBlocks(m.content).map((b, j) => (
             b.type === "text" ? <div key={j} className="sa-msg-text selectable">{b.text}</div>
@@ -143,7 +146,7 @@ const SaTranscript = React.memo(function SaTranscript({ transcript, onRefresh })
 
 /** Keyed by agent id in SubagentPane, so tab/copied state start fresh per agent.
  *  `callId` is the main-chat task call (the root agent's, for nested agents). */
-function SubagentInspector({ agent, callId, now, level, transcript, onBack, onLoadTranscript, onJumpToCall }) {
+function SubagentInspector({ agent, callId, now, level, transcript, onBack, onLoadTranscript, onJumpToCall, onSteer, onStop }) {
   const [tab, setTab] = React.useState("activity");
   const p = agent.progress;
   // Which footer copy button just succeeded — copyText resolves true/false.
@@ -189,6 +192,7 @@ function SubagentInspector({ agent, callId, now, level, transcript, onBack, onLo
         {tab === "output" && <SaOutput agent={agent} level={level} />}
         {tab === "transcript" && <SaTranscript transcript={transcript} onRefresh={() => onLoadTranscript(agent.id)} />}
       </div>
+      <_SAI_Controls agentId={agent.id} running={agent.status === "running"} onSteer={onSteer} onStop={onStop} />
       <div className="sa-insp-foot">
         {callId && (
           <button className="btn ghost outlined" onClick={() => onJumpToCall(callId)}>

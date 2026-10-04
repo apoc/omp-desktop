@@ -19,11 +19,11 @@
 
 const {
   Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar, SubagentPane, ProjectSidebar, EmptyWorkspace,
-  StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, UpdateModal, useTweaks,
+  StatusBar, AmbientRail, ConversationTree, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, UpdateModal, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, DEFAULT_PROFILE_ID,
   INTENT_FRAMING, APPROVAL_PROMPT,
-  useBridgeSnapshot, useThemeEffect, useSubagentManager, useUpdater, timeNow,
+  useBridgeSnapshot, useThemeEffect, useSubagentManager, useUpdater, useConversationTree, useGoalMode, timeNow,
   useKeymap, useKeymapDispatch, ShortcutsModal,
 } = window;
 const { isCommandInvocation } = window.OMP_SLASH;
@@ -48,6 +48,9 @@ function App() {
   const [promptHistoryOpen, setPromptHistoryOpen] = React.useState(false);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [planOpen,    setPlanOpen]    = React.useState(false);
+  // Conversation tree (prompt-cache navigator): replaces the ambient rail
+  // while open — see design/conversation-tree.jsx, app/use-conversation-tree.jsx.
+  const [treeOpen,    setTreeOpen]    = React.useState(false);
   // Plan mode is per tab (issue #28; app/session-ui.js): one entry per
   // session id, read through `plan` and written through `updatePlan` below.
   const [plans, setPlans] = React.useState({});
@@ -80,6 +83,12 @@ function App() {
   // on-demand agent transcripts.
   const [subagents,           setSubagents]           = React.useState(() => window.OMP_SUBAGENTS.emptySubagents());
   const [subagentTranscripts, setSubagentTranscripts] = React.useState({});
+  // omp's steer / follow-up queue + this tab's unacknowledged sends
+  // (app/message-queue.js), rendered by the composer's queue strip.
+  const [queue,        setQueue]        = React.useState(() => window.OMP_QUEUE.EMPTY_QUEUE);
+  const [queueSending, setQueueSending] = React.useState([]);
+  // omp's goal mode for this tab (app/goal.js `{known, goal}`).
+  const [goal,         setGoal]         = React.useState(() => window.OMP_GOAL.UNKNOWN);
 
   // ── Tab list — driven by bridge session registry ──────────────────────────
   // Each entry: { id, name, path, color, branch }
@@ -108,7 +117,7 @@ function App() {
     setModelState, setThinkingLevel,
     setSessions, setActiveSessionId, setProfiles, setStartupProfileId, setRecentProjects,
     setNoTabProfileId, setWorkspaceNotes,
-    setPromptHistory, setSubagents, setSubagentTranscripts,
+    setPromptHistory, setSubagents, setSubagentTranscripts, setQueue, setQueueSending, setGoal,
   });
   useThemeEffect(t);
   React.useEffect(() => {
@@ -196,6 +205,12 @@ function App() {
     // invoked mid-prompt ("review this /skill:code-review", #30) counts as
     // a command too: it is sent as typed, like a leading `/skill:x`.
     const isCmd = isCommandInvocation(data.commands, msg);
+    // Goal mode (app/use-goal-mode.jsx): the text is the goal's objective.
+    // Plan mode cannot be on at the same time; a command still runs as one.
+    if (goalUi.mode && !isCmd) {
+      goalUi.start(msg, images);
+      return;
+    }
     if (plan.mode && !isCmd) {
       if (hasAnnotations) {
         // Feedback with block comments — always takes priority over intent framing
@@ -231,9 +246,11 @@ function App() {
   const handleAbort      = () => { bridge?.abort(); setStreaming(false); };
   const handlePickModel  = m  => { setModelState(m); bridge?.setModel(m); };
   const handleAskAnswer  = React.useCallback((id, value) => { bridge?.answerAsk(id, value); }, [bridge]); // bridge = window.OMP_BRIDGE, assigned once before React renders — stable ref
+  const handleAskDialogAnswer = React.useCallback((id, answers) => { bridge?.answerAskDialog(id, answers); }, [bridge]);
   const handleConfirmAsk = React.useCallback((id, confirmed) => { bridge?.answerConfirm(id, confirmed); }, [bridge]);
   const handleCancelAsk  = React.useCallback((id) => { bridge?.cancelAsk(id); }, [bridge]);
   const handleGrantApproval = React.useCallback((tool, scope) => { bridge?.grantApprovalRule(tool, scope); }, [bridge]);
+  const handleStopRetry  = React.useCallback(() => bridge?.stopRetry(), [bridge]);
   const handlePickLogin = async (provider) => {
     if (!bridge) return;
     try {
@@ -253,15 +270,29 @@ function App() {
 
   // Extracted so both the global keymap handler and the composer prop share
   // the same implementation (plan §7: "extract into a togglePlanMode callback").
-  const togglePlanMode = () => updatePlan(togglePlan);
+  // Plan mode and a goal exclude each other, as in omp: the toggle only
+  // turns plan mode off while the tab has a goal (or is in goal mode).
+  const togglePlanMode = () => {
+    if (!plan.mode && goalUi.planBlocked) return;
+    updatePlan(togglePlan);
+  };
 
   // Composer-scoped follow-up: the composer owns the draft text. Re-trim
   // here (mirrors handleSend's `msg = text.trim()`) — expandPastes runs
   // after the composer's own trim and can reintroduce leading/trailing
-  // whitespace from the raw pasted content, which would otherwise mismatch
-  // the RPC echo's always-trimmed text (adaptUserContent) and duplicate
-  // the bubble instead of reconciling it (see OMP_BRIDGE.followUp).
-  const handleFollowUp = (text, images) => { bridge?.followUp(text.trim(), images); };
+  // whitespace from the raw pasted content. In goal mode the follow-up
+  // chord starts the goal too, like Enter (handleSend).
+  const handleFollowUp = (text, images) => {
+    const msg = text.trim();
+    if (goalUi.mode && !isCommandInvocation(data.commands, msg)) {
+      goalUi.start(msg, images);
+      return;
+    }
+    bridge?.followUp(msg, images);
+  };
+  // Queue strip actions: resolve `true` once omp edited its queue.
+  const handleRemoveQueued  = (text, kind) => bridge?.removeQueuedMessage(text, kind);
+  const handlePromoteQueued = text => bridge?.promoteQueuedMessage(text);
 
   // CommandBridge (⌘K) picking a non-desktop (RPC) command — no local
   // handler exists for it, unlike handleCommand's desktop entries. It has
@@ -277,10 +308,34 @@ function App() {
   const [promptInsert, setPromptInsert] = React.useState(null);
   const handlePickHistoryPrompt = (text) => setPromptInsert({ text, nonce: Date.now() });
 
-  const handleCommand = c => {
-    if      (c.name === "plan")      { updatePlan(enterPlan); }
+  // Goal mode in the composer and the goal strip above it (omp's `goal`).
+  const goalUi = useGoalMode({
+    bridge, tabId: planKey, sessionIds, goal, planMode: plan.mode, profileId: activeProfileId,
+    runState: activeProject.runState,
+    onRestoreDraft: (text, images) => setPromptInsert({ text, images, nonce: Date.now() }),
+  });
+
+  // Conversation tree data + actions. A successful "branch here" puts the
+  // re-asked prompt into the composer through `promptInsert` (replaces the
+  // draft). `sessionFile` comes with every snapshot's tab entry: it changes
+  // when branch/fork/new move the process onto another file, which refetches.
+  const convTree = useConversationTree({
+    bridge, open: treeOpen, sessionId: activeProject.id, sessionFile: activeProject.sessionFile ?? null,
+    profileId: activeProfileId, processStartedAt: activeProject.processStartedAt ?? null,
+    streaming, onBranchText: text => setPromptInsert({ text, nonce: Date.now() }),
+  });
+
+  // `args`: text typed after a desktop command in the composer (composer.jsx
+  // `execCmd`); empty from the ⌘K bridge.
+  const handleCommand = (c, args = "") => {
+    if      (c.name === "plan")      { if (!goalUi.planBlocked) updatePlan(enterPlan); }
+    // `/goal <objective>`: goal mode with the objective back in the
+    // composer, budget still to pick; Enter starts it. Blocked (plan mode,
+    // a goal already open), the text still comes back.
+    else if (c.name === "goal")      { goalUi.enter(); if (args) setPromptInsert({ text: args, nonce: Date.now() }); }
     else if (c.name === "todo")      { setPlanOpen(true); }
     else if (c.name === "compact")   { bridge?.compact(); }
+    else if (c.name === "tree" || c.name === "branch") { setTreeOpen(true); }
     else if (c.name === "export")    { bridge?.exportHtml(); }
     else if (c.name === "thinking")  { cycleThinking(); }
     else if (c.name === "model")     { openBridge("models"); }
@@ -512,7 +567,7 @@ function App() {
                 onHide={toggleSidebar}
               />
             )}
-            <div className={`stage ${showRail ? "with-rail" : ""}`}>
+            <div className={`stage ${treeOpen ? "with-tree" : showRail ? "with-rail" : ""}`}>
               <main className="session">
                 {noTab ? (
                   <EmptyWorkspace notes={workspaceNotes} />
@@ -522,9 +577,11 @@ function App() {
                     annotations={plan.annotations}
                     onAnnotate={handleAnnotate}
                     onAskAnswer={handleAskAnswer}
+                    onAskDialogAnswer={handleAskDialogAnswer}
                     onConfirmAsk={handleConfirmAsk}
                     onCancelAsk={handleCancelAsk}
                     onGrantApproval={handleGrantApproval}
+                    onStopRetry={handleStopRetry}
                     hoveredMsgIdx={hoveredMsgIdx}
                     hasProjectPath={!!activeProject?.path}
                     onInspectSubagent={subagentUi.open}
@@ -535,12 +592,20 @@ function App() {
                     onSend={handleSend}
                     planMode={plan.mode}
                     onTogglePlan={togglePlanMode}
+                    planBlocked={goalUi.planBlocked}
+                    goalMode={goalUi.mode}
+                    goalTint={goalUi.tint}
+                    onToggleGoal={goalUi.toggle}
+                    goalBlocked={goalUi.goalBlocked}
+                    goalStrip={goalUi.strip}
                     onOpenCmd={() => openBridge("commands")}
                     onOpenModel={() => openBridge("models")}
                     currentModel={model}
                     thinking={thinkingLevel}
-                    onCycleThinking={cycleThinking}
+                    onLoadThinkingLevels={() => bridge.thinkingLevels()}
+                    onSetThinking={level => bridge.setThinkingLevel(level)}
                     isStreaming={streaming}
+                    backgroundWork={activeProject.runState === "background"}
                     onAbort={handleAbort}
                     onApprove={handleApprovePlan}
                     annotationCount={Object.keys(plan.annotations).length}
@@ -550,6 +615,10 @@ function App() {
                     draftInsert={draftInsert}
                     promptHistory={promptHistory}
                     promptInsert={promptInsert}
+                    queue={queue}
+                    queueSending={queueSending}
+                    onRemoveQueued={handleRemoveQueued}
+                    onPromoteQueued={handlePromoteQueued}
                   />
                 </>)}
                 <StatusBar
@@ -563,6 +632,7 @@ function App() {
                   onChanges={() => setChangesOpen(true)}
                   onRules={() => setRulesOpen(true)}
                   onStats={() => setStatsOpen(true)}
+                  onTree={() => setTreeOpen(v => !v)}
                   onTweaks={() => window.postMessage({ type: '__activate_edit_mode' }, '*')}
                   autosave={t.autosave ?? true}
                   onAutosave={v => setTweak("autosave", v)}
@@ -577,12 +647,22 @@ function App() {
                   level={subagentUi.level}
                   transcript={subagentUi.selected ? subagentTranscripts[subagentUi.selected.id] : null}
                   onLoadTranscript={id => bridge?.loadSubagentTranscript(id)}
+                  onSteer={(id, text) => bridge?.steerSubagent(id, text)}
+                  onStop={id => bridge?.cancelSubagent(id)}
                   onClose={subagentUi.closePane}
                   onJumpToCall={subagentUi.jumpToCall}
                 />
               )}
 
-              {showRail && (
+              {treeOpen ? (
+                <ConversationTree
+                  model={convTree.model} currentFile={convTree.currentFile} error={convTree.error}
+                  loading={convTree.loading} treeKey={convTree.key} now={convTree.now} since={convTree.since}
+                  streaming={streaming}
+                  onRefresh={convTree.refresh} onClose={() => setTreeOpen(false)}
+                  onBranch={convTree.branch} onFork={convTree.fork} onOpenFile={convTree.openFile}
+                />
+              ) : showRail && (
                 <AmbientRail
                   ctx={liveCtx}
                   activity={activity}
@@ -590,6 +670,7 @@ function App() {
                   subagentPaneOpen={showSplit}
                   onOpenSubagent={subagentUi.open}
                   onToggleSubagentPane={subagentUi.togglePane}
+                  onOpenTree={() => setTreeOpen(true)}
                   messages={messages}
                   microcopy={data.microcopy}
                   sparklineValues={sparkline}

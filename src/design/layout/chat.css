@@ -91,6 +91,38 @@
   font-size: var(--d-text-sm);
 }
 
+/* A failed request (assistant-bubble.jsx `_AB_Failure`) */
+.ass-glyph.failed { border-color: color-mix(in oklab, var(--rose) 45%, var(--line-bright)); }
+.ass-failure {
+  margin-top: 4px; max-width: 720px;
+  padding: 8px 12px 9px;
+  border: 1px solid color-mix(in oklab, var(--rose) 35%, var(--line-bright));
+  border-radius: var(--r-2);
+  background: color-mix(in oklab, var(--rose) 5%, var(--bg-surface));
+}
+.ass-failure-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ass-failure-head .chip { padding: 1px 8px; white-space: nowrap; }
+.ass-failure-title { margin-right: 2px; color: var(--rose); font-weight: 600; font-size: var(--d-text-sm); }
+.ass-failure-msg {
+  margin-top: 6px;
+  color: var(--fg); font-size: var(--d-text); line-height: var(--d-leading);
+  overflow-wrap: anywhere;
+}
+.ass-failure-raw { margin-top: 6px; }
+.ass-failure-raw > summary {
+  cursor: pointer; list-style: none;
+  color: var(--fg-4); font-family: var(--font-mono); font-size: var(--d-text-xs);
+}
+.ass-failure-raw > summary::-webkit-details-marker { display: none; }
+.ass-failure-raw > summary::before { content: "▸ "; }
+.ass-failure-raw[open] > summary::before { content: "▾ "; }
+.ass-failure-raw pre {
+  margin: 6px 0 0; padding: 6px 8px; max-height: 160px; overflow: auto;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  font-family: var(--font-mono); font-size: var(--d-text-xs); color: var(--fg-3);
+  background: var(--bg-input); border: 1px solid var(--line); border-radius: var(--r-1);
+}
+
 /* user bubble — right side, soft gradient */
 .user-bubble {
   max-width: min(820px, 70%);
@@ -193,6 +225,18 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .tool-card-spacer { flex: 1; }
+/* job row (chat-view.jsx `JobRow`): the command after the job id */
+.job-label { color: var(--fg-3); }
+/* retry row (chat/retry-row.jsx): omp retrying a failed request */
+.retry-card { border-color: color-mix(in oklab, var(--amber) 35%, var(--line)); }
+.retry-glyph svg { animation: spin 1.4s linear infinite; }
+.retry-where { flex: none; }
+.retry-body { padding: 2px 12px 10px; display: flex; flex-direction: column; gap: 6px; }
+.retry-error { color: var(--fg-2); }
+.retry-foot { display: flex; align-items: center; gap: 10px; }
+.retry-status { flex: 1; min-width: 0; color: var(--fg-4); font-size: var(--d-text-xs); }
+.retry-stop { flex: none; white-space: nowrap; padding: 3px 12px; font-size: var(--d-text-xs); }
+.retry-stop-error { color: var(--rose); font-size: var(--d-text-xs); }
 
 .tool-search {
   padding: 6px 8px 8px;
@@ -461,174 +505,4 @@
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--line-bright) transparent;
-}
-
-/* ── Ask bubble ─────────────────────────────────────────────────────── */
-.ask-glyph {
-  background: color-mix(in oklab, var(--amber) 12%, var(--bg-elevated));
-  border-color: color-mix(in oklab, var(--amber) 40%, var(--line));
-}
-
-.ask-question {
-  font-size: var(--d-text);
-  color: var(--fg);
-  line-height: 1.5;
-  margin-bottom: 10px;
-  font-weight: 500;
-  /* omp titles can be multi-line and can carry unbroken 2000-char
-     payload previews — wrap them instead of collapsing to one run. */
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-/* Detail lines of a tool-approval prompt (origin/reason, path, command,
-   content preview). Height-capped so the payload scrolls inside the card
-   and the Approve/Deny row stays on screen. */
-.ask-approval-details {
-  font-size: var(--d-text-xs);
-  color: var(--fg-3);
-  line-height: var(--d-leading);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 200px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--line-bright) transparent;
-  background: var(--bg-elevated);
-  border: 1px solid var(--line);
-  border-radius: var(--r-2);
-  padding: 8px 10px;
-  margin-bottom: 10px;
-}
-
-.ask-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-.ask-opt {
-  appearance: none;
-  border: 1px solid var(--line-bright);
-  background: var(--bg-elevated);
-  color: var(--fg-2);
-  font-family: var(--font-sans);
-  font-size: var(--d-text-sm);
-  padding: 5px 12px;
-  border-radius: var(--r-pill);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  transition: border-color 120ms, color 120ms, background 120ms;
-}
-.ask-opt:hover:not(:disabled) {
-  border-color: var(--amber);
-  color: var(--amber);
-  background: color-mix(in oklab, var(--amber) 8%, var(--bg-elevated));
-}
-.ask-opt.done-opt { border-style: dashed; }
-.ask-opt.selected {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-.ask-opt.dimmed { opacity: 0.3; }
-.ask-opt:disabled { cursor: default; }
-
-.ask-approval-rules {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 6px;
-}
-.ask-opt.ask-remember {
-  font-size: var(--d-text-xs);
-  color: var(--fg-3);
-  border-style: dashed;
-}
-.ask-opt.ask-remember:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: color-mix(in oklab, var(--accent) 8%, var(--bg-elevated));
-}
-
-.ask-other {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-top: 8px;
-}
-
-.ask-other-input {
-  flex: 1;
-  appearance: none;
-  border: 1px solid var(--line-bright);
-  background: var(--bg-input);
-  color: var(--fg);
-  font-family: var(--font-sans);
-  font-size: var(--d-text-sm);
-  padding: 6px 10px;
-  border-radius: var(--r-2);
-  outline: none;
-  transition: border-color 120ms;
-}
-.ask-other-input:focus {
-  border-color: color-mix(in oklab, var(--amber) 50%, var(--line));
-}
-.ask-other-input:disabled { opacity: 0.35; cursor: default; }
-
-.ask-submit {
-  appearance: none;
-  border: 1px solid color-mix(in oklab, var(--amber) 40%, var(--line));
-  background: color-mix(in oklab, var(--amber) 8%, transparent);
-  color: var(--amber);
-  font-family: var(--font-sans);
-  font-size: var(--d-text-sm);
-  padding: 5px 12px;
-  border-radius: var(--r-pill);
-  cursor: pointer;
-  transition: background 120ms;
-}
-.ask-submit:hover { background: color-mix(in oklab, var(--amber) 15%, transparent); }
-
-/* Custom free-text echo shown after answering with typed text */
-.ask-custom-echo {
-  font-size: var(--d-text-sm);
-  color: var(--accent);
-  padding: 5px 0;
-}
-
-/* Confirm dialog body text */
-.ask-confirm-message {
-  font-size: var(--d-text-sm);
-  color: var(--fg-2);
-  line-height: 1.5;
-  margin-top: 4px;
-}
-
-/* Editor dialog textarea */
-.ask-editor-textarea {
-  width: 100%;
-  appearance: none;
-  border: 1px solid var(--line-bright);
-  background: var(--bg-input);
-  color: var(--fg);
-  font-family: var(--font-mono);
-  font-size: var(--d-text-sm);
-  padding: 8px 10px;
-  border-radius: var(--r-2);
-  outline: none;
-  resize: vertical;
-  margin-top: 6px;
-  transition: border-color 120ms;
-}
-.ask-editor-textarea:focus { border-color: color-mix(in oklab, var(--amber) 50%, var(--line)); }
-.ask-editor-textarea:disabled { opacity: 0.6; cursor: default; }
-
-.ask-editor-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
 }

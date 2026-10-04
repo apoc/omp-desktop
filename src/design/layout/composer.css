@@ -16,8 +16,9 @@
   margin-bottom: 6px;
 }
 
-/* Image attachments, and the collapsed-paste chips (#31) under the same layout. */
-.attach-strip, .paste-strip { padding: 0 2px 8px; }
+/* Image attachments, and the collapsed-paste chips (#31) under the same layout.
+   The queue strip below shares their spacing. */
+.attach-strip, .paste-strip, .queue-strip { padding: 0 2px 8px; }
 .attach-strip, .paste-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .attach-chip { position: relative; width: 48px; height: 48px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line-bright); flex: none; }
 .attach-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -54,6 +55,27 @@
   font-size: var(--d-text-xs); color: var(--fg-2);
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
+
+/* Steers / follow-ups omp holds for the agent (queue-strip.jsx). */
+.queue-strip { display: flex; flex-direction: column; gap: 4px; max-height: 148px; overflow-y: auto; }
+.queue-row {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg-elevated);
+  font-size: var(--d-text-xs);
+}
+.queue-row.sending { opacity: .65; }
+.queue-kind { flex: none; font-family: var(--font-mono); color: var(--amber); }
+.queue-row.followUp .queue-kind { color: var(--cyan); }
+.queue-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-2); }
+.queue-note { flex: none; color: var(--fg-4); }
+/* `.btn.icon.ghost` (styles.css), sized down; the inset ring stays inside
+   the strip's scroll box. */
+.btn.icon.queue-btn { flex: none; width: 20px; height: 20px; }
+.queue-btn:disabled { opacity: .4; cursor: default; }
+.btn.queue-btn:disabled:hover { background: transparent; color: var(--fg-3); }
+.btn.queue-btn:focus-visible { outline-offset: -2px; }
 
 .composer-row {
   display: flex; align-items: flex-end; gap: 6px;
@@ -92,6 +114,40 @@
 }
 .composer-pill:hover { border-color: var(--line-bright); background: var(--bg-hover); }
 .composer-pill.on { border-color: color-mix(in oklab, var(--amber) 50%, var(--line)); background: color-mix(in oklab, var(--amber) 12%, transparent); }
+
+/* The agent yielded and a background job will wake it (run state
+   `background`); the dot is the tab bar's. */
+.composer-bg-note {
+  display: inline-flex; align-items: center; gap: 6px; margin-right: 10px;
+  color: var(--fg-3); font-family: var(--font-mono); font-size: var(--d-text-xs);
+}
+
+/* Thinking-level menu on the thinking pill (thinking-menu.jsx). Opens
+   upward: the composer sits at the bottom of the window. */
+.thinking-menu { position: relative; display: inline-flex; }
+.thinking-pop {
+  bottom: calc(100% + 6px); left: 0;
+  /* As wide as its longest row, so each hint stays on one line. */
+  width: max-content; min-width: 240px; max-width: min(420px, calc(100vw - 32px));
+}
+.thinking-pop.busy, .thinking-pop.busy .thinking-item { cursor: progress; }
+.thinking-pop-head, .thinking-pop-foot {
+  padding: 5px 8px 4px;
+  font-size: var(--d-text-xs); color: var(--fg-4);
+}
+.thinking-pop-foot { border-top: 1px solid var(--line-soft); margin-top: 3px; }
+.thinking-pop-note { padding: 5px 8px; font-size: var(--d-text-xs); color: var(--fg-3); }
+.thinking-pop-note.error { color: var(--rose); overflow-wrap: anywhere; }
+/* Row base shared with .profile-item (chrome.css); the hint sits on the
+   name's baseline. */
+.thinking-item { align-items: baseline; }
+/* Fixed gutter so the names align whether or not a row is checked. */
+.thinking-item-mark { width: 10px; flex: none; align-self: center; display: inline-flex; }
+.thinking-item-name { flex: none; min-width: 56px; }
+.thinking-item-hint {
+  flex: 1; min-width: 0; font-size: var(--d-text-xs); color: var(--fg-4);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 /* slash palette pop */
 .slash-pop {

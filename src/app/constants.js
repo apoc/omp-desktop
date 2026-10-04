@@ -54,6 +54,19 @@
   const isSubmitEnter = (e) =>
     e.key === "Enter" && !e.nativeEvent?.isComposing && e.keyCode !== 229;
 
+  // omp's thinking levels, lowest first: its own descriptions
+  // (packages/tui/src/thinking.ts, THINKING_LEVEL_METADATA), plus the status
+  // bar's abbreviation where it shortens one.
+  const THINKING_LEVELS = {
+    off:     { hint: "no reasoning" },
+    minimal: { hint: "very brief reasoning (~1k tokens)", short: "min" },
+    low:     { hint: "light reasoning (~2k tokens)" },
+    medium:  { hint: "moderate reasoning (~8k tokens)", short: "med" },
+    high:    { hint: "deep reasoning (~16k tokens)" },
+    xhigh:   { hint: "extended reasoning (~32k tokens)" },
+    max:     { hint: "maximum reasoning the model supports" },
+  };
+
   Object.assign(window, {
     TWEAK_DEFAULTS,
     NULL_MODEL,
@@ -62,5 +75,6 @@
     INTENT_FRAMING,
     APPROVAL_PROMPT,
     isSubmitEnter,
+    THINKING_LEVELS,
   });
 })();

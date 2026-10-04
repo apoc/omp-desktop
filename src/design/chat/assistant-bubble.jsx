@@ -1,5 +1,6 @@
-/* chat/assistant-bubble.jsx — assistant block (text + plan + thoughts) +
-   InlinePlan (mini-plan rendered inline in the first plan reply). */
+/* chat/assistant-bubble.jsx — assistant block (text + plan + thoughts +
+   a failed request's failure) + InlinePlan (mini-plan rendered inline in the
+   first plan reply). */
 
 const { Icon: _ChatIcon, MarkdownContent: _ChatMd, AnnotablePlan: _ChatAP, CopyButton: _ChatCopy } = window;
 
@@ -44,12 +45,52 @@ const _messageText = (msg) => (msg.blocks ?? [])
   .filter((b) => b.type === "text" && b.text?.trim())
   .map((b) => b.text).join("\n\n");
 
+// A request that failed for good — omp's own retries are behind it
+// (app/turn-status.js `failureOf`). `retryable` (the "temporary" chip) is
+// omp's live `prompt_result` verdict and unknown for a reloaded turn.
+function _AB_Failure({ failure: f }) {
+  const where = [f.provider, f.model].filter(Boolean).join(" · ");
+  return (
+    <div className="ass-failure">
+      <div className="ass-failure-head">
+        <span className="ass-failure-title">request failed</span>
+        {f.httpStatus != null && <span className="chip danger mono">HTTP {f.httpStatus}</span>}
+        {f.retryable && (
+          <span className="chip warn" title="omp already retried it; sending again later may work">temporary</span>
+        )}
+        {where && <span className="chip muted mono">{where}</span>}
+      </div>
+      <div className="ass-failure-msg selectable">{f.headline}</div>
+      {f.raw !== f.headline && (
+        <details className="ass-failure-raw">
+          <summary>provider response</summary>
+          <pre className="selectable">{f.raw}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+// How omp's automatic retries ended on this reply (app/turn-status.js
+// `retryFinished`); the failed attempts left the conversation.
+function _AB_Retries({ retries: r }) {
+  const n = `${r.failed} failed attempt${r.failed === 1 ? "" : "s"}`;
+  const [label, title] = r.outcome === "recovered"
+    ? [`after ${n}`, "omp retried the request by itself until it answered"]
+    : r.outcome === "stopped" ? [n, "Retrying was stopped"]
+    : [n, "omp gave up retrying"];
+  return <span className={`chip mono ${r.outcome === "recovered" ? "warn" : "muted"}`} title={title}>{label}</span>;
+}
+
 function AssistantBubble({ msg, idx, highlighted, annotable, annotations, onAnnotate }) {
-  const copyText = msg.streaming ? "" : _messageText(msg);
+  // A failed request has no text of its own; its copy is the provider's error.
+  const copyText = msg.streaming ? "" : (_messageText(msg) || msg.failure?.raw || "");
   return (
     <div className={`row assistant fade-up${highlighted ? " mm-hot" : ""}`} data-msg-idx={idx}>
       <div className="ass-rail">
-        <div className="ass-glyph"><_ChatIcon name="sparkle" size={11} color="var(--accent)" /></div>
+        <div className={`ass-glyph${msg.failure ? " failed" : ""}`}>
+          <_ChatIcon name="sparkle" size={11} color={msg.failure ? "var(--rose)" : "var(--accent)"} />
+        </div>
         <div className="ass-thread" />
       </div>
       <div className="ass-body">
@@ -62,6 +103,7 @@ function AssistantBubble({ msg, idx, highlighted, annotable, annotations, onAnno
               thinking
             </span>
           )}
+          {msg.retries && <_AB_Retries retries={msg.retries} />}
           <_ChatCopy className="ass-copy" label="Copy message" text={copyText} />
         </div>
         {msg.thought && (
@@ -90,6 +132,7 @@ function AssistantBubble({ msg, idx, highlighted, annotable, annotations, onAnno
           }
           return null;
         })}
+        {msg.failure && <_AB_Failure failure={msg.failure} />}
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-/* ui/icons.jsx — OMP Icon Pack v1 (58 icons) + Icon component +
+/* ui/icons.jsx — OMP Icon Pack v1 (59 icons) + Icon component +
    TOOL_META map (tool name → colour, icon, label). */
 
 // Each icon has a single accent dot. Props: name, size, color, dotColor.
@@ -52,6 +52,7 @@ const _ICON_PATHS = {
   info:    { p: ['<circle cx="8" cy="8" r="6"/><path d="M8 7v4"/>'],                                                                                                                                                                          d: [8,5]     },
   clock:   { p: ['<circle cx="8" cy="8" r="6"/><path d="M8 4v4l3 2"/>'],                                                                                                                                                                      d: [11,10]   },
   live:    { p: ['<circle cx="8" cy="8" r="2.5" fill="currentColor"/><circle cx="8" cy="8" r="5.5"/>'],                                                                                                                                       d: [8,8]     },
+  goal:    { p: ['<circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="3"/>'],                                                                                                                                                              d: [8,8]     },
   branch:  { p: ['<circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M4 4.5v7M4 8h2a4 4 0 0 0 4-4"/>'],                                                                                d: [12,8]    },
   merge:   { p: ['<circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="13" r="1.5"/><path d="M4 4.5v7M4 8a4 4 0 0 0 4 4h2.5"/>'],                                                                             d: [12,13]   },
   commit:  { p: ['<circle cx="8" cy="8" r="3"/><path d="M2 8h3M11 8h3"/>'],                                                                                                                                                                   d: [8,8]     },
@@ -86,6 +87,9 @@ const TOOL_META = {
   task:    { color: "var(--cyan)",    icon: "agent", label: "task"  },
   debug:   { color: "var(--amber)",   icon: "bolt",  label: "debug" },
   ask:     { color: "var(--fg-3)",    icon: "circle",label: "ask"   },
+  job:     { color: "var(--cyan)",    icon: "refresh",label: "job"  }, // chat-view.jsx JobRow
+  retry:   { color: "var(--amber)",   icon: "refresh",label: "retry" }, // chat/retry-row.jsx
+  goal:    { color: "var(--lilac)",   icon: "goal",   label: "goal"  }, // chat/goal-row.jsx, design/goal-strip.jsx
 };
 
 Object.assign(window, { Icon, TOOL_META });

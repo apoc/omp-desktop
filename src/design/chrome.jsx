@@ -6,7 +6,7 @@
    - Ambient rail: TokenGauge, ActivityRadar, subagents card, Minimap
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot, RenameField } = window;
+const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot, RenameField, THINKING_LEVELS } = window;
 const { groupTabs } = window.OMP_PROJECT_NAV;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` — same
@@ -175,8 +175,8 @@ function TabBar({
 }
 
 // ── Status bar (footer): connection, model, tokens, todos, extension ─
-function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel, onTweaks, onChanges, onRules, onStats, autosave, onAutosave }) {
-  const thinkLabel = { off: "off", minimal: "min", low: "low", medium: "med", high: "high", xhigh: "max" }[thinking] ?? "—";
+function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel, onTweaks, onChanges, onRules, onStats, onTree, autosave, onAutosave }) {
+  const thinkLabel = THINKING_LEVELS[thinking]?.short ?? thinking ?? "—";
   return (
     <div className="status">
       <span className="status-cell"><span className="dot live" /> connected</span>
@@ -216,6 +216,10 @@ function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel,
         <Icon name="diff2" size={11} color="var(--fg-3)" />
       </button>
       <span className="status-sep">·</span>
+      <button className="status-cell btn ghost" onClick={onTree} title="conversation tree (prompt-cache status)" style={{ height: 20, padding: "0 6px" }}>
+        <Icon name="branch" size={11} color="var(--fg-3)" />
+      </button>
+      <span className="status-sep">·</span>
       <button className="status-cell btn ghost" onClick={onRules} title="approval rules" style={{ height: 20, padding: "0 6px" }}>
         <Icon name="check" size={11} color="var(--fg-3)" />
       </button>
@@ -239,12 +243,15 @@ function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel,
 function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
   // Log-scaled max across assistant messages so heatmap variance is
   // visible even when one compaction turn dwarfs the rest.
-  const maxTokens = React.useMemo(() => {
+  const { maxTokens, shown } = React.useMemo(() => {
     let max = 0;
+    let n = 0;
     for (const m of messages) {
+      if (window.OMP_TURN_STATUS.isHidden(m)) continue; // the chat hides it too
+      n++;
       if (m.kind === "assistant" && m.tokens && m.tokens > max) max = m.tokens;
     }
-    return max;
+    return { maxTokens: max, shown: n };
   }, [messages]);
   const logMax = Math.log10(maxTokens + 1) || 1;
 
@@ -253,15 +260,19 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
       <div className="minimap-head">
         <Icon name="minimap" size={11} color="var(--fg-3)" />
         <span className="mono" style={{ color: "var(--fg-3)" }}>session</span>
-        <span className="mono" style={{ marginLeft: "auto", color: "var(--fg-4)" }}>{messages.length}</span>
+        <span className="mono" style={{ marginLeft: "auto", color: "var(--fg-4)" }}>{shown}</span>
       </div>
       <div className="minimap-grid">
         {messages.map((m, i) => {
+          if (window.OMP_TURN_STATUS.isHidden(m)) return null;
           let hue = "var(--fg-5)";
           if      (m.kind === "user")      hue = "var(--fg-3)";
-          else if (m.kind === "assistant") hue = "var(--accent)";
+          else if (m.kind === "assistant") hue = m.failure ? "var(--rose)" : "var(--accent)";
           else if (m.kind === "ask")       hue = "var(--amber)";
+          else if (m.kind === "retry")     hue = TOOL_META.retry.color;
           else if (m.kind === "tool")      hue = TOOL_META[m.tool]?.color || "var(--fg-4)";
+          else if (m.kind === "job")       hue = TOOL_META.job.color;
+          else if (m.kind === "goal")      hue = TOOL_META.goal.color;
 
           // Brightness: assistant cells modulate by log(tokens), others flat.
           let opacity = 0.7;
@@ -274,7 +285,9 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
           // LLM cost lives on the assistant message that invoked them),
           // so they get tool-specific info instead of a token chip.
           let title;
-          if (m.kind === "assistant") {
+          if (m.kind === "assistant" && m.failure) {
+            title = `request failed${m.failure.httpStatus != null ? ` · HTTP ${m.failure.httpStatus}` : ""}${m.time ? " · " + m.time : ""}`;
+          } else if (m.kind === "assistant") {
             const tok  = m.tokens ? `${m.tokens.toLocaleString()} tok` : "—";
             const inOut = (m.tokensIn != null || m.tokensOut != null)
               ? ` (${(m.tokensIn ?? 0).toLocaleString()} in · ${(m.tokensOut ?? 0).toLocaleString()} out)`
@@ -287,6 +300,12 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
           } else if (m.kind === "user") {
             const preview = m.text ? ` · ${m.text.slice(0, 80)}${m.text.length > 80 ? "…" : ""}` : "";
             title = `you${preview}`;
+          } else if (m.kind === "job") {
+            title = `${m.jobId} finished${m.label ? " · " + m.label : ""}`;
+          } else if (m.kind === "retry") {
+            title = `retrying · attempt ${m.attempt}${m.maxAttempts ? " of " + m.maxAttempts : ""}`;
+          } else if (m.kind === "goal") {
+            title = window.OMP_GOAL.rowView(m).title;
           } else {
             title = m.kind;
           }
@@ -316,7 +335,7 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
 // ── Right rail: ambient peripherals stacked ──────────────────────────
 function AmbientRail({
   ctx, activity, messages, microcopy, onClose, sparklineValues, hoveredMsgIdx, onMinimapHover, onMinimapClick,
-  subagents, subagentPaneOpen, onOpenSubagent, onToggleSubagentPane,
+  subagents, subagentPaneOpen, onOpenSubagent, onToggleSubagentPane, onOpenTree,
 }) {
   // Use live tps samples. Before the first turn, sparklineValues is all zeros
   // which renders as a flat baseline — honest, not fake random data.
@@ -327,9 +346,14 @@ function AmbientRail({
     <aside className="rail">
       <div className="rail-head">
         <span className="mono" style={{ color: "var(--fg-3)" }}>ambient</span>
-        <button className="btn icon ghost" onClick={onClose} title="hide rail">
-          <Icon name="close" size={10} />
-        </button>
+        <span className="rail-head-actions">
+          <button className="btn icon ghost" onClick={onOpenTree} title="conversation tree (prompt-cache status)">
+            <Icon name="branch" size={10} />
+          </button>
+          <button className="btn icon ghost" onClick={onClose} title="hide rail">
+            <Icon name="close" size={10} />
+          </button>
+        </span>
       </div>
 
       <div className="rail-card glass">

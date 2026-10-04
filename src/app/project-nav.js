@@ -12,7 +12,7 @@
 // recorded cwd) never group.
 (function () {
   const { DEFAULT_PROFILE_ID } = window; // app/constants.js
-  const RUN_STATE_RANK = { idle: 0, running: 1, "waiting-user": 2, failed: 3 };
+  const RUN_STATE_RANK = { idle: 0, background: 1, running: 2, retrying: 3, "waiting-user": 4, failed: 5 };
 
   /** Comparable form of a folder path: forward slashes, no trailing slash
    *  (a bare `/` stays), and lowercased only for Windows drive/UNC paths —
@@ -64,7 +64,8 @@
     return [...groups.values()];
   }
 
-  /** The most urgent member state: failed > waiting-user > running > idle. */
+  /** The most urgent member state: failed > waiting-user > retrying >
+   *  running > background > idle. */
   function groupRunState(tabs) {
     let best = "idle";
     for (const tab of tabs) {

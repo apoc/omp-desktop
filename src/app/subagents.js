@@ -141,6 +141,11 @@
     return text.length > 120 ? `${text.slice(0, 117)}…` : text;
   }
 
+  // Message content (a string, or blocks) → its text blocks, joined. Not
+  // trimmed: the transcript's tool-result preview keeps leading indentation.
+  const blockText = content => (typeof content === "string" ? content
+    : (content ?? []).filter(b => b.type === "text").map(b => b.text).join("\n"));
+
   // One AgentSessionEvent → one stream line, or null for events the live
   // stream does not show (deltas, turn bookkeeping).
   function summarizeEvent(ev, now) {
@@ -150,9 +155,15 @@
       case "tool_execution_end":
         return ev.isError ? { t: now, kind: "error", tool: ev.toolName ?? "", text: "tool failed" } : null;
       case "message_end": {
-        const blocks = ev.message?.role === "assistant" ? ev.message.content ?? [] : [];
-        const text = blocks.filter(b => b.type === "text").map(b => b.text).join("\n").trim();
-        return text ? { t: now, kind: "text", text } : null;
+        const m = ev.message;
+        // A user message attributed to the user is one a person sent the
+        // agent (`steer_subagent`, omp's Agent Hub chat). Its task prompt
+        // and omp's own reminders are attributed to the agent: not shown.
+        const kind = m?.role === "assistant" ? "text"
+          : m?.role === "user" && m.attribution === "user" ? "user"
+          : null;
+        const text = kind ? blockText(m.content).trim() : "";
+        return text ? { t: now, kind, text } : null;
       }
       default:
         return null;
@@ -346,7 +357,7 @@
   }
 
   window.OMP_SUBAGENTS = {
-    emptySubagents, applySubagentFrame, mergeSnapshots, mergeTranscript, summarizeEvent, formatArgs,
+    emptySubagents, applySubagentFrame, mergeSnapshots, mergeTranscript, summarizeEvent, blockText, formatArgs,
     listAgents, groupByCall, rootCallIdOf, totals, agentHue, elapsedMs, subscriptionLevelFor,
     getAgent, parentIdOf, isLive, isTerminal,
     fmtDuration, fmtCost, fmtAgo,

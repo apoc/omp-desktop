@@ -1,6 +1,8 @@
 /* adapter.js — pure transforms between RPC data and design component data shapes.
    No side effects. All functions exported via window.* for Babel-transpiled scripts.
-   Depends on: window.MODEL_NAMES (model-names.js loaded first). */
+   Depends on: window.MODEL_NAMES (model-names.js loaded first),
+   window.OMP_TURN_STATUS (app/turn-status.js) and window.OMP_TRANSCRIPT
+   (app/transcript-merge.js), both for adaptAgentMessages. */
 
 (function () {
   "use strict";
@@ -233,6 +235,8 @@
     const args   = (typeof event.args === "object" && event.args !== null) ? event.args : {};
     const target = args.path ?? args.pattern ?? args.command ?? args.query
                 ?? args.expression ?? args.url
+                // omp's goal tool: the operation (create, get, complete…).
+                ?? (tool === "goal" ? args.op : undefined)
                 ?? (tool === "eval" && args.input
                       ? (String(args.input).match(/={5}\s*(.*?)\s*={5}/)?.[1] ?? "")
                       : "")
@@ -395,9 +399,7 @@
   // ── User-turn content → { text, images } ───────────────────────────────────
   // Shared by adaptAgentMessages (get_messages replay) and live.js's
   // message_start handler (live event echo) so both paths always agree on
-  // which turns are pure-tool-result (dropped) vs. keep-worthy — the
-  // get_messages merge in live.js swaps entries into place by position, so
-  // any drift between the two would misalign it.
+  // which turns are pure-tool-result (dropped) vs. keep-worthy.
   function adaptUserContent(blocks) {
     const textBlocks = blocks.filter(b => b.type === "text");
     const images = blocks.filter(b => b.type === "image" && typeof b.data === "string" && typeof b.mimeType === "string");
@@ -407,18 +409,23 @@
 
   // ── AgentMessage[] (from get_messages) → design message array ─────────────
   // Skips pure tool-result turns; maps thinking blocks to thought field.
+  // `ts` is omp's message timestamp: the merge after a tab switch matches
+  // live entries to these by it (app/transcript-merge.js).
   function adaptAgentMessages(apiMessages) {
     const result = [];
-    for (const msg of apiMessages ?? []) {
+    const messages = Array.isArray(apiMessages) ? apiMessages : [];
+    const failures = window.OMP_TURN_STATUS.finalFailures(messages);
+    for (const [index, msg] of messages.entries()) {
       if (!msg || typeof msg !== "object") continue;
       const { role, content } = msg;
       const time   = _formatTime(msg.timestamp ?? msg.createdAt);
+      const ts     = window.OMP_TRANSCRIPT.tsOf(msg);
       const blocks = Array.isArray(content) ? content : [{ type: "text", text: String(content ?? "") }];
 
       if (role === "user") {
         const { text, images } = adaptUserContent(blocks);
         if (!text && images.length === 0) continue;  // skip pure tool-result turns
-        result.push({ kind: "user", time, text, images });
+        result.push({ kind: "user", time, ts, text, images });
 
       } else if (role === "assistant") {
         let thought = null;
@@ -431,7 +438,11 @@
           }
           // tool_use blocks already rendered as separate tool cards; skip here
         }
-        if (designBlocks.length > 0 || thought) {
+        // A failed request has no text: its failure is the turn
+        // (app/turn-status.js). Only a failure that ended its run counts —
+        // omp keeps some failed attempts it then continued from.
+        const failure = failures.get(index) ?? null;
+        if (designBlocks.length > 0 || thought || failure) {
           // omp's persisted AgentMessage may carry usage in either RPC shape
           // ({input, output}) or raw Anthropic shape ({input_tokens, output_tokens}).
           const u = msg.usage;
@@ -439,11 +450,12 @@
           const tokensOut = u?.output ?? u?.output_tokens ?? null;
           const tokens = (tokensIn != null || tokensOut != null) ? (tokensIn ?? 0) + (tokensOut ?? 0) : null;
           result.push({
-            kind: "assistant", time, thought,
+            kind: "assistant", time, ts, thought,
             lead: thought ? "thinking" : null,
             blocks: designBlocks,
             streaming: false,
             tokens, tokensIn, tokensOut,
+            ...(failure ? { failure } : {}),
           });
         }
       }
@@ -502,7 +514,7 @@
    *  `models` — no longer available, or filtered out — are skipped, so every
    *  entry is pickable and a filtered list still fills up to `limit`. */
   function pickRecentModels(models, keys, limit) {
-    const byKey = new Map(models.map(m => [`${m.provider}/${m.id}`, m]));
+    const byKey = new Map(models.map(m => [modelKey(m), m]));
     const picked = [];
     for (const key of keys) {
       if (picked.length >= limit) break;
@@ -510,6 +522,11 @@
       if (m) picked.push(m);
     }
     return picked;
+  }
+
+  /** A model's identity across providers: omp's `provider/modelId`. */
+  function modelKey(m) {
+    return `${m.provider}/${m.id}`;
   }
 
   // ── Exports ───────────────────────────────────────────────────────────────
@@ -530,6 +547,7 @@
     adaptAgentMessages,
     adaptUserContent,
     pickRecentModels,
+    modelKey,
     timeNow,
   });
 })();

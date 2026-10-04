@@ -1,0 +1,298 @@
+/* Ask bubbles — every extension_ui_request prompt omp sends the desktop
+   (chat/ask-bubble.jsx), and omp's ask dialog inside them
+   (chat/ask-dialog.jsx). Every rule is `ask-` scoped. */
+
+/* ── Ask bubble ─────────────────────────────────────────────────────── */
+.ask-glyph {
+  background: color-mix(in oklab, var(--amber) 12%, var(--bg-elevated));
+  border-color: color-mix(in oklab, var(--amber) 40%, var(--line));
+}
+
+.ask-question {
+  font-size: var(--d-text);
+  color: var(--fg);
+  line-height: 1.5;
+  margin-bottom: 10px;
+  font-weight: 500;
+  /* omp titles can be multi-line and can carry unbroken 2000-char
+     payload previews — wrap them instead of collapsing to one run. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Detail lines of a tool-approval prompt (origin/reason, path, command,
+   content preview). Height-capped so the payload scrolls inside the card
+   and the Approve/Deny row stays on screen. */
+.ask-approval-details {
+  font-size: var(--d-text-xs);
+  color: var(--fg-3);
+  line-height: var(--d-leading);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 200px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-bright) transparent;
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+.ask-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.ask-opt {
+  appearance: none;
+  border: 1px solid var(--line-bright);
+  background: var(--bg-elevated);
+  color: var(--fg-2);
+  font-family: var(--font-sans);
+  font-size: var(--d-text-sm);
+  padding: 5px 12px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: border-color 120ms, color 120ms, background 120ms;
+}
+.ask-opt:hover:not(:disabled) {
+  border-color: var(--amber);
+  color: var(--amber);
+  background: color-mix(in oklab, var(--amber) 8%, var(--bg-elevated));
+}
+.ask-opt.selected {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.ask-opt.dimmed { opacity: 0.3; }
+.ask-opt:disabled { cursor: default; }
+
+.ask-approval-rules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.ask-opt.ask-remember {
+  font-size: var(--d-text-xs);
+  color: var(--fg-3);
+  border-style: dashed;
+}
+.ask-opt.ask-remember:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 8%, var(--bg-elevated));
+}
+
+.ask-other {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.ask-other-input {
+  flex: 1;
+  appearance: none;
+  border: 1px solid var(--line-bright);
+  background: var(--bg-input);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--d-text-sm);
+  padding: 6px 10px;
+  border-radius: var(--r-2);
+  outline: none;
+  transition: border-color 120ms;
+}
+.ask-other-input:focus {
+  border-color: color-mix(in oklab, var(--amber) 50%, var(--line));
+}
+.ask-other-input:disabled { opacity: 0.35; cursor: default; }
+
+.ask-submit {
+  appearance: none;
+  border: 1px solid color-mix(in oklab, var(--amber) 40%, var(--line));
+  background: color-mix(in oklab, var(--amber) 8%, transparent);
+  color: var(--amber);
+  font-family: var(--font-sans);
+  font-size: var(--d-text-sm);
+  padding: 5px 12px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition: background 120ms;
+}
+.ask-submit:hover:not(:disabled) { background: color-mix(in oklab, var(--amber) 15%, transparent); }
+.ask-submit:disabled { opacity: 0.4; cursor: default; }
+
+/* Confirm dialog body text */
+.ask-confirm-message {
+  font-size: var(--d-text-sm);
+  color: var(--fg-2);
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+/* Editor dialog textarea */
+.ask-editor-textarea {
+  width: 100%;
+  appearance: none;
+  border: 1px solid var(--line-bright);
+  background: var(--bg-input);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--d-text-sm);
+  padding: 8px 10px;
+  border-radius: var(--r-2);
+  outline: none;
+  resize: vertical;
+  margin-top: 6px;
+  transition: border-color 120ms;
+}
+.ask-editor-textarea:focus { border-color: color-mix(in oklab, var(--amber) 50%, var(--line)); }
+.ask-editor-textarea:disabled { opacity: 0.6; cursor: default; }
+
+.ask-editor-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* ── Ask dialog: one card per ask tool call ─────────────────────────── */
+.ask-dialog {
+  max-width: 760px;
+  border: 1px solid color-mix(in oklab, var(--amber) 38%, var(--line));
+  background: var(--bg-surface);
+  border-radius: var(--r-2);
+  overflow: hidden;
+}
+.ask-dialog.done { border-color: var(--line); }
+
+.ask-q { padding: 12px 14px 14px; }
+.ask-q + .ask-q { border-top: 1px solid var(--line); }
+.ask-q-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: var(--d-text-xs);
+  color: var(--fg-4);
+}
+/* Header chips (`.chip.warn`), a notch tighter than the meta row's. */
+.ask-q-head .chip,
+.ask-sum-q .chip { padding: 1px 8px; white-space: nowrap; }
+.ask-q-kind { margin-left: auto; }
+.ask-q-kind.todo { color: var(--amber); }
+
+/* The question is markdown: paragraphs after the first read as body text. */
+.ask-q .ask-question { white-space: normal; margin-bottom: 8px; }
+.ask-q .ask-question .md-content { line-height: 1.5; }
+.ask-q .ask-question .md-content p:not(:last-child) { margin-bottom: 0.5em; }
+.ask-q .ask-question .md-content > :not(:first-child) { font-weight: 400; color: var(--fg-2); }
+
+.ask-rows { display: flex; flex-direction: column; gap: 4px; }
+.ask-row-btn {
+  appearance: none;
+  width: 100%;
+  text-align: left;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+  background: var(--bg-elevated);
+  color: var(--fg-2);
+  font-family: var(--font-sans);
+  font-size: var(--d-text-sm);
+  cursor: pointer;
+  transition: border-color 120ms, background 120ms;
+}
+.ask-row-btn:hover { border-color: color-mix(in oklab, var(--amber) 55%, var(--line)); }
+.ask-row-btn:focus-visible { outline: 2px solid color-mix(in oklab, var(--amber) 60%, transparent); outline-offset: 1px; }
+.ask-row.selected .ask-row-btn {
+  border-color: color-mix(in oklab, var(--accent) 55%, var(--line));
+  background: var(--accent-soft);
+}
+
+/* Radio / checkbox marker; the checkbox tick is an inline SVG. */
+.ask-mark {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  margin-top: 2px;
+  border: 1.5px solid var(--fg-4);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--bg-window);
+}
+.ask-mark.box { border-radius: 4px; }
+.ask-row.selected .ask-mark { border-color: var(--accent); }
+.ask-row.selected .ask-mark.radio::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.ask-row.selected .ask-mark.box { background: var(--accent); }
+
+.ask-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ask-row-label { color: var(--fg); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.ask-row-desc { color: var(--fg-3); font-size: var(--d-text-xs); line-height: var(--d-leading); }
+.ask-row-text code,
+.ask-sum-q code,
+.ask-sum-a code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  padding: 0.05em 0.35em;
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--accent) 10%, var(--bg-elevated));
+}
+.ask-row-label .chip { font-size: 10px; padding: 0 6px; }
+
+/* An option's preview (markdown), height-capped under its row. */
+.ask-row-preview {
+  margin: 4px 0 4px 34px;
+  max-height: 180px;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-bright) transparent;
+}
+.ask-row-preview .md-content .code-block { margin: 0; }
+
+.ask-dialog-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--line);
+  background: color-mix(in oklab, var(--bg-elevated) 70%, transparent);
+}
+.ask-progress { font-size: var(--d-text-xs); color: var(--fg-3); }
+.ask-progress.incomplete { color: var(--amber); }
+.ask-foot-spacer { flex: 1; }
+
+/* Settled dialog: what was sent per question. */
+.ask-sum-row { padding: 9px 14px; display: flex; flex-direction: column; gap: 4px; }
+.ask-sum-row + .ask-sum-row { border-top: 1px solid var(--line); }
+.ask-sum-q { display: flex; gap: 6px; align-items: baseline; color: var(--fg-3); font-size: var(--d-text-xs); }
+.ask-sum-q-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ask-sum-a { display: flex; gap: 6px; align-items: baseline; color: var(--accent); font-size: var(--d-text-sm); }
+.ask-sum-a svg { flex-shrink: 0; position: relative; top: 1px; }
+.ask-sum-a .typed { color: var(--fg-4); font-size: var(--d-text-xs); white-space: nowrap; }
+.ask-sum-a.none { color: var(--fg-4); font-style: italic; }
+.ask-dialog.closed .chip { color: var(--fg-4); border-color: var(--line-bright); }

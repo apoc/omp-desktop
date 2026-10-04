@@ -62,21 +62,45 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "negotiate_protocol",
     "prompt",
     "abort",
+    // Retry row's Stop while omp waits between automatic retries: ends the
+    // run on the last failure without `abort`'s other effects.
+    "abort_retry",
     "follow_up",
     "steer",
+    // Queue strip above the composer: edit omp's pending steer/follow-up
+    // queue, which `queue_update` and `get_state.queuedMessages` report.
+    "remove_queued_message",
+    "promote_queued_message",
     "set_model",
     "cycle_model",
     "cycle_thinking_level",
+    // Thinking-level menu on the composer pill: the current model's levels,
+    // and the one picked.
+    "get_available_thinking_levels",
+    "set_thinking_level",
     "compact",
     "new_session",
     "export_html",
     "get_login_providers",
     "login",
+    // omp's ask dialog: every question of one ask tool call in a single
+    // `extension_ui_request` (method "ask"), answered with `answers[]`.
+    "set_ask_dialog",
     // Subagent manager (src/app/subagents.js): subscription level, the
-    // live-agent snapshot, and per-agent transcript tailing.
+    // live-agent snapshot, per-agent transcript tailing, and the
+    // inspector's message box and stop button for a running agent.
     "set_subagent_subscription",
     "get_subagents",
     "get_subagent_messages",
+    "steer_subagent",
+    "cancel_subagent",
+    // Conversation tree (src/app/conversation-tree.js): "Branch here" starts
+    // a new file from a user prompt, "Fork after the reply" from a turn's last
+    // assistant entry. `fork` first shipped in omp 18.4.11 (the version floor).
+    "branch",
+    "fork",
+    // Goal mode: omp's `goal` command (get/create/resume/pause/drop).
+    "goal",
 ];
 
 /// Manages one omp process per tab session.

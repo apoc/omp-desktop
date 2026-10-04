@@ -15,6 +15,11 @@
   const { LOCAL_COMMANDS, adaptAvailableCommands, mergeSlashCommands, isCommandInvocation } = window.OMP_SLASH;
   const SUB = window.OMP_SUBAGENTS;
   const STITLE = window.OMP_SESSION_TITLE;
+  const QUEUE = window.OMP_QUEUE;
+  const ASK = window.OMP_ASK_DIALOG;
+  const TURN = window.OMP_TURN_STATUS;
+  const GOAL = window.OMP_GOAL;
+  const { tsOf, mergeTranscript } = window.OMP_TRANSCRIPT;
 
   // ── Safe defaults so design components never crash on missing fields ──────
   const DEFAULT_DATA = {
@@ -57,13 +62,28 @@
     rpcState:       null,
     sessionCost:    null,
     currentTps:     0,
-    exitReason:     null,   // non-empty agent://exit reason for the last run — drives runStateOf's "failed"
+    exitReason:     null,   // non-empty agent://exit reason for the last run — drives the "failed" run state
+    // omp reports background work (an async bash/task/eval job) that will
+    // wake the agent after it yielded: set by every get_state's
+    // `hasPendingAsyncWork` (agent_end always asks for one), cleared by
+    // `session_settled`. Drives the "background" run state.
+    asyncPending:   false,
+    // `_trimMessages` cut the transcript's head (see the get_messages merge).
+    trimmed:        false,
     // Subagent manager (src/app/subagents.js). Terminal agents are kept here
     // for the life of the session — omp's own registry forgets them.
     subagents:           SUB.emptySubagents(),
     // agentId → { status, messages, nextByte, error } from get_subagent_messages.
     // Ephemeral: dropped on tab switch (not snapshotted) and refetched on demand.
     subagentTranscripts: {},
+    // omp's steer / follow-up queue (app/message-queue.js), replaced by
+    // every `queue_update` and `get_state` — never edited locally.
+    queue:          QUEUE.EMPTY_QUEUE,
+    // Steers / follow-ups sent but not yet acknowledged ("sending" rows).
+    queueSending:   [],
+    // omp's goal mode (app/goal.js): `{ known, goal }` from `get_state.goal`,
+    // `goal_updated` frames and `goal` command responses.
+    goal:           GOAL.UNKNOWN,
   };
 
   let streamingBubble = null;
@@ -78,6 +98,10 @@
   let lastSeq         = 0;   // highest journal seq processed for the active session — see _dispatchEnvelope
   let lastTurnOk      = true; // last assistant message_end was not error/aborted — a failed first exchange must not spend the one-shot
   let _replayBuffer   = null; // null = live dispatch; [] = buffering during a replay (see _switchToSession)
+  // The user's `abort` is in flight — set by `abort()`, cleared by its
+  // id-less response. omp pauses an active goal on abort, and that pause is
+  // labelled as the user's stop (app/goal.js `fromFrame`).
+  let userAbortInFlight = false;
   let _msgSeq = 0;  // monotonic counter — stable React keys for message bubbles
   // Whether the manager is inspecting an agent — decides the RPC subagent
   // subscription level ("events" vs "progress"). Mirrors the UI (set only by
@@ -145,7 +169,7 @@
   // Notes filed while no tab is open (a failed "Open with"): there is no
   // transcript to hold them, and `_resetSessionVars` would drop them from
   // `state.messages`. The empty workspace shows them; the next tab that
-  // activates receives them as local-only notes, so none is lost unseen.
+  // activates receives them as notes, so none is lost unseen.
   let workspaceNotes = [];
   // Recently opened project folders (the project sidebar's `recent`
   // section), always for the active tab's profile: `_recentsProfile` is the
@@ -177,6 +201,8 @@
   // Used by _sendWithResponse to correlate commands that need a typed reply.
   const _pendingResponses = new Map(); // id → { resolve, reject }
   let _nextCmdId = 1;
+  // Timeout for a short interactive command a user is waiting on.
+  const QUICK_CMD_TIMEOUT_MS = 15000;
 
   /**
    * Send a command and return a Promise that resolves with the response data
@@ -223,11 +249,14 @@
   // always reflected in the same snapshot that React receives.
   // Active tool-card indices are shifted so in-flight updates stay correct;
   // completed cards are already removed from the map and are unaffected.
+  // `state.trimmed` tells the get_messages merge that the head is gone on
+  // purpose, so it does not bring the cut history back.
   function _trimMessages() {
     if (state.isStreaming) return;                  // wait for clean turn boundary
     if (state.messages.length <= MINIMAP_MAX) return;
     const drop = MINIMAP_COLS;                      // evict one full row (13)
     state.messages = state.messages.slice(drop);
+    state.trimmed = true;
     for (const [id, idx] of activeToolCards) {
       const shifted = idx - drop;
       if (shifted < 0) activeToolCards.delete(id); // guard: possible on abort (no tool_execution_end)
@@ -235,31 +264,8 @@
     }
   }
 
-  // ── Four-state run projection ────────────────────────────────────────────
-  // Total function from a session's live/snapshot fields to one of four
-  // user-facing states — the tab bar previously showed only a color dot, so
-  // a backgrounded tab streaming, blocked on an unanswered ask, or crashed
-  // was indistinguishable from an idle one. Order matters: a fatal exit
-  // outranks everything (a process that died mid-turn is "failed" even with
-  // a stale ask still open), and an unanswered ask outranks isStreaming —
-  // every ask (select/confirm/input/editor) is emitted mid-turn and
-  // isStreaming only clears on turn_end/exit/get_state, none of which fire
-  // while the ask is open, so checking isStreaming first made "waiting-user"
-  // unreachable in practice.
-  // Pure — proven with an eval-kernel cell (4/4 cases: streaming+no-ask →
-  // running, streaming+open-ask → waiting-user, streaming+answered-ask →
-  // running, not-streaming+exitReason → failed) rather than a permanent test
-  // file, per this file's existing convention for extracted decision logic
-  // (_startProjectSession's tabName).
-  function runStateOf({ isStreaming, exitReason, messages }) {
-    if (exitReason) return "failed";
-    const waitingUser = messages.some(m => m.kind === "ask" && !m.answered && !m.cancelled);
-    if (waitingUser) return "waiting-user";
-    if (isStreaming) return "running";
-    return "idle";
-  }
-
-  // Memo for runStateOf, keyed on the messages array's identity.
+  // Memo for a session's run state (`TURN.runStateOf`, app/turn-status.js),
+  // keyed on the messages array's identity.
   //
   // _buildSnapshot runs runStateOf for EVERY open tab on every notify() —
   // i.e. on every RPC line — so without this the cost is
@@ -268,7 +274,8 @@
   // writer replaces the array (see _pushAssistantNote), so a stale entry is
   // unreachable (proven with an eval-kernel cell: 21/21 cases, including
   // the same array replayed under changing isStreaming/exitReason, which a
-  // naive key-on-array-only memo gets wrong).
+  // naive key-on-array-only memo gets wrong — `asyncPending` is part of
+  // the key for the same reason).
   // A backgrounded tab's array is frozen for as long as it
   // stays backgrounded, so those tabs become a map lookup; only the active
   // tab, whose array is replaced as it streams, still scans — and that scan
@@ -278,16 +285,16 @@
   // Shared so a never-activated tab keys the memo stably instead of
   // allocating a fresh (always-missing) array on every notify.
   const _EMPTY_SESSION_FIELDS = Object.freeze({
-    isStreaming: false, exitReason: null, messages: Object.freeze([]),
+    isStreaming: false, exitReason: null, asyncPending: false, messages: Object.freeze([]),
   });
   function runStateCached(fields) {
-    const { messages, isStreaming, exitReason } = fields;
+    const { messages, isStreaming, exitReason, asyncPending } = fields;
     const hit = _runStateMemo.get(messages);
-    if (hit && hit.isStreaming === isStreaming && hit.exitReason === exitReason) {
+    if (hit && hit.isStreaming === isStreaming && hit.exitReason === exitReason && hit.asyncPending === asyncPending) {
       return hit.value;
     }
-    const value = runStateOf(fields);
-    _runStateMemo.set(messages, { isStreaming, exitReason, value });
+    const value = TURN.runStateOf(fields);
+    _runStateMemo.set(messages, { isStreaming, exitReason, asyncPending, value });
     return value;
   }
 
@@ -305,6 +312,9 @@
       sparkline:       state.sparkline,
       subagents:           state.subagents,
       subagentTranscripts: state.subagentTranscripts,
+      queue:           state.queue,
+      queueSending:    state.queueSending,
+      goal:            state.goal,
       // Tab list — derived from session registry, not per-session state.
       // runState: active tab reads live state; background tabs read their
       // cached snapshot (never activated yet = "idle" defaults).
@@ -312,7 +322,7 @@
         ...s,
         runState: runStateCached(
           s.id === activeSessionId
-            ? { isStreaming: state.isStreaming, exitReason: state.exitReason, messages: state.messages }
+            ? state
             : sessionSnapshots.get(s.id) ?? _EMPTY_SESSION_FIELDS
         ),
       })),
@@ -353,8 +363,17 @@
     }
   }
 
-  // Build an ask bubble. The four `extension_ui_request` methods differ only
-  // in `method` and one or two method-specific fields; the defaults below
+  // What the user typed for a `/skill:` call, from its `skill-prompt`
+  // message's details (omp's `buildSkillPromptMessage`): `prompt` is the
+  // draft as sent, else the invocation is rebuilt from name and args.
+  function _skillPromptText(details) {
+    if (typeof details?.prompt === "string" && details.prompt) return details.prompt;
+    const args = typeof details?.args === "string" && details.args ? ` ${details.args}` : "";
+    return `/skill:${details?.name ?? ""}${args}`;
+  }
+
+  // Build an ask bubble. The `extension_ui_request` methods it is built for
+  // differ only in `method` and a few method-specific fields; the defaults below
   // (`options`/`answered`/`cancelled`/`answer`) are exactly what runStateOf
   // and _resolveAsk depend on, so they live here rather than being restated
   // — and silently drifting — per branch. One drift is deliberately
@@ -378,10 +397,11 @@
   }
 
   // Buffer an ask bubble instead of pushing it straight into
-  // `state.messages`: omp emits `extension_ui_request.select` just BEFORE
-  // the `tool_execution_start` of the tool it gates, so pushing on arrival
-  // puts the prompt above its own tool card. tool_execution_start flushes
-  // the queue, giving the [tool_card, ask_bubble] order.
+  // `state.messages`: omp's `select` (a tool approval) and its ask dialog
+  // request both reach stdout just BEFORE the `tool_execution_start` of the
+  // tool they belong to, so pushing on arrival puts the prompt above its own
+  // tool card. tool_execution_start flushes the queue, giving the
+  // [tool_card, ask_bubble] order.
   //
   // Two properties this has to keep, both learned from a wedged session:
   //   1. It is a QUEUE, not a single slot. A turn with parallel tool calls
@@ -429,26 +449,31 @@
     }
   }
 
-  // Resolve a pending ask bubble: apply `patch` to the first unanswered,
-  // uncancelled bubble with this id, then send `payload` back to omp. The
-  // re-answer guard (a bubble already answered or cancelled is left alone,
-  // and nothing is sent) is the subtle part — it lives here once instead of
-  // in each of answerAsk/answerConfirm/cancelAsk.
-  // Proven with an eval-kernel cell (7/7 cases: patch applied, array
-  // replaced, {value}/{confirmed}/{cancelled} payload shapes preserved
-  // per caller, and re-answer + unknown-id both send nothing).
-  function _resolveAsk(id, patch, payload) {
-    let resolved = false;
+  // Settle a pending ask bubble: apply `patch` to the first unanswered,
+  // uncancelled bubble with this id and publish. Returns whether one
+  // matched. The re-answer guard (a bubble already answered or cancelled is
+  // left alone) is the subtle part — it lives here once, for the user's
+  // answers (_resolveAsk) and omp's own `cancel` alike.
+  function _settleAsk(id, patch) {
+    let settled = false;
     state.messages = state.messages.map(m => {
       if (m.kind === "ask" && m.id === id && !m.answered && !m.cancelled) {
-        resolved = true;
+        settled = true;
         return { ...m, ...patch };
       }
       return m;
     });
-    if (!resolved) return;
-    notify();
-    _send({ type: "extension_ui_response", id, ...payload });
+    if (settled) notify();
+    return settled;
+  }
+
+  // Resolve a pending ask bubble: settle it, then send `payload` back to
+  // omp — only if it was still open, so a re-answer sends nothing.
+  // Proven with an eval-kernel cell (7/7 cases: patch applied, array
+  // replaced, {value}/{confirmed}/{cancelled} payload shapes preserved
+  // per caller, and re-answer + unknown-id both send nothing).
+  function _resolveAsk(id, patch, payload) {
+    if (_settleAsk(id, patch)) _send({ type: "extension_ui_response", id, ...payload });
   }
 
   // Append a synthetic assistant note (process exited, startup failed,
@@ -464,19 +489,54 @@
   // Any future note site calls this rather than re-deriving the shape.
   // Proven with an eval-kernel cell (3/3 cases: array identity changes,
   // body lands in `blocks` with no `text` field, note is completed).
-  // `localOnly` (opt-in, existing call sites unaffected): the note has no
-  // corresponding persisted turn on omp's side — get_messages's merge below
-  // would otherwise treat it as an ordinary assistant entry and either drop
-  // it or let a later real turn overwrite its slot on the next tab switch.
-  function _pushAssistantNote(text, localOnly) {
-    state.messages = [...state.messages, {
-      kind: "assistant",
-      time: timeNow(),
-      model: state.model?.name ?? null,
+  // A note carries no `ts` (no omp message stands behind it), so the
+  // get_messages merge keeps it in place (app/transcript-merge.js).
+  function _pushAssistantNote(text) {
+    state.messages = [...state.messages, _assistantBubble({
       blocks: [{ type: "text", text }],
-      thought: null, lead: null, streaming: false, completed: true,
-      ...(localOnly ? { localOnly: true } : {}),
-    }];
+      completed: true,
+    })];
+  }
+
+  // A finished assistant bubble the desktop builds itself, with `fields` on top.
+  function _assistantBubble(fields) {
+    return {
+      kind: "assistant", time: timeNow(), model: state.model?.name ?? null,
+      blocks: [], thought: null, lead: null, streaming: false,
+      ...fields,
+    };
+  }
+
+  // Show a run's final failure (`make(previous)` builds it, app/turn-status.js)
+  // on the bubble its failed message created: the one with the failed
+  // message's `ts` when the caller knows it — even one still marked
+  // streaming because its message_end was lost — else the last bubble of an
+  // omp message (it has a `ts`; notes do not), unless a user turn omp
+  // accepted came after it (a prompt it refused, which never got a `ts`,
+  // starts no run). An earlier hidden `pendingFailure` belongs to an
+  // attempt omp retried.
+  // When no bubble stands for that message (frames lost to a replay gap),
+  // the failure gets a bubble of its own, tied to the message by `ts`.
+  function _showFailure(make, ts = null) {
+    const msgs = state.messages;
+    let idx = ts == null ? -1 : msgs.findLastIndex(m => m.kind === "assistant" && m.ts === ts);
+    const byTs = idx !== -1;
+    if (!byTs) {
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].kind === "user" && msgs[i].ts != null) break;
+        if (msgs[i].kind === "assistant" && msgs[i].ts != null && !msgs[i].streaming && !msgs[i].superseded) { idx = i; break; }
+      }
+    }
+    const target = idx === -1 ? null : msgs[idx];
+    if (target && (byTs || target.pendingFailure || target.failure)) {
+      const { pendingFailure, ...rest } = target;
+      const next = [...msgs];
+      next[idx] = { ...rest, streaming: false, failure: make(target.failure ?? pendingFailure ?? null) };
+      state.messages = next;
+      if (streamingBubble && streamingBubble.ts === target.ts) streamingBubble = null;
+    } else {
+      state.messages = [...msgs, _assistantBubble({ ts, failure: make(null) })];
+    }
   }
 
   /** Pure: the assistant-note text for a non-empty `agent://exit` reason.
@@ -577,6 +637,19 @@
     _layoutWriting = false;
   }
 
+  // The active tab's omp process is gone (the exit listener, or a startup
+  // death found by session_status). A dead process sends no terminal frames
+  // and answers no get_subagents: end its live agents here (outcome
+  // unknown) or they tick forever. Its queue died with it, no send to it
+  // will be acknowledged, and its background jobs died with it too.
+  function _endDeadProcessState() {
+    state.subagents = SUB.mergeSnapshots(state.subagents, []);
+    state.queue = QUEUE.EMPTY_QUEUE;
+    state.queueSending = [];
+    state.asyncPending = false;
+    state.messages = TURN.retryCleared(state.messages);
+  }
+
   // Reset all per-session volatile state (called before loading a new session)
   function _resetSessionVars() {
     Object.assign(state, {
@@ -596,8 +669,13 @@
       sessionCost:   null,
       currentTps:    0,
       exitReason:    null,
+      asyncPending:  false,
+      trimmed:       false,
       subagents:           SUB.emptySubagents(),
       subagentTranscripts: {},
+      queue:         QUEUE.EMPTY_QUEUE,
+      queueSending:  [],
+      goal:          GOAL.UNKNOWN,
     });
     streamingBubble = null;
     lastTurnOk  = true;
@@ -608,6 +686,7 @@
     turnStartTime   = null;
     activityLog     = [];
     lastSeq         = 0;
+    userAbortInFlight = false;
   }
 
   // ── Session snapshot helpers ──────────────────────────────────────────────
@@ -634,11 +713,16 @@
       sessionCost:   state.sessionCost,
       currentTps:    state.currentTps,
       exitReason:    state.exitReason,
+      asyncPending:  state.asyncPending,
+      trimmed:       state.trimmed,
       // Last-turn outcome for the auto-rename gate (see _applyRpcState):
       // survives tab switches so a snapshot-restored session does not
       // forget a failed first exchange and re-arm the one-shot.
       lastTurnOk,
       subagents:     state.subagents,
+      queue:         state.queue,
+      queueSending:  state.queueSending,
+      goal:          state.goal,
       // volatile vars
       streamingBubble,
       activeToolCards: new Map(activeToolCards),
@@ -646,6 +730,9 @@
       turnStartTime,
       activityLog:   [...activityLog],
       lastSeq,
+      // An abort whose pause frame and response are still in the tab's
+      // journal: the replay on the way back labels the pause and clears it.
+      userAbortInFlight,
     });
   }
 
@@ -668,8 +755,13 @@
       sessionCost:   snap.sessionCost,
       currentTps:    snap.currentTps,
       exitReason:    snap.exitReason ?? null,
+      asyncPending:  snap.asyncPending ?? false,
+      trimmed:       snap.trimmed ?? false,
       subagents:     snap.subagents ?? SUB.emptySubagents(),
       subagentTranscripts: {},
+      queue:         snap.queue ?? QUEUE.EMPTY_QUEUE,
+      queueSending:  snap.queueSending ?? [],
+      goal:          snap.goal ?? GOAL.UNKNOWN,
     });
     streamingBubble = snap.streamingBubble;
     activeToolCards = snap.activeToolCards;
@@ -677,6 +769,7 @@
     turnStartTime   = snap.turnStartTime;
     activityLog     = snap.activityLog;
     lastSeq         = snap.lastSeq ?? 0;
+    userAbortInFlight = snap.userAbortInFlight ?? false;
     lastTurnOk      = snap.lastTurnOk ?? true;
     return true;
   }
@@ -720,7 +813,7 @@
       _resetSessionVars();
     }
     if (workspaceNotes.length > 0) {
-      for (const note of workspaceNotes) _pushAssistantNote(note, true);
+      for (const note of workspaceNotes) _pushAssistantNote(note);
       workspaceNotes = [];
     }
 
@@ -748,9 +841,7 @@
       if (reason) {
         _pushAssistantNote(_exitNote(reason, sessionRegistry.get(id)?.profile));
       }
-      // A dead process sends no terminal frames and answers no get_subagents:
-      // end its live agents here (outcome unknown) or they tick forever.
-      state.subagents = SUB.mergeSnapshots(state.subagents, []);
+      _endDeadProcessState();
       notify();
     });
     if (_switchGen !== myGen) {
@@ -785,6 +876,8 @@
       if (replay.dropped && sessionRegistry.get(id)?.autoRenameInFlight) {
         sessionRegistry.set(id, { ...sessionRegistry.get(id), autoRenameInFlight: false });
       }
+      // Same for an abort: its response may be among the evicted events.
+      if (replay.dropped) userAbortInFlight = false;
     } catch (e) {
       console.warn(`[live] replay_events failed for '${id}':`, e);
     }
@@ -820,7 +913,7 @@
         _notedStartupErrors.add(id);
         console.warn(`[live] session '${id}' startup error: ${startupError}`);
         _pushAssistantNote(_exitNote(startupError, sessionRegistry.get(id)?.profile));
-        state.subagents = SUB.mergeSnapshots(state.subagents, []); // died in the background — see the exit listener
+        _endDeadProcessState(); // died in the background — see the exit listener
       }
     } catch (e) {
       console.warn(`[live] session_status query failed:`, e);
@@ -909,6 +1002,14 @@
     // reportable again. Cleared after the spawn resolved, so a spawn that
     // threw leaves the previous reason still deduped.
     _notedStartupErrors.delete(id);
+    // The conversation tree needs to know which cache touches this process
+    // could have made: a new process rebuilds its system prompt (recalled
+    // memories change it), so earlier processes' cache is not reusable.
+    // Every spawn funnels through here (new tab, resume, launch restore,
+    // profile respawn); branch/fork/`new_session` keep the process and so
+    // leave it alone. Read the entry afresh: it may have changed during the await.
+    const spawned = sessionRegistry.get(id);
+    if (spawned) sessionRegistry.set(id, { ...spawned, processStartedAt: Date.now() });
     // Git: read initial branch and arm the HEAD watcher (fire-and-forget errors)
     if (cwd) {
       const branch = await window.__TAURI__.core
@@ -1106,8 +1207,9 @@
       // while `left` budget lasts; a resume starts with no budget because
       // `get_state` cannot tell a saved auto-title from a manual one, and
       // manual titles must never be overwritten. `sessionId` binds this
-      // state to the omp session it was granted for (set on the first
-      // send, see `STITLE.isRenameStateStale`).
+      // state to the omp session it was granted for (set by the first
+      // `get_state` that finds it armed or budgeted, see `_applyRpcState`
+      // and `STITLE.isRenameStateStale`).
       autoRenameArmed: !resume,
       autoRenameInFlight: false,
       autoRenameTurns: 0,
@@ -1145,6 +1247,30 @@
     return id;
   }
 
+  /** Tell the user an open failed, where they are looking: the active tab,
+   *  or the empty workspace when none is open. `_startProjectSession` has
+   *  already rolled the tab back. The note has no `ts` (omp holds no turn
+   *  for it), so the next `get_messages` merge keeps it in place. */
+  function _reportOpenFailure(e) {
+    const note = `**Could not open project:** ${String(e?.message ?? e)}`;
+    if (activeSessionId) _pushAssistantNote(note);
+    else workspaceNotes = [...workspaceNotes, note];
+    notify();
+  }
+
+  /** `_startProjectSession` for an open the user asked for (`+`, a recent
+   *  project, a saved conversation): a refused spawn — an omp below the
+   *  version floor, omp missing from PATH, a dangling profile — is reported
+   *  before the rejection reaches app-live.jsx, whose handlers only log it. */
+  async function _openReported(cwd, opts) {
+    try {
+      return await _startProjectSession(cwd, opts);
+    } catch (e) {
+      _reportOpenFailure(e);
+      throw e;
+    }
+  }
+
   // ── OS folder-open requests ───────────────────────────────────────────────
   // "Open with OMP Desktop" on a folder in Finder, Explorer or a Linux file
   // manager. Each platform hands the request to the Rust side through its
@@ -1167,11 +1293,7 @@
       // thing left is telling the user: the OS has no UI to report into and
       // silently ignoring a double-clicked folder looks like a hang.
       console.error(`[live] folder open failed for '${path}':`, e);
-      const note = `**Could not open project:** ${String(e?.message ?? e)}`;
-      if (activeSessionId) _pushAssistantNote(note);
-      else workspaceNotes = [...workspaceNotes, note];
-      notify();
-      return;
+      _reportOpenFailure(e);
     }
   }
 
@@ -1290,9 +1412,9 @@
       }
     } finally {
       if (notes.length > 0) {
-        // `localOnly`: the active tab's first `get_messages` may still be
-        // in flight, and its merge keeps only local-only notes.
-        if (activeSessionId) for (const note of notes) _pushAssistantNote(note, true);
+        // The active tab's first `get_messages` may still be in flight; its
+        // merge keeps these notes (they have no `ts`).
+        if (activeSessionId) for (const note of notes) _pushAssistantNote(note);
         else workspaceNotes = [...workspaceNotes, ...notes];
       }
       const untouched = activeSessionId === autoActive
@@ -1364,6 +1486,13 @@
 
   // ── RPC response handler ──────────────────────────────────────────────────
   function _handleResponse(resp) {
+    // `branch` / `fork` moved the process onto a new file whether or not a
+    // caller still waits (it may have timed out, or the response is replayed
+    // after a tab switch), so the transcript follows here, before the
+    // id-correlated early return.
+    if ((resp.command === "branch" || resp.command === "fork") && resp.success && !resp.data?.cancelled) {
+      _resetForNewFile();
+    }
     // ID-keyed correlation — resolve or reject the waiting _sendWithResponse call.
     if (resp.id && _pendingResponses.has(resp.id)) {
       const handler = _pendingResponses.get(resp.id);
@@ -1398,6 +1527,7 @@
       // Emitted only after session.abort() returns, and abort() sends no
       // id, so this uncorrelated response is the release point.
       _releaseAutoRenameAfterAbort();
+      userAbortInFlight = false;
       return;
     }
     if (!resp.success) return;
@@ -1408,42 +1538,32 @@
 
     } else if (command === "get_messages") {
       const completed = window.adaptAgentMessages(data.messages ?? []);
-      // Tool/ask/compact cards exist only in live event state — omp never
-      // persists them and get_messages never returns them. Walk the current
-      // snapshot in order: preserve tool/ask/compact entries in-place and
-      // replace each text entry (user/assistant) with the ground-truth copy
-      // from `completed`. Any new turns that arrived while we were on another
-      // tab (missed live events) are appended at the end. activeToolCards
-      // indices are rebuilt so in-flight tool_execution_update events keep
-      // landing on the right array slot.
-      //
-      // A still-`pendingEcho` bubble (queued follow-up/steer, see
-      // OMP_BRIDGE.followUp/.steer) is also kept in place rather than
-      // consuming a `pending` slot — omp hasn't persisted it yet, so
-      // `completed` doesn't contain it; treating it as an ordinary text
-      // entry here would misalign every slot after it (the next persisted
-      // turn would be substituted into its place, and the last real turn
-      // would then find nothing left and be dropped). Same reasoning for
-      // `localOnly` (see _pushAssistantNote) — a command_output note has
-      // no persisted turn either, ever, not just "not yet".
-      const pending = [...completed];
-      const merged = [];
-      for (const m of state.messages) {
-        if (m.streaming) continue; // streaming bubble handled separately below
-        if (m.kind === "tool" || m.kind === "ask" || m.kind === "compact" || m.pendingEcho || m.localOnly) {
-          merged.push(m);
-        } else if (pending.length > 0) {
-          merged.push(pending.shift());
-        }
-      }
-      merged.push(...pending); // turns that completed while we were away
-      // Rebuild activeToolCards — new entries may have been appended from pending
+      // Each live entry that stands for an omp message (`ts`) takes its
+      // ground-truth copy; everything else — cards, notes, job rows,
+      // bubbles of messages the adapter skips or omp dropped — stays in
+      // place, and turns the live transcript missed go in at their place in
+      // omp's order (`mergeTranscript`, app/transcript-merge.js; it also
+      // keeps what omp never persists: the live `retryable` verdict and the
+      // `retries` chip of omp's automatic retries).
+      // activeToolCards indices are rebuilt so in-flight
+      // tool_execution_update events keep landing on the right array slot.
+      const merged = mergeTranscript(state.messages, completed, { trimmed: state.trimmed });
+      // Rebuild activeToolCards — merged entries may have moved
       activeToolCards = new Map();
       for (let i = 0; i < merged.length; i++) {
         const m = merged[i];
         if (m.kind === "tool" && m.status === "running" && m._toolCallId) {
           activeToolCards.set(m._toolCallId, i);
         }
+      }
+      // omp adds a message to get_messages only at its `message_end`: a
+      // streaming bubble whose message is already there ended while its
+      // frames were lost, and the merge put that copy in its place.
+      // Raw messages, not the adapted ones: the adapter skips a message that
+      // went straight to a tool call, and that bubble is just as stale.
+      const streamingTs = streamingBubble?.ts;
+      if (streamingTs != null && (data.messages ?? []).some(m => m?.role === "assistant" && m.timestamp === streamingTs)) {
+        streamingBubble = null;
       }
       state.messages = streamingBubble ? [...merged, streamingBubble] : merged;
       // Backfill prompt history from the persisted transcript — runs on
@@ -1483,8 +1603,8 @@
 
     } else if (command === "cycle_model") {
       if (data?.model) {
+        // A re-clamped thinking level arrives as `thinking_level_changed`.
         state.model  = _buildModelEntry(data.model);
-        if (data.thinkingLevel != null) state.thinkingLevel = data.thinkingLevel;
         state.models = state.models.map(m => ({ ...m, current: m.id === data.model.id }));
         notify();
       }
@@ -1504,13 +1624,7 @@
       // will not clear a name when the new session is untitled. Same reset
       // as a profile respawn — otherwise `/new` keeps the old title and
       // never re-arms, and leftover budget retitles the new transcript.
-      _resetSessionVars();
-      if (activeSessionId && sessionRegistry.has(activeSessionId)) {
-        const entry = sessionRegistry.get(activeSessionId);
-        sessionRegistry.set(activeSessionId, { ...entry, ..._freshConversationFields(entry) });
-      }
-      _initFetch();
-      notify();
+      _reloadConversation(_freshConversationFields);
 
     } else if (command === "get_subagents") {
       // Authoritative list of agents still running; reconciles anything
@@ -1563,6 +1677,40 @@
       return;
     }
 
+    // Goal mode (app/goal.js): omp reports every change, accounting
+    // included; a change of a goal the tab already knew also goes into the
+    // transcript as a goal row (live-only, kept by the get_messages merge).
+    if (type === "goal_updated") {
+      const { state: next, row } = GOAL.fromFrame(state.goal, ev, { stopping: userAbortInFlight });
+      if (next === state.goal && !row) return;
+      state.goal = next;
+      if (row) state.messages = [...state.messages, { ...row, time }];
+      notify();
+      return;
+    }
+
+    // omp's whole steer / follow-up queue (app/message-queue.js); the strip
+    // above the composer renders exactly this.
+    if (type === "queue_update") {
+      const next = QUEUE.fromSnapshot(ev, state.queue);
+      if (next !== state.queue) { state.queue = next; notify(); }
+      return;
+    }
+
+    // omp reports every change of the applied thinking level: a pick in the
+    // composer's menu (the only confirmation `set_thinking_level` gets, and
+    // omp may clamp the pick), a cycle, a typed `/effort <level>`, a model switch
+    // re-clamping the level, `auto` resolving per turn. The effective
+    // level, like get_state's.
+    if (type === "thinking_level_changed") {
+      const level = _effectiveThinking(ev.thinkingLevel);
+      if (level !== state.thinkingLevel) {
+        state.thinkingLevel = level;
+        notify();
+      }
+      return;
+    }
+
     // A builtin slash command sent as a plain prompt (e.g. picking `/jobs`
     // from the merged palette) runs locally inside omp — no turn, no
     // agent_end, and the `prompt` response itself carries nothing. Its only
@@ -1595,13 +1743,13 @@
         sessionRegistry.set(activeSessionId, { ...entry, autoRenameInFlight: false });
         return;
       }
-      _pushAssistantNote(ev.text, true);
+      _pushAssistantNote(ev.text);
       notify();
       return;
     }
 
     // Same local-only-command path: a config-changing builtin (/model,
-    // /thinking) or a title-changing one (/rename) mutates session state
+    // /effort) or a title-changing one (/rename) mutates session state
     // outside the normal turn lifecycle, with no set_model/cycle_model
     // response to key off. Re-fetch rather than duplicate _applyRpcState's
     // model/thinkingLevel/sessionName derivation here.
@@ -1669,14 +1817,27 @@
         notify();
         return;
       }
-      // Agent asks the user to pick from a list — also the shape of every
-      // tool-approval prompt ("Allow tool: X", options ["Approve","Deny"]).
+      // Agent asks the user to pick from a list: every tool-approval prompt
+      // ("Allow tool: X", options ["Approve","Deny"]) and extension pickers
+      // like /review's. The ask tool uses the `ask` dialog below instead.
       // Buffered rather than pushed immediately; see _queueAskBubble.
       if (ev.method === "select") {
-        const OTHER_OPT = "Other (type your own)";
-        _queueAskBubble(_askMessage("select", ev, {
-          options: (ev.options ?? []).filter(o => o !== OTHER_OPT),
-        }));
+        _queueAskBubble(_askMessage("select", ev, { options: ev.options ?? [] }));
+        return;
+      }
+      // omp's ask dialog (enabled per process in _initFetch): every question
+      // of one ask tool call, answered with `answers` (OMP_BRIDGE.
+      // answerAskDialog; rules in app/ask-dialog.js). omp writes it from
+      // inside the running ask tool, yet it reaches stdout before that
+      // tool's tool_execution_start (seen live), so it is buffered like a
+      // select. A shape the dialog cannot answer is cancelled, as below.
+      if (ev.method === "ask") {
+        const questions = ASK.parseQuestions(ev.questions);
+        if (!questions) {
+          _send({ type: "extension_ui_response", id: ev.id, cancelled: true });
+          return;
+        }
+        _queueAskBubble(_askMessage("ask", ev, { questions, timeout: ev.timeout ?? null, answers: null }));
         return;
       }
       // Yes/No confirmation dialog. Pushed directly — see the `input`
@@ -1712,12 +1873,8 @@
           if (pendingAskBubbles.length === 0) _disarmAskFlush();
           return;
         }
-        state.messages = state.messages.map(m =>
-          m.kind === "ask" && m.id === ev.targetId && !m.answered
-            ? { ...m, cancelled: true }
-            : m
-        );
-        notify();
+        // omp settled it itself (turn stopped, or its ask timeout ran out).
+        _settleAsk(ev.targetId, { cancelled: true, closedByOmp: true });
         return;
       }
       // Any other/future method we have no UI for — cancel so the server
@@ -1730,6 +1887,8 @@
     if (type === "turn_start") {
       turnStartTime = now;
       state.isStreaming = true;
+      // A turn while omp waited to retry: the next attempt is in flight.
+      state.messages = TURN.retryAttempting(state.messages, now);
       notify();
       return;
     }
@@ -1763,35 +1922,54 @@
     if (type === "message_start") {
       const msg  = ev.message;
       const role = msg?.role;
+      // omp's message timestamp: the get_messages merge after a tab switch
+      // matches this entry to its persisted copy by it (`mergeTranscript`).
+      const ts   = tsOf(msg);
 
-      if (role === "user") {
+      // A `/skill:` call reaches the model as a `skill-prompt` custom
+      // message whose text is the whole skill file; what the user typed is
+      // in `details.prompt`, which omp's own transcript shows too.
+      // get_messages never returns custom messages, so that bubble has no
+      // persisted copy and the merge keeps it as is.
+      const skill = role === "custom" && msg.customType === "skill-prompt" && msg.attribution === "user";
+      if (role === "user" || skill) {
         const blocks = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: String(msg.content ?? "") }];
-        const { text, images } = window.adaptUserContent(blocks);
+        const { text: typed, images } = window.adaptUserContent(blocks);
+        const text = skill ? _skillPromptText(msg.details) : typed;
         if (text || images.length > 0) {
-          // A follow-up's or steer's optimistic bubble (see OMP_BRIDGE.followUp
-          // / .steer) is tagged `pendingEcho` and may no longer be the tail by
-          // the time omp echoes it back — omp holds a follow-up until the agent
-          // would otherwise stop, and defers a steer until the current turn's
-          // tool batch finishes, so any tool card/assistant turn in between
-          // appends after it. Reconcile against the oldest matching pending
-          // bubble wherever it is instead of only checking the tail, or a
-          // duplicate is appended.
-          const pendingIdx = state.messages.findIndex(m => m.kind === "user" && m.pendingEcho && m.text === text);
-          if (pendingIdx !== -1) {
-            const next = state.messages.slice();
-            next[pendingIdx] = { ...next[pendingIdx], pendingEcho: false };
-            state.messages = next;
+          // `send` shows its prompt right away, so its echo finds that
+          // bubble at the tail and ties it to omp's message. Steers and
+          // follow-ups only appear here, when omp hands them to the model:
+          // tagged `echo`, so the scroll pin (app/scroll-pin.js) does not
+          // pull a reader down to them, and so two identical steers
+          // delivered back to back both show.
+          const last = state.messages[state.messages.length - 1];
+          if (last?.kind === "user" && !last.echo && last.ts == null && last.text === text) {
+            state.messages = [...state.messages.slice(0, -1), { ...last, ts }];
           } else {
-            const last = state.messages[state.messages.length - 1];
-            if (!(last?.kind === "user" && last.text === text)) {
-              state.messages = [...state.messages, { kind: "user", time, text, images }];
-            }
+            state.messages = [...state.messages, { kind: "user", time, ts, text, images, echo: true }];
           }
           notify();
         }
+      } else if (role === "custom") {
+        // A background job's result (`async-result`) is what wakes the agent
+        // after it yielded: name the job above the reply it triggers. omp's
+        // hidden goal-continuation prompt likewise starts a turn nobody
+        // typed: mark it above the reply.
+        const jobs = TURN.finishedJobsOf(msg);
+        if (jobs) {
+          state.messages = [...state.messages, ...jobs.map(job => ({ kind: "job", time, ...job }))];
+          notify();
+        } else {
+          const row = GOAL.continuationRow(msg);
+          if (row) {
+            state.messages = [...state.messages, { ...row, time }];
+            notify();
+          }
+        }
       } else if (role === "assistant") {
         streamingBubble = {
-          kind: "assistant", time,
+          kind: "assistant", time, ts,
           thought: null, lead: null,
           blocks: [{ type: "text", text: "" }],
           streaming: true,
@@ -1819,6 +1997,9 @@
       streamingBubble.thought = thought;
       streamingBubble.lead    = thought ? "thinking" : null;
       streamingBubble.blocks  = designBlocks.length > 0 ? designBlocks : [{ type: "text", text: "" }];
+      // The message this bubble shows: after frames were lost, a bubble left
+      // streaming can receive the next message's updates (see get_messages).
+      if (msg.role === "assistant") streamingBubble.ts = tsOf(msg) ?? streamingBubble.ts;
 
       const updated = { ...streamingBubble, blocks: [...streamingBubble.blocks] };
       // Find by streaming flag — indexOf fails after the first update because
@@ -1841,17 +2022,23 @@
       // Auto-rename gate input: an assistant turn ending in error/aborted
       // still lands in omp's messageCount, so the gate needs the outcome,
       // not just the count.
-      if (msg?.role === "assistant") {
-        lastTurnOk = msg.stopReason !== "error" && msg.stopReason !== "aborted";
-      }
+      const answered = msg?.role === "assistant" && !TURN.failedStop(msg);
+      if (msg?.role === "assistant") lastTurnOk = answered;
       const usage = msg?.usage;
       const tokens = usage ? ((usage.input ?? 0) + (usage.output ?? 0)) : null;
-      if (streamingBubble && msg) {
+      // Only an assistant message ends the streaming bubble: when frames were
+      // lost, a tool result's, a steer's or a job's message_end can arrive
+      // while a stale bubble is still open, and must neither fill nor re-tag
+      // it (the get_messages merge sorts that bubble out by its `ts`).
+      if (streamingBubble && msg?.role === "assistant") {
         const blocks = Array.isArray(msg.content) ? msg.content : [];
         const thought = blocks.find(b => b.type === "thinking")?.thinking ?? streamingBubble.thought;
         const designBlocks = blocks.filter(b => b.type === "text" && b.text?.trim()).map(b => ({ type: "text", text: b.text }));
         // Find by streaming flag — extension_ui_request.select may have pushed
         // an ask bubble after the streaming bubble before message_end arrives.
+        // A failed request is not shown yet (`pendingFailure`): omp may
+        // still retry it. `_showFailure` shows it once the agent yields.
+        const pendingFailure = TURN.failureOf(msg);
         const completed = {
           ...streamingBubble,
           streaming: false, thought,
@@ -1860,6 +2047,10 @@
           tokens,
           tokensIn:  usage?.input  ?? null,
           tokensOut: usage?.output ?? null,
+          ts:        tsOf(msg) ?? streamingBubble.ts,
+          ...(pendingFailure ? { pendingFailure } : {}),
+          // omp may retry a stream that stalled or dropped (`retryStarted`).
+          ...(msg.stopReason === "aborted" ? { aborted: true } : {}),
         };
         const eidx = state.messages.findLastIndex(m => m.streaming === true);
         if (eidx !== -1) {
@@ -1870,7 +2061,7 @@
           state.messages = [...state.messages.slice(0, -1), completed];
         }
         streamingBubble = null;
-      } else if (streamingBubble) {
+      } else if (streamingBubble && !msg) {
         const completed2 = { ...streamingBubble, streaming: false, tokens };
         const eidx2 = state.messages.findLastIndex(m => m.streaming === true);
         if (eidx2 !== -1) {
@@ -1881,6 +2072,12 @@
           state.messages = [...state.messages.slice(0, -1), completed2];
         }
         streamingBubble = null;
+      }
+      // A retried request answered: the retries are over even if more turns
+      // follow in this run (app/turn-status.js `retryFinished`). By omp's
+      // rule only output counts: after an empty stop omp keeps retrying.
+      if (TURN.producedOutput(msg)) {
+        state.messages = TURN.retryFinished(state.messages, msg, tsOf(msg));
       }
       notify();
       return;
@@ -1954,6 +2151,43 @@
       return;
     }
 
+    // ── Turn outcome (app/turn-status.js) ───────────────────────────────────
+    // omp retries a failed request by itself (auto-retry): one retry row per
+    // run, from the first `auto_retry_start` to the run's final `agent_end`.
+    if (type === "auto_retry_start") {
+      state.messages = TURN.retryStarted(state.messages, ev, now);
+      notify();
+      return;
+    }
+    if (type === "auto_retry_end") {
+      const next = TURN.retryEnded(state.messages, ev);
+      if (next !== state.messages) { state.messages = next; notify(); }
+      return;
+    }
+
+    // `prompt_result` closes an accepted prompt once the agent yielded, after
+    // that run's `agent_end`. Only a failed agent turn matters here: the
+    // frame adds omp's cleaned error text and its `retryable` verdict to the
+    // failure `agent_end` just showed. Not id-correlated — an ordinary
+    // prompt is sent without one.
+    if (type === "prompt_result") {
+      if (ev.agentInvoked === true && ev.status === "error") {
+        _showFailure(prev => TURN.withPromptError(prev, ev.error));
+        notify();
+      }
+      return;
+    }
+
+    // Nothing can wake the session any more: no run, nothing queued, and no
+    // background job left whose result would start one.
+    if (type === "session_settled") {
+      if (state.asyncPending) {
+        state.asyncPending = false;
+        notify();
+      }
+      return;
+    }
+
     if (type === "agent_start" || type === "agent_end") {
       // Refinement counter: terminal agent turns since the last title
       // write. Non-terminal ends are scheduling pauses, not new material
@@ -1962,6 +2196,23 @@
       if (STITLE.countsAsRefineTurn(ev) && activeSessionId && sessionRegistry.has(activeSessionId)) {
         const e = sessionRegistry.get(activeSessionId);
         sessionRegistry.set(activeSessionId, { ...e, autoRenameTurns: (e.autoRenameTurns ?? 0) + 1 });
+      }
+      if (type === "agent_end") {
+        // A yield is the run's final outcome — omp's own retries are behind it.
+        // (Background work left behind reaches `asyncPending` through the
+        // get_state below, which notifies anyway.)
+        if (TURN.isYield(ev)) {
+          const messages = Array.isArray(ev.messages) ? ev.messages : [];
+          const last = messages.findLast(m => m?.role === "assistant");
+          // A retry row still here means the retries did not recover: the
+          // row goes, the final attempt says how they ended (and is shown
+          // again if a retry had hidden it).
+          const before = state.messages;
+          state.messages = TURN.retryYielded(before, last ?? null, tsOf(last));
+          const failure = TURN.failureOf(last);
+          if (failure) _showFailure(() => failure, tsOf(last));
+          if (failure || state.messages !== before) notify();
+        }
       }
       _send({ type: "get_state" });
     }
@@ -1988,10 +2239,20 @@
     state.messages = msgs;
   }
 
+  // The effective thinking level as get_state and `thinking_level_changed`
+  // report it. Unset (a model without thinking, say) reads as off, as in
+  // omp's own UI.
+  function _effectiveThinking(level) {
+    return level ?? "off";
+  }
+
   function _applyRpcState(rpcState) {
     if (!rpcState) return;
     state.rpcState      = rpcState;
     state.isStreaming   = rpcState.isStreaming ?? false;
+    // Background work that will wake the agent (see `state.asyncPending`);
+    // this is also how a tab activated mid-wait learns about it.
+    state.asyncPending  = rpcState.hasPendingAsyncWork === true;
     // If the turn completed while we were away (snapshot had streamingBubble
     // with streaming:true, but omp now says isStreaming:false), retire the
     // bubble immediately. The completed text arrives with get_messages; the
@@ -2001,7 +2262,12 @@
       streamingBubble = null;
       state.messages = state.messages.filter(m => !m.streaming);
     }
-    state.thinkingLevel = rpcState.thinkingLevel ?? "auto";
+    state.thinkingLevel = _effectiveThinking(rpcState.thinkingLevel);
+    // The queue as of this get_state; later `queue_update`s follow it in
+    // the same stream, so the last one written wins.
+    state.queue = QUEUE.fromSnapshot(rpcState.queuedMessages, state.queue);
+    // `null` with no goal; absent from an omp that predates goal mode.
+    state.goal = GOAL.fromSnapshot(state.goal, rpcState.goal ?? null);
 
     if (rpcState.model) {
       state.model = {
@@ -2065,6 +2331,15 @@
     // `sessionId`, which a stale snapshot cannot misreport, unlike a title.
     if (activeSessionId && sessionRegistry.has(activeSessionId)) {
       let entry = sessionRegistry.get(activeSessionId);
+      // A budget that has no session binding yet (a fresh tab before its
+      // first send, or `_resetForNewFile` after branch/fork, which mints a
+      // new omp session id) binds to the session omp reports now; only a
+      // *bound* id that later differs means an in-process switch.
+      if (!entry.autoRenameSessionId && rpcState.sessionId &&
+          (entry.autoRenameArmed || entry.autoRenameLeft > 0)) {
+        entry = { ...entry, autoRenameSessionId: rpcState.sessionId };
+        sessionRegistry.set(activeSessionId, entry);
+      }
       if (STITLE.isRenameStateStale(rpcState, entry.autoRenameSessionId)) {
         // The conversation the budget was granted for is gone: retire
         // everything, as for a resume (its note cannot come; its title may
@@ -2079,7 +2354,6 @@
         sessionRegistry.set(activeSessionId, {
           ...entry, autoRenameArmed: false, autoRenameInFlight: true,
           autoRenameLeft: STITLE.REFINE_MAX, autoRenameTurns: 0,
-          autoRenameSessionId: rpcState.sessionId ?? null,
         });
         _send({ type: "prompt", message: "/rename" });
       } else if (!entry.autoRenameInFlight &&
@@ -2120,6 +2394,10 @@
       .catch(() => {})
       .finally(() => {
         if (_switchGen !== gen) return;
+        // omp's ask dialog is off by default and per process: a respawned
+        // process falls back to one `select` per question until told again.
+        _sendWithResponse({ type: "set_ask_dialog", enabled: true })
+          .catch(err => console.warn("[live] set_ask_dialog failed:", err));
         _send({ type: "get_state" });
         _send({ type: "get_messages" });
         _send({ type: "get_available_models" });
@@ -2330,79 +2608,292 @@
     ));
   }
 
+  // ── Steer / follow-up sends (app/message-queue.js) ────────────────────────
+  let _queueSendSeq = 0;
+
+  /** Hand a steer (`kind` "steering") or follow-up ("followUp") to omp via
+   *  `send`, the id-correlated RPC call. No transcript bubble: omp holds a
+   *  follow-up until the agent would otherwise stop and a steer until the
+   *  current tool batch ends, and may drop either from its queue (✕), so
+   *  the message shows in the queue strip — first as a "sending" row until
+   *  omp acknowledges it, then from omp's own queue — and joins the
+   *  transcript as its `message_start` echo when the model gets it.
+   *  A refusal files a note that carries the text, which has already left
+   *  the composer. A timeout only drops the row: omp may still admit the
+   *  message (an image being prepared), and its `queue_update` shows it.
+   *
+   *  Side-effectful end to end (IPC, both tab stores); the row and note
+   *  shapes are pure and tested in test-message-queue.mjs. */
+  function _sendQueued(kind, text, images, send) {
+    const origin = activeSessionId;
+    if (!origin) return;
+    const id = ++_queueSendSeq;
+    _disarmAutoRename(text);
+    _recordPrompt(text);
+    state.queueSending = [...state.queueSending, QUEUE.sendingEntry(id, kind, text, images.length, state.queue, state.queueSending)];
+    notify();
+    send().then(() => _dropSending(origin, id), e => {
+      if (!e?.timedOut) {
+        const reason = e?.message ?? String(e);
+        // Responses are only dispatched for the active tab, so a refusal
+        // reaching us for another one is a failed hand-off racing a switch.
+        if (origin === activeSessionId) _pushAssistantNote(QUEUE.failureNote(kind, reason, text));
+        else console.warn(`[live] ${kind} for '${origin}' not sent: ${reason}`);
+      }
+      _dropSending(origin, id);
+    });
+  }
+
+  /** Remove a "sending" row from its tab, wherever that tab's state lives
+   *  now: the live `state` if it is active, its snapshot otherwise — and
+   *  both while a switch away from it is under way (the snapshot is taken
+   *  before `activeSessionId` moves). */
+  function _dropSending(sessionId, id) {
+    const without = list => list.filter(s => s.id !== id);
+    const snap = sessionSnapshots.get(sessionId);
+    if (snap?.queueSending) snap.queueSending = without(snap.queueSending);
+    if (sessionId === activeSessionId) {
+      state.queueSending = without(state.queueSending);
+      notify();
+    }
+  }
+
+  /** The active tab's process runs another conversation in place: drop the
+   *  live transcript, patch the registry entry with `fieldsOf(entry)` and
+   *  refetch. `keepTurnOutcome` keeps `lastTurnOk`, which the reset would
+   *  otherwise turn into a pass. Shared by `new_session` and branch/fork. */
+  function _reloadConversation(fieldsOf, keepTurnOutcome = false) {
+    const id = activeSessionId;
+    if (id && sessionRegistry.has(id)) {
+      const entry = sessionRegistry.get(id);
+      sessionRegistry.set(id, { ...entry, ...fieldsOf(entry) });
+    }
+    const turnOk = lastTurnOk;
+    _resetSessionVars();
+    if (keepTurnOutcome) lastTurnOk = turnOk;
+    _initFetch();
+    notify();
+  }
+
+  /** The active tab's process moved onto a new session file (`branch` /
+   *  `fork`, from `_handleResponse`): reset and refetch as `new_session`
+   *  does, but keep the tab's name and rename budget — the conversation is a
+   *  copy. omp mints a new session id for the file, so the id the budget is
+   *  bound to is dropped (rebound by the next `get_state`, see
+   *  `_applyRpcState`) and a pending `/rename` note is released; its
+   *  generation belongs to the old session. `sessionFile` is cleared for
+   *  `get_state` to refill. The last turn's outcome is kept: the copy ends in
+   *  an exchange the tab already ran, and the `lastTurnOk` gate keeps a
+   *  branch/fork of a failed turn from spending the auto-rename. */
+  function _resetForNewFile() {
+    _reloadConversation(() => ({ sessionFile: null, autoRenameSessionId: null, autoRenameInFlight: false }), true);
+  }
+
+  /** `branch` / `fork` (`send` runs the RPC); `_handleResponse` has already
+   *  moved the transcript (`_resetForNewFile`) by the time it resolves.
+   *  Refused here while the tab streams (omp would run it, but the
+   *  transcript is mid-turn); omp's own refusals (`session_busy`) arrive as
+   *  the rejection's message. `text` is the branched prompt (empty for a fork). */
+  async function _moveToNewFile(send) {
+    if (state.isStreaming) return { ok: false, error: "Wait for the current turn to finish." };
+    let data;
+    try {
+      data = await send();
+    } catch (e) {
+      return { ok: false, error: String(e?.message ?? e) };
+    }
+    if (data?.cancelled) return { ok: false, cancelled: true };
+    return { ok: true, text: String(data?.text ?? "") };
+  }
+
+  /** `OMP_BRIDGE.send`: the user bubble at once, then `prompt`. A
+   *  `streamingBehavior` tells omp what to do if a turn is running by the
+   *  time the prompt arrives; idle, omp ignores it and runs the prompt. */
+  function _sendPrompt(text, images, streamingBehavior) {
+    state.messages = [...state.messages, { kind: "user", time: timeNow(), text, images: images ?? [] }];
+    _disarmAutoRename(text);
+    _recordPrompt(text);
+    notify();
+    _send({ type: "prompt", message: text, images: images ?? [], ...(streamingBehavior ? { streamingBehavior } : {}) });
+  }
+
+  /** A `goal` command's `{goal, state}` result applied to the active tab. */
+  function _applyGoalResult(data) {
+    const next = GOAL.fromSnapshot(state.goal, data?.state ?? null);
+    if (next !== state.goal) { state.goal = next; notify(); }
+  }
+
+  /** `goal pause` / `resume` / `drop` on the active tab → `{ok}` or
+   *  `{ok: false, error}`. The `goal_updated` frame omp sends first already
+   *  moved the strip; the result is applied for a frame lost to a switch. */
+  const GOAL_OPS = new Set(["pause", "resume", "drop"]);
+  async function _goalOp(op) {
+    if (!GOAL_OPS.has(op)) return { ok: false, error: `unknown goal operation: ${op}` };
+    const origin = activeSessionId;
+    try {
+      const data = await _sendWithResponse({ type: "goal", op }, QUICK_CMD_TIMEOUT_MS);
+      if (origin === activeSessionId) _applyGoalResult(data);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e?.message ?? e) };
+    }
+  }
+
   // ── OMP_BRIDGE public API ─────────────────────────────────────────────────
   window.OMP_BRIDGE = {
     get isConnected() { return !!window.__TAURI__ && !!activeSessionId; },
 
     // ── Messaging ────────────────────────────────────────────────────────────
-    // A recognized command may resolve as `agentInvoked: false` — omp ran
-    // it locally (its command_output note is already tagged `localOnly`,
-    // see _pushAssistantNote) with no persisted turn of its own. This
-    // bubble needs the same tag, or the next get_messages merge (tab
-    // switch) gives its slot to a later, unrelated turn instead of keeping
-    // it in place. Only tracked via the extra id-correlated round trip for
-    // a recognized command or skill invocation — an ordinary prompt is the
-    // overwhelmingly common case and stays a plain fire-and-forget send.
-    send(text, images) {
-      const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [] };
-      state.messages = [...state.messages, userMsg];
-      _disarmAutoRename(text);
-      _recordPrompt(text);
-      notify();
-      if (isCommandInvocation(state.commands, text)) {
-        _sendWithResponse({ type: "prompt", message: text, images: images ?? [] })
-          .then((data) => {
-            if (data?.agentInvoked === false) {
-              userMsg.localOnly = true;
-              notify();
-            }
-          })
-          .catch(() => {}); // a real failure is already surfaced via the normal response/error path
-      } else {
-        _send({ type: "prompt", message: text, images: images ?? [] });
-      }
-    },
+    // The bubble shows at once; omp's echo (`message_start`) ties it to the
+    // persisted message. A command omp runs locally sends no echo, so its
+    // bubble keeps no `ts` and the get_messages merge leaves it in place.
+    send(text, images) { _sendPrompt(text, images); },
     // No id on purpose: a pending-id match returns before the command
     // switch, and the abort response is what releases a cancelled
     // auto-rename. See `_releaseAutoRenameAfterAbort`.
-    abort()            { _send({ type: "abort" }); },
-    // Both tagged `pendingEcho`: omp doesn't inject a follow-up until the
-    // agent would otherwise stop, and defers a steer until the current
-    // turn's tool batch finishes — so either bubble is usually no longer
-    // the tail by the time its message_start echo arrives. The echo
-    // handler reconciles by content match instead of assuming it's last.
-    //
-    // Both also route a real slash command — or a skill invocation, even
+    abort()            { userAbortInFlight = true; _send({ type: "abort" }); },
+    /** Stops omp's automatic retries of the active tab's failed request.
+     *  While omp waits between attempts `abort_retry` ends the run on the
+     *  last failure and touches nothing else. An attempt already in flight
+     *  is beyond it (measured: `abort_retry` is a no-op then and the retries
+     *  go on), so that takes `abort`, as Esc does. Resolves to `{ok}` or
+     *  `{ok: false, error}`. */
+    async stopRetry() {
+      const ri = TURN.retryIndex(state.messages);
+      if (ri === -1) return { ok: true };
+      if (state.messages[ri].phase !== "waiting") {
+        this.abort();
+        return { ok: true };
+      }
+      try {
+        await _sendWithResponse({ type: "abort_retry" }, QUICK_CMD_TIMEOUT_MS);
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: String(e?.message ?? e) };
+      }
+    },
+    // Both route a real slash command — or a skill invocation, even
     // mid-prompt (#30) — through `prompt` with the matching
     // `streamingBehavior` instead of their own dedicated RPC command: omp's
     // `steer`/`follow_up` frames skip command and skill dispatch entirely
     // (only `prompt` runs it), so a command sent mid-stream through the
     // dedicated frame would just reach the model as literal text — this is
     // the transport's problem, not something callers (app-live.jsx) should
-    // each have to know and check for themselves.
+    // each have to know and check for themselves. See `_sendQueued` for
+    // how the message shows until omp delivers it.
     followUp(text, images) {
-      const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [], pendingEcho: true };
-      state.messages = [...state.messages, userMsg];
-      _disarmAutoRename(text);
-      _recordPrompt(text);
-      notify();
-      if (isCommandInvocation(state.commands, text)) {
-        _send({ type: "prompt", message: text, images: images ?? [], streamingBehavior: "followUp" });
-      } else {
-        _send({ type: "follow_up", message: text, images: images ?? [] });
-      }
+      const imgs = images ?? [];
+      _sendQueued("followUp", text, imgs, isCommandInvocation(state.commands, text)
+        ? () => _sendWithResponse({ type: "prompt", message: text, images: imgs, streamingBehavior: "followUp" })
+        : () => _sendWithResponse({ type: "follow_up", message: text, images: imgs }));
     },
     steer(text, images) {
-      const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [], pendingEcho: true };
-      state.messages = [...state.messages, userMsg];
-      _disarmAutoRename(text);
-      _recordPrompt(text);
-      notify();
-      if (isCommandInvocation(state.commands, text)) {
-        _send({ type: "prompt", message: text, images: images ?? [], streamingBehavior: "steer" });
-      } else {
-        _send({ type: "steer", message: text, images: images ?? [] });
+      const imgs = images ?? [];
+      _sendQueued("steering", text, imgs, isCommandInvocation(state.commands, text)
+        ? () => _sendWithResponse({ type: "prompt", message: text, images: imgs, streamingBehavior: "steer" })
+        : () => _sendWithResponse({ type: "steer", message: text, images: imgs }));
+    },
+    /** ✕ / ✎ on a queue-strip row (`queue`: "steering" | "followUp"):
+     *  `true` once omp removed the message, `false` when it was no longer
+     *  pending — already delivered, or a steer the model already took,
+     *  which stays listed until the transcript records it. Rejects only
+     *  when the request itself fails. The row goes away with omp's next
+     *  `queue_update`, never locally; omp removes the *first* match, and
+     *  repeating the call would remove the next duplicate. The default
+     *  (long) timeout: a reply held back by a tab switch is replayed on the
+     *  way back, and ✎ only restores the text once it is seen. */
+    async removeQueuedMessage(text, queue) {
+      const data = await _sendWithResponse({ type: "remove_queued_message", message: text, queue });
+      return data?.removed === true;
+    },
+    /** ↑ on a follow-up row: move it to the end of the steering queue.
+     *  While idle (e.g. after an abort) omp starts a turn with it right
+     *  away. Same result contract as `removeQueuedMessage`. */
+    async promoteQueuedMessage(text) {
+      const data = await _sendWithResponse({ type: "promote_queued_message", message: text });
+      return data?.promoted === true;
+    },
+    // ── Goal mode (app/goal.js) ──────────────────────────────────────────────
+    /** Starts a goal on the active tab: what the composer sends in goal
+     *  mode. `goal create` goes first, so the objective's turn already
+     *  carries omp's goal context and goal tool. With auto-continue on
+     *  (`goal.continuationModes` holds "rpc") omp then starts a goal turn
+     *  by itself; otherwise the objective goes out as the first prompt, as
+     *  omp's own `/goal` does — as a steer when a turn is running. Images
+     *  ride with the objective; when omp already started on its own they
+     *  are steered in with it rather than dropped. Resolves `{ok}` or
+     *  `{ok: false, error}` (omp refuses in plan mode, with a paused goal…).
+     *  A tab switch before the follow-up sends nothing to the other tab:
+     *  both requests keep the default timeout, so a reply held back by the
+     *  switch is replayed on the way back and the sequence goes on there.
+     *  IPC end to end; the decisions are app/goal.js's (`ompStartedTurn`,
+     *  test-goal.mjs), the sequence was live-tested against omp 18.6.0. */
+    async goalStart(objective, tokenBudget, images) {
+      const text = String(objective ?? "").trim();
+      const imgs = images ?? [];
+      if (!text) return { ok: false, error: "Describe the goal first." };
+      const origin = activeSessionId;
+      if (!origin) return { ok: false, error: "Not connected" };
+      const wasStreaming = state.isStreaming;
+      try {
+        const data = await _sendWithResponse(
+          { type: "goal", op: "create", objective: text, ...(tokenBudget ? { token_budget: tokenBudget } : {}) },
+        );
+        if (origin === activeSessionId) _applyGoalResult(data);
+      } catch (e) {
+        // No answer is not a refusal: omp may still create the goal, whose
+        // frame then shows it in the strip.
+        if (e?.timedOut) return { ok: false, error: "omp has not answered yet; if the goal starts, it shows here." };
+        return { ok: false, error: String(e?.message ?? e) };
       }
+      if (origin !== activeSessionId) return { ok: true };
+      const bridge = window.OMP_BRIDGE;
+      if (wasStreaming) {
+        bridge.steer(text, imgs);
+        return { ok: true };
+      }
+      let rpcState = null;
+      try {
+        rpcState = await _sendWithResponse({ type: "get_state" });
+      } catch (e) {
+        console.warn("[live] get_state after goal create failed; sending the objective:", e);
+      }
+      if (origin !== activeSessionId) return { ok: true };
+      // Nothing started, but omp is not settled either (a background job or
+      // queued follow-ups): a turn may begin any moment, so the objective
+      // waits in the queue strip instead of as a bubble omp would echo again
+      // later. It still goes out as a `prompt`, not a `steer`: only omp's
+      // prompt path adds the goal-mode context (objective, budget, when to
+      // call it complete) to the turn — an idle steer is drained without it.
+      // A turn that started meanwhile takes it as a steer. Settled: the
+      // first prompt, with the same `streamingBehavior` fallback.
+      if (GOAL.ompStartedTurn(rpcState)) {
+        if (imgs.length > 0) bridge.steer(text, imgs);
+      } else if (rpcState?.isSettled === false) {
+        _sendQueued("steering", text, imgs,
+          () => _sendWithResponse({ type: "prompt", message: text, images: imgs, streamingBehavior: "steer" }));
+      } else _sendPrompt(text, imgs, "steer");
+      return { ok: true };
+    },
+    /** `pause` / `resume` / `drop` the active tab's goal. */
+    goalOp(op) { return _goalOp(op); },
+    /** Clears a completed goal's summary from the strip (local only). */
+    goalDismiss() {
+      const next = GOAL.dismiss(state.goal);
+      if (next !== state.goal) { state.goal = next; notify(); }
+    },
+    /** omp's auto-continue setting for `profile` (src-tauri goal_config.rs):
+     *  `{ok, value}` (true / false) or `{ok: false, error}` with omp's
+     *  reason. The profile is passed explicitly, as for `recentModels`:
+     *  during a respawn's detach the active profile is not the tab's. */
+    goalContinuation(profile) {
+      return _invokeResult("goal_continuation_get", { profile });
+    },
+    /** Turns it on or off in omp's config for `profile`; running tabs of
+     *  that profile pick it up without a restart. Same result shape, with
+     *  the setting omp reports afterwards. */
+    setGoalContinuation(profile, enabled) {
+      return _invokeResult("goal_continuation_set", { profile, enabled });
     },
     /** Manual rename from the tab bar or sidebar (#32): omp's own
      *  `/rename <title>` builtin, so the name is stored as user-set and
@@ -2431,10 +2922,10 @@
       const entry = sessionRegistry.get(id);
       sessionRegistry.set(id, { ...entry, renameNotes: [...(entry.renameNotes ?? []), rename.note] });
       try {
-        await _sendWithResponse({ type: "prompt", message: rename.command }, 15000);
+        await _sendWithResponse({ type: "prompt", message: rename.command }, QUICK_CMD_TIMEOUT_MS);
       } catch (e) {
         if (activeSessionId === id) {
-          _pushAssistantNote(`Rename failed: ${e?.message ?? e}`, true);
+          _pushAssistantNote(`Rename failed: ${e?.message ?? e}`);
           notify();
         }
         // Keep the expectation: the user may have switched away right after
@@ -2459,6 +2950,18 @@
     recentModels(profile = _activeProfileId()) { return _invokeSafe("model_usage_list", { profile }, []); },
     cycleModel()       { _send({ type: "cycle_model" }); },
     cycleThinking()    { _send({ type: "cycle_thinking_level" }); },
+    /** The thinking levels the active tab's model supports, `off` first:
+     *  omp's own list, which leaves out its `auto` selector. */
+    async thinkingLevels() {
+      const data = await _sendWithResponse({ type: "get_available_thinking_levels" }, QUICK_CMD_TIMEOUT_MS);
+      return Array.isArray(data?.levels) ? data.levels.filter(l => typeof l === "string") : [];
+    },
+    /** Applies a level from `thinkingLevels()` to the active tab. The
+     *  response carries nothing; the level omp applied (it may clamp the
+     *  pick) arrives before it, as `thinking_level_changed`. */
+    setThinkingLevel(level) {
+      return _sendWithResponse({ type: "set_thinking_level", level }, QUICK_CMD_TIMEOUT_MS);
+    },
     compact() {
       const id  = "cmpct-" + (_nextCmdId++);
       state.messages = [...state.messages, { kind: "compact", status: "pending", id, time: timeNow() }];
@@ -2502,6 +3005,25 @@
       if (state.subagentTranscripts[agentId]?.req !== req) return;
       state.subagentTranscripts = { ...state.subagentTranscripts, [agentId]: entry };
       notify();
+    },
+
+    /** The inspector's message box: send a running subagent a message as
+     *  its user. omp holds the reply until the agent accepted it (queued
+     *  into its turn, or a new turn started) and runs slash commands and
+     *  prompt templates inside the agent. Rejects with omp's reason
+     *  (`Subagent not running: …`, `Subagent refused the message: …`).
+     *  The message itself joins the agent's event stream on delivery
+     *  (`summarizeEvent`'s `user` line). */
+    async steerSubagent(agentId, text) {
+      await _sendWithResponse({ type: "steer_subagent", subagentId: agentId, message: text });
+    },
+    /** Hard-stop a running subagent: the parent gets an aborted result for
+     *  it and its own turn goes on. `false` when it was no longer running,
+     *  so a repeat is harmless; the record ends with omp's `aborted`
+     *  lifecycle frame, never locally. */
+    async cancelSubagent(agentId) {
+      const data = await _sendWithResponse({ type: "cancel_subagent", subagentId: agentId });
+      return data?.cancelled === true;
     },
 
     // ── Login ─────────────────────────────────────────────────────────────────
@@ -2549,7 +3071,8 @@
     },
 
     /**
-     * Respond to a pending ask bubble (extension_ui_request method=select).
+     * Respond to a pending ask bubble (extension_ui_request method=select,
+     * input or editor).
      * Marks the message as answered in state so it survives subsequent notify() calls,
      * then sends the extension_ui_response to omp — but only if a matching,
      * still-open ask message actually existed. Re-answer-proof: a second
@@ -2561,10 +3084,23 @@
      * cell (7/7 cases: normal send, double-click no-resend, answering a
      * cancelled ask, unknown id, rehydrated-already-answered message).
      * @param {string} id     The extension_ui_request id.
-     * @param {string} value  The chosen option text or custom typed answer.
+     * @param {string} value  The chosen option text, or the typed text of an
+     *                        input/editor prompt.
      */
     answerAsk(id, value) {
       _resolveAsk(id, { answered: true, answer: value }, { value });
+    },
+
+    /**
+     * Answer omp's ask dialog (extension_ui_request method=ask) with the
+     * `answers` OMP_ASK_DIALOG.answers built — one per question, in request
+     * order. Same re-answer guard as `answerAsk`; the settled bubble keeps
+     * them for its summary.
+     * @param {string} id
+     * @param {Array<{id: string, selectedOptions: string[], customInput?: string}>} answers
+     */
+    answerAskDialog(id, answers) {
+      _resolveAsk(id, { answered: true, answers }, { answers });
     },
 
     /**
@@ -2587,8 +3123,8 @@
     },
 
     /**
-     * User-initiated decline of a pending ask (e.g. the Cancel button on an
-     * `input`/`editor` dialog) — distinct from the runtime's own
+     * User-initiated decline of a pending ask (the Cancel button on an
+     * `input`/`editor` prompt or the ask dialog) — distinct from the runtime's own
      * `extension_ui_request.cancel` event, but resolved the same way on
      * both the local message (marked `cancelled`) and the wire
      * (`{cancelled: true}`). Same re-answer-proof guard as `answerAsk`.
@@ -2708,14 +3244,14 @@
      *  explicit. With no tab open there is nothing to inherit, so the ticked
      *  default profile applies. Returns the new session id, or rejects if
      *  the resolved profile no longer exists on the backend (unlisted by
-     *  another window, or a hand-edited profiles.json) — no tab is left
-     *  registered when that happens.
+     *  another window, or a hand-edited profiles.json) or omp refuses to
+     *  start — no tab is left registered, and a note says why.
      *
      *  `profile` overrides the inherited one — "new conversation in this
      *  project" passes the project's own profile, which need not be the
      *  active tab's. Always spawns: `+`/`Ctrl+T` mean a *new* tab. */
     async openSession(cwd, profile = _activeProfileId()) {
-      return _startProjectSession(cwd, { profile });
+      return _openReported(cwd, { profile });
     },
 
     /** Open project folder `path` (a recent-projects row) under the active
@@ -2732,7 +3268,7 @@
         await window.OMP_BRIDGE.activateSession(id);
         return id;
       }
-      return _startProjectSession(path, { profile });
+      return _openReported(path, { profile });
     },
 
     /** Drop `path` from the active profile's recent projects. */
@@ -2811,9 +3347,32 @@
         await window.OMP_BRIDGE.activateSession(open);
         return open;
       }
-      return _startProjectSession(session.cwd || "", {
+      return _openReported(session.cwd || "", {
         resume: session.path, name: session.title, profile,
       });
+    },
+
+    // ── Conversation tree (prompt-cache navigator) ───────────────────────────
+
+    /** The conversation family of `sessionFile` (`conversation_tree`, see
+     *  src-tauri/src/conversation_tree/) under `profile`. Both come from the
+     *  caller, so the request matches the key its result is tagged with —
+     *  never `_activeProfileId()`, see `recentModels`. Resolves to
+     *  `{ok: true, value}` or `{ok: false, error}`. */
+    conversationTree(sessionFile, profile) {
+      return _invokeResult("conversation_tree", { sessionFile, profile });
+    },
+    /** Re-ask a user prompt of this tab's file: omp copies the path before it
+     *  into a new session file and the process moves there. Resolves to
+     *  `{ok: true, text}` (the prompt, for the composer),
+     *  `{ok: false, cancelled: true}` or `{ok: false, error}`. */
+    branchAt(entryId) {
+      return _moveToNewFile(() => _sendWithResponse({ type: "branch", entryId }));
+    },
+    /** Continue after a message (a turn's last reply): same move as
+     *  `branchAt`, nothing to re-ask. omp refuses (`session_busy`) unless idle. */
+    forkAt(entryId) {
+      return _moveToNewFile(() => _sendWithResponse({ type: "fork", entryId }));
     },
 
     // ── Profiles ─────────────────────────────────────────────────────────────

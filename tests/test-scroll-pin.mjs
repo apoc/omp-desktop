@@ -91,6 +91,11 @@ check("shouldRepin: streaming assistant tail does not re-pin", () => {
   assert.equal(P.shouldRepin(1, messages), false);
 });
 
+check("shouldRepin: a delivered steer/follow-up (echo) does not pull a reader down", () => {
+  const messages = [{ kind: "assistant", _id: 1 }, { kind: "user", _id: 2, echo: true }];
+  assert.equal(P.shouldRepin(1, messages), false);
+});
+
 check("shouldRepin: transcript reset to empty re-pins (/new, profile switch)", () => {
   assert.equal(P.shouldRepin(1, []), true);
 });

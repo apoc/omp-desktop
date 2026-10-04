@@ -21,6 +21,19 @@
 // on any inline script). Loaded right after marked.min.js/highlight.min.js;
 // both are parser-blocking, so they are already defined here.
 (function () {
+  // Fence `text` as a code block that its own content cannot close: a fixed
+  // ``` fence lets an embedded ``` line end the block early, and everything
+  // after it would be parsed as markdown. A backtick run longer than any
+  // run inside is always safe. For callers that build markdown source
+  // (changes-panel.jsx's diffs, message-queue.js's refusal notes); defined
+  // before the guard below so it needs neither library.
+  function fenceCode(text, lang = '') {
+    const longest = (text.match(/`+/g) ?? []).reduce((n, r) => Math.max(n, r.length), 0);
+    const fence = '`'.repeat(Math.max(3, longest + 1));
+    return fence + lang + '\n' + text + '\n' + fence;
+  }
+  window.OMP_MARKDOWN = { fenceCode };
+
   if (!window.marked || !window.hljs) return;
   // Since marked 15, renderers get raw token fields: `href`, `title`,
   // `lang`, raw HTML and an autolink's `text` arrive unescaped and must be

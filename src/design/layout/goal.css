@@ -1,0 +1,78 @@
+/* Goal mode — the strip above the composer (goal-strip.jsx), the composer's
+   goal pill and tint, and the goal rows in the transcript (chat/goal-row.jsx).
+   Goal colour: lilac (TOOL_META.goal). */
+
+/* ── Composer ──────────────────────────────────────────────────────── */
+.composer.goal-on { background: linear-gradient(180deg, color-mix(in oklab, var(--lilac) 9%, transparent), transparent); }
+.composer.goal-draft .composer-row { border-color: color-mix(in oklab, var(--lilac) 45%, var(--line-bright)); }
+.composer.goal-draft .composer-row:focus-within { border-color: var(--lilac); box-shadow: 0 0 0 3px color-mix(in oklab, var(--lilac) 18%, transparent); }
+.composer-pill.goal-pill.on { border-color: color-mix(in oklab, var(--lilac) 50%, var(--line)); background: color-mix(in oklab, var(--lilac) 12%, transparent); }
+.composer-pill:disabled { opacity: .45; cursor: default; }
+.composer-pill:disabled:hover { border-color: var(--line); background: var(--bg-elevated); }
+.btn.primary.goal-start { background: var(--lilac); border-color: var(--lilac); }
+
+/* ── Strip ─────────────────────────────────────────────────────────── */
+.goal-strip { display: flex; flex-direction: column; gap: 6px; padding: 4px 6px 8px; font-size: var(--d-text-sm); }
+.goal-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.goal-name { color: var(--lilac); font-family: var(--font-mono); flex: none; }
+.goal-obj { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.goal-sub { color: var(--fg-3); flex: none; }
+.goal-head .goal-sub:last-of-type { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goal-spacer { flex: 1; }
+.goal-actions { display: flex; gap: 6px; flex: none; }
+.goal-strip .btn { height: 22px; white-space: nowrap; flex: none; }
+.btn.outlined.goal-resume { color: var(--lilac); border-color: color-mix(in oklab, var(--lilac) 40%, var(--line)); }
+.btn.outlined.goal-drop { color: var(--rose); border-color: color-mix(in oklab, var(--rose) 40%, var(--line)); }
+
+.goal-chip { font-family: var(--font-mono); font-size: var(--d-text-xs); padding: 1px 7px; border-radius: var(--r-pill); border: 1px solid; flex: none; }
+.goal-chip.active { color: var(--lilac); border-color: color-mix(in oklab, var(--lilac) 40%, var(--line)); background: color-mix(in oklab, var(--lilac) 12%, transparent); }
+.goal-chip.paused { color: var(--fg-3); border-color: var(--line-bright); }
+.goal-chip.limit { color: var(--amber); border-color: color-mix(in oklab, var(--amber) 40%, var(--line)); background: color-mix(in oklab, var(--amber) 12%, transparent); }
+.goal-chip.done { color: var(--lime); border-color: color-mix(in oklab, var(--lime) 40%, var(--line)); background: color-mix(in oklab, var(--lime) 12%, transparent); }
+
+/* Second and further lines line up under the objective, past the icon.
+   They wrap in a narrow session column (sidebar and rail open at the
+   window's minimum width) instead of clipping the switch. */
+.goal-meter, .goal-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding-left: 20px; font-size: var(--d-text-xs); }
+.goal-meter { font-family: var(--font-mono); color: var(--fg-3); }
+.goal-line { color: var(--fg-2); }
+.goal-bar { flex: 0 1 180px; min-width: 60px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.goal-bar > span { display: block; height: 100%; background: var(--lilac); border-radius: 2px; }
+.goal-bar.limit > span { background: var(--amber); }
+.goal-bar.done > span { background: var(--lime); }
+.goal-note { flex: 1; min-width: 0; color: var(--fg-3); }
+.goal-note b { color: var(--fg-2); font-weight: 500; }
+.goal-error { padding-left: 20px; font-size: var(--d-text-xs); color: var(--rose); overflow-wrap: anywhere; }
+.goal-error-inline { font-size: var(--d-text-xs); color: var(--rose); }
+
+/* Budget picker (goal mode). */
+.goal-budget { gap: 4px; }
+.goal-budget-label { color: var(--fg-3); font-family: var(--font-mono); margin-right: 4px; }
+.goal-opt { font-family: var(--font-mono); font-size: var(--d-text-xs); padding: 1px 8px; border-radius: var(--r-pill); border: 1px solid var(--line); background: transparent; color: var(--fg-2); cursor: pointer; }
+.goal-opt:hover { border-color: var(--line-bright); background: var(--bg-hover); }
+.goal-opt.on { color: var(--lilac); border-color: color-mix(in oklab, var(--lilac) 50%, var(--line)); background: color-mix(in oklab, var(--lilac) 12%, transparent); }
+.goal-budget-input { width: 88px; font-size: var(--d-text-xs); padding: 1px 8px; border-radius: var(--r-pill); border: 1px solid color-mix(in oklab, var(--lilac) 50%, var(--line)); background: transparent; color: var(--fg); }
+.goal-budget-input:focus-visible { outline: none; border-color: var(--lilac); }
+.goal-budget-input.bad { border-color: var(--rose); }
+
+/* Auto-continue switch: omp's goal.continuationModes for the profile. */
+.goal-switch { display: inline-flex; align-items: center; gap: 6px; flex: none; white-space: nowrap; padding: 0; border: 0; background: none; color: var(--fg-3); font-family: var(--font-mono); font-size: var(--d-text-xs); cursor: pointer; }
+.goal-switch:disabled { cursor: default; opacity: .6; }
+.goal-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.goal-toggle { width: 24px; height: 13px; border-radius: 7px; background: var(--line-bright); position: relative; flex: none; }
+.goal-toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 9px; height: 9px; border-radius: 50%; background: var(--fg-3); transition: left .12s; }
+.goal-toggle.on { background: color-mix(in oklab, var(--lilac) 55%, var(--line)); }
+.goal-toggle.on::after { left: 13px; background: var(--fg); }
+
+/* ── Transcript rows ──────────────────────────────────────────────── */
+.goal-row-card { border-color: color-mix(in oklab, var(--lilac) 30%, var(--line)); }
+.goal-row-card.limit { border-color: color-mix(in oklab, var(--amber) 35%, var(--line)); }
+.goal-row-card.done { border-color: color-mix(in oklab, var(--lime) 35%, var(--line)); }
+.goal-row-card.paused { border-color: var(--line-bright); }
+.goal-row-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goal-row-detail { color: var(--fg-3); }
+.goal-row-chip { white-space: nowrap; flex: none; }
+/* A turn omp started by itself to continue the goal. */
+.goal-cont { display: flex; align-items: center; gap: 6px; padding: 2px 0 2px 34px; font-family: var(--font-mono); font-size: var(--d-text-xs); color: var(--fg-4); }
+.goal-cont::before { content: ""; width: 14px; height: 1px; background: color-mix(in oklab, var(--lilac) 50%, var(--line)); }
+.goal-cont-tag { color: var(--lilac); }

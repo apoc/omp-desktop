@@ -84,7 +84,7 @@ Toggle plan mode (`Shift+Alt+P`, `/plan` or the composer pill) and the agent dra
 
 ### Requirements
 
-`omp` must be installed and on your `PATH` (on Windows it is usually `%LOCALAPPDATA%\omp\omp.exe`). The app is tested with omp 18.4. On macOS, GUI apps get a minimal `PATH`, so the app also looks in Homebrew, `~/.local/bin` and `~/.cargo/bin`.
+`omp` must be installed and on your `PATH` (on Windows it is usually `%LOCALAPPDATA%\omp\omp.exe`). Each release needs a recent omp: a tab started against an older one does not start, and its message names the version required (`omp update` fixes it). On macOS, GUI apps get a minimal `PATH`, so the app also looks in Homebrew, `~/.local/bin` and `~/.cargo/bin`.
 
 ### Download
 
@@ -169,7 +169,7 @@ flowchart LR
   Bridge -- "invoke send_command" --> AB
   AB -- "agent://line/{id} events" --> Bridge
   Bridge -- invoke --> Svc
-  AB -- "stdin / stdout (JSON lines)" --> OMP["omp --mode rpc<br/>(rpc-ui when supported)"]
+  AB -- "stdin / stdout (JSON lines)" --> OMP["omp --mode rpc-ui"]
 ```
 
 - **Rust** (`src-tauri/src/`): `agent/` spawns and supervises one `omp` per tab. That covers process groups and job objects, so a tab's whole tree dies with it; bounded stdout/stderr readers; and a per-session journal that replays what a background tab missed. Around it are small modules for profiles, recent projects, approval rules, keybindings, the git working tree, `omp stats`, saved sessions, OS folder-open requests and the updater.

@@ -10,6 +10,7 @@ const {
   entryOf: draftEntryOf, updateEntry: updateDraftEntry, pruneEntries: pruneDrafts, DRAFT_IDLE, recallInDraft,
   normalizePaste, shouldCollapsePaste, collapsePaste, pastesIn, expandPastes, inlinePaste,
 } = window.OMP_SESSION_UI;
+const { restoredDraft: restoredQueueDraft } = window.OMP_QUEUE;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` (display
 // logic lives there so chrome.jsx's ⌘K/history hints can reuse it too,
@@ -27,7 +28,7 @@ function hintKeyFor(actionId, fallback) {
 }
 
 // ── The composer (input + plan/steer modes + send) ────────────────────
-function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert }) {
+function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, planBlocked = "", goalMode = false, goalTint = false, onToggleGoal, goalBlocked = "", goalStrip = null, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued }) {
   // Drafts are per tab (issue #28). The composer stays mounted across tab
   // switches and keeps one draft per session id (app/session-ui.js
   // DRAFT_IDLE): text, pending image attachments (sent alongside the next
@@ -41,6 +42,12 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   const [drafts, setDrafts] = React.useState({});
   const draft = draftEntryOf(drafts, sessionId, DRAFT_IDLE);
   const { text, attachments, pendingImages } = draft;
+  // What the draft can send. A goal needs its objective as text; a steer
+  // (mid-turn) can be images alone; a plain send can also be plan
+  // annotations alone (app-live.jsx merges them into the message).
+  const hasText = !!text.trim();
+  const steerable = goalMode ? hasText : hasText || attachments.length > 0;
+  const sendable = steerable || (!goalMode && planMode && annotationCount > 0);
   const updateDraft = (id, fn) => setDrafts(m => updateDraftEntry(m, id, DRAFT_IDLE, fn));
   // Any text edit ends a prompt-history recall; only the recall step itself
   // (onKey) writes `historyNav` alongside the text.
@@ -49,6 +56,11 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   // meanwhile must not get its entry back.
   const sessionIdsRef = React.useRef(sessionIds);
   sessionIdsRef.current = sessionIds;
+  const updateOpenDraft = (id, fn) => setDrafts(m => (sessionIdsRef.current?.includes(id)
+    ? updateDraftEntry(m, id, DRAFT_IDLE, fn)
+    : m));
+  const sessionIdRef = React.useRef(sessionId);
+  sessionIdRef.current = sessionId;
   React.useEffect(() => { setDrafts(m => pruneDrafts(m, sessionIds)); }, [sessionIds]);
   const [activeIdx, setActiveIdx] = React.useState(0);
   const taRef   = React.useRef(null);
@@ -223,10 +235,19 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   // ⌘K's draftInsert does — keyed on `nonce` so picking the same prompt
   // twice in a row still re-fires. Unlike draftInsert, this always
   // *replaces* the draft (the modal's contract is "put this message
-  // directly in the prompt box"), never appends an existing one.
+  // directly in the prompt box"), never appends an existing one. `images`
+  // (a goal start omp refused) go back in as attachments. An insert from
+  // before this composer mounted (it unmounts while no tab is open) is not
+  // replayed into the next tab's draft.
+  const seenInsertRef = React.useRef(promptInsert?.nonce);
   React.useEffect(() => {
-    if (!promptInsert) return;
+    if (!promptInsert || promptInsert.nonce === seenInsertRef.current) return;
+    seenInsertRef.current = promptInsert.nonce;
     replaceDraft(promptInsert.text);
+    const images = promptInsert.images ?? [];
+    if (images.length === 0) return;
+    const back = images.map(image => ({ id: `att-${++attachCounterRef.current}`, name: "", image, src: toDataUrl(image) }));
+    updateDraft(sessionId, d => ({ ...d, attachments: [...d.attachments, ...back].slice(0, MAX_ATTACHMENTS) }));
   }, [promptInsert?.nonce]);
 
   const execCmd = (cmd) => {
@@ -248,10 +269,13 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
       replaceDraft(slashInsertText(cmd));
       return;
     }
+    // Text typed after a desktop command goes to its handler: `/goal
+    // <objective>` puts the objective back into the composer in goal mode.
+    const args = expandPastes(/^\/\S*\s+([\s\S]*)$/.exec(text)?.[1]?.trim() ?? "", draft.pastes);
     updateDraft(sessionId, d => ({ ...d, text: "", pastes: DRAFT_IDLE.pastes, pasteCounter: 0 }));
     setActiveIdx(0);
     setMentionDismissedKey(null);
-    onPick?.(cmd);
+    onPick?.(cmd, args);
   };
 
   // Replace `range` (an @mention or mid-prompt `/token`) with `insert` and
@@ -325,13 +349,8 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   const sendWith = (dispatcher, { followUp = false } = {}) => {
     if (showSlash && !followUp) { execCmd(filtered[clampedIdx]); return; }
     if (pendingImages > 0) return; // a paste/pick is still preparing — its image would ship on the *next* message instead
-    // follow-up (`onFollowUp` dispatcher) requires non-empty text — annotations
-    // are a send-only affordance (app-live.jsx merges them into the message).
-    // Plain send can proceed with annotations or attached images alone.
-    const canSend = followUp
-      ? !!text.trim()
-      : (text.trim() || attachments.length > 0 || (planMode && annotationCount > 0));
-    if (!canSend) return;
+    // A follow-up (`onFollowUp` dispatcher) requires non-empty text.
+    if (!(followUp ? hasText : sendable)) return;
     const images = attachments.map(a => a.image);
     dispatcher(expandPastes(text.trim(), draft.pastes), images);
     // Back to an empty draft: text, attachments and collapsed pastes all
@@ -343,6 +362,20 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
     setMentionDismissedKey(null);
     setSlashDismissedKey(null);
     requestAnimationFrame(() => taRef.current?.focus());
+  };
+
+  // ✎ on a queued message (QueueStrip): omp removes it first, and only a
+  // confirmed removal puts its text back — into the tab it was queued
+  // from, ahead of anything typed there since. omp's queue does not hand
+  // back attached images.
+  const editQueued = async (row) => {
+    const target = sessionId;
+    const removed = await onRemoveQueued(row.text, row.kind);
+    if (removed) {
+      updateOpenDraft(target, d => ({ ...d, text: restoredQueueDraft(row.text, d.text), historyNav: null }));
+      if (sessionIdRef.current === target) requestAnimationFrame(() => taRef.current?.focus());
+    }
+    return removed;
   };
   const send = () => sendWith(onSend);
 
@@ -362,9 +395,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
     const slice = files.slice(0, room);
     // Counted only while the tab is open: a paste resolved through the
     // async clipboard path may land after its tab closed.
-    setDrafts(m => (sessionIdsRef.current?.includes(target)
-      ? updateDraftEntry(m, target, DRAFT_IDLE, d => ({ ...d, pendingImages: d.pendingImages + slice.length }))
-      : m));
+    updateOpenDraft(target, d => ({ ...d, pendingImages: d.pendingImages + slice.length }));
     let ok = [];
     try {
       const prepared = await Promise.all(slice.map(async (file) => {
@@ -381,13 +412,11 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
       // over — a concurrent addFiles (fast double-paste) may have already
       // appended by the time this resolves. A tab closed meanwhile is left
       // without an entry rather than given one back.
-      setDrafts(m => (sessionIdsRef.current?.includes(target)
-        ? updateDraftEntry(m, target, DRAFT_IDLE, d => ({
-          ...d,
-          attachments: ok.length > 0 ? [...d.attachments, ...ok].slice(0, MAX_ATTACHMENTS) : d.attachments,
-          pendingImages: d.pendingImages - slice.length,
-        }))
-        : m));
+      updateOpenDraft(target, d => ({
+        ...d,
+        attachments: ok.length > 0 ? [...d.attachments, ...ok].slice(0, MAX_ATTACHMENTS) : d.attachments,
+        pendingImages: d.pendingImages - slice.length,
+      }));
     }
   };
   const removeAttachment = (attId) =>
@@ -485,9 +514,10 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   const bridgeHint    = hintFor("desktop.commands.open", "⌘K");
   const bridgeKeyHint = hintKeyFor("desktop.commands.open", "K");
   const abortHint = hintFor("app.interrupt", "⎋");
+  const cycleThinkingHint = hintFor("app.thinking.cycle", "⇧Tab");
 
   return (
-    <div className={`composer ${planMode ? "plan-on" : ""}`}>
+    <div className={`composer${planMode ? " plan-on" : ""}${goalTint ? " goal-on" : ""}${goalMode ? " goal-draft" : ""}`}>
       {planMode && (
         <div className="plan-strip">
           <Icon name="plan" size={12} color="var(--amber)" />
@@ -496,6 +526,8 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
           <button className="btn ghost" onClick={onTogglePlan} style={{ marginLeft: "auto", height: 22 }}>exit</button>
         </div>
       )}
+      {/* Goal mode (goal-strip.jsx): built by app-live.jsx, keyed by tab. */}
+      {goalStrip}
 
       {showSlash && (
         <div className="slash-pop" ref={listRef}>
@@ -522,6 +554,13 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
           listRef={mentionListRef}
         />
       )}
+
+      {/* Keyed by tab, like the paste strip: a pending action or notice
+          belongs to the tab it was taken in. */}
+      <QueueStrip key={`queue-${sessionId}`} queue={queue} sending={queueSending}
+        onRemove={row => onRemoveQueued(row.text, row.kind)}
+        onPromote={row => onPromoteQueued(row.text)}
+        onEdit={editQueued} />
 
       {attachments.length > 0 && (
         <div className="attach-strip">
@@ -559,7 +598,9 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
             ref={taRef}
             rows="1"
             placeholder={
-              planMode && !isStreaming
+              goalMode && !isStreaming
+                ? "describe the goal — the agent works toward it until it calls it done…"
+                : planMode && !isStreaming
                 ? (microcopy?.planTip ?? "describe what to build, or give feedback on the plan…")
                 : isStreaming
                   ? microcopy?.streamingTip
@@ -583,10 +624,10 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
         </button>
         {isStreaming ? (
           <>
-            {(text.trim() || attachments.length > 0) && (
-              <button className="btn outlined" onClick={send} disabled={pendingImages > 0}
-                style={{ color: "var(--amber)", borderColor: "color-mix(in oklab, var(--amber) 40%, var(--line))" }}>
-                <Icon name="arrow" size={10} color="var(--amber)" /> steer
+            {steerable && (
+              <button className={`btn outlined${goalMode ? " goal-resume" : ""}`} onClick={send} disabled={pendingImages > 0}
+                style={goalMode ? undefined : { color: "var(--amber)", borderColor: "color-mix(in oklab, var(--amber) 40%, var(--line))" }}>
+                <Icon name={goalMode ? "goal" : "arrow"} size={10} color={goalMode ? "var(--lilac)" : "var(--amber)"} /> {goalMode ? "start goal" : "steer"}
               </button>
             )}
             <button className="btn danger" onClick={onAbort}>
@@ -601,9 +642,11 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
                 <Icon name="play" size={10} color="var(--amber)" /> approve
               </button>
             )}
-            <button className="btn primary" onClick={send}
-              disabled={!(text.trim() || attachments.length > 0 || (planMode && annotationCount > 0)) || pendingImages > 0}>
-              {planMode
+            <button className={`btn primary${goalMode ? " goal-start" : ""}`} onClick={send}
+              disabled={!sendable || pendingImages > 0}>
+              {goalMode
+                ? "start goal"
+                : planMode
                 ? `send feedback${annotationCount > 0 ? ` · ${annotationCount} comment${annotationCount !== 1 ? "s" : ""}` : ""}`
                 : "send"}
               {" "}<Icon name="arrow" size={11} />
@@ -618,18 +661,31 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
           <span style={{ color: "var(--fg-2)" }}>{currentModel?.name}</span>
           <Icon name="chev" size={10} color="var(--fg-4)" />
         </button>
-        <button className="composer-pill" onClick={onCycleThinking}>
-          <Icon name="thinking" size={11} color="var(--lilac)" />
-          <span style={{ color: "var(--fg-2)" }}>thinking · {thinking}</span>
-        </button>
-        <button className={`composer-pill ${planMode ? "on" : ""}`} onClick={onTogglePlan}>
+        <ThinkingMenu key={sessionId} model={currentModel} level={thinking}
+          cycleHint={cycleThinkingHint} onLoad={onLoadThinkingLevels} onSet={onSetThinking} />
+        <button className={`composer-pill ${planMode ? "on" : ""}`} onClick={onTogglePlan}
+          disabled={!!planBlocked && !planMode} title={planBlocked && !planMode ? planBlocked : undefined}>
           <Icon name="plan" size={11} color={planMode ? "var(--amber)" : "var(--fg-3)"} />
           <span style={{ color: planMode ? "var(--amber)" : "var(--fg-2)" }}>plan mode</span>
         </button>
+        <button className={`composer-pill goal-pill${goalMode ? " on" : ""}`} onClick={onToggleGoal}
+          disabled={!!goalBlocked && !goalMode}
+          title={goalBlocked && !goalMode ? goalBlocked : "goal mode: your next message becomes a goal the agent works toward"}>
+          <Icon name="goal" size={11} color={goalMode ? "var(--lilac)" : "var(--fg-3)"} />
+          <span style={{ color: goalMode ? "var(--lilac)" : "var(--fg-2)" }}>goal</span>
+        </button>
         <div style={{ flex: 1 }} />
+        {backgroundWork && (
+          <span className="composer-bg-note" title="omp reports background work (an async bash, task or eval job) whose result will wake the agent">
+            <TabRunDot state="background" />
+            background job running · the agent resumes when it finishes
+          </span>
+        )}
         <span className="mono" style={{ color: "var(--fg-4)", fontSize: "var(--d-text-xs)" }}>
           {[
-            ...(isStreaming && (text.trim() || attachments.length > 0) ? ["↵ steer"] : ["↵ send", "⇧↵ newline"]),
+            ...(isStreaming && steerable
+              ? [goalMode ? "↵ start goal" : "↵ steer"]
+              : [goalMode ? "↵ start goal" : "↵ send", "⇧↵ newline"]),
             // Dropped entirely when unbound rather than showing a keyless
             // "abort" segment that advertises a shortcut that isn't there.
             ...(abortHint ? [`${abortHint} abort`] : []),
@@ -703,7 +759,7 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, pro
     const modelHits = models.filter((m) => !q || fil(m.name) || fil(m.id));
     const recentHits = window.pickRecentModels(modelHits, recentKeys, RECENT_MODEL_LIMIT);
     const modelRow = (m, group) => (
-      <button key={`${group}:${m.provider}/${m.id}`}
+      <button key={`${group}:${window.modelKey(m)}`}
         className={`bridge-row ${m.id === currentModelId ? "active" : ""}`}
         onClick={() => { onPickModel(m); onClose(); }}>
         <span className="bridge-glyph">
