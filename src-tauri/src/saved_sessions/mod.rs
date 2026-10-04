@@ -76,7 +76,7 @@ fn sessions_root_for(home: &Path, profile: Option<&str>, env_dir: Option<&OsStr>
 /// `PI_CODING_AGENT_DIR=… omp --profile <id>`, which still resolved its
 /// models/sessions under `~/.omp/profiles/<id>/` - so the history panel
 /// reads the same tree the child process writes.
-fn sessions_root_dir(app: &AppHandle, profile: Option<&str>) -> Option<PathBuf> {
+pub fn sessions_root_dir(app: &AppHandle, profile: Option<&str>) -> Option<PathBuf> {
     let env_dir = std::env::var_os("PI_CODING_AGENT_DIR");
     app.path()
         .home_dir()

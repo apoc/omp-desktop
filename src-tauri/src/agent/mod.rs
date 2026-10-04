@@ -91,6 +91,11 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "get_subagent_messages",
     "steer_subagent",
     "cancel_subagent",
+    // Conversation tree (src/app/conversation-tree.js): "Branch here" starts
+    // a new file from a user prompt, "Fork after the reply" from a turn's last
+    // assistant entry. `fork` first shipped in omp 18.4.11 (the version floor).
+    "branch",
+    "fork",
 ];
 
 /// Manages one omp process per tab session.

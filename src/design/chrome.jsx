@@ -175,7 +175,7 @@ function TabBar({
 }
 
 // ── Status bar (footer): connection, model, tokens, todos, extension ─
-function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel, onTweaks, onChanges, onRules, onStats, autosave, onAutosave }) {
+function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel, onTweaks, onChanges, onRules, onStats, onTree, autosave, onAutosave }) {
   const thinkLabel = THINKING_LEVELS[thinking]?.short ?? thinking ?? "—";
   return (
     <div className="status">
@@ -214,6 +214,10 @@ function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel,
       <span className="status-sep">·</span>
       <button className="status-cell btn ghost" onClick={onChanges} title="changes (git status/diff)" style={{ height: 20, padding: "0 6px" }}>
         <Icon name="diff2" size={11} color="var(--fg-3)" />
+      </button>
+      <span className="status-sep">·</span>
+      <button className="status-cell btn ghost" onClick={onTree} title="conversation tree (prompt-cache status)" style={{ height: 20, padding: "0 6px" }}>
+        <Icon name="branch" size={11} color="var(--fg-3)" />
       </button>
       <span className="status-sep">·</span>
       <button className="status-cell btn ghost" onClick={onRules} title="approval rules" style={{ height: 20, padding: "0 6px" }}>
@@ -321,7 +325,7 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
 // ── Right rail: ambient peripherals stacked ──────────────────────────
 function AmbientRail({
   ctx, activity, messages, microcopy, onClose, sparklineValues, hoveredMsgIdx, onMinimapHover, onMinimapClick,
-  subagents, subagentPaneOpen, onOpenSubagent, onToggleSubagentPane,
+  subagents, subagentPaneOpen, onOpenSubagent, onToggleSubagentPane, onOpenTree,
 }) {
   // Use live tps samples. Before the first turn, sparklineValues is all zeros
   // which renders as a flat baseline — honest, not fake random data.
@@ -332,9 +336,14 @@ function AmbientRail({
     <aside className="rail">
       <div className="rail-head">
         <span className="mono" style={{ color: "var(--fg-3)" }}>ambient</span>
-        <button className="btn icon ghost" onClick={onClose} title="hide rail">
-          <Icon name="close" size={10} />
-        </button>
+        <span className="rail-head-actions">
+          <button className="btn icon ghost" onClick={onOpenTree} title="conversation tree (prompt-cache status)">
+            <Icon name="branch" size={10} />
+          </button>
+          <button className="btn icon ghost" onClick={onClose} title="hide rail">
+            <Icon name="close" size={10} />
+          </button>
+        </span>
       </div>
 
       <div className="rail-card glass">

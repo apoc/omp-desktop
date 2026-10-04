@@ -18,17 +18,20 @@
   const DESKTOP = "desktop";
 
   // Only entries app-live.jsx `handleCommand` actually implements, plus
-  // `steer`/`branch` — carried over unchanged from the previous hardcoded
-  // list; `handleCommand` has no case for either today so picking them is a
-  // pre-existing no-op, not something this change touches. A local name
-  // shadows the RPC command of the same name/alias (desktop UI wins).
+  // `steer` — carried over unchanged from the previous hardcoded list;
+  // `handleCommand` has no case for it today, so picking it is a pre-existing
+  // no-op, not something this change touches. `branch` and `tree` both open
+  // the conversation-tree pane. A local name shadows the RPC command of the
+  // same name/alias (desktop UI wins), so omp's terminal `/branch` and
+  // `/tree` pickers never run from the desktop.
   const LOCAL_COMMANDS = Object.freeze([
     { name: "plan",      hint: "draft a plan before writing code",             icon: "◇", group: "Mode"    },
     { name: "steer",     hint: "interrupt and redirect mid-tool",              icon: "↺", group: "Mode"    },
     { name: "compact",   hint: "compact context window",                       icon: "▤", group: "Session" },
     { name: "new",       hint: "start a fresh session (history kept on disk)", icon: "↺", group: "Session" },
     { name: "history",   hint: "browse and resume saved sessions",             icon: "◷", group: "Session" },
-    { name: "branch",    hint: "fork the session from current head",           icon: "⑂", group: "Session" },
+    { name: "branch",    hint: "re-ask a prompt or fork, from the conversation tree", icon: "⑂", group: "Session" },
+    { name: "tree",      hint: "conversation tree with prompt-cache status",   icon: "⑂", group: "Session" },
     { name: "model",     hint: "switch model",                                 icon: "◉", group: "Agent"   },
     { name: "thinking",  hint: "cycle thinking level",                         icon: "✶", group: "Agent"   },
     { name: "login",     hint: "authenticate with a model provider",           icon: "⊙", group: "Agent"   },

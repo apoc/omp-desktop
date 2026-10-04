@@ -980,6 +980,14 @@
     // reportable again. Cleared after the spawn resolved, so a spawn that
     // threw leaves the previous reason still deduped.
     _notedStartupErrors.delete(id);
+    // The conversation tree needs to know which cache touches this process
+    // could have made: a new process rebuilds its system prompt (recalled
+    // memories change it), so earlier processes' cache is not reusable.
+    // Every spawn funnels through here (new tab, resume, launch restore,
+    // profile respawn); branch/fork/`new_session` keep the process and so
+    // leave it alone. Read the entry afresh: it may have changed during the await.
+    const spawned = sessionRegistry.get(id);
+    if (spawned) sessionRegistry.set(id, { ...spawned, processStartedAt: Date.now() });
     // Git: read initial branch and arm the HEAD watcher (fire-and-forget errors)
     if (cwd) {
       const branch = await window.__TAURI__.core
@@ -1177,8 +1185,9 @@
       // while `left` budget lasts; a resume starts with no budget because
       // `get_state` cannot tell a saved auto-title from a manual one, and
       // manual titles must never be overwritten. `sessionId` binds this
-      // state to the omp session it was granted for (set on the first
-      // send, see `STITLE.isRenameStateStale`).
+      // state to the omp session it was granted for (set by the first
+      // `get_state` that finds it armed or budgeted, see `_applyRpcState`
+      // and `STITLE.isRenameStateStale`).
       autoRenameArmed: !resume,
       autoRenameInFlight: false,
       autoRenameTurns: 0,
@@ -1455,6 +1464,13 @@
 
   // ── RPC response handler ──────────────────────────────────────────────────
   function _handleResponse(resp) {
+    // `branch` / `fork` moved the process onto a new file whether or not a
+    // caller still waits (it may have timed out, or the response is replayed
+    // after a tab switch), so the transcript follows here, before the
+    // id-correlated early return.
+    if ((resp.command === "branch" || resp.command === "fork") && resp.success && !resp.data?.cancelled) {
+      _resetForNewFile();
+    }
     // ID-keyed correlation — resolve or reject the waiting _sendWithResponse call.
     if (resp.id && _pendingResponses.has(resp.id)) {
       const handler = _pendingResponses.get(resp.id);
@@ -1584,13 +1600,7 @@
       // will not clear a name when the new session is untitled. Same reset
       // as a profile respawn — otherwise `/new` keeps the old title and
       // never re-arms, and leftover budget retitles the new transcript.
-      _resetSessionVars();
-      if (activeSessionId && sessionRegistry.has(activeSessionId)) {
-        const entry = sessionRegistry.get(activeSessionId);
-        sessionRegistry.set(activeSessionId, { ...entry, ..._freshConversationFields(entry) });
-      }
-      _initFetch();
-      notify();
+      _reloadConversation(_freshConversationFields);
 
     } else if (command === "get_subagents") {
       // Authoritative list of agents still running; reconciles anything
@@ -2250,6 +2260,15 @@
     // `sessionId`, which a stale snapshot cannot misreport, unlike a title.
     if (activeSessionId && sessionRegistry.has(activeSessionId)) {
       let entry = sessionRegistry.get(activeSessionId);
+      // A budget that has no session binding yet (a fresh tab before its
+      // first send, or `_resetForNewFile` after branch/fork, which mints a
+      // new omp session id) binds to the session omp reports now; only a
+      // *bound* id that later differs means an in-process switch.
+      if (!entry.autoRenameSessionId && rpcState.sessionId &&
+          (entry.autoRenameArmed || entry.autoRenameLeft > 0)) {
+        entry = { ...entry, autoRenameSessionId: rpcState.sessionId };
+        sessionRegistry.set(activeSessionId, entry);
+      }
       if (STITLE.isRenameStateStale(rpcState, entry.autoRenameSessionId)) {
         // The conversation the budget was granted for is gone: retire
         // everything, as for a resume (its note cannot come; its title may
@@ -2264,7 +2283,6 @@
         sessionRegistry.set(activeSessionId, {
           ...entry, autoRenameArmed: false, autoRenameInFlight: true,
           autoRenameLeft: STITLE.REFINE_MAX, autoRenameTurns: 0,
-          autoRenameSessionId: rpcState.sessionId ?? null,
         });
         _send({ type: "prompt", message: "/rename" });
       } else if (!entry.autoRenameInFlight &&
@@ -2567,6 +2585,54 @@
       state.queueSending = without(state.queueSending);
       notify();
     }
+  }
+
+  /** The active tab's process runs another conversation in place: drop the
+   *  live transcript, patch the registry entry with `fieldsOf(entry)` and
+   *  refetch. `keepTurnOutcome` keeps `lastTurnOk`, which the reset would
+   *  otherwise turn into a pass. Shared by `new_session` and branch/fork. */
+  function _reloadConversation(fieldsOf, keepTurnOutcome = false) {
+    const id = activeSessionId;
+    if (id && sessionRegistry.has(id)) {
+      const entry = sessionRegistry.get(id);
+      sessionRegistry.set(id, { ...entry, ...fieldsOf(entry) });
+    }
+    const turnOk = lastTurnOk;
+    _resetSessionVars();
+    if (keepTurnOutcome) lastTurnOk = turnOk;
+    _initFetch();
+    notify();
+  }
+
+  /** The active tab's process moved onto a new session file (`branch` /
+   *  `fork`, from `_handleResponse`): reset and refetch as `new_session`
+   *  does, but keep the tab's name and rename budget — the conversation is a
+   *  copy. omp mints a new session id for the file, so the id the budget is
+   *  bound to is dropped (rebound by the next `get_state`, see
+   *  `_applyRpcState`) and a pending `/rename` note is released; its
+   *  generation belongs to the old session. `sessionFile` is cleared for
+   *  `get_state` to refill. The last turn's outcome is kept: the copy ends in
+   *  an exchange the tab already ran, and the `lastTurnOk` gate keeps a
+   *  branch/fork of a failed turn from spending the auto-rename. */
+  function _resetForNewFile() {
+    _reloadConversation(() => ({ sessionFile: null, autoRenameSessionId: null, autoRenameInFlight: false }), true);
+  }
+
+  /** `branch` / `fork` (`send` runs the RPC); `_handleResponse` has already
+   *  moved the transcript (`_resetForNewFile`) by the time it resolves.
+   *  Refused here while the tab streams (omp would run it, but the
+   *  transcript is mid-turn); omp's own refusals (`session_busy`) arrive as
+   *  the rejection's message. `text` is the branched prompt (empty for a fork). */
+  async function _moveToNewFile(send) {
+    if (state.isStreaming) return { ok: false, error: "Wait for the current turn to finish." };
+    let data;
+    try {
+      data = await send();
+    } catch (e) {
+      return { ok: false, error: String(e?.message ?? e) };
+    }
+    if (data?.cancelled) return { ok: false, cancelled: true };
+    return { ok: true, text: String(data?.text ?? "") };
   }
 
   // ── OMP_BRIDGE public API ─────────────────────────────────────────────────
@@ -3084,6 +3150,29 @@
       return _openReported(session.cwd || "", {
         resume: session.path, name: session.title, profile,
       });
+    },
+
+    // ── Conversation tree (prompt-cache navigator) ───────────────────────────
+
+    /** The conversation family of `sessionFile` (`conversation_tree`, see
+     *  src-tauri/src/conversation_tree/) under `profile`. Both come from the
+     *  caller, so the request matches the key its result is tagged with —
+     *  never `_activeProfileId()`, see `recentModels`. Resolves to
+     *  `{ok: true, value}` or `{ok: false, error}`. */
+    conversationTree(sessionFile, profile) {
+      return _invokeResult("conversation_tree", { sessionFile, profile });
+    },
+    /** Re-ask a user prompt of this tab's file: omp copies the path before it
+     *  into a new session file and the process moves there. Resolves to
+     *  `{ok: true, text}` (the prompt, for the composer),
+     *  `{ok: false, cancelled: true}` or `{ok: false, error}`. */
+    branchAt(entryId) {
+      return _moveToNewFile(() => _sendWithResponse({ type: "branch", entryId }));
+    },
+    /** Continue after a message (a turn's last reply): same move as
+     *  `branchAt`, nothing to re-ask. omp refuses (`session_busy`) unless idle. */
+    forkAt(entryId) {
+      return _moveToNewFile(() => _sendWithResponse({ type: "fork", entryId }));
     },
 
     // ── Profiles ─────────────────────────────────────────────────────────────

@@ -1,0 +1,117 @@
+/* Conversation tree pane — replaces the ambient rail while open ─────────
+   design/conversation-tree*.jsx. Cache colours: lime = cached, amber =
+   expiring (< 10 min), cyan = partly cached, rose = cold price. */
+
+/* ── Stage: the pane takes the rail's column ───────────────────────────── */
+.stage.with-tree { grid-template-columns: minmax(0, 1fr) min(540px, 50%); }
+.window.is-split .stage.with-tree { grid-template-columns: minmax(0, 1fr) 320px min(540px, 50%); }
+.rail-head-actions { display: inline-flex; align-items: center; gap: 2px; }
+
+.tree-drawer {
+  position: relative; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column;
+  background: var(--bg-elevated);
+  border-left: 1px solid var(--line-bright);
+}
+.tree-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 6px; min-width: 0; }
+.tree-title { font-weight: 600; color: var(--fg); flex: none; white-space: nowrap; }
+/* `.chip` is inline-flex, on which `text-overflow` is inert: block-level text so the chips ellipsize. */
+.tree-head .chip { display: inline-block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-summary { padding: 4px 14px 10px; border-bottom: 1px solid var(--line); font-size: var(--d-text-sm); color: var(--fg-2); }
+.tree-summary .lime { color: var(--lime); }
+.tree-summary .cyan { color: var(--cyan); }
+.tree-legend { display: flex; gap: 12px; margin-top: 6px; font-size: var(--d-text-xs); color: var(--fg-3); }
+.tree-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.tree-legend .muted { margin-left: auto; color: var(--fg-4); }
+.lg { width: 10px; height: 10px; border-radius: 50%; display: inline-block; box-sizing: border-box; }
+.lg.warm { background: var(--lime); box-shadow: 0 0 0 3px color-mix(in oklab, var(--lime) 22%, transparent); }
+.lg.expiring { background: var(--amber); outline: 1.5px dashed var(--amber); outline-offset: 2px; }
+.lg.partial { background: linear-gradient(to top, var(--cyan) 50%, transparent 50%); border: 2px solid var(--cyan); }
+.lg.cold { border: 2px solid var(--fg-5); }
+
+.tree-list { flex: 1; min-height: 0; overflow: auto; padding: 2px 0 6px; }
+.tree-empty { padding: 18px 14px; font-size: var(--d-text-sm); color: var(--fg-3); white-space: pre-wrap; word-break: break-word; }
+
+/* ── Rows ──────────────────────────────────────────────────────────────── */
+.tree-row {
+  position: relative; display: flex; align-items: stretch; gap: 6px;
+  padding: 0 12px 0 8px; cursor: pointer;
+  border-left: 3px solid transparent; overflow: hidden;
+}
+.tree-row.s-warm { border-left-color: var(--lime); background: color-mix(in oklab, var(--lime) 5%, transparent); }
+.tree-row.s-expiring { border-left-color: var(--amber); background: color-mix(in oklab, var(--amber) 8%, transparent); }
+.tree-row.s-partial { border-left-color: var(--cyan); background: color-mix(in oklab, var(--cyan) 6%, transparent); }
+.tree-row.s-cold, .tree-row.s-unknown { border-left-color: var(--line); }
+.tree-row.s-cold .tree-text { opacity: 0.5; }
+.tree-row.selected { outline: 1px solid color-mix(in oklab, var(--accent) 60%, transparent); outline-offset: -1px; }
+.tree-graph { flex: none; }
+.tree-text { flex: 1; min-width: 0; padding: 9px 0 8px; }
+.tree-prompt { color: var(--fg); font-size: var(--d-text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tree-time { color: var(--fg-4); font-size: var(--d-text-xs); margin-right: 8px; }
+.tree-reply { color: var(--fg-3); font-size: var(--d-text-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
+.tree-tips { display: flex; gap: 6px; margin-top: 6px; overflow: hidden; }
+.tree-tip, .tree-cont {
+  flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-family: var(--font-mono); font-size: 10px; line-height: 16px; padding: 0 7px;
+  border-radius: 999px; border: 1px solid var(--line-bright); color: var(--fg-3); background: transparent;
+}
+.tree-tip.here { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 45%, var(--line)); flex: none; }
+.tree-tip.anchor { color: var(--cyan); border-color: color-mix(in oklab, var(--cyan) 45%, var(--line)); }
+.tree-tip.partial { color: var(--cyan); border-color: color-mix(in oklab, var(--cyan) 30%, var(--line)); }
+.tree-tip.label { color: var(--lilac); border-color: color-mix(in oklab, var(--lilac) 40%, var(--line)); }
+.tree-tip.stale { color: var(--amber); border-color: color-mix(in oklab, var(--amber) 35%, var(--line)); cursor: help; flex: none; }
+.tree-tip.open { cursor: pointer; }
+.tree-tip.open:hover { color: var(--fg); border-color: var(--fg-4); }
+.tree-cont.warm { color: var(--lime); border-color: color-mix(in oklab, var(--lime) 45%, var(--line)); }
+.tree-cont.expiring { color: var(--amber); border-color: color-mix(in oklab, var(--amber) 45%, var(--line)); }
+.tree-cont.cold { color: var(--fg-4); }
+
+/* ── Cache meter ───────────────────────────────────────────────────────── */
+.cache-meter {
+  flex: none; width: 108px; display: flex; flex-direction: column;
+  justify-content: center; align-items: flex-end; gap: 4px; font-family: var(--font-mono);
+}
+.cache-label { font-size: 10px; color: var(--fg-4); }
+.cache-meter.warm .cache-label { color: var(--lime); }
+.cache-meter.expiring .cache-label { color: var(--amber); }
+.cache-meter.partial .cache-label { color: var(--cyan); }
+.cache-bar { width: 100%; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.cache-bar span { display: block; height: 100%; border-radius: 3px; }
+.cache-meter.warm .cache-bar span { background: var(--lime); }
+.cache-meter.expiring .cache-bar span { background: var(--amber); }
+.cache-bar.split { background: color-mix(in oklab, var(--rose) 35%, var(--line)); }
+.cache-bar.split span { background: var(--cyan); border-radius: 3px 0 0 3px; }
+.cache-price { font-size: var(--d-text-sm); font-weight: 600; color: var(--fg-2); }
+.cache-price.read { color: var(--lime); }
+.cache-meter.expiring .cache-price.read { color: var(--amber); }
+.cache-price.part { color: var(--cyan); }
+.cache-price.write { color: var(--rose); opacity: .85; }
+
+.tree-compaction {
+  display: flex; justify-content: space-between; gap: 10px; margin: 6px 10px; padding: 5px 8px;
+  border-top: 1.5px solid var(--line-bright); border-bottom: 1.5px solid var(--line-bright);
+  font-family: var(--font-mono); font-size: 10px; color: var(--fg-3); background: var(--bg-surface);
+}
+
+/* ── Detail footer ─────────────────────────────────────────────────────── */
+.tree-detail { border-top: 1px solid var(--line-bright); padding: 12px 14px 14px; background: var(--bg-surface); }
+.tree-detail-title { color: var(--fg); font-size: var(--d-text-sm); }
+.tree-compare { display: flex; align-items: center; gap: 10px; margin: 10px 0 12px; }
+.cmp { flex: 1; min-width: 0; border: 1px solid var(--line-bright); border-radius: var(--r-2); padding: 8px 10px; }
+.cmp-k { font-family: var(--font-mono); font-size: 10px; color: var(--fg-4); }
+.cmp-v { font-size: 20px; font-weight: 600; margin-top: 2px; }
+.cmp-d { font-size: var(--d-text-xs); color: var(--fg-3); }
+.cmp.later .cmp-v { color: var(--rose); }
+.cmp-arrow { font-family: var(--font-mono); font-size: 10px; color: var(--amber); white-space: nowrap; }
+.tree-detail.s-warm .cmp.now { border-color: color-mix(in oklab, var(--lime) 50%, var(--line)); }
+.tree-detail.s-warm .cmp.now .cmp-v { color: var(--lime); }
+.tree-detail.s-expiring .cmp.now { border-color: color-mix(in oklab, var(--amber) 55%, var(--line)); }
+.tree-detail.s-expiring .cmp.now .cmp-v { color: var(--amber); }
+.tree-detail.s-partial .cmp.now { border-color: color-mix(in oklab, var(--cyan) 50%, var(--line)); }
+.tree-detail.s-partial .cmp.now .cmp-v { color: var(--cyan); }
+.tree-detail.s-cold .cmp.now { border-color: color-mix(in oklab, var(--rose) 45%, var(--line)); }
+.tree-detail.s-cold .cmp.now .cmp-v { color: var(--rose); }
+.tree-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.tree-actions .btn:disabled { opacity: .45; cursor: default; }
+.tree-note { margin: -4px 0 12px; font-size: var(--d-text-xs); color: var(--amber); line-height: 1.45; }
+.tree-error { margin-top: 10px; font-size: var(--d-text-sm); color: var(--rose); word-break: break-word; }

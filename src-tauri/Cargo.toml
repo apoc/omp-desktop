@@ -17,7 +17,8 @@ tauri-plugin-dialog = "2"
 # Linux, which every omp child would have inherited.
 tauri-plugin-updater = "2.13"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `raw_value`: the conversation tree skips message bodies it does not read.
+serde_json = { version = "1", features = ["raw_value"] }
 notify = "8"
 gix = "0.87"
 open = { version = "5", features = ["shellexecute-on-windows"] }

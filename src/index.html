@@ -126,6 +126,14 @@
        live.js reads it at its top-level init, so it must load before them. -->
   <script src="app/ask-dialog.js"></script>
 
+  <!-- Conversation tree (prompt-cache navigator): pure model over the Rust
+       `conversation_tree` payload. IIFEs; conversation-tree-graph.js (the
+       entry index and lane layout, window.OMP_CONV_GRAPH) must precede
+       conversation-tree.js, which destructures it at load. window.OMP_CONV_TREE
+       is called at render time by app/use-conversation-tree.jsx. -->
+  <script src="app/conversation-tree-graph.js"></script>
+  <script src="app/conversation-tree.js"></script>
+
   <!-- Design components (unchanged — from src/design/ copy) -->
   <script src="design/tweaks/style.js"></script>
   <script src="design/tweaks/use-tweaks.js"></script>
@@ -193,6 +201,12 @@
   <script type="text/babel" src="design/prompt-history-modal.jsx"></script>
   <script type="text/babel" src="design/shortcuts-modal.jsx"></script>
   <script type="text/babel" src="design/update-modal.jsx"></script>
+  <!-- Conversation tree pane: rows (formatters, graph, meter) → detail
+       footer → pane; the detail and the pane destructure the earlier
+       files' window exports at top level, so keep this order. -->
+  <script type="text/babel" src="design/conversation-tree-rows.jsx"></script>
+  <script type="text/babel" src="design/conversation-tree-detail.jsx"></script>
+  <script type="text/babel" src="design/conversation-tree.jsx"></script>
 
   <!-- Live data layer (must load before app-live.jsx) -->
   <script src="model-names.js"></script>
@@ -220,6 +234,7 @@
   <script type="text/babel" src="app/use-keymap.jsx"></script>
   <script type="text/babel" src="app/use-subagent-manager.jsx"></script>
   <script type="text/babel" src="app/use-updater.jsx"></script>
+  <script type="text/babel" src="app/use-conversation-tree.jsx"></script>
 
   <script type="text/babel" src="app-live.jsx"></script>
 </body>

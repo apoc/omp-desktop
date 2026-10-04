@@ -103,7 +103,10 @@ pub fn spawn_candidate_output<S: AsRef<std::ffi::OsStr>>(
 /// Oldest omp OMP Desktop runs against: the newest release whose RPC
 /// commands, events or state fields the app relies on. Raise it in the change
 /// that starts using a newer omp feature; nothing else has to follow.
-const MIN_OMP_VERSION: [u32; 3] = [18, 4, 9];
+///
+/// 18.4.11: the RPC `fork` command (the conversation tree's "Fork after the
+/// reply").
+const MIN_OMP_VERSION: [u32; 3] = [18, 4, 11];
 
 /// Set once an `omp --version` check passed. Only a pass is remembered: after
 /// a refusal the next tab start asks again, so an `omp update` takes effect

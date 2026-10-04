@@ -19,11 +19,11 @@
 
 const {
   Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar, SubagentPane, ProjectSidebar, EmptyWorkspace,
-  StatusBar, AmbientRail, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, UpdateModal, useTweaks,
+  StatusBar, AmbientRail, ConversationTree, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, UpdateModal, useTweaks,
   TweaksPanel, TweakSection, TweakRadio, TweakToggle, TweakColor, TweakSlider,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, DEFAULT_PROFILE_ID,
   INTENT_FRAMING, APPROVAL_PROMPT,
-  useBridgeSnapshot, useThemeEffect, useSubagentManager, useUpdater, timeNow,
+  useBridgeSnapshot, useThemeEffect, useSubagentManager, useUpdater, useConversationTree, timeNow,
   useKeymap, useKeymapDispatch, ShortcutsModal,
 } = window;
 const { isCommandInvocation } = window.OMP_SLASH;
@@ -48,6 +48,9 @@ function App() {
   const [promptHistoryOpen, setPromptHistoryOpen] = React.useState(false);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [planOpen,    setPlanOpen]    = React.useState(false);
+  // Conversation tree (prompt-cache navigator): replaces the ambient rail
+  // while open — see design/conversation-tree.jsx, app/use-conversation-tree.jsx.
+  const [treeOpen,    setTreeOpen]    = React.useState(false);
   // Plan mode is per tab (issue #28; app/session-ui.js): one entry per
   // session id, read through `plan` and written through `updatePlan` below.
   const [plans, setPlans] = React.useState({});
@@ -283,10 +286,21 @@ function App() {
   const [promptInsert, setPromptInsert] = React.useState(null);
   const handlePickHistoryPrompt = (text) => setPromptInsert({ text, nonce: Date.now() });
 
+  // Conversation tree data + actions. A successful "branch here" puts the
+  // re-asked prompt into the composer through `promptInsert` (replaces the
+  // draft). `sessionFile` comes with every snapshot's tab entry: it changes
+  // when branch/fork/new move the process onto another file, which refetches.
+  const convTree = useConversationTree({
+    bridge, open: treeOpen, sessionId: activeProject.id, sessionFile: activeProject.sessionFile ?? null,
+    profileId: activeProfileId, processStartedAt: activeProject.processStartedAt ?? null,
+    streaming, onBranchText: text => setPromptInsert({ text, nonce: Date.now() }),
+  });
+
   const handleCommand = c => {
     if      (c.name === "plan")      { updatePlan(enterPlan); }
     else if (c.name === "todo")      { setPlanOpen(true); }
     else if (c.name === "compact")   { bridge?.compact(); }
+    else if (c.name === "tree" || c.name === "branch") { setTreeOpen(true); }
     else if (c.name === "export")    { bridge?.exportHtml(); }
     else if (c.name === "thinking")  { cycleThinking(); }
     else if (c.name === "model")     { openBridge("models"); }
@@ -518,7 +532,7 @@ function App() {
                 onHide={toggleSidebar}
               />
             )}
-            <div className={`stage ${showRail ? "with-rail" : ""}`}>
+            <div className={`stage ${treeOpen ? "with-tree" : showRail ? "with-rail" : ""}`}>
               <main className="session">
                 {noTab ? (
                   <EmptyWorkspace notes={workspaceNotes} />
@@ -576,6 +590,7 @@ function App() {
                   onChanges={() => setChangesOpen(true)}
                   onRules={() => setRulesOpen(true)}
                   onStats={() => setStatsOpen(true)}
+                  onTree={() => setTreeOpen(v => !v)}
                   onTweaks={() => window.postMessage({ type: '__activate_edit_mode' }, '*')}
                   autosave={t.autosave ?? true}
                   onAutosave={v => setTweak("autosave", v)}
@@ -597,7 +612,15 @@ function App() {
                 />
               )}
 
-              {showRail && (
+              {treeOpen ? (
+                <ConversationTree
+                  model={convTree.model} currentFile={convTree.currentFile} error={convTree.error}
+                  loading={convTree.loading} treeKey={convTree.key} now={convTree.now} since={convTree.since}
+                  streaming={streaming}
+                  onRefresh={convTree.refresh} onClose={() => setTreeOpen(false)}
+                  onBranch={convTree.branch} onFork={convTree.fork} onOpenFile={convTree.openFile}
+                />
+              ) : showRail && (
                 <AmbientRail
                   ctx={liveCtx}
                   activity={activity}
@@ -605,6 +628,7 @@ function App() {
                   subagentPaneOpen={showSplit}
                   onOpenSubagent={subagentUi.open}
                   onToggleSubagentPane={subagentUi.togglePane}
+                  onOpenTree={() => setTreeOpen(true)}
                   messages={messages}
                   microcopy={data.microcopy}
                   sparklineValues={sparkline}

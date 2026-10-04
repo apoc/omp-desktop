@@ -7,6 +7,7 @@
 mod agent;
 mod approval;
 mod child_path;
+mod conversation_tree;
 mod external_open;
 mod files;
 mod git;
@@ -243,6 +244,26 @@ async fn list_saved_sessions(
     let profile = store.resolve_owned(profile)?;
     tauri::async_runtime::spawn_blocking(move || {
         saved_sessions::scan_saved_sessions(&app, cwd.as_deref(), profile.as_deref())
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+}
+
+/// The conversation family of one saved session file (`session_file`, under
+/// `profile`'s sessions directory): its entries merged across the files
+/// branched/forked from each other, for the tree navigator.
+///
+/// `spawn_blocking`: a session file can reach tens of MiB.
+#[tauri::command]
+async fn conversation_tree(
+    session_file: String,
+    profile: Option<String>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+    app: tauri::AppHandle,
+) -> Result<conversation_tree::ConversationTree, String> {
+    let profile = store.resolve_owned(profile)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        conversation_tree::load(&app, &session_file, profile.as_deref())
     })
     .await
     .map_err(|e| format!("join error: {e}"))?
@@ -870,6 +891,7 @@ pub fn run() {
             stop_git_watch,
             open_url_external,
             list_saved_sessions,
+            conversation_tree,
             approval_rules_list,
             approval_rules_grant,
             approval_rules_revoke,
