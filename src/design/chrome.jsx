@@ -6,7 +6,7 @@
    - Ambient rail: TokenGauge, ActivityRadar, subagents card, Minimap
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot, RenameField } = window;
+const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot, RenameField, THINKING_LEVELS } = window;
 const { groupTabs } = window.OMP_PROJECT_NAV;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` — same
@@ -176,7 +176,7 @@ function TabBar({
 
 // ── Status bar (footer): connection, model, tokens, todos, extension ─
 function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel, onTweaks, onChanges, onRules, onStats, autosave, onAutosave }) {
-  const thinkLabel = { off: "off", minimal: "min", low: "low", medium: "med", high: "high", xhigh: "max" }[thinking] ?? "—";
+  const thinkLabel = THINKING_LEVELS[thinking]?.short ?? thinking ?? "—";
   return (
     <div className="status">
       <span className="status-cell"><span className="dot live" /> connected</span>

@@ -53,19 +53,7 @@ function ProfileMenu({
     triggerRef.current?.focus();
   }, []);
 
-  // Outside click / Escape dismiss. Attached only while open so the app
-  // isn't paying for two document listeners for a closed menu.
-  React.useEffect(() => {
-    if (!open) return undefined;
-    const onDown = e => { if (!rootRef.current?.contains(e.target)) close(); };
-    const onKey  = e => { if (e.key === "Escape") { e.preventDefault(); close(); } };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open, close]);
+  window.usePopoverDismiss(open, rootRef, close);
 
   React.useEffect(() => { if (mode) inputRef.current?.focus(); }, [mode]);
 

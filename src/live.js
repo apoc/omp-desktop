@@ -183,6 +183,8 @@
   // Used by _sendWithResponse to correlate commands that need a typed reply.
   const _pendingResponses = new Map(); // id → { resolve, reject }
   let _nextCmdId = 1;
+  // Timeout for a short interactive command a user is waiting on.
+  const QUICK_CMD_TIMEOUT_MS = 15000;
 
   /**
    * Send a command and return a Promise that resolves with the response data
@@ -1532,8 +1534,8 @@
 
     } else if (command === "cycle_model") {
       if (data?.model) {
+        // A re-clamped thinking level arrives as `thinking_level_changed`.
         state.model  = _buildModelEntry(data.model);
-        if (data.thinkingLevel != null) state.thinkingLevel = data.thinkingLevel;
         state.models = state.models.map(m => ({ ...m, current: m.id === data.model.id }));
         notify();
       }
@@ -1620,6 +1622,20 @@
       return;
     }
 
+    // omp reports every change of the applied thinking level: a pick in the
+    // composer's menu (the only confirmation `set_thinking_level` gets, and
+    // omp may clamp the pick), a cycle, a typed `/effort <level>`, a model switch
+    // re-clamping the level, `auto` resolving per turn. The effective
+    // level, like get_state's.
+    if (type === "thinking_level_changed") {
+      const level = _effectiveThinking(ev.thinkingLevel);
+      if (level !== state.thinkingLevel) {
+        state.thinkingLevel = level;
+        notify();
+      }
+      return;
+    }
+
     // A builtin slash command sent as a plain prompt (e.g. picking `/jobs`
     // from the merged palette) runs locally inside omp — no turn, no
     // agent_end, and the `prompt` response itself carries nothing. Its only
@@ -1658,7 +1674,7 @@
     }
 
     // Same local-only-command path: a config-changing builtin (/model,
-    // /thinking) or a title-changing one (/rename) mutates session state
+    // /effort) or a title-changing one (/rename) mutates session state
     // outside the normal turn lifecycle, with no set_model/cycle_model
     // response to key off. Re-fetch rather than duplicate _applyRpcState's
     // model/thinkingLevel/sessionName derivation here.
@@ -2044,6 +2060,13 @@
     state.messages = msgs;
   }
 
+  // The effective thinking level as get_state and `thinking_level_changed`
+  // report it. Unset (a model without thinking, say) reads as off, as in
+  // omp's own UI.
+  function _effectiveThinking(level) {
+    return level ?? "off";
+  }
+
   function _applyRpcState(rpcState) {
     if (!rpcState) return;
     state.rpcState      = rpcState;
@@ -2057,7 +2080,7 @@
       streamingBubble = null;
       state.messages = state.messages.filter(m => !m.streaming);
     }
-    state.thinkingLevel = rpcState.thinkingLevel ?? "auto";
+    state.thinkingLevel = _effectiveThinking(rpcState.thinkingLevel);
     // The queue as of this get_state; later `queue_update`s follow it in
     // the same stream, so the last one written wins.
     state.queue = QUEUE.fromSnapshot(rpcState.queuedMessages, state.queue);
@@ -2543,7 +2566,7 @@
       const entry = sessionRegistry.get(id);
       sessionRegistry.set(id, { ...entry, renameNotes: [...(entry.renameNotes ?? []), rename.note] });
       try {
-        await _sendWithResponse({ type: "prompt", message: rename.command }, 15000);
+        await _sendWithResponse({ type: "prompt", message: rename.command }, QUICK_CMD_TIMEOUT_MS);
       } catch (e) {
         if (activeSessionId === id) {
           _pushAssistantNote(`Rename failed: ${e?.message ?? e}`, true);
@@ -2571,6 +2594,18 @@
     recentModels(profile = _activeProfileId()) { return _invokeSafe("model_usage_list", { profile }, []); },
     cycleModel()       { _send({ type: "cycle_model" }); },
     cycleThinking()    { _send({ type: "cycle_thinking_level" }); },
+    /** The thinking levels the active tab's model supports, `off` first:
+     *  omp's own list, which leaves out its `auto` selector. */
+    async thinkingLevels() {
+      const data = await _sendWithResponse({ type: "get_available_thinking_levels" }, QUICK_CMD_TIMEOUT_MS);
+      return Array.isArray(data?.levels) ? data.levels.filter(l => typeof l === "string") : [];
+    },
+    /** Applies a level from `thinkingLevels()` to the active tab. The
+     *  response carries nothing; the level omp applied (it may clamp the
+     *  pick) arrives before it, as `thinking_level_changed`. */
+    setThinkingLevel(level) {
+      return _sendWithResponse({ type: "set_thinking_level", level }, QUICK_CMD_TIMEOUT_MS);
+    },
     compact() {
       const id  = "cmpct-" + (_nextCmdId++);
       state.messages = [...state.messages, { kind: "compact", status: "pending", id, time: timeNow() }];

@@ -28,7 +28,7 @@ function hintKeyFor(actionId, fallback) {
 }
 
 // ── The composer (input + plan/steer modes + send) ────────────────────
-function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onCycleThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued }) {
+function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued }) {
   // Drafts are per tab (issue #28). The composer stays mounted across tab
   // switches and keeps one draft per session id (app/session-ui.js
   // DRAFT_IDLE): text, pending image attachments (sent alongside the next
@@ -501,6 +501,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   const bridgeHint    = hintFor("desktop.commands.open", "⌘K");
   const bridgeKeyHint = hintKeyFor("desktop.commands.open", "K");
   const abortHint = hintFor("app.interrupt", "⎋");
+  const cycleThinkingHint = hintFor("app.thinking.cycle", "⇧Tab");
 
   return (
     <div className={`composer ${planMode ? "plan-on" : ""}`}>
@@ -641,10 +642,8 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
           <span style={{ color: "var(--fg-2)" }}>{currentModel?.name}</span>
           <Icon name="chev" size={10} color="var(--fg-4)" />
         </button>
-        <button className="composer-pill" onClick={onCycleThinking}>
-          <Icon name="thinking" size={11} color="var(--lilac)" />
-          <span style={{ color: "var(--fg-2)" }}>thinking · {thinking}</span>
-        </button>
+        <ThinkingMenu key={sessionId} model={currentModel} level={thinking}
+          cycleHint={cycleThinkingHint} onLoad={onLoadThinkingLevels} onSet={onSetThinking} />
         <button className={`composer-pill ${planMode ? "on" : ""}`} onClick={onTogglePlan}>
           <Icon name="plan" size={11} color={planMode ? "var(--amber)" : "var(--fg-3)"} />
           <span style={{ color: planMode ? "var(--amber)" : "var(--fg-2)" }}>plan mode</span>
@@ -726,7 +725,7 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, pro
     const modelHits = models.filter((m) => !q || fil(m.name) || fil(m.id));
     const recentHits = window.pickRecentModels(modelHits, recentKeys, RECENT_MODEL_LIMIT);
     const modelRow = (m, group) => (
-      <button key={`${group}:${m.provider}/${m.id}`}
+      <button key={`${group}:${window.modelKey(m)}`}
         className={`bridge-row ${m.id === currentModelId ? "active" : ""}`}
         onClick={() => { onPickModel(m); onClose(); }}>
         <span className="bridge-glyph">

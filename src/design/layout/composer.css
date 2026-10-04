@@ -115,6 +115,33 @@
 .composer-pill:hover { border-color: var(--line-bright); background: var(--bg-hover); }
 .composer-pill.on { border-color: color-mix(in oklab, var(--amber) 50%, var(--line)); background: color-mix(in oklab, var(--amber) 12%, transparent); }
 
+/* Thinking-level menu on the thinking pill (thinking-menu.jsx). Opens
+   upward: the composer sits at the bottom of the window. */
+.thinking-menu { position: relative; display: inline-flex; }
+.thinking-pop {
+  bottom: calc(100% + 6px); left: 0;
+  /* As wide as its longest row, so each hint stays on one line. */
+  width: max-content; min-width: 240px; max-width: min(420px, calc(100vw - 32px));
+}
+.thinking-pop.busy, .thinking-pop.busy .thinking-item { cursor: progress; }
+.thinking-pop-head, .thinking-pop-foot {
+  padding: 5px 8px 4px;
+  font-size: var(--d-text-xs); color: var(--fg-4);
+}
+.thinking-pop-foot { border-top: 1px solid var(--line-soft); margin-top: 3px; }
+.thinking-pop-note { padding: 5px 8px; font-size: var(--d-text-xs); color: var(--fg-3); }
+.thinking-pop-note.error { color: var(--rose); overflow-wrap: anywhere; }
+/* Row base shared with .profile-item (chrome.css); the hint sits on the
+   name's baseline. */
+.thinking-item { align-items: baseline; }
+/* Fixed gutter so the names align whether or not a row is checked. */
+.thinking-item-mark { width: 10px; flex: none; align-self: center; display: inline-flex; }
+.thinking-item-name { flex: none; min-width: 56px; }
+.thinking-item-hint {
+  flex: 1; min-width: 0; font-size: var(--d-text-xs); color: var(--fg-4);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
 /* slash palette pop */
 .slash-pop {
   position: absolute;

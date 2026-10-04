@@ -71,6 +71,10 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "set_model",
     "cycle_model",
     "cycle_thinking_level",
+    // Thinking-level menu on the composer pill: the current model's levels,
+    // and the one picked.
+    "get_available_thinking_levels",
+    "set_thinking_level",
     "compact",
     "new_session",
     "export_html",

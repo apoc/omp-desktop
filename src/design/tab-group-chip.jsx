@@ -34,18 +34,7 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
     triggerRef.current?.focus();
   }, []);
 
-  // Outside click / Escape dismiss, attached only while open.
-  React.useEffect(() => {
-    if (!open) return undefined;
-    const onDown = e => { if (!rootRef.current?.contains(e.target)) close(); };
-    const onKey  = e => { if (e.key === "Escape") { e.preventDefault(); close(); } };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open, close]);
+  window.usePopoverDismiss(open, rootRef, close);
 
   const active  = group.tabs.find(t => t.id === activeId);
   const profile = profileLabel(group.profile);

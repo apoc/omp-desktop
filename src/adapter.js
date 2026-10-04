@@ -502,7 +502,7 @@
    *  `models` — no longer available, or filtered out — are skipped, so every
    *  entry is pickable and a filtered list still fills up to `limit`. */
   function pickRecentModels(models, keys, limit) {
-    const byKey = new Map(models.map(m => [`${m.provider}/${m.id}`, m]));
+    const byKey = new Map(models.map(m => [modelKey(m), m]));
     const picked = [];
     for (const key of keys) {
       if (picked.length >= limit) break;
@@ -510,6 +510,11 @@
       if (m) picked.push(m);
     }
     return picked;
+  }
+
+  /** A model's identity across providers: omp's `provider/modelId`. */
+  function modelKey(m) {
+    return `${m.provider}/${m.id}`;
   }
 
   // ── Exports ───────────────────────────────────────────────────────────────
@@ -530,6 +535,7 @@
     adaptAgentMessages,
     adaptUserContent,
     pickRecentModels,
+    modelKey,
     timeNow,
   });
 })();

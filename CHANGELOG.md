@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Messages waiting for the agent are listed above the prompt box: steers (Enter while the agent works) and follow-ups (Ctrl+Q), in the order the agent will get them. Each row can be removed (✕), taken back into the prompt box to edit (✎, text only), or — for a follow-up — sent as a steer right away (↑), which also starts the agent again after you stopped it. A message the agent already took cannot be pulled back; the row then says "already delivered". The list is omp's own queue, so it stays correct across tab switches. A steer or follow-up omp refuses leaves a note with its text.
 - Talk to a running subagent, or stop it, from the subagent manager. Open an agent while it works: a message box under its details sends it a message as if you were its user (Enter sends, Shift+Enter starts a new line). The agent reads it at its next step; while the agent is open in the manager, the message then shows up as a `you ›` line in its Output tab. A message the agent refuses stays in the box with a note saying why; so does text you were still typing when the agent finished. The stop button asks once more before it ends the agent; the agent that started it gets an aborted result and carries on.
+- Pick the thinking level from a menu (#10): click the thinking pill under the prompt box. It lists the levels the current model supports, each with what it means, and ticks the one in use. Shift+Tab still cycles through the levels.
 
 ### Changed
 
@@ -20,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The chat stays on its latest line when the area below it grows — the list of waiting messages, attached images, or a long draft — instead of hiding the end of the conversation behind it until the next update.
 - A tab that fails to start — omp too old or not on `PATH`, or its profile deleted meanwhile — now says why, in the current tab or on the empty workspace, when it was opened with `+`, from a recent project or from the history panel. Before, nothing happened.
+- After picking a model whose highest thinking level is lower than the current one, the thinking pill shows the lowered level right away instead of at the next prompt.
+- A model without thinking showed `thinking · auto`; it now shows `off`, as omp does. The status bar showed `xhigh` as `max`, and omp's own `max` level as `—`.
 
 ## [0.5.0] - 2026-10-03
 

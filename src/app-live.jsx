@@ -544,7 +544,8 @@ function App() {
                     onOpenModel={() => openBridge("models")}
                     currentModel={model}
                     thinking={thinkingLevel}
-                    onCycleThinking={cycleThinking}
+                    onLoadThinkingLevels={() => bridge.thinkingLevels()}
+                    onSetThinking={level => bridge.setThinkingLevel(level)}
                     isStreaming={streaming}
                     onAbort={handleAbort}
                     onApprove={handleApprovePlan}
