@@ -99,6 +99,8 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     // assistant entry. `fork` first shipped in omp 18.4.11 (the version floor).
     "branch",
     "fork",
+    // Goal mode: omp's `goal` command (get/create/resume/pause/drop).
+    "goal",
 ];
 
 /// Manages one omp process per tab session.

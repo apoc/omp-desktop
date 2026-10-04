@@ -32,6 +32,12 @@
     return "idle";
   }
 
+  // Run states in which the agent is still at work: mid-turn, retrying a
+  // failed request, waiting on the user, or waiting on a background job
+  // that will wake it. A `failed` tab has no live process left.
+  const BUSY_RUN_STATES = new Set(["running", "retrying", "waiting-user", "background"]);
+  const isBusyRunState = runState => BUSY_RUN_STATES.has(runState);
+
   /** Whether an `agent_end` is the agent yielding its turn. `yielded: false`
    *  ends are the agent's own continuations (a retry, compaction, a
    *  stop-time reminder); frames without the field count when terminal —
@@ -353,7 +359,7 @@
   }
 
   window.OMP_TURN_STATUS = Object.freeze({
-    runStateOf, isYield, stripDiagnostics, providerHeadline, failureOf, finalFailures,
+    runStateOf, isBusyRunState, isYield, stripDiagnostics, providerHeadline, failureOf, finalFailures,
     withPromptError, finishedJobsOf,
     failedStop, producedOutput, isHidden, retryIndex, retryStarted, retryAttempting, retryEnded, retryFinished, retryYielded, retryCleared,
   });

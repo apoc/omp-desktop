@@ -235,6 +235,8 @@
     const args   = (typeof event.args === "object" && event.args !== null) ? event.args : {};
     const target = args.path ?? args.pattern ?? args.command ?? args.query
                 ?? args.expression ?? args.url
+                // omp's goal tool: the operation (create, get, complete…).
+                ?? (tool === "goal" ? args.op : undefined)
                 ?? (tool === "eval" && args.input
                       ? (String(args.input).match(/={5}\s*(.*?)\s*={5}/)?.[1] ?? "")
                       : "")

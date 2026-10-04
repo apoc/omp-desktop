@@ -18,6 +18,7 @@
   const QUEUE = window.OMP_QUEUE;
   const ASK = window.OMP_ASK_DIALOG;
   const TURN = window.OMP_TURN_STATUS;
+  const GOAL = window.OMP_GOAL;
   const { tsOf, mergeTranscript } = window.OMP_TRANSCRIPT;
 
   // ── Safe defaults so design components never crash on missing fields ──────
@@ -80,6 +81,9 @@
     queue:          QUEUE.EMPTY_QUEUE,
     // Steers / follow-ups sent but not yet acknowledged ("sending" rows).
     queueSending:   [],
+    // omp's goal mode (app/goal.js): `{ known, goal }` from `get_state.goal`,
+    // `goal_updated` frames and `goal` command responses.
+    goal:           GOAL.UNKNOWN,
   };
 
   let streamingBubble = null;
@@ -94,6 +98,10 @@
   let lastSeq         = 0;   // highest journal seq processed for the active session — see _dispatchEnvelope
   let lastTurnOk      = true; // last assistant message_end was not error/aborted — a failed first exchange must not spend the one-shot
   let _replayBuffer   = null; // null = live dispatch; [] = buffering during a replay (see _switchToSession)
+  // The user's `abort` is in flight — set by `abort()`, cleared by its
+  // id-less response. omp pauses an active goal on abort, and that pause is
+  // labelled as the user's stop (app/goal.js `fromFrame`).
+  let userAbortInFlight = false;
   let _msgSeq = 0;  // monotonic counter — stable React keys for message bubbles
   // Whether the manager is inspecting an agent — decides the RPC subagent
   // subscription level ("events" vs "progress"). Mirrors the UI (set only by
@@ -306,6 +314,7 @@
       subagentTranscripts: state.subagentTranscripts,
       queue:           state.queue,
       queueSending:    state.queueSending,
+      goal:            state.goal,
       // Tab list — derived from session registry, not per-session state.
       // runState: active tab reads live state; background tabs read their
       // cached snapshot (never activated yet = "idle" defaults).
@@ -666,6 +675,7 @@
       subagentTranscripts: {},
       queue:         QUEUE.EMPTY_QUEUE,
       queueSending:  [],
+      goal:          GOAL.UNKNOWN,
     });
     streamingBubble = null;
     lastTurnOk  = true;
@@ -676,6 +686,7 @@
     turnStartTime   = null;
     activityLog     = [];
     lastSeq         = 0;
+    userAbortInFlight = false;
   }
 
   // ── Session snapshot helpers ──────────────────────────────────────────────
@@ -711,6 +722,7 @@
       subagents:     state.subagents,
       queue:         state.queue,
       queueSending:  state.queueSending,
+      goal:          state.goal,
       // volatile vars
       streamingBubble,
       activeToolCards: new Map(activeToolCards),
@@ -718,6 +730,9 @@
       turnStartTime,
       activityLog:   [...activityLog],
       lastSeq,
+      // An abort whose pause frame and response are still in the tab's
+      // journal: the replay on the way back labels the pause and clears it.
+      userAbortInFlight,
     });
   }
 
@@ -746,6 +761,7 @@
       subagentTranscripts: {},
       queue:         snap.queue ?? QUEUE.EMPTY_QUEUE,
       queueSending:  snap.queueSending ?? [],
+      goal:          snap.goal ?? GOAL.UNKNOWN,
     });
     streamingBubble = snap.streamingBubble;
     activeToolCards = snap.activeToolCards;
@@ -753,6 +769,7 @@
     turnStartTime   = snap.turnStartTime;
     activityLog     = snap.activityLog;
     lastSeq         = snap.lastSeq ?? 0;
+    userAbortInFlight = snap.userAbortInFlight ?? false;
     lastTurnOk      = snap.lastTurnOk ?? true;
     return true;
   }
@@ -859,6 +876,8 @@
       if (replay.dropped && sessionRegistry.get(id)?.autoRenameInFlight) {
         sessionRegistry.set(id, { ...sessionRegistry.get(id), autoRenameInFlight: false });
       }
+      // Same for an abort: its response may be among the evicted events.
+      if (replay.dropped) userAbortInFlight = false;
     } catch (e) {
       console.warn(`[live] replay_events failed for '${id}':`, e);
     }
@@ -1508,6 +1527,7 @@
       // Emitted only after session.abort() returns, and abort() sends no
       // id, so this uncorrelated response is the release point.
       _releaseAutoRenameAfterAbort();
+      userAbortInFlight = false;
       return;
     }
     if (!resp.success) return;
@@ -1654,6 +1674,18 @@
 
     if (type === "available_commands_update") {
       _applyCommands(ev.commands);
+      return;
+    }
+
+    // Goal mode (app/goal.js): omp reports every change, accounting
+    // included; a change of a goal the tab already knew also goes into the
+    // transcript as a goal row (live-only, kept by the get_messages merge).
+    if (type === "goal_updated") {
+      const { state: next, row } = GOAL.fromFrame(state.goal, ev, { stopping: userAbortInFlight });
+      if (next === state.goal && !row) return;
+      state.goal = next;
+      if (row) state.messages = [...state.messages, { ...row, time }];
+      notify();
       return;
     }
 
@@ -1921,11 +1953,19 @@
         }
       } else if (role === "custom") {
         // A background job's result (`async-result`) is what wakes the agent
-        // after it yielded: name the job above the reply it triggers.
+        // after it yielded: name the job above the reply it triggers. omp's
+        // hidden goal-continuation prompt likewise starts a turn nobody
+        // typed: mark it above the reply.
         const jobs = TURN.finishedJobsOf(msg);
         if (jobs) {
           state.messages = [...state.messages, ...jobs.map(job => ({ kind: "job", time, ...job }))];
           notify();
+        } else {
+          const row = GOAL.continuationRow(msg);
+          if (row) {
+            state.messages = [...state.messages, { ...row, time }];
+            notify();
+          }
         }
       } else if (role === "assistant") {
         streamingBubble = {
@@ -2226,6 +2266,8 @@
     // The queue as of this get_state; later `queue_update`s follow it in
     // the same stream, so the last one written wins.
     state.queue = QUEUE.fromSnapshot(rpcState.queuedMessages, state.queue);
+    // `null` with no goal; absent from an omp that predates goal mode.
+    state.goal = GOAL.fromSnapshot(state.goal, rpcState.goal ?? null);
 
     if (rpcState.model) {
       state.model = {
@@ -2664,6 +2706,39 @@
     return { ok: true, text: String(data?.text ?? "") };
   }
 
+  /** `OMP_BRIDGE.send`: the user bubble at once, then `prompt`. A
+   *  `streamingBehavior` tells omp what to do if a turn is running by the
+   *  time the prompt arrives; idle, omp ignores it and runs the prompt. */
+  function _sendPrompt(text, images, streamingBehavior) {
+    state.messages = [...state.messages, { kind: "user", time: timeNow(), text, images: images ?? [] }];
+    _disarmAutoRename(text);
+    _recordPrompt(text);
+    notify();
+    _send({ type: "prompt", message: text, images: images ?? [], ...(streamingBehavior ? { streamingBehavior } : {}) });
+  }
+
+  /** A `goal` command's `{goal, state}` result applied to the active tab. */
+  function _applyGoalResult(data) {
+    const next = GOAL.fromSnapshot(state.goal, data?.state ?? null);
+    if (next !== state.goal) { state.goal = next; notify(); }
+  }
+
+  /** `goal pause` / `resume` / `drop` on the active tab → `{ok}` or
+   *  `{ok: false, error}`. The `goal_updated` frame omp sends first already
+   *  moved the strip; the result is applied for a frame lost to a switch. */
+  const GOAL_OPS = new Set(["pause", "resume", "drop"]);
+  async function _goalOp(op) {
+    if (!GOAL_OPS.has(op)) return { ok: false, error: `unknown goal operation: ${op}` };
+    const origin = activeSessionId;
+    try {
+      const data = await _sendWithResponse({ type: "goal", op }, QUICK_CMD_TIMEOUT_MS);
+      if (origin === activeSessionId) _applyGoalResult(data);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e?.message ?? e) };
+    }
+  }
+
   // ── OMP_BRIDGE public API ─────────────────────────────────────────────────
   window.OMP_BRIDGE = {
     get isConnected() { return !!window.__TAURI__ && !!activeSessionId; },
@@ -2672,17 +2747,11 @@
     // The bubble shows at once; omp's echo (`message_start`) ties it to the
     // persisted message. A command omp runs locally sends no echo, so its
     // bubble keeps no `ts` and the get_messages merge leaves it in place.
-    send(text, images) {
-      state.messages = [...state.messages, { kind: "user", time: timeNow(), text, images: images ?? [] }];
-      _disarmAutoRename(text);
-      _recordPrompt(text);
-      notify();
-      _send({ type: "prompt", message: text, images: images ?? [] });
-    },
+    send(text, images) { _sendPrompt(text, images); },
     // No id on purpose: a pending-id match returns before the command
     // switch, and the abort response is what releases a cancelled
     // auto-rename. See `_releaseAutoRenameAfterAbort`.
-    abort()            { _send({ type: "abort" }); },
+    abort()            { userAbortInFlight = true; _send({ type: "abort" }); },
     /** Stops omp's automatic retries of the active tab's failed request.
      *  While omp waits between attempts `abort_retry` ends the run on the
      *  last failure and touches nothing else. An attempt already in flight
@@ -2743,6 +2812,88 @@
     async promoteQueuedMessage(text) {
       const data = await _sendWithResponse({ type: "promote_queued_message", message: text });
       return data?.promoted === true;
+    },
+    // ── Goal mode (app/goal.js) ──────────────────────────────────────────────
+    /** Starts a goal on the active tab: what the composer sends in goal
+     *  mode. `goal create` goes first, so the objective's turn already
+     *  carries omp's goal context and goal tool. With auto-continue on
+     *  (`goal.continuationModes` holds "rpc") omp then starts a goal turn
+     *  by itself; otherwise the objective goes out as the first prompt, as
+     *  omp's own `/goal` does — as a steer when a turn is running. Images
+     *  ride with the objective; when omp already started on its own they
+     *  are steered in with it rather than dropped. Resolves `{ok}` or
+     *  `{ok: false, error}` (omp refuses in plan mode, with a paused goal…).
+     *  A tab switch before the follow-up sends nothing to the other tab:
+     *  both requests keep the default timeout, so a reply held back by the
+     *  switch is replayed on the way back and the sequence goes on there.
+     *  IPC end to end; the decisions are app/goal.js's (`ompStartedTurn`,
+     *  test-goal.mjs), the sequence was live-tested against omp 18.6.0. */
+    async goalStart(objective, tokenBudget, images) {
+      const text = String(objective ?? "").trim();
+      const imgs = images ?? [];
+      if (!text) return { ok: false, error: "Describe the goal first." };
+      const origin = activeSessionId;
+      if (!origin) return { ok: false, error: "Not connected" };
+      const wasStreaming = state.isStreaming;
+      try {
+        const data = await _sendWithResponse(
+          { type: "goal", op: "create", objective: text, ...(tokenBudget ? { token_budget: tokenBudget } : {}) },
+        );
+        if (origin === activeSessionId) _applyGoalResult(data);
+      } catch (e) {
+        // No answer is not a refusal: omp may still create the goal, whose
+        // frame then shows it in the strip.
+        if (e?.timedOut) return { ok: false, error: "omp has not answered yet; if the goal starts, it shows here." };
+        return { ok: false, error: String(e?.message ?? e) };
+      }
+      if (origin !== activeSessionId) return { ok: true };
+      const bridge = window.OMP_BRIDGE;
+      if (wasStreaming) {
+        bridge.steer(text, imgs);
+        return { ok: true };
+      }
+      let rpcState = null;
+      try {
+        rpcState = await _sendWithResponse({ type: "get_state" });
+      } catch (e) {
+        console.warn("[live] get_state after goal create failed; sending the objective:", e);
+      }
+      if (origin !== activeSessionId) return { ok: true };
+      // Nothing started, but omp is not settled either (a background job or
+      // queued follow-ups): a turn may begin any moment, so the objective
+      // waits in the queue strip instead of as a bubble omp would echo again
+      // later. It still goes out as a `prompt`, not a `steer`: only omp's
+      // prompt path adds the goal-mode context (objective, budget, when to
+      // call it complete) to the turn — an idle steer is drained without it.
+      // A turn that started meanwhile takes it as a steer. Settled: the
+      // first prompt, with the same `streamingBehavior` fallback.
+      if (GOAL.ompStartedTurn(rpcState)) {
+        if (imgs.length > 0) bridge.steer(text, imgs);
+      } else if (rpcState?.isSettled === false) {
+        _sendQueued("steering", text, imgs,
+          () => _sendWithResponse({ type: "prompt", message: text, images: imgs, streamingBehavior: "steer" }));
+      } else _sendPrompt(text, imgs, "steer");
+      return { ok: true };
+    },
+    /** `pause` / `resume` / `drop` the active tab's goal. */
+    goalOp(op) { return _goalOp(op); },
+    /** Clears a completed goal's summary from the strip (local only). */
+    goalDismiss() {
+      const next = GOAL.dismiss(state.goal);
+      if (next !== state.goal) { state.goal = next; notify(); }
+    },
+    /** omp's auto-continue setting for `profile` (src-tauri goal_config.rs):
+     *  `{ok, value}` (true / false) or `{ok: false, error}` with omp's
+     *  reason. The profile is passed explicitly, as for `recentModels`:
+     *  during a respawn's detach the active profile is not the tab's. */
+    goalContinuation(profile) {
+      return _invokeResult("goal_continuation_get", { profile });
+    },
+    /** Turns it on or off in omp's config for `profile`; running tabs of
+     *  that profile pick it up without a restart. Same result shape, with
+     *  the setting omp reports afterwards. */
+    setGoalContinuation(profile, enabled) {
+      return _invokeResult("goal_continuation_set", { profile, enabled });
     },
     /** Manual rename from the tab bar or sidebar (#32): omp's own
      *  `/rename <title>` builtin, so the name is stored as user-set and

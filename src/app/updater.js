@@ -128,13 +128,13 @@
     return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   }
 
-  // Tabs a restart would interrupt: mid-turn, retrying a failed request,
-  // waiting on the user, or waiting on a background job that dies with the
-  // process. A `failed` tab has no live process left to lose.
-  const BUSY_RUN_STATES = new Set(["running", "retrying", "waiting-user", "background"]);
+  // Tabs a restart would interrupt: every busy run state
+  // (app/turn-status.js `isBusyRunState`; a background job dies with the
+  // process too). Looked up at call time: turn-status.js loads later.
   function busyTabCount(sessions) {
     if (!Array.isArray(sessions)) return 0;
-    return sessions.filter((s) => BUSY_RUN_STATES.has(s?.runState)).length;
+    const { isBusyRunState } = window.OMP_TURN_STATUS;
+    return sessions.filter((s) => isBusyRunState(s?.runState)).length;
   }
 
   window.OMP_UPDATER = Object.freeze({

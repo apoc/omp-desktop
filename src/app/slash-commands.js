@@ -26,6 +26,7 @@
   // `/tree` pickers never run from the desktop.
   const LOCAL_COMMANDS = Object.freeze([
     { name: "plan",      hint: "draft a plan before writing code",             icon: "◇", group: "Mode"    },
+    { name: "goal",      hint: "start a goal the agent works on until done",   icon: "◎", group: "Mode"    },
     { name: "steer",     hint: "interrupt and redirect mid-tool",              icon: "↺", group: "Mode"    },
     { name: "compact",   hint: "compact context window",                       icon: "▤", group: "Session" },
     { name: "new",       hint: "start a fresh session (history kept on disk)", icon: "↺", group: "Session" },

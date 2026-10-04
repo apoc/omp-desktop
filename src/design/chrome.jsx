@@ -272,6 +272,7 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
           else if (m.kind === "retry")     hue = TOOL_META.retry.color;
           else if (m.kind === "tool")      hue = TOOL_META[m.tool]?.color || "var(--fg-4)";
           else if (m.kind === "job")       hue = TOOL_META.job.color;
+          else if (m.kind === "goal")      hue = TOOL_META.goal.color;
 
           // Brightness: assistant cells modulate by log(tokens), others flat.
           let opacity = 0.7;
@@ -303,6 +304,8 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
             title = `${m.jobId} finished${m.label ? " · " + m.label : ""}`;
           } else if (m.kind === "retry") {
             title = `retrying · attempt ${m.attempt}${m.maxAttempts ? " of " + m.maxAttempts : ""}`;
+          } else if (m.kind === "goal") {
+            title = window.OMP_GOAL.rowView(m).title;
           } else {
             title = m.kind;
           }

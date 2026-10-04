@@ -12,10 +12,12 @@ mod external_open;
 mod files;
 mod git;
 mod git_watcher;
+mod goal_config;
 mod json_store;
 mod keybindings;
 mod model_usage;
 mod navigation_guard;
+mod omp_cli;
 mod open_tabs;
 mod profiles;
 mod recent_projects;
@@ -578,6 +580,39 @@ async fn usage_stats(
         .map_err(|e| format!("join error: {e}"))?
 }
 
+/// Whether omp's goal mode auto-continues over RPC for `profile` — see
+/// `goal_config::get`. `profile` is the tab's profile, resolved like
+/// `usage_stats`'s (an unlisted id is refused rather than letting omp
+/// create a profile directory for it).
+///
+/// Runs `async` + `spawn_blocking`: it shells out to `omp config get`.
+#[tauri::command]
+async fn goal_continuation_get(
+    profile: Option<String>,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+) -> Result<bool, String> {
+    let profile = store.resolve_owned(profile)?;
+    tauri::async_runtime::spawn_blocking(move || goal_config::get(profile.as_deref()))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+}
+
+/// Turn goal mode's auto-continue over RPC on or off for `profile` — see
+/// `goal_config::set`. Returns the effective value re-read after the
+/// write. Same profile resolution and `async` + `spawn_blocking` shape as
+/// [`goal_continuation_get`].
+#[tauri::command]
+async fn goal_continuation_set(
+    profile: Option<String>,
+    enabled: bool,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+) -> Result<bool, String> {
+    let profile = store.resolve_owned(profile)?;
+    tauri::async_runtime::spawn_blocking(move || goal_config::set(profile.as_deref(), enabled))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+}
+
 /// Shared profile-resolution and home-dir setup for the three keybindings
 /// commands. Returns `(home, resolved_profile, env_dir)` ready to pass to
 /// `keybindings::payload` / `keybindings::payload_with_overlay`.
@@ -900,6 +935,8 @@ pub fn run() {
             workspace_accept,
             workspace_reject,
             usage_stats,
+            goal_continuation_get,
+            goal_continuation_set,
             list_project_files,
             list_profiles,
             create_profile,

@@ -74,7 +74,7 @@ function UsageStatsPanel({ onClose, profileLabel }) {
     if (!res.ok) {
       // Backend rejection (omp not on PATH, an omp build old enough to
       // predate the `stats` subcommand, a sync failure, ...) — see
-      // stats.rs::exit_failure_message for why this is distinct from
+      // omp_cli.rs::exit_failure_message for why this is distinct from
       // "zero sessions synced" below. Clears `data` too, not just
       // `error`: without this, a refresh clicked after the panel already
       // showed a dashboard would render the error/empty message directly

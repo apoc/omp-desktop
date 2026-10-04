@@ -45,7 +45,7 @@ const CANDIDATES: &[&str] = if cfg!(windows) {
 /// caller can forget it.
 ///
 /// Shared by [`spawn_omp`] and [`spawn_candidate_output`] (the latter,
-/// in turn, by [`check_omp_version`] and `stats::fetch` — the last is
+/// in turn, by [`check_omp_version`] and `omp_cli::run` — the last is
 /// outside this module, which is why `spawn_candidate_output` is `pub`)
 /// so none of them can duplicate — or silently drift from — this list.
 fn omp_command(name: &str) -> Command {
@@ -72,9 +72,9 @@ fn omp_command(name: &str) -> Command {
 /// successful `Ok(Output)` from `.output()`'s own perspective and is
 /// always returned as-is, never retried.
 ///
-/// Shared by [`check_omp_version`] and `stats::fetch` (the latter outside
-/// this module, hence `pub`) — both used to run their own copy of this
-/// exact loop.
+/// Shared by [`check_omp_version`] and `omp_cli::run` (`omp stats`,
+/// `omp config`; outside this module, hence `pub`) — `check_omp_version`
+/// and `stats::fetch` used to run their own copy of this exact loop.
 pub fn spawn_candidate_output<S: AsRef<std::ffi::OsStr>>(
     args: &[S],
 ) -> Result<std::process::Output, String> {
@@ -194,10 +194,10 @@ fn check_omp_version() -> Result<(), String> {
 /// for the built-in profile — `Some(id)` becomes `--profile=<id>`; a
 /// blank id (defence-in-depth: `ProfileStore::resolve` already maps
 /// blank/`"default"` to `None`) is treated the same as `None` rather than
-/// producing a bare `--profile=`. Shared by [`omp_args`] and
-/// `stats::fetch`'s own argv builder (the latter outside this module,
-/// hence `pub`) so the flag's spelling and empty-id guard live in
-/// exactly one place.
+/// producing a bare `--profile=`. Shared by [`omp_args`] and the argv
+/// builders of `stats::fetch` and `goal_config` (outside this module,
+/// hence `pub`) so the flag's spelling and empty-id guard live in exactly
+/// one place.
 pub fn profile_flag(profile: Option<&str>) -> Option<String> {
     profile
         .filter(|p| !p.is_empty())

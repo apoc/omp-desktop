@@ -83,8 +83,9 @@
        its own top-level init, so this must load before both. -->
   <script src="app/subagents.js"></script>
 
-  <!-- In-app updater state (issue #19): pure reducer + selectors.
-       Dependency-free IIFE; design/update-modal.jsx and
+  <!-- In-app updater state (issue #19): pure reducer + selectors. IIFE;
+       busyTabCount looks up window.OMP_TURN_STATUS (app/turn-status.js,
+       loaded later) at call time only. design/update-modal.jsx and
        app/use-updater.jsx read window.OMP_UPDATER. -->
   <script src="app/updater.js"></script>
 
@@ -108,9 +109,9 @@
   <script src="app/matrix-rain.js"></script>
 
   <!-- Per-tab composer draft + plan-mode state (issue #28): pure map and
-       transition helpers. Dependency-free IIFE; design/composer.jsx and
-       app-live.jsx destructure window.OMP_SESSION_UI at top level, so it
-       must load before both. -->
+       transition helpers. Dependency-free IIFE; design/composer.jsx,
+       app/use-goal-mode.jsx and app-live.jsx destructure
+       window.OMP_SESSION_UI at top level, so it must load before them. -->
   <script src="app/session-ui.js"></script>
 
   <!-- Steer / follow-up queue strip: pure helpers over omp's queue
@@ -133,6 +134,13 @@
        is called at render time by app/use-conversation-tree.jsx. -->
   <script src="app/conversation-tree-graph.js"></script>
   <script src="app/conversation-tree.js"></script>
+
+  <!-- omp's goal mode: pure state/row/strip helpers. Dependency-free IIFE;
+       design/chat/goal-row.jsx, design/goal-strip.jsx and
+       app/use-goal-mode.jsx destructure window.OMP_GOAL at top level and
+       live.js reads it at its top-level init, so it must load before all
+       of them. -->
+  <script src="app/goal.js"></script>
 
   <!-- Design components (unchanged — from src/design/ copy) -->
   <script src="design/tweaks/style.js"></script>
@@ -158,8 +166,9 @@
   <!-- ask-bubble.jsx destructures window.AskDialog at top level. -->
   <script type="text/babel" src="design/chat/ask-dialog.jsx"></script>
   <script type="text/babel" src="design/chat/ask-bubble.jsx"></script>
-  <!-- chat-view.jsx destructures window.RetryRow at top level. -->
+  <!-- chat-view.jsx destructures window.RetryRow and window.GoalRow at top level. -->
   <script type="text/babel" src="design/chat/retry-row.jsx"></script>
+  <script type="text/babel" src="design/chat/goal-row.jsx"></script>
   <script type="text/babel" src="design/chat/chat-view.jsx"></script>
   <!-- Subagent manager UI. bits → controls → inspector (destructures the
        controls) → pane (destructures the inspector) → rail card; all before
@@ -176,6 +185,9 @@
   <script type="text/babel" src="design/paste-strip.jsx"></script>
   <script type="text/babel" src="design/queue-strip.jsx"></script>
   <script type="text/babel" src="design/thinking-menu.jsx"></script>
+  <!-- Goal strip above the composer: app/use-goal-mode.jsx destructures
+       window.GoalStrip at top level and hands it to composer.jsx as an element. -->
+  <script type="text/babel" src="design/goal-strip.jsx"></script>
   <script type="text/babel" src="design/composer.jsx"></script>
   <!-- Per-tab profile selector — chrome.jsx destructures window.ProfileMenu
        at top level, so this must load before it. -->
@@ -236,6 +248,10 @@
   <script type="text/babel" src="app/use-keymap.jsx"></script>
   <script type="text/babel" src="app/use-subagent-manager.jsx"></script>
   <script type="text/babel" src="app/use-updater.jsx"></script>
+  <!-- Goal mode in the composer; destructures window.GoalStrip,
+       window.OMP_SESSION_UI, window.OMP_GOAL and window.OMP_TURN_STATUS
+       at top level. -->
+  <script type="text/babel" src="app/use-goal-mode.jsx"></script>
   <script type="text/babel" src="app/use-conversation-tree.jsx"></script>
 
   <script type="text/babel" src="app-live.jsx"></script>

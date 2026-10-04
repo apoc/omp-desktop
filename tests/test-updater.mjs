@@ -11,10 +11,12 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const root  = join(dirname(fileURLToPath(import.meta.url)), "..");
-const src   = readFileSync(join(root, "src/app/updater.js"), "utf8");
 const win   = {};
-// eslint-disable-next-line no-new-func
-new Function("window", src)(win);
+// busyTabCount reads window.OMP_TURN_STATUS.isBusyRunState.
+for (const file of ["src/app/turn-status.js", "src/app/updater.js"]) {
+  // eslint-disable-next-line no-new-func
+  new Function("window", readFileSync(join(root, file), "utf8"))(win);
+}
 const U = win.OMP_UPDATER;
 
 let passed = 0;
