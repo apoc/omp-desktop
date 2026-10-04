@@ -71,6 +71,17 @@ function _AB_Failure({ failure: f }) {
   );
 }
 
+// How omp's automatic retries ended on this reply (app/turn-status.js
+// `retryFinished`); the failed attempts left the conversation.
+function _AB_Retries({ retries: r }) {
+  const n = `${r.failed} failed attempt${r.failed === 1 ? "" : "s"}`;
+  const [label, title] = r.outcome === "recovered"
+    ? [`after ${n}`, "omp retried the request by itself until it answered"]
+    : r.outcome === "stopped" ? [n, "Retrying was stopped"]
+    : [n, "omp gave up retrying"];
+  return <span className={`chip mono ${r.outcome === "recovered" ? "warn" : "muted"}`} title={title}>{label}</span>;
+}
+
 function AssistantBubble({ msg, idx, highlighted, annotable, annotations, onAnnotate }) {
   // A failed request has no text of its own; its copy is the provider's error.
   const copyText = msg.streaming ? "" : (_messageText(msg) || msg.failure?.raw || "");
@@ -92,6 +103,7 @@ function AssistantBubble({ msg, idx, highlighted, annotable, annotations, onAnno
               thinking
             </span>
           )}
+          {msg.retries && <_AB_Retries retries={msg.retries} />}
           <_ChatCopy className="ass-copy" label="Copy message" text={copyText} />
         </div>
         {msg.thought && (

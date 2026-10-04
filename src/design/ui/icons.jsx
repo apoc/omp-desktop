@@ -87,6 +87,7 @@ const TOOL_META = {
   debug:   { color: "var(--amber)",   icon: "bolt",  label: "debug" },
   ask:     { color: "var(--fg-3)",    icon: "circle",label: "ask"   },
   job:     { color: "var(--cyan)",    icon: "refresh",label: "job"  }, // chat-view.jsx JobRow
+  retry:   { color: "var(--amber)",   icon: "refresh",label: "retry" }, // chat/retry-row.jsx
 };
 
 Object.assign(window, { Icon, TOOL_META });

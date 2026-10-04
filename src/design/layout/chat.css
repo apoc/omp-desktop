@@ -227,6 +227,16 @@
 .tool-card-spacer { flex: 1; }
 /* job row (chat-view.jsx `JobRow`): the command after the job id */
 .job-label { color: var(--fg-3); }
+/* retry row (chat/retry-row.jsx): omp retrying a failed request */
+.retry-card { border-color: color-mix(in oklab, var(--amber) 35%, var(--line)); }
+.retry-glyph svg { animation: spin 1.4s linear infinite; }
+.retry-where { flex: none; }
+.retry-body { padding: 2px 12px 10px; display: flex; flex-direction: column; gap: 6px; }
+.retry-error { color: var(--fg-2); }
+.retry-foot { display: flex; align-items: center; gap: 10px; }
+.retry-status { flex: 1; min-width: 0; color: var(--fg-4); font-size: var(--d-text-xs); }
+.retry-stop { flex: none; white-space: nowrap; padding: 3px 12px; font-size: var(--d-text-xs); }
+.retry-stop-error { color: var(--rose); font-size: var(--d-text-xs); }
 
 .tool-search {
   padding: 6px 8px 8px;

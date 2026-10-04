@@ -95,8 +95,8 @@ check("group order follows each project's first appearance", () => {
 
 // ── groupRunState / groupTarget ───────────────────────────────────────────
 
-check("run state priority is failed > waiting-user > running > background > idle", () => {
-  const states = ["idle", "background", "running", "waiting-user", "failed"];
+check("run state priority is failed > waiting-user > retrying > running > background > idle", () => {
+  const states = ["idle", "background", "running", "retrying", "waiting-user", "failed"];
   for (let i = 0; i < states.length; i++) {
     const tabs = states.slice(0, i + 1).map((s, j) => tab(`t${j}`, "/p", { runState: s }));
     // Winner last, then first: a "first non-idle wins" scan fails one of the two.

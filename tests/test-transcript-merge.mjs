@@ -119,6 +119,46 @@ check("a failure's persisted copy keeps omp's live retryable verdict", () => {
   assert.equal(persisted[1].failure.retryable, null, "the persisted copy is not mutated");
 });
 
+check("a reply's retries chip survives the merge; omp never persists it", () => {
+  // Recovered after one failed attempt: the attempt is gone from get_messages,
+  // its hidden bubble stays, the reply's copy keeps the chip.
+  const hidden = liveBubble("", 2, { retried: true, superseded: true });
+  const ok = liveBubble("ok", 5, { retries: { failed: 1, outcome: "recovered" } });
+  const merged = mergeTranscript([liveUser("go", 1), hidden, ok], adapt([userMsg("go", 1), replyMsg("ok", 5)]));
+  assert.deepEqual(shape(merged), ["user:go", "assistant:", "assistant:ok"]);
+  assert.equal(merged[1].superseded, true);
+  assert.deepEqual({ ...merged[2].retries }, { failed: 1, outcome: "recovered" });
+  // Gave up: the persisted failure keeps the chip next to its own failure.
+  const failedLive = liveBubble("", 2, { retries: { failed: 3, outcome: "failed" }, failure: { raw: OVERLOADED, retryable: true } });
+  const gaveUp = mergeTranscript([liveUser("again", 1), failedLive], adapt([userMsg("again", 1), failedMsg(OVERLOADED, 2)]));
+  assert.deepEqual({ ...gaveUp[1].retries }, { failed: 3, outcome: "failed" });
+  assert.equal(gaveUp[1].failure.retryable, true);
+  // Stopped in flight: the aborted copy has no failure; the row's stays on it.
+  const stoppedLive = liveBubble("partial", 2, { retries: { failed: 2, outcome: "stopped" }, failure: { raw: OVERLOADED, headline: "overloaded" } });
+  const aborted = { role: "assistant", stopReason: "aborted", content: [{ type: "text", text: "partial" }], timestamp: 2 };
+  const stoppedCopy = adapt([userMsg("again", 1), aborted]);
+  assert.equal(stoppedCopy.length, 2, "the adapter keeps an aborted message with text");
+  const stopped = mergeTranscript([liveUser("again", 1), stoppedLive], stoppedCopy).at(-1);
+  assert.notEqual(stopped.time, "live", "the persisted copy replaced the live bubble");
+  assert.deepEqual({ ...stopped.retries }, { failed: 2, outcome: "stopped" });
+  assert.equal(stopped.failure?.raw, OVERLOADED);
+});
+
+check("an attempt omp retried but kept in its context stays hidden through the merge", () => {
+  // A tool-call turn that failed: omp keeps it (and a synthetic tool result) and retries.
+  const kept = { ...failedMsg(OVERLOADED, 2), content: [{ type: "toolCall", id: "toolu_2", name: "bash", arguments: { command: "ls" } }] };
+  const persisted = adapt([userMsg("go", 1), kept, { ...toolResultMsg(3), toolCallId: "toolu_2" }]);
+  const copy = persisted.find(m => m.kind === "assistant" && m.ts === 2);
+  assert.ok(copy?.failure, "the adapter shows it as the run's final failure");
+  const live = liveBubble("", 2, { retried: true, superseded: true, pendingFailure: copy.failure });
+  const merged = mergeTranscript([liveUser("go", 1), live, { kind: "retry", phase: "waiting" }], persisted);
+  const attempt = merged.find(m => m.kind === "assistant" && m.ts === 2);
+  assert.equal(attempt.superseded, true);
+  assert.equal(attempt.retried, true);
+  assert.equal(attempt.failure, undefined);
+  assert.equal(attempt.pendingFailure.raw, copy.failure.raw);
+});
+
 check("turns the live transcript missed go in at their place in omp's order", () => {
   // Frames for the second exchange were lost while the tab was in the background.
   const persisted = adapt([userMsg("one", 1), replyMsg("a", 2), userMsg("two", 5), replyMsg("b", 6), userMsg("three", 9), replyMsg("c", 10), replyMsg("d", 12)]);

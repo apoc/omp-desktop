@@ -243,12 +243,15 @@ function StatusBar({ ctx, model, thinking, todoDone, todoTotal, onTodo, onModel,
 function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
   // Log-scaled max across assistant messages so heatmap variance is
   // visible even when one compaction turn dwarfs the rest.
-  const maxTokens = React.useMemo(() => {
+  const { maxTokens, shown } = React.useMemo(() => {
     let max = 0;
+    let n = 0;
     for (const m of messages) {
+      if (window.OMP_TURN_STATUS.isHidden(m)) continue; // the chat hides it too
+      n++;
       if (m.kind === "assistant" && m.tokens && m.tokens > max) max = m.tokens;
     }
-    return max;
+    return { maxTokens: max, shown: n };
   }, [messages]);
   const logMax = Math.log10(maxTokens + 1) || 1;
 
@@ -257,14 +260,16 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
       <div className="minimap-head">
         <Icon name="minimap" size={11} color="var(--fg-3)" />
         <span className="mono" style={{ color: "var(--fg-3)" }}>session</span>
-        <span className="mono" style={{ marginLeft: "auto", color: "var(--fg-4)" }}>{messages.length}</span>
+        <span className="mono" style={{ marginLeft: "auto", color: "var(--fg-4)" }}>{shown}</span>
       </div>
       <div className="minimap-grid">
         {messages.map((m, i) => {
+          if (window.OMP_TURN_STATUS.isHidden(m)) return null;
           let hue = "var(--fg-5)";
           if      (m.kind === "user")      hue = "var(--fg-3)";
           else if (m.kind === "assistant") hue = m.failure ? "var(--rose)" : "var(--accent)";
           else if (m.kind === "ask")       hue = "var(--amber)";
+          else if (m.kind === "retry")     hue = TOOL_META.retry.color;
           else if (m.kind === "tool")      hue = TOOL_META[m.tool]?.color || "var(--fg-4)";
           else if (m.kind === "job")       hue = TOOL_META.job.color;
 
@@ -296,6 +301,8 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
             title = `you${preview}`;
           } else if (m.kind === "job") {
             title = `${m.jobId} finished${m.label ? " · " + m.label : ""}`;
+          } else if (m.kind === "retry") {
+            title = `retrying · attempt ${m.attempt}${m.maxAttempts ? " of " + m.maxAttempts : ""}`;
           } else {
             title = m.kind;
           }

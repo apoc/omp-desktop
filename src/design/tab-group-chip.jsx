@@ -17,6 +17,7 @@ function TabRunDot({ state }) {
   const title = state === "waiting-user" ? "waiting for you"
     : state === "failed" ? "agent process exited"
     : state === "background" ? "background job running · the agent resumes when it finishes"
+    : state === "retrying" ? "retrying a failed request"
     : "running";
   return <span className={`tab-run-dot ${state}`} title={title} />;
 }

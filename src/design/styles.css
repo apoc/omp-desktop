@@ -293,6 +293,7 @@ input, textarea { font: inherit; color: inherit; background: transparent; border
   0%, 100% { transform: translate(0, 0); }
   50% { transform: translate(0, -3px); }
 }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .fade-up { animation: fadeUp 320ms var(--ease-out) both; }
 .slide-in { animation: slideIn 360ms var(--ease-out) both; }

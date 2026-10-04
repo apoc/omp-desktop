@@ -62,6 +62,9 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "negotiate_protocol",
     "prompt",
     "abort",
+    // Retry row's Stop while omp waits between automatic retries: ends the
+    // run on the last failure without `abort`'s other effects.
+    "abort_retry",
     "follow_up",
     "steer",
     // Queue strip above the composer: edit omp's pending steer/follow-up

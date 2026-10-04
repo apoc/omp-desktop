@@ -242,6 +242,7 @@ function App() {
   const handleConfirmAsk = React.useCallback((id, confirmed) => { bridge?.answerConfirm(id, confirmed); }, [bridge]);
   const handleCancelAsk  = React.useCallback((id) => { bridge?.cancelAsk(id); }, [bridge]);
   const handleGrantApproval = React.useCallback((tool, scope) => { bridge?.grantApprovalRule(tool, scope); }, [bridge]);
+  const handleStopRetry  = React.useCallback(() => bridge?.stopRetry(), [bridge]);
   const handlePickLogin = async (provider) => {
     if (!bridge) return;
     try {
@@ -546,6 +547,7 @@ function App() {
                     onConfirmAsk={handleConfirmAsk}
                     onCancelAsk={handleCancelAsk}
                     onGrantApproval={handleGrantApproval}
+                    onStopRetry={handleStopRetry}
                     hoveredMsgIdx={hoveredMsgIdx}
                     hasProjectPath={!!activeProject?.path}
                     onInspectSubagent={subagentUi.open}

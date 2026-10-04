@@ -27,12 +27,27 @@
     return Number.isFinite(m.ts) ? `${m.kind}:${m.ts}` : null;
   }
 
-  // `copy` with the live `retryable` verdict of `live`: omp sends it only in
-  // the live `prompt_result` and never persists it.
-  function _withVerdict(copy, live) {
+  // `copy` with what only the live bubble knows: omp's `retryable` verdict
+  // (sent only in the live `prompt_result`, never persisted) and its part in
+  // omp's automatic retries (app/turn-status.js) — the `retries` chip of the
+  // reply they ended on, with the failure a stopped attempt took from its
+  // retry row (the persisted copy of an aborted message carries none), or,
+  // for an attempt omp retried but kept in its context (a failed tool-call
+  // turn), staying `retried` / `superseded` with its failure still pending.
+  function _withLiveFields(copy, live) {
+    let out = copy;
     const verdict = live.failure?.retryable;
-    if (typeof verdict !== "boolean" || !copy.failure || copy.failure.retryable === verdict) return copy;
-    return { ...copy, failure: { ...copy.failure, retryable: verdict } };
+    if (typeof verdict === "boolean" && copy.failure && copy.failure.retryable !== verdict) {
+      out = { ...out, failure: { ...copy.failure, retryable: verdict } };
+    }
+    if (live.retries) {
+      out = { ...out, retries: live.retries };
+      if (!out.failure && live.failure && live.retries.outcome === "stopped") out = { ...out, failure: live.failure };
+    } else if (live.retried) {
+      const { failure, ...rest } = out;
+      out = { ...rest, retried: true, ...(live.superseded ? { superseded: true } : {}), ...(failure ? { pendingFailure: failure } : {}) };
+    }
+    return out;
   }
 
   // A user bubble `send` showed before omp's echo tied it to a message: the
@@ -40,8 +55,9 @@
   const _inFlight = m => m.kind === "user" && !Number.isFinite(m.ts);
 
   /** The tab's transcript after a get_messages. A live entry whose message
-   *  get_messages returned is replaced by that copy (the ground truth);
-   *  every other live entry stays where it is. Persisted entries the live
+   *  get_messages returned is replaced by that copy (the ground truth),
+   *  keeping what only the live bubble knows (`_withLiveFields`); every
+   *  other live entry stays where it is. Persisted entries the live
    *  transcript never showed — frames lost while the tab was in the
    *  background, or the history of a tab that had none yet — go in at their
    *  place in omp's order: before the first live entry whose copy comes
@@ -101,7 +117,7 @@
         continue;
       }
       flush(i);
-      merged.push(_withVerdict(persisted[i], m));
+      merged.push(_withLiveFields(persisted[i], m));
     }
     flush(Infinity);
     // The prompts in flight have no copy and are never streaming.

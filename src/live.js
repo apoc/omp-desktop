@@ -502,8 +502,10 @@
   // on the bubble its failed message created: the one with the failed
   // message's `ts` when the caller knows it — even one still marked
   // streaming because its message_end was lost — else the last bubble of an
-  // omp message (it has a `ts`; notes do not), unless a user turn came after
-  // it. An earlier hidden `pendingFailure` belongs to an attempt omp retried.
+  // omp message (it has a `ts`; notes do not), unless a user turn omp
+  // accepted came after it (a prompt it refused, which never got a `ts`,
+  // starts no run). An earlier hidden `pendingFailure` belongs to an
+  // attempt omp retried.
   // When no bubble stands for that message (frames lost to a replay gap),
   // the failure gets a bubble of its own, tied to the message by `ts`.
   function _showFailure(make, ts = null) {
@@ -512,8 +514,8 @@
     const byTs = idx !== -1;
     if (!byTs) {
       for (let i = msgs.length - 1; i >= 0; i--) {
-        if (msgs[i].kind === "user") break;
-        if (msgs[i].kind === "assistant" && msgs[i].ts != null && !msgs[i].streaming) { idx = i; break; }
+        if (msgs[i].kind === "user" && msgs[i].ts != null) break;
+        if (msgs[i].kind === "assistant" && msgs[i].ts != null && !msgs[i].streaming && !msgs[i].superseded) { idx = i; break; }
       }
     }
     const target = idx === -1 ? null : msgs[idx];
@@ -636,6 +638,7 @@
     state.queue = QUEUE.EMPTY_QUEUE;
     state.queueSending = [];
     state.asyncPending = false;
+    state.messages = TURN.retryCleared(state.messages);
   }
 
   // Reset all per-session volatile state (called before loading a new session)
@@ -1520,7 +1523,8 @@
       // bubbles of messages the adapter skips or omp dropped — stays in
       // place, and turns the live transcript missed go in at their place in
       // omp's order (`mergeTranscript`, app/transcript-merge.js; it also
-      // keeps omp's live `retryable` verdict, which is never persisted).
+      // keeps what omp never persists: the live `retryable` verdict and the
+      // `retries` chip of omp's automatic retries).
       // activeToolCards indices are rebuilt so in-flight
       // tool_execution_update events keep landing on the right array slot.
       const merged = mergeTranscript(state.messages, completed, { trimmed: state.trimmed });
@@ -1851,6 +1855,8 @@
     if (type === "turn_start") {
       turnStartTime = now;
       state.isStreaming = true;
+      // A turn while omp waited to retry: the next attempt is in flight.
+      state.messages = TURN.retryAttempting(state.messages, now);
       notify();
       return;
     }
@@ -1976,9 +1982,8 @@
       // Auto-rename gate input: an assistant turn ending in error/aborted
       // still lands in omp's messageCount, so the gate needs the outcome,
       // not just the count.
-      if (msg?.role === "assistant") {
-        lastTurnOk = msg.stopReason !== "error" && msg.stopReason !== "aborted";
-      }
+      const answered = msg?.role === "assistant" && !TURN.failedStop(msg);
+      if (msg?.role === "assistant") lastTurnOk = answered;
       const usage = msg?.usage;
       const tokens = usage ? ((usage.input ?? 0) + (usage.output ?? 0)) : null;
       // Only an assistant message ends the streaming bubble: when frames were
@@ -2004,6 +2009,8 @@
           tokensOut: usage?.output ?? null,
           ts:        tsOf(msg) ?? streamingBubble.ts,
           ...(pendingFailure ? { pendingFailure } : {}),
+          // omp may retry a stream that stalled or dropped (`retryStarted`).
+          ...(msg.stopReason === "aborted" ? { aborted: true } : {}),
         };
         const eidx = state.messages.findLastIndex(m => m.streaming === true);
         if (eidx !== -1) {
@@ -2025,6 +2032,12 @@
           state.messages = [...state.messages.slice(0, -1), completed2];
         }
         streamingBubble = null;
+      }
+      // A retried request answered: the retries are over even if more turns
+      // follow in this run (app/turn-status.js `retryFinished`). By omp's
+      // rule only output counts: after an empty stop omp keeps retrying.
+      if (TURN.producedOutput(msg)) {
+        state.messages = TURN.retryFinished(state.messages, msg, tsOf(msg));
       }
       notify();
       return;
@@ -2099,6 +2112,19 @@
     }
 
     // ── Turn outcome (app/turn-status.js) ───────────────────────────────────
+    // omp retries a failed request by itself (auto-retry): one retry row per
+    // run, from the first `auto_retry_start` to the run's final `agent_end`.
+    if (type === "auto_retry_start") {
+      state.messages = TURN.retryStarted(state.messages, ev, now);
+      notify();
+      return;
+    }
+    if (type === "auto_retry_end") {
+      const next = TURN.retryEnded(state.messages, ev);
+      if (next !== state.messages) { state.messages = next; notify(); }
+      return;
+    }
+
     // `prompt_result` closes an accepted prompt once the agent yielded, after
     // that run's `agent_end`. Only a failed agent turn matters here: the
     // frame adds omp's cleaned error text and its `retryable` verdict to the
@@ -2138,11 +2164,14 @@
         if (TURN.isYield(ev)) {
           const messages = Array.isArray(ev.messages) ? ev.messages : [];
           const last = messages.findLast(m => m?.role === "assistant");
+          // A retry row still here means the retries did not recover: the
+          // row goes, the final attempt says how they ended (and is shown
+          // again if a retry had hidden it).
+          const before = state.messages;
+          state.messages = TURN.retryYielded(before, last ?? null, tsOf(last));
           const failure = TURN.failureOf(last);
-          if (failure) {
-            _showFailure(() => failure, tsOf(last));
-            notify();
-          }
+          if (failure) _showFailure(() => failure, tsOf(last));
+          if (failure || state.messages !== before) notify();
         }
       }
       _send({ type: "get_state" });
@@ -2654,6 +2683,26 @@
     // switch, and the abort response is what releases a cancelled
     // auto-rename. See `_releaseAutoRenameAfterAbort`.
     abort()            { _send({ type: "abort" }); },
+    /** Stops omp's automatic retries of the active tab's failed request.
+     *  While omp waits between attempts `abort_retry` ends the run on the
+     *  last failure and touches nothing else. An attempt already in flight
+     *  is beyond it (measured: `abort_retry` is a no-op then and the retries
+     *  go on), so that takes `abort`, as Esc does. Resolves to `{ok}` or
+     *  `{ok: false, error}`. */
+    async stopRetry() {
+      const ri = TURN.retryIndex(state.messages);
+      if (ri === -1) return { ok: true };
+      if (state.messages[ri].phase !== "waiting") {
+        this.abort();
+        return { ok: true };
+      }
+      try {
+        await _sendWithResponse({ type: "abort_retry" }, QUICK_CMD_TIMEOUT_MS);
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: String(e?.message ?? e) };
+      }
+    },
     // Both route a real slash command — or a skill invocation, even
     // mid-prompt (#30) — through `prompt` with the matching
     // `streamingBehavior` instead of their own dedicated RPC command: omp's

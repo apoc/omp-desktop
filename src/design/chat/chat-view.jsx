@@ -6,7 +6,7 @@
    minimap-hover cross-highlight (mm-hot) flows through here via the
    `hoveredMsgIdx` prop. */
 
-const { UserBubble: _CV_UserBubble, ToolCard: _CV_ToolCard, AssistantBubble: _CV_AssistantBubble, AskBubble: _CV_AskBubble, Icon: _CV_Icon, TOOL_META: _CV_TOOL_META } = window;
+const { UserBubble: _CV_UserBubble, ToolCard: _CV_ToolCard, AssistantBubble: _CV_AssistantBubble, AskBubble: _CV_AskBubble, RetryRow: _CV_RetryRow, Icon: _CV_Icon, TOOL_META: _CV_TOOL_META } = window;
 const { nextPinned: _CV_nextPinned, shouldRepin: _CV_shouldRepin } = window.OMP_SCROLL_PIN;
 
 // ── Per-bubble memo wrappers ────────────────────────────────────────────────
@@ -109,7 +109,7 @@ const JobRow = React.memo(function JobRow({ msg, idx, highlighted }) {
   );
 });
 
-function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, onAskAnswer, onAskDialogAnswer, onConfirmAsk, onCancelAsk, onGrantApproval, hasProjectPath, onInspectSubagent }) {
+function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, onAskAnswer, onAskDialogAnswer, onConfirmAsk, onCancelAsk, onGrantApproval, onStopRetry, hasProjectPath, onInspectSubagent }) {
   const scrollRef   = React.useRef(null);
   const pinnedRef   = React.useRef(true);   // assume start pinned to bottom
   const prevTopRef  = React.useRef(0);
@@ -181,7 +181,7 @@ function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, 
   let lastAsstIdx = -1;
   if (planMode) {
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].kind === "assistant" && !messages[i].streaming) { lastAsstIdx = i; break; }
+      if (messages[i].kind === "assistant" && !messages[i].streaming && !messages[i].superseded) { lastAsstIdx = i; break; }
     }
   }
 
@@ -196,9 +196,11 @@ function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, 
              history, but requires a larger refactor. */}
           {messages.map((m, i) => {
             const hl = hoveredMsgIdx === i;
+            if (window.OMP_TURN_STATUS.isHidden(m)) return null;
             if (m.kind === "user")    return <_CV_UserBubble_M    key={m._id ?? i} idx={i} highlighted={hl} msg={m} />;
             if (m.kind === "compact") return <CompactRow          key={m._id ?? i} msg={m} />;
             if (m.kind === "job")     return <JobRow              key={m._id ?? i} idx={i} highlighted={hl} msg={m} />;
+            if (m.kind === "retry")   return <_CV_RetryRow        key={m._id ?? i} idx={i} highlighted={hl} msg={m} onStop={onStopRetry} />;
             if (m.kind === "tool")    return <_CV_ToolCard_M      key={m._id ?? i} idx={i} highlighted={hl} msg={m} onInspectSubagent={onInspectSubagent} />;
             if (m.kind === "ask")     return <_CV_AskBubble_M     key={m._id ?? i} idx={i} highlighted={hl} msg={m} onAnswer={onAskAnswer} onAnswerDialog={onAskDialogAnswer} onConfirm={onConfirmAsk} onCancelAsk={onCancelAsk} onGrant={onGrantApproval} hasProjectPath={hasProjectPath} />;
             return <_CV_AssistantBubble_M key={m._id ?? i} idx={i} highlighted={hl} msg={m}
