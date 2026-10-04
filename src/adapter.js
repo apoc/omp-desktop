@@ -1,7 +1,8 @@
 /* adapter.js — pure transforms between RPC data and design component data shapes.
    No side effects. All functions exported via window.* for Babel-transpiled scripts.
-   Depends on: window.MODEL_NAMES (model-names.js loaded first) and
-   window.OMP_TURN_STATUS (app/turn-status.js, for adaptAgentMessages). */
+   Depends on: window.MODEL_NAMES (model-names.js loaded first),
+   window.OMP_TURN_STATUS (app/turn-status.js) and window.OMP_TRANSCRIPT
+   (app/transcript-merge.js), both for adaptAgentMessages. */
 
 (function () {
   "use strict";
@@ -396,9 +397,7 @@
   // ── User-turn content → { text, images } ───────────────────────────────────
   // Shared by adaptAgentMessages (get_messages replay) and live.js's
   // message_start handler (live event echo) so both paths always agree on
-  // which turns are pure-tool-result (dropped) vs. keep-worthy — the
-  // get_messages merge in live.js swaps entries into place by position, so
-  // any drift between the two would misalign it.
+  // which turns are pure-tool-result (dropped) vs. keep-worthy.
   function adaptUserContent(blocks) {
     const textBlocks = blocks.filter(b => b.type === "text");
     const images = blocks.filter(b => b.type === "image" && typeof b.data === "string" && typeof b.mimeType === "string");
@@ -408,6 +407,8 @@
 
   // ── AgentMessage[] (from get_messages) → design message array ─────────────
   // Skips pure tool-result turns; maps thinking blocks to thought field.
+  // `ts` is omp's message timestamp: the merge after a tab switch matches
+  // live entries to these by it (app/transcript-merge.js).
   function adaptAgentMessages(apiMessages) {
     const result = [];
     const messages = Array.isArray(apiMessages) ? apiMessages : [];
@@ -416,12 +417,13 @@
       if (!msg || typeof msg !== "object") continue;
       const { role, content } = msg;
       const time   = _formatTime(msg.timestamp ?? msg.createdAt);
+      const ts     = window.OMP_TRANSCRIPT.tsOf(msg);
       const blocks = Array.isArray(content) ? content : [{ type: "text", text: String(content ?? "") }];
 
       if (role === "user") {
         const { text, images } = adaptUserContent(blocks);
         if (!text && images.length === 0) continue;  // skip pure tool-result turns
-        result.push({ kind: "user", time, text, images });
+        result.push({ kind: "user", time, ts, text, images });
 
       } else if (role === "assistant") {
         let thought = null;
@@ -446,7 +448,7 @@
           const tokensOut = u?.output ?? u?.output_tokens ?? null;
           const tokens = (tokensIn != null || tokensOut != null) ? (tokensIn ?? 0) + (tokensOut ?? 0) : null;
           result.push({
-            kind: "assistant", time, thought,
+            kind: "assistant", time, ts, thought,
             lead: thought ? "thinking" : null,
             blocks: designBlocks,
             streaming: false,

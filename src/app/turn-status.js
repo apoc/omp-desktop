@@ -137,24 +137,6 @@
     });
   }
 
-  /** `fetched` (get_messages bubbles) with the live `retryable` verdicts
-   *  found in `live`, matched by failure text; omp never persists them.
-   *  Matched by text rather than by position: the merge pairs bubbles by
-   *  position, and a live attempt omp retried (absent from get_messages)
-   *  shifts every pair after it. A provider's error text carries its
-   *  request id. Bubbles without a new verdict keep their identity. */
-  function withLiveVerdicts(live, fetched) {
-    const verdicts = new Map();
-    for (const m of live ?? []) {
-      if (typeof m?.failure?.retryable === "boolean") verdicts.set(m.failure.raw, m.failure.retryable);
-    }
-    return fetched.map(m => {
-      const verdict = m?.failure ? verdicts.get(m.failure.raw) : undefined;
-      if (typeof verdict !== "boolean" || m.failure.retryable === verdict) return m;
-      return { ...m, failure: { ...m.failure, retryable: verdict } };
-    });
-  }
-
   /** The background jobs an `async-result` custom message delivers —
    *  `[{jobId, type, label, durationMs}]`, the message that wakes the agent
    *  after it yielded — or null for any other message. */
@@ -176,6 +158,6 @@
 
   window.OMP_TURN_STATUS = Object.freeze({
     runStateOf, isYield, stripDiagnostics, providerHeadline, failureOf, finalFailures,
-    withPromptError, withLiveVerdicts, finishedJobsOf,
+    withPromptError, finishedJobsOf,
   });
 })();

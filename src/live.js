@@ -18,6 +18,7 @@
   const QUEUE = window.OMP_QUEUE;
   const ASK = window.OMP_ASK_DIALOG;
   const TURN = window.OMP_TURN_STATUS;
+  const { tsOf, mergeTranscript } = window.OMP_TRANSCRIPT;
 
   // ── Safe defaults so design components never crash on missing fields ──────
   const DEFAULT_DATA = {
@@ -66,6 +67,8 @@
     // `hasPendingAsyncWork` (agent_end always asks for one), cleared by
     // `session_settled`. Drives the "background" run state.
     asyncPending:   false,
+    // `_trimMessages` cut the transcript's head (see the get_messages merge).
+    trimmed:        false,
     // Subagent manager (src/app/subagents.js). Terminal agents are kept here
     // for the life of the session — omp's own registry forgets them.
     subagents:           SUB.emptySubagents(),
@@ -158,7 +161,7 @@
   // Notes filed while no tab is open (a failed "Open with"): there is no
   // transcript to hold them, and `_resetSessionVars` would drop them from
   // `state.messages`. The empty workspace shows them; the next tab that
-  // activates receives them as local-only notes, so none is lost unseen.
+  // activates receives them as notes, so none is lost unseen.
   let workspaceNotes = [];
   // Recently opened project folders (the project sidebar's `recent`
   // section), always for the active tab's profile: `_recentsProfile` is the
@@ -238,11 +241,14 @@
   // always reflected in the same snapshot that React receives.
   // Active tool-card indices are shifted so in-flight updates stay correct;
   // completed cards are already removed from the map and are unaffected.
+  // `state.trimmed` tells the get_messages merge that the head is gone on
+  // purpose, so it does not bring the cut history back.
   function _trimMessages() {
     if (state.isStreaming) return;                  // wait for clean turn boundary
     if (state.messages.length <= MINIMAP_MAX) return;
     const drop = MINIMAP_COLS;                      // evict one full row (13)
     state.messages = state.messages.slice(drop);
+    state.trimmed = true;
     for (const [id, idx] of activeToolCards) {
       const shifted = idx - drop;
       if (shifted < 0) activeToolCards.delete(id); // guard: possible on abort (no tool_execution_end)
@@ -474,15 +480,12 @@
   // Any future note site calls this rather than re-deriving the shape.
   // Proven with an eval-kernel cell (3/3 cases: array identity changes,
   // body lands in `blocks` with no `text` field, note is completed).
-  // `localOnly` (opt-in, existing call sites unaffected): the note has no
-  // corresponding persisted turn on omp's side — get_messages's merge below
-  // would otherwise treat it as an ordinary assistant entry and either drop
-  // it or let a later real turn overwrite its slot on the next tab switch.
-  function _pushAssistantNote(text, localOnly) {
+  // A note carries no `ts` (no omp message stands behind it), so the
+  // get_messages merge keeps it in place (app/transcript-merge.js).
+  function _pushAssistantNote(text) {
     state.messages = [...state.messages, _assistantBubble({
       blocks: [{ type: "text", text }],
       completed: true,
-      ...(localOnly ? { localOnly: true } : {}),
     })];
   }
 
@@ -496,26 +499,32 @@
   }
 
   // Show a run's final failure (`make(previous)` builds it, app/turn-status.js)
-  // on the bubble its failed message created at message_end: the last
-  // assistant bubble, unless a user turn came after it. An earlier hidden
-  // `pendingFailure` belongs to an attempt omp retried. When that message
-  // never arrived (frames lost to a replay gap), the failure gets a bubble
-  // of its own — the failed message is persisted, so it is no local note.
-  function _showFailure(make) {
+  // on the bubble its failed message created: the one with the failed
+  // message's `ts` when the caller knows it — even one still marked
+  // streaming because its message_end was lost — else the last bubble of an
+  // omp message (it has a `ts`; notes do not), unless a user turn came after
+  // it. An earlier hidden `pendingFailure` belongs to an attempt omp retried.
+  // When no bubble stands for that message (frames lost to a replay gap),
+  // the failure gets a bubble of its own, tied to the message by `ts`.
+  function _showFailure(make, ts = null) {
     const msgs = state.messages;
-    let idx = -1;
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].kind === "user") break;
-      if (msgs[i].kind === "assistant" && !msgs[i].localOnly && !msgs[i].streaming) { idx = i; break; }
+    let idx = ts == null ? -1 : msgs.findLastIndex(m => m.kind === "assistant" && m.ts === ts);
+    const byTs = idx !== -1;
+    if (!byTs) {
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].kind === "user") break;
+        if (msgs[i].kind === "assistant" && msgs[i].ts != null && !msgs[i].streaming) { idx = i; break; }
+      }
     }
     const target = idx === -1 ? null : msgs[idx];
-    if (target && (target.pendingFailure || target.failure)) {
+    if (target && (byTs || target.pendingFailure || target.failure)) {
       const { pendingFailure, ...rest } = target;
       const next = [...msgs];
-      next[idx] = { ...rest, failure: make(target.failure ?? pendingFailure) };
+      next[idx] = { ...rest, streaming: false, failure: make(target.failure ?? pendingFailure ?? null) };
       state.messages = next;
+      if (streamingBubble && streamingBubble.ts === target.ts) streamingBubble = null;
     } else {
-      state.messages = [...msgs, _assistantBubble({ failure: make(null) })];
+      state.messages = [...msgs, _assistantBubble({ ts, failure: make(null) })];
     }
   }
 
@@ -649,6 +658,7 @@
       currentTps:    0,
       exitReason:    null,
       asyncPending:  false,
+      trimmed:       false,
       subagents:           SUB.emptySubagents(),
       subagentTranscripts: {},
       queue:         QUEUE.EMPTY_QUEUE,
@@ -690,6 +700,7 @@
       currentTps:    state.currentTps,
       exitReason:    state.exitReason,
       asyncPending:  state.asyncPending,
+      trimmed:       state.trimmed,
       // Last-turn outcome for the auto-rename gate (see _applyRpcState):
       // survives tab switches so a snapshot-restored session does not
       // forget a failed first exchange and re-arm the one-shot.
@@ -727,6 +738,7 @@
       currentTps:    snap.currentTps,
       exitReason:    snap.exitReason ?? null,
       asyncPending:  snap.asyncPending ?? false,
+      trimmed:       snap.trimmed ?? false,
       subagents:     snap.subagents ?? SUB.emptySubagents(),
       subagentTranscripts: {},
       queue:         snap.queue ?? QUEUE.EMPTY_QUEUE,
@@ -781,7 +793,7 @@
       _resetSessionVars();
     }
     if (workspaceNotes.length > 0) {
-      for (const note of workspaceNotes) _pushAssistantNote(note, true);
+      for (const note of workspaceNotes) _pushAssistantNote(note);
       workspaceNotes = [];
     }
 
@@ -1206,11 +1218,11 @@
 
   /** Tell the user an open failed, where they are looking: the active tab,
    *  or the empty workspace when none is open. `_startProjectSession` has
-   *  already rolled the tab back. Local-only: omp holds no turn for the note,
-   *  so the next `get_messages` merge must keep it in place. */
+   *  already rolled the tab back. The note has no `ts` (omp holds no turn
+   *  for it), so the next `get_messages` merge keeps it in place. */
   function _reportOpenFailure(e) {
     const note = `**Could not open project:** ${String(e?.message ?? e)}`;
-    if (activeSessionId) _pushAssistantNote(note, true);
+    if (activeSessionId) _pushAssistantNote(note);
     else workspaceNotes = [...workspaceNotes, note];
     notify();
   }
@@ -1369,9 +1381,9 @@
       }
     } finally {
       if (notes.length > 0) {
-        // `localOnly`: the active tab's first `get_messages` may still be
-        // in flight, and its merge keeps only local-only notes.
-        if (activeSessionId) for (const note of notes) _pushAssistantNote(note, true);
+        // The active tab's first `get_messages` may still be in flight; its
+        // merge keeps these notes (they have no `ts`).
+        if (activeSessionId) for (const note of notes) _pushAssistantNote(note);
         else workspaceNotes = [...workspaceNotes, ...notes];
       }
       const untouched = activeSessionId === autoActive
@@ -1487,42 +1499,31 @@
 
     } else if (command === "get_messages") {
       const completed = window.adaptAgentMessages(data.messages ?? []);
-      // Tool/ask/compact cards exist only in live event state — omp never
-      // persists them and get_messages never returns them. Walk the current
-      // snapshot in order: preserve tool/ask/compact entries in-place and
-      // replace each text entry (user/assistant) with the ground-truth copy
-      // from `completed`. Any new turns that arrived while we were on another
-      // tab (missed live events) are appended at the end. activeToolCards
-      // indices are rebuilt so in-flight tool_execution_update events keep
-      // landing on the right array slot.
-      //
-      // A `localOnly` entry (see _pushAssistantNote) is also kept in place
-      // rather than consuming a `pending` slot: a command_output note has no
-      // persisted turn, so treating it as an ordinary text entry here would
-      // misalign every slot after it (the next persisted turn would be
-      // substituted into its place, and the last real turn would then find
-      // nothing left and be dropped).
-      //
-      // A failed turn's persisted copy lacks omp's live `retryable` verdict
-      // (`prompt_result` only); `withLiveVerdicts` re-applies it by failure text.
-      const pending = TURN.withLiveVerdicts(state.messages, completed);
-      const merged = [];
-      for (const m of state.messages) {
-        if (m.streaming) continue; // streaming bubble handled separately below
-        if (m.kind === "tool" || m.kind === "ask" || m.kind === "compact" || m.localOnly) {
-          merged.push(m);
-        } else if (pending.length > 0) {
-          merged.push(pending.shift());
-        }
-      }
-      merged.push(...pending); // turns that completed while we were away
-      // Rebuild activeToolCards — new entries may have been appended from pending
+      // Each live entry that stands for an omp message (`ts`) takes its
+      // ground-truth copy; everything else — cards, notes, job rows,
+      // bubbles of messages the adapter skips or omp dropped — stays in
+      // place, and turns the live transcript missed go in at their place in
+      // omp's order (`mergeTranscript`, app/transcript-merge.js; it also
+      // keeps omp's live `retryable` verdict, which is never persisted).
+      // activeToolCards indices are rebuilt so in-flight
+      // tool_execution_update events keep landing on the right array slot.
+      const merged = mergeTranscript(state.messages, completed, { trimmed: state.trimmed });
+      // Rebuild activeToolCards — merged entries may have moved
       activeToolCards = new Map();
       for (let i = 0; i < merged.length; i++) {
         const m = merged[i];
         if (m.kind === "tool" && m.status === "running" && m._toolCallId) {
           activeToolCards.set(m._toolCallId, i);
         }
+      }
+      // omp adds a message to get_messages only at its `message_end`: a
+      // streaming bubble whose message is already there ended while its
+      // frames were lost, and the merge put that copy in its place.
+      // Raw messages, not the adapted ones: the adapter skips a message that
+      // went straight to a tool call, and that bubble is just as stale.
+      const streamingTs = streamingBubble?.ts;
+      if (streamingTs != null && (data.messages ?? []).some(m => m?.role === "assistant" && m.timestamp === streamingTs)) {
+        streamingBubble = null;
       }
       state.messages = streamingBubble ? [...merged, streamingBubble] : merged;
       // Backfill prompt history from the persisted transcript — runs on
@@ -1696,7 +1697,7 @@
         sessionRegistry.set(activeSessionId, { ...entry, autoRenameInFlight: false });
         return;
       }
-      _pushAssistantNote(ev.text, true);
+      _pushAssistantNote(ev.text);
       notify();
       return;
     }
@@ -1873,12 +1874,15 @@
     if (type === "message_start") {
       const msg  = ev.message;
       const role = msg?.role;
+      // omp's message timestamp: the get_messages merge after a tab switch
+      // matches this entry to its persisted copy by it (`mergeTranscript`).
+      const ts   = tsOf(msg);
 
       // A `/skill:` call reaches the model as a `skill-prompt` custom
       // message whose text is the whole skill file; what the user typed is
       // in `details.prompt`, which omp's own transcript shows too.
-      // get_messages never returns custom messages, so that bubble is
-      // `localOnly` for its merge.
+      // get_messages never returns custom messages, so that bubble has no
+      // persisted copy and the merge keeps it as is.
       const skill = role === "custom" && msg.customType === "skill-prompt" && msg.attribution === "user";
       if (role === "user" || skill) {
         const blocks = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: String(msg.content ?? "") }];
@@ -1886,15 +1890,16 @@
         const text = skill ? _skillPromptText(msg.details) : typed;
         if (text || images.length > 0) {
           // `send` shows its prompt right away, so its echo finds that
-          // bubble at the tail. Steers and follow-ups only appear here, when
-          // omp hands them to the model: tagged `echo`, so the scroll pin
-          // (app/scroll-pin.js) does not pull a reader down to them, and so
-          // two identical steers delivered back to back both show.
+          // bubble at the tail and ties it to omp's message. Steers and
+          // follow-ups only appear here, when omp hands them to the model:
+          // tagged `echo`, so the scroll pin (app/scroll-pin.js) does not
+          // pull a reader down to them, and so two identical steers
+          // delivered back to back both show.
           const last = state.messages[state.messages.length - 1];
-          if (last?.kind === "user" && !last.echo && last.text === text) {
-            if (skill && !last.localOnly) state.messages = [...state.messages.slice(0, -1), { ...last, localOnly: true }];
+          if (last?.kind === "user" && !last.echo && last.ts == null && last.text === text) {
+            state.messages = [...state.messages.slice(0, -1), { ...last, ts }];
           } else {
-            state.messages = [...state.messages, { kind: "user", time, text, images, echo: true, ...(skill ? { localOnly: true } : {}) }];
+            state.messages = [...state.messages, { kind: "user", time, ts, text, images, echo: true }];
           }
           notify();
         }
@@ -1903,13 +1908,12 @@
         // after it yielded: name the job above the reply it triggers.
         const jobs = TURN.finishedJobsOf(msg);
         if (jobs) {
-          // `localOnly`: the adapter never builds job rows from get_messages.
-          state.messages = [...state.messages, ...jobs.map(job => ({ kind: "job", time, localOnly: true, ...job }))];
+          state.messages = [...state.messages, ...jobs.map(job => ({ kind: "job", time, ...job }))];
           notify();
         }
       } else if (role === "assistant") {
         streamingBubble = {
-          kind: "assistant", time,
+          kind: "assistant", time, ts,
           thought: null, lead: null,
           blocks: [{ type: "text", text: "" }],
           streaming: true,
@@ -1937,6 +1941,9 @@
       streamingBubble.thought = thought;
       streamingBubble.lead    = thought ? "thinking" : null;
       streamingBubble.blocks  = designBlocks.length > 0 ? designBlocks : [{ type: "text", text: "" }];
+      // The message this bubble shows: after frames were lost, a bubble left
+      // streaming can receive the next message's updates (see get_messages).
+      if (msg.role === "assistant") streamingBubble.ts = tsOf(msg) ?? streamingBubble.ts;
 
       const updated = { ...streamingBubble, blocks: [...streamingBubble.blocks] };
       // Find by streaming flag — indexOf fails after the first update because
@@ -1964,7 +1971,11 @@
       }
       const usage = msg?.usage;
       const tokens = usage ? ((usage.input ?? 0) + (usage.output ?? 0)) : null;
-      if (streamingBubble && msg) {
+      // Only an assistant message ends the streaming bubble: when frames were
+      // lost, a tool result's, a steer's or a job's message_end can arrive
+      // while a stale bubble is still open, and must neither fill nor re-tag
+      // it (the get_messages merge sorts that bubble out by its `ts`).
+      if (streamingBubble && msg?.role === "assistant") {
         const blocks = Array.isArray(msg.content) ? msg.content : [];
         const thought = blocks.find(b => b.type === "thinking")?.thinking ?? streamingBubble.thought;
         const designBlocks = blocks.filter(b => b.type === "text" && b.text?.trim()).map(b => ({ type: "text", text: b.text }));
@@ -1981,6 +1992,7 @@
           tokens,
           tokensIn:  usage?.input  ?? null,
           tokensOut: usage?.output ?? null,
+          ts:        tsOf(msg) ?? streamingBubble.ts,
           ...(pendingFailure ? { pendingFailure } : {}),
         };
         const eidx = state.messages.findLastIndex(m => m.streaming === true);
@@ -1992,7 +2004,7 @@
           state.messages = [...state.messages.slice(0, -1), completed];
         }
         streamingBubble = null;
-      } else if (streamingBubble) {
+      } else if (streamingBubble && !msg) {
         const completed2 = { ...streamingBubble, streaming: false, tokens };
         const eidx2 = state.messages.findLastIndex(m => m.streaming === true);
         if (eidx2 !== -1) {
@@ -2115,9 +2127,10 @@
         // get_state below, which notifies anyway.)
         if (TURN.isYield(ev)) {
           const messages = Array.isArray(ev.messages) ? ev.messages : [];
-          const failure = TURN.failureOf(messages.findLast(m => m?.role === "assistant"));
+          const last = messages.findLast(m => m?.role === "assistant");
+          const failure = TURN.failureOf(last);
           if (failure) {
-            _showFailure(() => failure);
+            _showFailure(() => failure, tsOf(last));
             notify();
           }
         }
@@ -2535,7 +2548,7 @@
         const reason = e?.message ?? String(e);
         // Responses are only dispatched for the active tab, so a refusal
         // reaching us for another one is a failed hand-off racing a switch.
-        if (origin === activeSessionId) _pushAssistantNote(QUEUE.failureNote(kind, reason, text), true);
+        if (origin === activeSessionId) _pushAssistantNote(QUEUE.failureNote(kind, reason, text));
         else console.warn(`[live] ${kind} for '${origin}' not sent: ${reason}`);
       }
       _dropSending(origin, id);
@@ -2561,32 +2574,15 @@
     get isConnected() { return !!window.__TAURI__ && !!activeSessionId; },
 
     // ── Messaging ────────────────────────────────────────────────────────────
-    // A recognized command may resolve as `agentInvoked: false` — omp ran
-    // it locally (its command_output note is already tagged `localOnly`,
-    // see _pushAssistantNote) with no persisted turn of its own. This
-    // bubble needs the same tag, or the next get_messages merge (tab
-    // switch) gives its slot to a later, unrelated turn instead of keeping
-    // it in place. Only tracked via the extra id-correlated round trip for
-    // a recognized command or skill invocation — an ordinary prompt is the
-    // overwhelmingly common case and stays a plain fire-and-forget send.
+    // The bubble shows at once; omp's echo (`message_start`) ties it to the
+    // persisted message. A command omp runs locally sends no echo, so its
+    // bubble keeps no `ts` and the get_messages merge leaves it in place.
     send(text, images) {
-      const userMsg = { kind: "user", time: timeNow(), text, images: images ?? [] };
-      state.messages = [...state.messages, userMsg];
+      state.messages = [...state.messages, { kind: "user", time: timeNow(), text, images: images ?? [] }];
       _disarmAutoRename(text);
       _recordPrompt(text);
       notify();
-      if (isCommandInvocation(state.commands, text)) {
-        _sendWithResponse({ type: "prompt", message: text, images: images ?? [] })
-          .then((data) => {
-            if (data?.agentInvoked === false) {
-              userMsg.localOnly = true;
-              notify();
-            }
-          })
-          .catch(() => {}); // a real failure is already surfaced via the normal response/error path
-      } else {
-        _send({ type: "prompt", message: text, images: images ?? [] });
-      }
+      _send({ type: "prompt", message: text, images: images ?? [] });
     },
     // No id on purpose: a pending-id match returns before the command
     // switch, and the abort response is what releases a cancelled
@@ -2663,7 +2659,7 @@
         await _sendWithResponse({ type: "prompt", message: rename.command }, QUICK_CMD_TIMEOUT_MS);
       } catch (e) {
         if (activeSessionId === id) {
-          _pushAssistantNote(`Rename failed: ${e?.message ?? e}`, true);
+          _pushAssistantNote(`Rename failed: ${e?.message ?? e}`);
           notify();
         }
         // Keep the expectation: the user may have switched away right after

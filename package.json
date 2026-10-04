@@ -7,7 +7,7 @@
     "build": "tauri build --config src-tauri/tauri.dist.conf.json",
     "build:frontend": "node scripts/build-frontend.mjs",
     "tauri": "tauri",
-    "test": "node tests/test-ask-dialog.mjs && node tests/test-keymap.mjs && node tests/test-lightbox.mjs && node tests/test-matrix-rain.mjs && node tests/test-project-nav.mjs && node tests/test-markdown.mjs && node tests/test-message-queue.mjs && node tests/test-prompt-history.mjs && node tests/test-recent-models.mjs && node tests/test-scroll-pin.mjs && node tests/test-session-title.mjs && node tests/test-session-ui.mjs && node tests/test-slash-commands.mjs && node tests/test-subagents.mjs && node tests/test-tool-output.mjs && node tests/test-turn-status.mjs && node tests/test-updater.mjs && node tests/test-updater-json.mjs && node scripts/build-frontend.mjs",
+    "test": "node tests/test-ask-dialog.mjs && node tests/test-keymap.mjs && node tests/test-lightbox.mjs && node tests/test-matrix-rain.mjs && node tests/test-project-nav.mjs && node tests/test-markdown.mjs && node tests/test-message-queue.mjs && node tests/test-prompt-history.mjs && node tests/test-recent-models.mjs && node tests/test-scroll-pin.mjs && node tests/test-session-title.mjs && node tests/test-session-ui.mjs && node tests/test-slash-commands.mjs && node tests/test-subagents.mjs && node tests/test-tool-output.mjs && node tests/test-transcript-merge.mjs && node tests/test-turn-status.mjs && node tests/test-updater.mjs && node tests/test-updater-json.mjs && node scripts/build-frontend.mjs",
     "test:ask-dialog": "node tests/test-ask-dialog.mjs",
     "test:keymap": "node tests/test-keymap.mjs",
     "test:lightbox": "node tests/test-lightbox.mjs",
@@ -23,6 +23,7 @@
     "test:slash-commands": "node tests/test-slash-commands.mjs",
     "test:subagents": "node tests/test-subagents.mjs",
     "test:tool-output": "node tests/test-tool-output.mjs",
+    "test:transcript-merge": "node tests/test-transcript-merge.mjs",
     "test:turn-status": "node tests/test-turn-status.mjs",
     "test:updater": "node tests/test-updater.mjs",
     "test:updater-json": "node tests/test-updater-json.mjs"

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Regression script for src/app/turn-status.js — a tab's run state, which
-// `agent_end` ends a turn for good, the failure a failed request shows, the
-// `retryable` verdict surviving a get_messages merge, and the background jobs
-// an `async-result` message reports. Fixtures are frames captured from omp
-// 18.6.0 (a keyless Anthropic profile's 401, an `async: true` bash job).
+// `agent_end` ends a turn for good, the failure a failed request shows, and
+// the background jobs an `async-result` message reports. Fixtures are frames
+// captured from omp 18.6.0 (a keyless Anthropic profile's 401, an
+// `async: true` bash job).
 // Run: node tests/test-turn-status.mjs
 
 import assert from "node:assert/strict";
@@ -190,33 +190,6 @@ check("prompt_result alone (agent_end lost its messages) still builds a failure"
   assert.equal(bare.retryable, true);
   const shown = T.failureOf(FAILED_401);
   assert.equal(T.withPromptError(shown, undefined), shown);
-});
-
-// ── withLiveVerdicts ──────────────────────────────────────────────────────
-check("a get_messages merge keeps the live retryable verdict of the same failure", () => {
-  const transient = { kind: "assistant", failure: T.withPromptError(T.failureOf(FAILED_401), { ...PROMPT_RESULT_401.error, retryable: true }) };
-  const live = [
-    { kind: "user", text: "hi" },
-    // An attempt omp retried: hidden, no verdict, absent from get_messages.
-    { kind: "assistant", blocks: [], pendingFailure: T.failureOf({ ...FAILED_401, errorMessage: "529 attempt one" }) },
-    transient,
-  ];
-  const fetched = { kind: "assistant", failure: T.failureOf(FAILED_401) };
-  // Another failure, or none: nothing to carry.
-  const other = { kind: "assistant", failure: T.failureOf({ ...FAILED_401, errorMessage: "529 overloaded" }) };
-  const plain = { kind: "assistant", blocks: [] };
-  // The persisted text still carries omp's dump line; the live one does not.
-  const dumped = { kind: "assistant", failure: T.failureOf({ ...FAILED_401, errorMessage: `${AUTH_BODY}\nraw-http-request=C:\\x.json` }) };
-  const [carried, otherOut, plainOut, dumpedOut] = T.withLiveVerdicts(live, [fetched, other, plain, dumped]);
-  assert.equal(carried.failure.retryable, true);
-  assert.equal(fetched.failure.retryable, null, "the fetched copy is not mutated");
-  assert.equal(otherOut, other);
-  assert.equal(plainOut, plain);
-  assert.equal(dumpedOut.failure.retryable, true);
-  // A failure shown without a prompt_result has no verdict to carry.
-  const [unchanged] = T.withLiveVerdicts([{ kind: "assistant", failure: T.failureOf(FAILED_401) }], [fetched]);
-  assert.equal(unchanged, fetched);
-  assert.deepEqual(T.withLiveVerdicts(undefined, []), []);
 });
 
 // ── finishedJobsOf ────────────────────────────────────────────────────────

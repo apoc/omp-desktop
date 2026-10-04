@@ -201,6 +201,11 @@
        calls window.OMP_TURN_STATUS and live.js reads it at its top-level
        init, so it must load before both. -->
   <script src="app/turn-status.js"></script>
+  <!-- get_messages merge over a tab's live transcript. Dependency-free IIFE;
+       adapter.js calls window.OMP_TRANSCRIPT.tsOf inside adaptAgentMessages
+       and live.js destructures it at its top-level init, so it must load
+       before both. -->
+  <script src="app/transcript-merge.js"></script>
   <script src="adapter.js"></script>
   <!-- Session-name tab rename: pure gate/note/title helpers for the
        after-first-turn auto `/rename`. Dependency-free IIFE; live.js
