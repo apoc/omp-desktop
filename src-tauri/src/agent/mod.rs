@@ -80,6 +80,9 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "export_html",
     "get_login_providers",
     "login",
+    // omp's ask dialog: every question of one ask tool call in a single
+    // `extension_ui_request` (method "ask"), answered with `answers[]`.
+    "set_ask_dialog",
     // Subagent manager (src/app/subagents.js): subscription level, the
     // live-agent snapshot, per-agent transcript tailing, and the
     // inspector's message box and stop button for a running agent.

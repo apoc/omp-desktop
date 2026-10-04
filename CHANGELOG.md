@@ -11,11 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Messages waiting for the agent are listed above the prompt box: steers (Enter while the agent works) and follow-ups (Ctrl+Q), in the order the agent will get them. Each row can be removed (✕), taken back into the prompt box to edit (✎, text only), or — for a follow-up — sent as a steer right away (↑), which also starts the agent again after you stopped it. A message the agent already took cannot be pulled back; the row then says "already delivered". The list is omp's own queue, so it stays correct across tab switches. A steer or follow-up omp refuses leaves a note with its text.
 - Talk to a running subagent, or stop it, from the subagent manager. Open an agent while it works: a message box under its details sends it a message as if you were its user (Enter sends, Shift+Enter starts a new line). The agent reads it at its next step; while the agent is open in the manager, the message then shows up as a `you ›` line in its Output tab. A message the agent refuses stays in the box with a note saying why; so does text you were still typing when the agent finished. The stop button asks once more before it ends the agent; the agent that started it gets an aborted result and carries on.
 - Pick the thinking level from a menu (#10): click the thinking pill under the prompt box. It lists the levels the current model supports, each with what it means, and ticks the one in use. Shift+Tab still cycles through the levels.
+- When the agent asks you questions, they now arrive together in one card: every question of the ask at once, with each option's description, the recommended option marked, previews where the agent gave them, and a box to type your own answer to each. Questions that take several answers have checkboxes. Nothing is sent until you press Submit, which waits until every pick-one question has an answer; a lone pick-one question still answers on click. Cancel stops the turn, as Esc does. Once sent, the card shrinks to the answers you gave. Before, the questions came one at a time, and every click on a multi-answer question added another prompt to the chat.
 
 ### Changed
 
-- OMP Desktop now requires omp 18.4.9 or newer. A tab started against an older omp does not start; its note names the installed and the required version, and an `omp update` takes effect for the next tab without restarting the app. The list of waiting messages and subagent steering (see Added) rely on RPC commands that older omp versions lack.
+- OMP Desktop now requires omp 18.4.9 or newer. A tab started against an older omp does not start; its note names the installed and the required version, and an `omp update` takes effect for the next tab without restarting the app. The list of waiting messages, subagent steering and the question card (see Added) rely on RPC commands that older omp versions lack.
 - A steer or follow-up now appears in the conversation when the agent actually reads it, not when you send it, and no longer pulls the view down if you are reading further up. Until then it is in the list above the prompt box.
+- Pick-from-a-list prompts from extensions, such as `/review`'s pickers, no longer have a box for typed text: they only accept one of their own options.
 
 ### Fixed
 
@@ -23,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A tab that fails to start — omp too old or not on `PATH`, or its profile deleted meanwhile — now says why, in the current tab or on the empty workspace, when it was opened with `+`, from a recent project or from the history panel. Before, nothing happened.
 - After picking a model whose highest thinking level is lower than the current one, the thinking pill shows the lowered level right away instead of at the next prompt.
 - A model without thinking showed `thinking · auto`; it now shows `off`, as omp does. The status bar showed `xhigh` as `max`, and omp's own `max` level as `—`.
+- An answer you typed to the agent's question reached the agent as if you had picked an option of that name; it now arrives as your own answer.
 
 ## [0.5.0] - 2026-10-03
 

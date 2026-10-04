@@ -1,13 +1,11 @@
-/* chat/ask-bubble.jsx — interactive ask-tool bubble.
+/* chat/ask-bubble.jsx — interactive ask bubble.
    Rendered for every extension_ui_request method the desktop shell has UI
-   for: select (options + free text), confirm (yes/no), input (single
+   for: select (pick one option: tool approvals, extension pickers), ask
+   (omp's ask dialog, chat/ask-dialog.jsx), confirm (yes/no), input (single
    line), editor (multi-line). Stays interactive until the user answers
    or the request is cancelled (by the runtime, or locally via Cancel). */
 
-const { Icon: _AskIcon } = window;
-
-// Label used by omp for the multi-select terminator — show it distinctly.
-const DONE_LABEL_PREFIX = "Done selecting";
+const { Icon: _AskIcon, AskDialog: _AskDialog, OMP_ASK_DIALOG: _AskDialogRules } = window;
 
 // Tool-approval prompts are a specific select shape omp emits before
 // running an exec-tier tool: options exactly ["Approve","Deny"], and a
@@ -28,8 +26,7 @@ const DONE_LABEL_PREFIX = "Done selecting";
 // appear when the grant the Rust side receives will actually be accepted
 // — but an unparseable name only withholds those buttons, it never
 // demotes the card back to a generic select (the head/details split and
-// its height cap must apply to every "Allow tool:" prompt, and a binary
-// approval must never regain a free-text answer box).
+// its height cap must apply to every "Allow tool:" prompt).
 // approvalInfo proven with an eval-kernel cell (24/24 cases: the real
 // captured 4-line 1159-char `write` title, single-line titles, CRLF vs a
 // lone trailing `\r` (Rust-parity), tool-name extraction incl.
@@ -52,8 +49,8 @@ function splitTitle(title) {
 
 // `{ tool, head, details }` for an "Allow tool:" prompt, else null. `tool`
 // is null when the name fails the Rust-side grammar: the card still
-// renders as an approval (split head, capped details, no free-text box)
-// but offers no grant, since that grant would be rejected anyway.
+// renders as an approval (split head, capped details) but offers no
+// grant, since that grant would be rejected anyway.
 function approvalInfo(msg) {
   if (typeof msg.title !== "string" || !Array.isArray(msg.options)) return null;
   if (msg.options.length !== 2 || msg.options[0] !== "Approve" || msg.options[1] !== "Deny") {
@@ -65,18 +62,15 @@ function approvalInfo(msg) {
   return { tool: APPROVAL_TOOL_NAME.test(tool) ? tool : null, head, details };
 }
 
-function isDoneOption(opt) {
-  return opt.includes(DONE_LABEL_PREFIX);
-}
-
-function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, onGrant, hasProjectPath }) {
-  const [custom, setCustom] = React.useState("");
+function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm, onCancelAsk, onGrant, hasProjectPath }) {
   const [draft, setDraft] = React.useState(msg.method === "editor" ? (msg.prefill ?? "") : "");
   const done = msg.answered || msg.cancelled;
   const method = msg.method ?? "select";
   const approval = method === "select" ? approvalInfo(msg) : null;
-  const isApproval = approval !== null;
   const tool = approval?.tool ?? null;
+  // omp's ask dialog while it waits: question count and omp's timeout.
+  const dialogOpen = method === "ask" && !done;
+  const timeoutNote = dialogOpen ? _AskDialogRules.timeoutNote(msg.questions, msg.timeout) : null;
 
   const submit = (value) => {
     if (done) return;
@@ -102,15 +96,16 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, on
     onCancelAsk(msg.id);
   };
 
-  const handleKey = (e) => {
-    if (isSubmitEnter(e) && custom.trim()) {
-      e.preventDefault();
-      submit(custom.trim());
-    }
-  };
-
   let body;
-  if (method === "confirm") {
+  if (method === "ask") {
+    body = (
+      <_AskDialog
+        msg={msg}
+        onSubmit={answers => onAnswerDialog(msg.id, answers)}
+        onCancel={decline}
+      />
+    );
+  } else if (method === "confirm") {
     const confirmedYes = msg.answered && msg.answer === "Confirm";
     const confirmedNo  = msg.answered && msg.answer === "Deny";
     body = (
@@ -198,16 +193,10 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, on
             {msg.options.map((opt, i) => {
               const isSelected = msg.answered && msg.answer === opt;
               const isDimmed   = done && !isSelected;
-              const isDone     = isDoneOption(opt);
               return (
                 <button
                   key={i}
-                  className={[
-                    "ask-opt",
-                    isSelected ? "selected" : "",
-                    isDimmed   ? "dimmed"   : "",
-                    isDone     ? "done-opt" : "",
-                  ].filter(Boolean).join(" ")}
+                  className={`ask-opt${isSelected ? " selected" : ""}${isDimmed ? " dimmed" : ""}`}
                   disabled={done}
                   onClick={() => submit(opt)}
                 >
@@ -233,31 +222,6 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, on
             )}
           </div>
         )}
-
-        {/* Free-text input — skips the "Other (type your own)" round-trip:
-            typing here sends the text directly as the select response value. */}
-        {!isApproval && (
-          <div className="ask-other">
-            <input
-              className="ask-other-input"
-              type="text"
-              placeholder="Or type your own answer…"
-              value={custom}
-              disabled={done}
-              onChange={e => setCustom(e.target.value)}
-              onKeyDown={handleKey}
-            />
-            {!done && custom.trim() && (
-              <button className="ask-submit" onClick={() => submit(custom.trim())}>
-                Submit
-              </button>
-            )}
-            {/* Show custom answer inline when the user typed rather than clicked */}
-            {done && msg.answer && !msg.options.includes(msg.answer) && (
-              <span className="ask-custom-echo">{msg.answer}</span>
-            )}
-          </div>
-        )}
       </>
     );
   }
@@ -274,6 +238,10 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, on
         <div className="ass-meta">
           <span className="mono" style={{ color: "var(--amber)" }}>Ask</span>
           <span className="chip muted">{msg.time}</span>
+          {dialogOpen && msg.questions.length > 1 && (
+            <span className="chip muted">{msg.questions.length} questions</span>
+          )}
+          {timeoutNote && <span className="chip warn">{timeoutNote}</span>}
           {msg.answered && (
             <span className="chip" style={{ color: "var(--accent)", borderColor: "color-mix(in oklab, var(--accent) 30%, var(--line))" }}>
               answered
@@ -281,7 +249,7 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onConfirm, onCancelAsk, on
           )}
           {msg.cancelled && (
             <span className="chip" style={{ color: "var(--fg-4)", borderColor: "var(--line-bright)" }}>
-              cancelled
+              {msg.closedByOmp ? "closed by omp" : "cancelled"}
             </span>
           )}
         </div>

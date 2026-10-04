@@ -235,6 +235,7 @@ function App() {
   const handleAbort      = () => { bridge?.abort(); setStreaming(false); };
   const handlePickModel  = m  => { setModelState(m); bridge?.setModel(m); };
   const handleAskAnswer  = React.useCallback((id, value) => { bridge?.answerAsk(id, value); }, [bridge]); // bridge = window.OMP_BRIDGE, assigned once before React renders — stable ref
+  const handleAskDialogAnswer = React.useCallback((id, answers) => { bridge?.answerAskDialog(id, answers); }, [bridge]);
   const handleConfirmAsk = React.useCallback((id, confirmed) => { bridge?.answerConfirm(id, confirmed); }, [bridge]);
   const handleCancelAsk  = React.useCallback((id) => { bridge?.cancelAsk(id); }, [bridge]);
   const handleGrantApproval = React.useCallback((tool, scope) => { bridge?.grantApprovalRule(tool, scope); }, [bridge]);
@@ -527,6 +528,7 @@ function App() {
                     annotations={plan.annotations}
                     onAnnotate={handleAnnotate}
                     onAskAnswer={handleAskAnswer}
+                    onAskDialogAnswer={handleAskDialogAnswer}
                     onConfirmAsk={handleConfirmAsk}
                     onCancelAsk={handleCancelAsk}
                     onGrantApproval={handleGrantApproval}

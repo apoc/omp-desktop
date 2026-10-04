@@ -16,6 +16,7 @@
   const SUB = window.OMP_SUBAGENTS;
   const STITLE = window.OMP_SESSION_TITLE;
   const QUEUE = window.OMP_QUEUE;
+  const ASK = window.OMP_ASK_DIALOG;
 
   // ── Safe defaults so design components never crash on missing fields ──────
   const DEFAULT_DATA = {
@@ -372,8 +373,8 @@
     return `/skill:${details?.name ?? ""}${args}`;
   }
 
-  // Build an ask bubble. The four `extension_ui_request` methods differ only
-  // in `method` and one or two method-specific fields; the defaults below
+  // Build an ask bubble. The `extension_ui_request` methods it is built for
+  // differ only in `method` and a few method-specific fields; the defaults below
   // (`options`/`answered`/`cancelled`/`answer`) are exactly what runStateOf
   // and _resolveAsk depend on, so they live here rather than being restated
   // — and silently drifting — per branch. One drift is deliberately
@@ -397,10 +398,11 @@
   }
 
   // Buffer an ask bubble instead of pushing it straight into
-  // `state.messages`: omp emits `extension_ui_request.select` just BEFORE
-  // the `tool_execution_start` of the tool it gates, so pushing on arrival
-  // puts the prompt above its own tool card. tool_execution_start flushes
-  // the queue, giving the [tool_card, ask_bubble] order.
+  // `state.messages`: omp's `select` (a tool approval) and its ask dialog
+  // request both reach stdout just BEFORE the `tool_execution_start` of the
+  // tool they belong to, so pushing on arrival puts the prompt above its own
+  // tool card. tool_execution_start flushes the queue, giving the
+  // [tool_card, ask_bubble] order.
   //
   // Two properties this has to keep, both learned from a wedged session:
   //   1. It is a QUEUE, not a single slot. A turn with parallel tool calls
@@ -448,26 +450,31 @@
     }
   }
 
-  // Resolve a pending ask bubble: apply `patch` to the first unanswered,
-  // uncancelled bubble with this id, then send `payload` back to omp. The
-  // re-answer guard (a bubble already answered or cancelled is left alone,
-  // and nothing is sent) is the subtle part — it lives here once instead of
-  // in each of answerAsk/answerConfirm/cancelAsk.
-  // Proven with an eval-kernel cell (7/7 cases: patch applied, array
-  // replaced, {value}/{confirmed}/{cancelled} payload shapes preserved
-  // per caller, and re-answer + unknown-id both send nothing).
-  function _resolveAsk(id, patch, payload) {
-    let resolved = false;
+  // Settle a pending ask bubble: apply `patch` to the first unanswered,
+  // uncancelled bubble with this id and publish. Returns whether one
+  // matched. The re-answer guard (a bubble already answered or cancelled is
+  // left alone) is the subtle part — it lives here once, for the user's
+  // answers (_resolveAsk) and omp's own `cancel` alike.
+  function _settleAsk(id, patch) {
+    let settled = false;
     state.messages = state.messages.map(m => {
       if (m.kind === "ask" && m.id === id && !m.answered && !m.cancelled) {
-        resolved = true;
+        settled = true;
         return { ...m, ...patch };
       }
       return m;
     });
-    if (!resolved) return;
-    notify();
-    _send({ type: "extension_ui_response", id, ...payload });
+    if (settled) notify();
+    return settled;
+  }
+
+  // Resolve a pending ask bubble: settle it, then send `payload` back to
+  // omp — only if it was still open, so a re-answer sends nothing.
+  // Proven with an eval-kernel cell (7/7 cases: patch applied, array
+  // replaced, {value}/{confirmed}/{cancelled} payload shapes preserved
+  // per caller, and re-answer + unknown-id both send nothing).
+  function _resolveAsk(id, patch, payload) {
+    if (_settleAsk(id, patch)) _send({ type: "extension_ui_response", id, ...payload });
   }
 
   // Append a synthetic assistant note (process exited, startup failed,
@@ -1742,14 +1749,27 @@
         notify();
         return;
       }
-      // Agent asks the user to pick from a list — also the shape of every
-      // tool-approval prompt ("Allow tool: X", options ["Approve","Deny"]).
+      // Agent asks the user to pick from a list: every tool-approval prompt
+      // ("Allow tool: X", options ["Approve","Deny"]) and extension pickers
+      // like /review's. The ask tool uses the `ask` dialog below instead.
       // Buffered rather than pushed immediately; see _queueAskBubble.
       if (ev.method === "select") {
-        const OTHER_OPT = "Other (type your own)";
-        _queueAskBubble(_askMessage("select", ev, {
-          options: (ev.options ?? []).filter(o => o !== OTHER_OPT),
-        }));
+        _queueAskBubble(_askMessage("select", ev, { options: ev.options ?? [] }));
+        return;
+      }
+      // omp's ask dialog (enabled per process in _initFetch): every question
+      // of one ask tool call, answered with `answers` (OMP_BRIDGE.
+      // answerAskDialog; rules in app/ask-dialog.js). omp writes it from
+      // inside the running ask tool, yet it reaches stdout before that
+      // tool's tool_execution_start (seen live), so it is buffered like a
+      // select. A shape the dialog cannot answer is cancelled, as below.
+      if (ev.method === "ask") {
+        const questions = ASK.parseQuestions(ev.questions);
+        if (!questions) {
+          _send({ type: "extension_ui_response", id: ev.id, cancelled: true });
+          return;
+        }
+        _queueAskBubble(_askMessage("ask", ev, { questions, timeout: ev.timeout ?? null, answers: null }));
         return;
       }
       // Yes/No confirmation dialog. Pushed directly — see the `input`
@@ -1785,12 +1805,8 @@
           if (pendingAskBubbles.length === 0) _disarmAskFlush();
           return;
         }
-        state.messages = state.messages.map(m =>
-          m.kind === "ask" && m.id === ev.targetId && !m.answered
-            ? { ...m, cancelled: true }
-            : m
-        );
-        notify();
+        // omp settled it itself (turn stopped, or its ask timeout ran out).
+        _settleAsk(ev.targetId, { cancelled: true, closedByOmp: true });
         return;
       }
       // Any other/future method we have no UI for — cancel so the server
@@ -2202,6 +2218,10 @@
       .catch(() => {})
       .finally(() => {
         if (_switchGen !== gen) return;
+        // omp's ask dialog is off by default and per process: a respawned
+        // process falls back to one `select` per question until told again.
+        _sendWithResponse({ type: "set_ask_dialog", enabled: true })
+          .catch(err => console.warn("[live] set_ask_dialog failed:", err));
         _send({ type: "get_state" });
         _send({ type: "get_messages" });
         _send({ type: "get_available_models" });
@@ -2715,7 +2735,8 @@
     },
 
     /**
-     * Respond to a pending ask bubble (extension_ui_request method=select).
+     * Respond to a pending ask bubble (extension_ui_request method=select,
+     * input or editor).
      * Marks the message as answered in state so it survives subsequent notify() calls,
      * then sends the extension_ui_response to omp — but only if a matching,
      * still-open ask message actually existed. Re-answer-proof: a second
@@ -2727,10 +2748,23 @@
      * cell (7/7 cases: normal send, double-click no-resend, answering a
      * cancelled ask, unknown id, rehydrated-already-answered message).
      * @param {string} id     The extension_ui_request id.
-     * @param {string} value  The chosen option text or custom typed answer.
+     * @param {string} value  The chosen option text, or the typed text of an
+     *                        input/editor prompt.
      */
     answerAsk(id, value) {
       _resolveAsk(id, { answered: true, answer: value }, { value });
+    },
+
+    /**
+     * Answer omp's ask dialog (extension_ui_request method=ask) with the
+     * `answers` OMP_ASK_DIALOG.answers built — one per question, in request
+     * order. Same re-answer guard as `answerAsk`; the settled bubble keeps
+     * them for its summary.
+     * @param {string} id
+     * @param {Array<{id: string, selectedOptions: string[], customInput?: string}>} answers
+     */
+    answerAskDialog(id, answers) {
+      _resolveAsk(id, { answered: true, answers }, { answers });
     },
 
     /**
@@ -2753,8 +2787,8 @@
     },
 
     /**
-     * User-initiated decline of a pending ask (e.g. the Cancel button on an
-     * `input`/`editor` dialog) — distinct from the runtime's own
+     * User-initiated decline of a pending ask (the Cancel button on an
+     * `input`/`editor` prompt or the ask dialog) — distinct from the runtime's own
      * `extension_ui_request.cancel` event, but resolved the same way on
      * both the local message (marked `cancelled`) and the wire
      * (`{cancelled: true}`). Same re-answer-proof guard as `answerAsk`.

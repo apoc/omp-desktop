@@ -41,7 +41,7 @@
   <!-- App constants. Dependency-free IIFE, loaded before the design
        components: profile-menu.jsx, chrome.jsx and thinking-menu.jsx
        destructure DEFAULT_PROFILE_ID / THINKING_LEVELS at top level,
-       composer.jsx and chat/ask-bubble.jsx call its isSubmitEnter helper,
+       composer.jsx and chat/ask-*.jsx call its isSubmitEnter helper,
        and app-live.jsx destructures the rest. -->
   <script src="app/constants.js"></script>
   <!-- Keymap registry + chord algebra. Dependency-free IIFE; must load before
@@ -120,6 +120,12 @@
        top-level init, so it must load before both. -->
   <script src="app/message-queue.js"></script>
 
+  <!-- omp's ask dialog (set_ask_dialog): request parsing, pick rules and
+       the `answers` reply. Dependency-free IIFE; design/chat/ask-dialog.jsx
+       and ask-bubble.jsx destructure window.OMP_ASK_DIALOG at top level and
+       live.js reads it at its top-level init, so it must load before them. -->
+  <script src="app/ask-dialog.js"></script>
+
   <!-- Design components (unchanged — from src/design/ copy) -->
   <script src="design/tweaks/style.js"></script>
   <script src="design/tweaks/use-tweaks.js"></script>
@@ -141,6 +147,8 @@
   <script type="text/babel" src="design/chat/eval-cell.jsx"></script>
   <script type="text/babel" src="design/chat/assistant-bubble.jsx"></script>
   <script type="text/babel" src="design/chat/tool-card.jsx"></script>
+  <!-- ask-bubble.jsx destructures window.AskDialog at top level. -->
+  <script type="text/babel" src="design/chat/ask-dialog.jsx"></script>
   <script type="text/babel" src="design/chat/ask-bubble.jsx"></script>
   <script type="text/babel" src="design/chat/chat-view.jsx"></script>
   <!-- Subagent manager UI. bits → controls → inspector (destructures the
