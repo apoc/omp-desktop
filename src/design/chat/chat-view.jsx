@@ -6,7 +6,7 @@
    minimap-hover cross-highlight (mm-hot) flows through here via the
    `hoveredMsgIdx` prop. */
 
-const { UserBubble: _CV_UserBubble, ToolCard: _CV_ToolCard, AssistantBubble: _CV_AssistantBubble, AskBubble: _CV_AskBubble, Icon: _CV_Icon } = window;
+const { UserBubble: _CV_UserBubble, ToolCard: _CV_ToolCard, AssistantBubble: _CV_AssistantBubble, AskBubble: _CV_AskBubble, Icon: _CV_Icon, TOOL_META: _CV_TOOL_META } = window;
 const { nextPinned: _CV_nextPinned, shouldRepin: _CV_shouldRepin } = window.OMP_SCROLL_PIN;
 
 // ── Per-bubble memo wrappers ────────────────────────────────────────────────
@@ -70,6 +70,40 @@ const CompactRow = React.memo(function CompactRow({ msg }) {
             {msg.summary}
           </div>
         )}
+      </div>
+    </div>
+  );
+});
+
+// A background job whose result omp just delivered (`async-result`,
+// app/turn-status.js `finishedJobsOf`): the agent's next reply is what that
+// result woke it for, so the job is named above it. Live-only, like tool
+// cards — get_messages' merge keeps it in place.
+const JobRow = React.memo(function JobRow({ msg, idx, highlighted }) {
+  const { color, icon, label } = _CV_TOOL_META.job;
+  return (
+    <div className={`row tool fade-up${highlighted ? " mm-hot" : ""}`} data-msg-idx={idx}>
+      <div className="ass-rail">
+        <div className="tool-glyph" style={{ borderColor: color, color }}>
+          <_CV_Icon name={icon} size={11} color={color} />
+        </div>
+        <div className="ass-thread" />
+      </div>
+      <div className="tool-card ok">
+        <div className="tool-card-head">
+          <span className="tool-tag" style={{
+            color,
+            background: `color-mix(in oklab, ${color} 14%, transparent)`,
+            borderColor: `color-mix(in oklab, ${color} 30%, var(--line))`,
+          }}>{label}</span>
+          <span className="tool-title" title={msg.label ?? undefined}>
+            {msg.jobId} finished
+            {msg.label && <span className="job-label"> · {msg.label}</span>}
+          </span>
+          <div className="tool-card-spacer" />
+          {msg.type && <span className="chip muted mono">{msg.type}</span>}
+          {msg.durationMs != null && <span className="chip muted mono">{window.OMP_SUBAGENTS.fmtDuration(msg.durationMs)}</span>}
+        </div>
       </div>
     </div>
   );
@@ -164,6 +198,7 @@ function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, 
             const hl = hoveredMsgIdx === i;
             if (m.kind === "user")    return <_CV_UserBubble_M    key={m._id ?? i} idx={i} highlighted={hl} msg={m} />;
             if (m.kind === "compact") return <CompactRow          key={m._id ?? i} msg={m} />;
+            if (m.kind === "job")     return <JobRow              key={m._id ?? i} idx={i} highlighted={hl} msg={m} />;
             if (m.kind === "tool")    return <_CV_ToolCard_M      key={m._id ?? i} idx={i} highlighted={hl} msg={m} onInspectSubagent={onInspectSubagent} />;
             if (m.kind === "ask")     return <_CV_AskBubble_M     key={m._id ?? i} idx={i} highlighted={hl} msg={m} onAnswer={onAskAnswer} onAnswerDialog={onAskDialogAnswer} onConfirm={onConfirmAsk} onCancelAsk={onCancelAsk} onGrant={onGrantApproval} hasProjectPath={hasProjectPath} />;
             return <_CV_AssistantBubble_M key={m._id ?? i} idx={i} highlighted={hl} msg={m}

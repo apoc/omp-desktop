@@ -28,7 +28,7 @@ function hintKeyFor(actionId, fallback) {
 }
 
 // ── The composer (input + plan/steer modes + send) ────────────────────
-function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued }) {
+function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued }) {
   // Drafts are per tab (issue #28). The composer stays mounted across tab
   // switches and keeps one draft per session id (app/session-ui.js
   // DRAFT_IDLE): text, pending image attachments (sent alongside the next
@@ -649,6 +649,12 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
           <span style={{ color: planMode ? "var(--amber)" : "var(--fg-2)" }}>plan mode</span>
         </button>
         <div style={{ flex: 1 }} />
+        {backgroundWork && (
+          <span className="composer-bg-note" title="omp reports background work (an async bash, task or eval job) whose result will wake the agent">
+            <TabRunDot state="background" />
+            background job running · the agent resumes when it finishes
+          </span>
+        )}
         <span className="mono" style={{ color: "var(--fg-4)", fontSize: "var(--d-text-xs)" }}>
           {[
             ...(isStreaming && (text.trim() || attachments.length > 0) ? ["↵ steer"] : ["↵ send", "⇧↵ newline"]),

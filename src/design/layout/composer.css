@@ -115,6 +115,13 @@
 .composer-pill:hover { border-color: var(--line-bright); background: var(--bg-hover); }
 .composer-pill.on { border-color: color-mix(in oklab, var(--amber) 50%, var(--line)); background: color-mix(in oklab, var(--amber) 12%, transparent); }
 
+/* The agent yielded and a background job will wake it (run state
+   `background`); the dot is the tab bar's. */
+.composer-bg-note {
+  display: inline-flex; align-items: center; gap: 6px; margin-right: 10px;
+  color: var(--fg-3); font-family: var(--font-mono); font-size: var(--d-text-xs);
+}
+
 /* Thinking-level menu on the thinking pill (thinking-menu.jsx). Opens
    upward: the composer sits at the bottom of the window. */
 .thinking-menu { position: relative; display: inline-flex; }

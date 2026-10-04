@@ -196,6 +196,11 @@
 
   <!-- Live data layer (must load before app-live.jsx) -->
   <script src="model-names.js"></script>
+  <!-- Run state and turn outcome: pure helpers over omp's prompt_result /
+       session_settled / agent_end frames. Dependency-free IIFE; adapter.js
+       calls window.OMP_TURN_STATUS and live.js reads it at its top-level
+       init, so it must load before both. -->
+  <script src="app/turn-status.js"></script>
   <script src="adapter.js"></script>
   <!-- Session-name tab rename: pure gate/note/title helpers for the
        after-first-turn auto `/rename`. Dependency-free IIFE; live.js

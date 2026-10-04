@@ -17,6 +17,7 @@
   const STITLE = window.OMP_SESSION_TITLE;
   const QUEUE = window.OMP_QUEUE;
   const ASK = window.OMP_ASK_DIALOG;
+  const TURN = window.OMP_TURN_STATUS;
 
   // ── Safe defaults so design components never crash on missing fields ──────
   const DEFAULT_DATA = {
@@ -59,7 +60,12 @@
     rpcState:       null,
     sessionCost:    null,
     currentTps:     0,
-    exitReason:     null,   // non-empty agent://exit reason for the last run — drives runStateOf's "failed"
+    exitReason:     null,   // non-empty agent://exit reason for the last run — drives the "failed" run state
+    // omp reports background work (an async bash/task/eval job) that will
+    // wake the agent after it yielded: set by every get_state's
+    // `hasPendingAsyncWork` (agent_end always asks for one), cleared by
+    // `session_settled`. Drives the "background" run state.
+    asyncPending:   false,
     // Subagent manager (src/app/subagents.js). Terminal agents are kept here
     // for the life of the session — omp's own registry forgets them.
     subagents:           SUB.emptySubagents(),
@@ -244,31 +250,8 @@
     }
   }
 
-  // ── Four-state run projection ────────────────────────────────────────────
-  // Total function from a session's live/snapshot fields to one of four
-  // user-facing states — the tab bar previously showed only a color dot, so
-  // a backgrounded tab streaming, blocked on an unanswered ask, or crashed
-  // was indistinguishable from an idle one. Order matters: a fatal exit
-  // outranks everything (a process that died mid-turn is "failed" even with
-  // a stale ask still open), and an unanswered ask outranks isStreaming —
-  // every ask (select/confirm/input/editor) is emitted mid-turn and
-  // isStreaming only clears on turn_end/exit/get_state, none of which fire
-  // while the ask is open, so checking isStreaming first made "waiting-user"
-  // unreachable in practice.
-  // Pure — proven with an eval-kernel cell (4/4 cases: streaming+no-ask →
-  // running, streaming+open-ask → waiting-user, streaming+answered-ask →
-  // running, not-streaming+exitReason → failed) rather than a permanent test
-  // file, per this file's existing convention for extracted decision logic
-  // (_startProjectSession's tabName).
-  function runStateOf({ isStreaming, exitReason, messages }) {
-    if (exitReason) return "failed";
-    const waitingUser = messages.some(m => m.kind === "ask" && !m.answered && !m.cancelled);
-    if (waitingUser) return "waiting-user";
-    if (isStreaming) return "running";
-    return "idle";
-  }
-
-  // Memo for runStateOf, keyed on the messages array's identity.
+  // Memo for a session's run state (`TURN.runStateOf`, app/turn-status.js),
+  // keyed on the messages array's identity.
   //
   // _buildSnapshot runs runStateOf for EVERY open tab on every notify() —
   // i.e. on every RPC line — so without this the cost is
@@ -277,7 +260,8 @@
   // writer replaces the array (see _pushAssistantNote), so a stale entry is
   // unreachable (proven with an eval-kernel cell: 21/21 cases, including
   // the same array replayed under changing isStreaming/exitReason, which a
-  // naive key-on-array-only memo gets wrong).
+  // naive key-on-array-only memo gets wrong — `asyncPending` is part of
+  // the key for the same reason).
   // A backgrounded tab's array is frozen for as long as it
   // stays backgrounded, so those tabs become a map lookup; only the active
   // tab, whose array is replaced as it streams, still scans — and that scan
@@ -287,16 +271,16 @@
   // Shared so a never-activated tab keys the memo stably instead of
   // allocating a fresh (always-missing) array on every notify.
   const _EMPTY_SESSION_FIELDS = Object.freeze({
-    isStreaming: false, exitReason: null, messages: Object.freeze([]),
+    isStreaming: false, exitReason: null, asyncPending: false, messages: Object.freeze([]),
   });
   function runStateCached(fields) {
-    const { messages, isStreaming, exitReason } = fields;
+    const { messages, isStreaming, exitReason, asyncPending } = fields;
     const hit = _runStateMemo.get(messages);
-    if (hit && hit.isStreaming === isStreaming && hit.exitReason === exitReason) {
+    if (hit && hit.isStreaming === isStreaming && hit.exitReason === exitReason && hit.asyncPending === asyncPending) {
       return hit.value;
     }
-    const value = runStateOf(fields);
-    _runStateMemo.set(messages, { isStreaming, exitReason, value });
+    const value = TURN.runStateOf(fields);
+    _runStateMemo.set(messages, { isStreaming, exitReason, asyncPending, value });
     return value;
   }
 
@@ -323,7 +307,7 @@
         ...s,
         runState: runStateCached(
           s.id === activeSessionId
-            ? { isStreaming: state.isStreaming, exitReason: state.exitReason, messages: state.messages }
+            ? state
             : sessionSnapshots.get(s.id) ?? _EMPTY_SESSION_FIELDS
         ),
       })),
@@ -495,14 +479,44 @@
   // would otherwise treat it as an ordinary assistant entry and either drop
   // it or let a later real turn overwrite its slot on the next tab switch.
   function _pushAssistantNote(text, localOnly) {
-    state.messages = [...state.messages, {
-      kind: "assistant",
-      time: timeNow(),
-      model: state.model?.name ?? null,
+    state.messages = [...state.messages, _assistantBubble({
       blocks: [{ type: "text", text }],
-      thought: null, lead: null, streaming: false, completed: true,
+      completed: true,
       ...(localOnly ? { localOnly: true } : {}),
-    }];
+    })];
+  }
+
+  // A finished assistant bubble the desktop builds itself, with `fields` on top.
+  function _assistantBubble(fields) {
+    return {
+      kind: "assistant", time: timeNow(), model: state.model?.name ?? null,
+      blocks: [], thought: null, lead: null, streaming: false,
+      ...fields,
+    };
+  }
+
+  // Show a run's final failure (`make(previous)` builds it, app/turn-status.js)
+  // on the bubble its failed message created at message_end: the last
+  // assistant bubble, unless a user turn came after it. An earlier hidden
+  // `pendingFailure` belongs to an attempt omp retried. When that message
+  // never arrived (frames lost to a replay gap), the failure gets a bubble
+  // of its own — the failed message is persisted, so it is no local note.
+  function _showFailure(make) {
+    const msgs = state.messages;
+    let idx = -1;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].kind === "user") break;
+      if (msgs[i].kind === "assistant" && !msgs[i].localOnly && !msgs[i].streaming) { idx = i; break; }
+    }
+    const target = idx === -1 ? null : msgs[idx];
+    if (target && (target.pendingFailure || target.failure)) {
+      const { pendingFailure, ...rest } = target;
+      const next = [...msgs];
+      next[idx] = { ...rest, failure: make(target.failure ?? pendingFailure) };
+      state.messages = next;
+    } else {
+      state.messages = [...msgs, _assistantBubble({ failure: make(null) })];
+    }
   }
 
   /** Pure: the assistant-note text for a non-empty `agent://exit` reason.
@@ -606,12 +620,13 @@
   // The active tab's omp process is gone (the exit listener, or a startup
   // death found by session_status). A dead process sends no terminal frames
   // and answers no get_subagents: end its live agents here (outcome
-  // unknown) or they tick forever. Its queue died with it, and no send to
-  // it will be acknowledged.
+  // unknown) or they tick forever. Its queue died with it, no send to it
+  // will be acknowledged, and its background jobs died with it too.
   function _endDeadProcessState() {
     state.subagents = SUB.mergeSnapshots(state.subagents, []);
     state.queue = QUEUE.EMPTY_QUEUE;
     state.queueSending = [];
+    state.asyncPending = false;
   }
 
   // Reset all per-session volatile state (called before loading a new session)
@@ -633,6 +648,7 @@
       sessionCost:   null,
       currentTps:    0,
       exitReason:    null,
+      asyncPending:  false,
       subagents:           SUB.emptySubagents(),
       subagentTranscripts: {},
       queue:         QUEUE.EMPTY_QUEUE,
@@ -673,6 +689,7 @@
       sessionCost:   state.sessionCost,
       currentTps:    state.currentTps,
       exitReason:    state.exitReason,
+      asyncPending:  state.asyncPending,
       // Last-turn outcome for the auto-rename gate (see _applyRpcState):
       // survives tab switches so a snapshot-restored session does not
       // forget a failed first exchange and re-arm the one-shot.
@@ -709,6 +726,7 @@
       sessionCost:   snap.sessionCost,
       currentTps:    snap.currentTps,
       exitReason:    snap.exitReason ?? null,
+      asyncPending:  snap.asyncPending ?? false,
       subagents:     snap.subagents ?? SUB.emptySubagents(),
       subagentTranscripts: {},
       queue:         snap.queue ?? QUEUE.EMPTY_QUEUE,
@@ -1484,7 +1502,10 @@
       // misalign every slot after it (the next persisted turn would be
       // substituted into its place, and the last real turn would then find
       // nothing left and be dropped).
-      const pending = [...completed];
+      //
+      // A failed turn's persisted copy lacks omp's live `retryable` verdict
+      // (`prompt_result` only); `withLiveVerdicts` re-applies it by failure text.
+      const pending = TURN.withLiveVerdicts(state.messages, completed);
       const merged = [];
       for (const m of state.messages) {
         if (m.streaming) continue; // streaming bubble handled separately below
@@ -1877,6 +1898,15 @@
           }
           notify();
         }
+      } else if (role === "custom") {
+        // A background job's result (`async-result`) is what wakes the agent
+        // after it yielded: name the job above the reply it triggers.
+        const jobs = TURN.finishedJobsOf(msg);
+        if (jobs) {
+          // `localOnly`: the adapter never builds job rows from get_messages.
+          state.messages = [...state.messages, ...jobs.map(job => ({ kind: "job", time, localOnly: true, ...job }))];
+          notify();
+        }
       } else if (role === "assistant") {
         streamingBubble = {
           kind: "assistant", time,
@@ -1940,6 +1970,9 @@
         const designBlocks = blocks.filter(b => b.type === "text" && b.text?.trim()).map(b => ({ type: "text", text: b.text }));
         // Find by streaming flag — extension_ui_request.select may have pushed
         // an ask bubble after the streaming bubble before message_end arrives.
+        // A failed request is not shown yet (`pendingFailure`): omp may
+        // still retry it. `_showFailure` shows it once the agent yields.
+        const pendingFailure = TURN.failureOf(msg);
         const completed = {
           ...streamingBubble,
           streaming: false, thought,
@@ -1948,6 +1981,7 @@
           tokens,
           tokensIn:  usage?.input  ?? null,
           tokensOut: usage?.output ?? null,
+          ...(pendingFailure ? { pendingFailure } : {}),
         };
         const eidx = state.messages.findLastIndex(m => m.streaming === true);
         if (eidx !== -1) {
@@ -2042,6 +2076,30 @@
       return;
     }
 
+    // ── Turn outcome (app/turn-status.js) ───────────────────────────────────
+    // `prompt_result` closes an accepted prompt once the agent yielded, after
+    // that run's `agent_end`. Only a failed agent turn matters here: the
+    // frame adds omp's cleaned error text and its `retryable` verdict to the
+    // failure `agent_end` just showed. Not id-correlated — an ordinary
+    // prompt is sent without one.
+    if (type === "prompt_result") {
+      if (ev.agentInvoked === true && ev.status === "error") {
+        _showFailure(prev => TURN.withPromptError(prev, ev.error));
+        notify();
+      }
+      return;
+    }
+
+    // Nothing can wake the session any more: no run, nothing queued, and no
+    // background job left whose result would start one.
+    if (type === "session_settled") {
+      if (state.asyncPending) {
+        state.asyncPending = false;
+        notify();
+      }
+      return;
+    }
+
     if (type === "agent_start" || type === "agent_end") {
       // Refinement counter: terminal agent turns since the last title
       // write. Non-terminal ends are scheduling pauses, not new material
@@ -2050,6 +2108,19 @@
       if (STITLE.countsAsRefineTurn(ev) && activeSessionId && sessionRegistry.has(activeSessionId)) {
         const e = sessionRegistry.get(activeSessionId);
         sessionRegistry.set(activeSessionId, { ...e, autoRenameTurns: (e.autoRenameTurns ?? 0) + 1 });
+      }
+      if (type === "agent_end") {
+        // A yield is the run's final outcome — omp's own retries are behind it.
+        // (Background work left behind reaches `asyncPending` through the
+        // get_state below, which notifies anyway.)
+        if (TURN.isYield(ev)) {
+          const messages = Array.isArray(ev.messages) ? ev.messages : [];
+          const failure = TURN.failureOf(messages.findLast(m => m?.role === "assistant"));
+          if (failure) {
+            _showFailure(() => failure);
+            notify();
+          }
+        }
       }
       _send({ type: "get_state" });
     }
@@ -2087,6 +2158,9 @@
     if (!rpcState) return;
     state.rpcState      = rpcState;
     state.isStreaming   = rpcState.isStreaming ?? false;
+    // Background work that will wake the agent (see `state.asyncPending`);
+    // this is also how a tab activated mid-wait learns about it.
+    state.asyncPending  = rpcState.hasPendingAsyncWork === true;
     // If the turn completed while we were away (snapshot had streamingBubble
     // with streaming:true, but omp now says isStreaming:false), retire the
     // bubble immediately. The completed text arrives with get_messages; the

@@ -259,9 +259,10 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
         {messages.map((m, i) => {
           let hue = "var(--fg-5)";
           if      (m.kind === "user")      hue = "var(--fg-3)";
-          else if (m.kind === "assistant") hue = "var(--accent)";
+          else if (m.kind === "assistant") hue = m.failure ? "var(--rose)" : "var(--accent)";
           else if (m.kind === "ask")       hue = "var(--amber)";
           else if (m.kind === "tool")      hue = TOOL_META[m.tool]?.color || "var(--fg-4)";
+          else if (m.kind === "job")       hue = TOOL_META.job.color;
 
           // Brightness: assistant cells modulate by log(tokens), others flat.
           let opacity = 0.7;
@@ -274,7 +275,9 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
           // LLM cost lives on the assistant message that invoked them),
           // so they get tool-specific info instead of a token chip.
           let title;
-          if (m.kind === "assistant") {
+          if (m.kind === "assistant" && m.failure) {
+            title = `request failed${m.failure.httpStatus != null ? ` · HTTP ${m.failure.httpStatus}` : ""}${m.time ? " · " + m.time : ""}`;
+          } else if (m.kind === "assistant") {
             const tok  = m.tokens ? `${m.tokens.toLocaleString()} tok` : "—";
             const inOut = (m.tokensIn != null || m.tokensOut != null)
               ? ` (${(m.tokensIn ?? 0).toLocaleString()} in · ${(m.tokensOut ?? 0).toLocaleString()} out)`
@@ -287,6 +290,8 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
           } else if (m.kind === "user") {
             const preview = m.text ? ` · ${m.text.slice(0, 80)}${m.text.length > 80 ? "…" : ""}` : "";
             title = `you${preview}`;
+          } else if (m.kind === "job") {
+            title = `${m.jobId} finished${m.label ? " · " + m.label : ""}`;
           } else {
             title = m.kind;
           }

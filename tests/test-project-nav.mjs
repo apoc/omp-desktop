@@ -95,16 +95,17 @@ check("group order follows each project's first appearance", () => {
 
 // ── groupRunState / groupTarget ───────────────────────────────────────────
 
-check("run state priority is failed > waiting-user > running > idle", () => {
-  const states = ["idle", "running", "waiting-user", "failed"];
+check("run state priority is failed > waiting-user > running > background > idle", () => {
+  const states = ["idle", "background", "running", "waiting-user", "failed"];
   for (let i = 0; i < states.length; i++) {
     const tabs = states.slice(0, i + 1).map((s, j) => tab(`t${j}`, "/p", { runState: s }));
     // Winner last, then first: a "first non-idle wins" scan fails one of the two.
     assert.equal(N.groupRunState(tabs), states[i]);
     assert.equal(N.groupRunState([...tabs].reverse()), states[i]);
   }
-  const mixed = ["running", "failed", "waiting-user"].map((s, j) => tab(`m${j}`, "/p", { runState: s }));
+  const mixed = ["running", "failed", "waiting-user", "background"].map((s, j) => tab(`m${j}`, "/p", { runState: s }));
   assert.equal(N.groupRunState(mixed), "failed");
+  assert.equal(N.groupRunState([tab("b", "/p", { runState: "background" }), tab("r", "/p", { runState: "running" })]), "running");
   assert.equal(N.groupRunState([tab("a", "/p", { runState: undefined })]), "idle");
 });
 

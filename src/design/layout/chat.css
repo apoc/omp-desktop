@@ -91,6 +91,38 @@
   font-size: var(--d-text-sm);
 }
 
+/* A failed request (assistant-bubble.jsx `_AB_Failure`) */
+.ass-glyph.failed { border-color: color-mix(in oklab, var(--rose) 45%, var(--line-bright)); }
+.ass-failure {
+  margin-top: 4px; max-width: 720px;
+  padding: 8px 12px 9px;
+  border: 1px solid color-mix(in oklab, var(--rose) 35%, var(--line-bright));
+  border-radius: var(--r-2);
+  background: color-mix(in oklab, var(--rose) 5%, var(--bg-surface));
+}
+.ass-failure-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ass-failure-head .chip { padding: 1px 8px; white-space: nowrap; }
+.ass-failure-title { margin-right: 2px; color: var(--rose); font-weight: 600; font-size: var(--d-text-sm); }
+.ass-failure-msg {
+  margin-top: 6px;
+  color: var(--fg); font-size: var(--d-text); line-height: var(--d-leading);
+  overflow-wrap: anywhere;
+}
+.ass-failure-raw { margin-top: 6px; }
+.ass-failure-raw > summary {
+  cursor: pointer; list-style: none;
+  color: var(--fg-4); font-family: var(--font-mono); font-size: var(--d-text-xs);
+}
+.ass-failure-raw > summary::-webkit-details-marker { display: none; }
+.ass-failure-raw > summary::before { content: "▸ "; }
+.ass-failure-raw[open] > summary::before { content: "▾ "; }
+.ass-failure-raw pre {
+  margin: 6px 0 0; padding: 6px 8px; max-height: 160px; overflow: auto;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  font-family: var(--font-mono); font-size: var(--d-text-xs); color: var(--fg-3);
+  background: var(--bg-input); border: 1px solid var(--line); border-radius: var(--r-1);
+}
+
 /* user bubble — right side, soft gradient */
 .user-bubble {
   max-width: min(820px, 70%);
@@ -193,6 +225,8 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .tool-card-spacer { flex: 1; }
+/* job row (chat-view.jsx `JobRow`): the command after the job id */
+.job-label { color: var(--fg-3); }
 
 .tool-search {
   padding: 6px 8px 8px;

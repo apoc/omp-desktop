@@ -1,6 +1,7 @@
 /* adapter.js — pure transforms between RPC data and design component data shapes.
    No side effects. All functions exported via window.* for Babel-transpiled scripts.
-   Depends on: window.MODEL_NAMES (model-names.js loaded first). */
+   Depends on: window.MODEL_NAMES (model-names.js loaded first) and
+   window.OMP_TURN_STATUS (app/turn-status.js, for adaptAgentMessages). */
 
 (function () {
   "use strict";
@@ -409,7 +410,9 @@
   // Skips pure tool-result turns; maps thinking blocks to thought field.
   function adaptAgentMessages(apiMessages) {
     const result = [];
-    for (const msg of apiMessages ?? []) {
+    const messages = Array.isArray(apiMessages) ? apiMessages : [];
+    const failures = window.OMP_TURN_STATUS.finalFailures(messages);
+    for (const [index, msg] of messages.entries()) {
       if (!msg || typeof msg !== "object") continue;
       const { role, content } = msg;
       const time   = _formatTime(msg.timestamp ?? msg.createdAt);
@@ -431,7 +434,11 @@
           }
           // tool_use blocks already rendered as separate tool cards; skip here
         }
-        if (designBlocks.length > 0 || thought) {
+        // A failed request has no text: its failure is the turn
+        // (app/turn-status.js). Only a failure that ended its run counts —
+        // omp keeps some failed attempts it then continued from.
+        const failure = failures.get(index) ?? null;
+        if (designBlocks.length > 0 || thought || failure) {
           // omp's persisted AgentMessage may carry usage in either RPC shape
           // ({input, output}) or raw Anthropic shape ({input_tokens, output_tokens}).
           const u = msg.usage;
@@ -444,6 +451,7 @@
             blocks: designBlocks,
             streaming: false,
             tokens, tokensIn, tokensOut,
+            ...(failure ? { failure } : {}),
           });
         }
       }

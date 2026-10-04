@@ -171,8 +171,9 @@ check("progressPct clamps and floors", () => {
 
 check("busyTabCount counts tabs a restart would interrupt", () => {
   assert.equal(U.busyTabCount([
-    { runState: "running" }, { runState: "waiting-user" }, { runState: "idle" }, { runState: "failed" }, {},
-  ]), 2);
+    { runState: "running" }, { runState: "waiting-user" }, { runState: "background" },
+    { runState: "idle" }, { runState: "failed" }, {},
+  ]), 3);
   assert.equal(U.busyTabCount(undefined), 0);
 });
 

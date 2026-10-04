@@ -549,6 +549,7 @@ function App() {
                     onLoadThinkingLevels={() => bridge.thinkingLevels()}
                     onSetThinking={level => bridge.setThinkingLevel(level)}
                     isStreaming={streaming}
+                    backgroundWork={activeProject.runState === "background"}
                     onAbort={handleAbort}
                     onApprove={handleApprovePlan}
                     annotationCount={Object.keys(plan.annotations).length}
