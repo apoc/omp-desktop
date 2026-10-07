@@ -184,8 +184,8 @@
 
   // ── Open-tab layout (issue #17) ───────────────────────────────────────────
   // Kept equal to the open tabs in `open-tabs.json` (src-tauri/src/open_tabs.rs)
-  // so the next launch reopens them; see AGENTS.md "Reopening tabs on
-  // relaunch". Disarmed until the startup restore settled (`_restoreOpenTabs`).
+  // so the next launch reopens them; see docs/architecture/reopening-tabs.md.
+  // Disarmed until the startup restore settled (`_restoreOpenTabs`).
   // `_layoutKey` is the JSON of the last layout queued (or adopted at
   // startup); `_layoutPending` the newest one not yet handed to a write —
   // one write runs at a time and only the newest layout is written next.
@@ -1372,8 +1372,7 @@
    *  meanwhile keeps the focus. Tabs that fail to reopen are reported, not
    *  retried; when the tabs are exactly what the restore produced, arming
    *  adopts the layout as already written, so the file keeps them until the
-   *  first real change (#34). Details: AGENTS.md "Reopening tabs on
-   *  relaunch". */
+   *  first real change (#34). Details: docs/architecture/reopening-tabs.md. */
   async function _restoreOpenTabs() {
     const notes = [];
     const restored = []; // ids this restore registered, in order
