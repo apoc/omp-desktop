@@ -41,6 +41,8 @@
     { id: "desktop.tab.close",       label: "Close tab",               group: "Tabs",    scope: "global",   defaultKeys: ["ctrl+w", "super+w"] },
     { id: "desktop.tab.next",        label: "Next tab",                group: "Tabs",    scope: "global",   defaultKeys: ["ctrl+tab"] },
     { id: "desktop.tab.prev",        label: "Previous tab",            group: "Tabs",    scope: "global",   defaultKeys: ["ctrl+shift+tab"] },
+    { id: "desktop.tab.moveLeft",    label: "Move tab left",           group: "Tabs",    scope: "global",   defaultKeys: ["ctrl+shift+pageup"] },
+    { id: "desktop.tab.moveRight",   label: "Move tab right",          group: "Tabs",    scope: "global",   defaultKeys: ["ctrl+shift+pagedown"] },
     { id: "desktop.panel.todo",      label: "Plan kanban",             group: "View",    scope: "global",   defaultKeys: [] },
     { id: "desktop.panel.changes",   label: "Working-tree changes",    group: "View",    scope: "global",   defaultKeys: [] },
     { id: "desktop.panel.rules",     label: "Approval rules",          group: "View",    scope: "global",   defaultKeys: [] },

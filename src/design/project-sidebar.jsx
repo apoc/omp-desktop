@@ -19,7 +19,7 @@ function sidebarHint(actionId, fallback) {
 
 function ProjectSidebar({
   tabs, activeId, recents, profileLabel,
-  onSelectTab, onCloseTab, onRenameTab, onNewInProject, onOpenRecent, onForgetRecent, onOpenFolder, onHide,
+  onSelectTab, onCloseTab, onRenameTab, onNewInProject, onOpenRecent, onForgetRecent, onOpenFolder, onHide, onReorder,
 }) {
   // Group keys the user folded. Not persisted: tab ids (and so pathless
   // groups' keys) don't survive a restart anyway.
@@ -40,6 +40,9 @@ function ProjectSidebar({
     </button>
   );
   const groups = groupTabs(tabs);
+  // Drag to reorder (#40), the same lists as the tab bar's: projects (a
+  // project's rows move as one block), and members within their project.
+  const reorder = window.useDragReorder(onReorder);
   const hideHint = sidebarHint("desktop.sidebar.toggle", "Ctrl+B");
 
   return (
@@ -51,7 +54,7 @@ function ProjectSidebar({
         </button>
       </div>
 
-      <div className="psb-scroll">
+      <div className="psb-scroll" onPointerDown={reorder.onPointerDown}>
         <div className="psb-section">open</div>
         {groups.length === 0 && <div className="psb-empty">no open tabs</div>}
         {groups.map(group => {
@@ -67,8 +70,10 @@ function ProjectSidebar({
           const cardTip = multi
             ? (group.path || group.name)
             : [group.tabs[0].name, group.path].filter(Boolean).join("\n");
+          const members = `members:${group.key}`;
           return (
-            <React.Fragment key={group.key}>
+            <div key={group.key} {...reorder.itemProps("projects", group.key, "y")}
+              className={`psb-group${reorder.dropClass("projects", group.key)}`}>
               {/* A multi-tab project row is only highlighted through its
                   active member row, as in the mockup; a single-tab one is
                   that tab. */}
@@ -116,7 +121,8 @@ function ProjectSidebar({
                 </span>
               </div>
               {expanded && membersNewestFirst(group).map(t => (
-                <div key={t.id} className={`psb-row psb-tab ${t.id === activeId ? "active" : ""}`}>
+                <div key={t.id} {...reorder.itemProps(members, t.id, "y")}
+                  className={`psb-row psb-tab ${t.id === activeId ? "active" : ""}${reorder.dropClass(members, t.id)}`}>
                   {renaming === t.id ? (
                     <div className="psb-main psb-editing">{renameField(t)}</div>
                   ) : (
@@ -134,7 +140,7 @@ function ProjectSidebar({
                   </span>
                 </div>
               ))}
-            </React.Fragment>
+            </div>
           );
         })}
 

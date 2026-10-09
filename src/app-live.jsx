@@ -27,7 +27,7 @@ const {
   useKeymap, useKeymapDispatch, ShortcutsModal,
 } = window;
 const { isCommandInvocation } = window.OMP_SLASH;
-const { recentRows } = window.OMP_PROJECT_NAV;
+const { recentRows, groupKey, moveGroup, moveMember, shiftGroup } = window.OMP_PROJECT_NAV;
 const {
   entryOf, updateEntry, pruneEntries,
   PLAN_IDLE, togglePlan, enterPlan, approvePlan, annotatePlan, markPlanSent,
@@ -423,6 +423,22 @@ function App() {
 
   const handleForgetRecent = path => { bridge?.forgetRecentProject(path); };
 
+  // Drag to reorder (#40), from the tab bar or the sidebar: `onDrop` of
+  // `useDragReorder`, in display order. Member lists show newest first, the
+  // registry's reverse, so a drop above a row is a registry move behind it.
+  const handleReorder = (list, id, targetId, after) => {
+    const order = list === "projects"
+      ? moveGroup(sessions, id, targetId, after)
+      : moveMember(sessions, id, targetId, !after);
+    if (order) bridge?.reorderTabs(order);
+  };
+  // Keyboard move: the active tab's project, one place along the tab bar.
+  const shiftActiveProject = delta => {
+    if (!activeProject.id) return;
+    const order = shiftGroup(sessions, groupKey(activeProject), delta);
+    if (order) bridge?.reorderTabs(order);
+  };
+
   // ── Global keymap handler map ─────────────────────────────────────────────
   // Written into handlersRef every render so the dispatch hook always reads
   // the latest closures without re-subscribing to the window listener.
@@ -470,6 +486,8 @@ function App() {
       const idx = sessions.findIndex(s => s.id === activeProject.id);
       bridge?.activateSession(sessions[(idx - 1 + sessions.length) % sessions.length].id);
     },
+    "desktop.tab.moveLeft":    () => shiftActiveProject(-1),
+    "desktop.tab.moveRight":   () => shiftActiveProject(1),
     "desktop.panel.todo":      () => setPlanOpen(v => !v),
     "desktop.panel.changes":   () => setChangesOpen(v => !v),
     "desktop.panel.rules":     () => setRulesOpen(v => !v),
@@ -541,6 +559,7 @@ function App() {
             onClose={handleCloseTab}
             onRename={handleRenameTab}
             onNewInProject={handleNewInProject}
+            onReorder={handleReorder}
             sidebarOpen={showSidebar}
             onToggleSidebar={toggleSidebar}
             onHistory={() => setHistoryOpen(true)}
@@ -565,6 +584,7 @@ function App() {
                 onForgetRecent={handleForgetRecent}
                 onOpenFolder={handleNewProject}
                 onHide={toggleSidebar}
+                onReorder={handleReorder}
               />
             )}
             <div className={`stage ${treeOpen ? "with-tree" : showRail ? "with-rail" : ""}`}>

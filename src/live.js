@@ -3622,6 +3622,23 @@
       }
     },
 
+    /** Put the tabs in `ids` order (#40): a drag in the tab bar, the group
+     *  chip's list or the sidebar, or the keyboard move. Only a permutation
+     *  of the open tabs is applied (`OMP_PROJECT_NAV.isReorderOf`, covered
+     *  by test-project-nav.mjs) — a tab opened or closed since the caller's
+     *  snapshot makes it a no-op (`false`), and the next drag starts from a
+     *  fresh snapshot. Entries, the active tab and any in-flight respawn are
+     *  untouched: they only ever `set` existing keys, which keeps the new
+     *  position. `notify` persists the order (`open-tabs.json`). */
+    reorderTabs(ids) {
+      if (!window.OMP_PROJECT_NAV.isReorderOf(ids, [...sessionRegistry.keys()])) return false;
+      const entries = ids.map(id => [id, sessionRegistry.get(id)]);
+      sessionRegistry.clear();
+      for (const [id, entry] of entries) sessionRegistry.set(id, entry);
+      notify();
+      return true;
+    },
+
     /** Open native folder picker and return the chosen (canonical) path, or
      *  null when cancelled or the pick is unusable (logged). */
     async pickFolder() {

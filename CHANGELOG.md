@@ -6,10 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Reorder tabs and projects by dragging (#40). Drag a project along the tab bar or the project sidebar, or a conversation within its project in the tab-bar dropdown or the sidebar; a line shows where it will land, and Esc cancels. `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` move the current tab's project one place left or right (rebindable in the shortcuts screen). The order is kept when the app restarts.
+
 ### Changed
 
 - A tab for a project with one conversation now shows the project's folder before the conversation's title (`omp-desktop · fix tab close`), in the tab bar and the project sidebar (#46). The folder is shortened first when space runs out, and left out while the conversation is still named after its folder.
-- A project's conversations are listed newest-opened first, in the tab-bar dropdown and the project sidebar (#38).
+- A project's conversations are listed newest-opened first, in the tab-bar dropdown and the project sidebar (#38), until you drag them into another order.
 - A tool call one of your approval rules let through now shows what was approved, not just the tool: a compact "auto-approved" row under the tool's card names the tool and what the call does — the command, the file, the action — and a click unfolds everything the approval prompt would have shown (#42). Before, the conversation only said "Auto-approved bash via your approval rule" in a full reply bubble.
 
 ### Fixed

@@ -123,6 +123,74 @@ check("membersNewestFirst lists the newest-opened member first, without reorderi
   assert.equal(N.membersNewestFirst(group)[0].id, N.groupTarget(group, "elsewhere"));
 });
 
+// ── moveGroup / moveMember / shiftGroup (reorder, #40) ────────────────────
+
+const ids = list => list.map(t => t.id);
+// Registry with project /p split by /q's tab: a1 q a2 r.
+const split = () => [tab("a1", "/p"), tab("q", "/q"), tab("a2", "/p"), tab("r", "/r")];
+const keyOf = id => N.groupKey(split().find(t => t.id === id));
+
+check("moveGroup moves a whole project, members contiguous and in order", () => {
+  // Tab bar shows [p q r]; p goes behind r.
+  assert.deepEqual(N.moveGroup(split(), keyOf("a1"), keyOf("r"), true), ["q", "r", "a1", "a2"]);
+  // r goes in front of q.
+  assert.deepEqual(N.moveGroup(split(), keyOf("r"), keyOf("q"), false), ["a1", "a2", "r", "q"]);
+});
+
+check("moveGroup reports a drop next to itself, or an unknown project, as no change", () => {
+  const tabs = [tab("a", "/p"), tab("b", "/q")];
+  const [p, q] = tabs.map(N.groupKey);
+  assert.equal(N.moveGroup(tabs, p, p, false), null);
+  assert.equal(N.moveGroup(tabs, p, q, false), null);
+  assert.equal(N.moveGroup(tabs, p, "missing", false), null);
+  assert.equal(N.moveGroup(tabs, "missing", q, true), null);
+});
+
+check("moveGroup's result renders the moved project where it was dropped", () => {
+  const order = N.moveGroup(split(), keyOf("r"), keyOf("a1"), false);
+  const byId = new Map(split().map(t => [t.id, t]));
+  assert.deepEqual(N.groupTabs(order.map(id => byId.get(id))).map(g => g.key), [keyOf("r"), keyOf("a1"), keyOf("q")]);
+});
+
+check("moveMember reorders within a project and keeps the others in place", () => {
+  assert.deepEqual(N.moveMember(split(), "a2", "a1", false), ["a2", "a1", "q", "r"]);
+  assert.deepEqual(N.moveMember(split(), "a1", "a2", true), ["a2", "a1", "q", "r"]);
+});
+
+check("moveMember never moves a tab into another project", () => {
+  assert.equal(N.moveMember(split(), "a1", "q", false), null);
+  assert.equal(N.moveMember(split(), "a1", "missing", false), null);
+  assert.equal(N.moveMember(split(), "a1", "a1", true), null);
+});
+
+check("a newest-first drop above a row is a registry move behind it", () => {
+  // Dropdown shows [c b a]; dropping a above c must list [a c b].
+  const tabs = [tab("a", "/p"), tab("b", "/p"), tab("c", "/p")];
+  const order = N.moveMember(tabs, "a", "c", true);
+  const byId = new Map(tabs.map(t => [t.id, t]));
+  const [group] = N.groupTabs(order.map(id => byId.get(id)));
+  assert.deepEqual(ids(N.membersNewestFirst(group)), ["a", "c", "b"]);
+});
+
+check("shiftGroup swaps with the neighbouring project and stops at either end", () => {
+  assert.deepEqual(N.shiftGroup(split(), keyOf("q"), -1), ["q", "a1", "a2", "r"]);
+  assert.deepEqual(N.shiftGroup(split(), keyOf("q"), 1), ["a1", "a2", "r", "q"]);
+  assert.equal(N.shiftGroup(split(), keyOf("a1"), -1), null);
+  assert.equal(N.shiftGroup(split(), keyOf("r"), 1), null);
+  assert.equal(N.shiftGroup(split(), "missing", 1), null);
+});
+
+check("isReorderOf accepts only the open tabs, each once", () => {
+  const open = ["a", "b", "c"];
+  assert.equal(N.isReorderOf(["c", "a", "b"], open), true);
+  // A snapshot from before a tab closed, or before one opened.
+  assert.equal(N.isReorderOf(["c", "a", "b", "d"], open), false);
+  assert.equal(N.isReorderOf(["c", "a"], open), false);
+  // Same length, but a duplicate would drop "b" from the registry.
+  assert.equal(N.isReorderOf(["a", "a", "c"], open), false);
+  assert.equal(N.isReorderOf(["a", "x", "c"], open), false);
+});
+
 // ── tabLabel ──────────────────────────────────────────────────────────────
 
 check("tabLabel prefixes a renamed tab with its project folder", () => {

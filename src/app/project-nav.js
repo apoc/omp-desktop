@@ -76,18 +76,75 @@
   }
 
   /** Tab a click on the whole group activates: the active tab when it is a
-   *  member, else the most recently opened (last) member. */
+   *  member, else the last member — the newest opened, unless a drag (#40)
+   *  put another there; either way the first row of `membersNewestFirst`. */
   function groupTarget(group, activeId) {
     return group.tabs.some(t => t.id === activeId)
       ? activeId
       : group.tabs[group.tabs.length - 1].id;
   }
 
-  /** A group's members as listed in the chip dropdown and the sidebar,
-   *  newest-opened first (#38). A copy: `group.tabs` keeps registry order,
-   *  which `groupTarget` reads. */
+  /** A group's members as listed in the chip dropdown and the sidebar:
+   *  registry order reversed, so a newly opened conversation comes first
+   *  (#38) until a drag reorders them (#40). A copy: `group.tabs` keeps
+   *  registry order, which `groupTarget` reads. */
   function membersNewestFirst(group) {
     return [...group.tabs].reverse();
+  }
+
+  /** Ids of `groups` flattened in order, each group's members contiguous.
+   *  `null` when that equals `tabs`' own order: nothing to write back. */
+  function changedOrder(tabs, groups) {
+    const ids = groups.flatMap(g => g.tabs.map(t => t.id));
+    return ids.every((id, i) => id === tabs[i].id) ? null : ids;
+  }
+
+  /** Tab ids in the order that puts project `key` before (or, with `after`,
+   *  behind) project `targetKey` in the tab bar (#40). Every group comes
+   *  out contiguous, which `groupTabs` renders the same as before. `null`
+   *  for an unknown key or when the order would not change. */
+  function moveGroup(tabs, key, targetKey, after) {
+    if (key === targetKey) return null;
+    const groups = groupTabs(tabs);
+    const from = groups.findIndex(g => g.key === key);
+    if (from < 0 || !groups.some(g => g.key === targetKey)) return null;
+    const [moved] = groups.splice(from, 1);
+    const to = groups.findIndex(g => g.key === targetKey) + (after ? 1 : 0);
+    groups.splice(to, 0, moved);
+    return changedOrder(tabs, groups);
+  }
+
+  /** Tab ids in the order that puts tab `id` before (or, with `after`,
+   *  behind) tab `targetId` of the same project, in registry order — the
+   *  newest-first lists (`membersNewestFirst`) show it reversed (#40).
+   *  `null` for unknown ids, tabs of different projects, or no change. */
+  function moveMember(tabs, id, targetId, after) {
+    if (id === targetId) return null;
+    const groups = groupTabs(tabs);
+    const group = groups.find(g => g.tabs.some(t => t.id === id));
+    if (!group || !group.tabs.some(t => t.id === targetId)) return null;
+    const members = group.tabs.filter(t => t.id !== id);
+    const to = members.findIndex(t => t.id === targetId) + (after ? 1 : 0);
+    members.splice(to, 0, group.tabs.find(t => t.id === id));
+    group.tabs = members;
+    return changedOrder(tabs, groups);
+  }
+
+  /** Tab ids with project `key` swapped one place left (`delta` -1) or right
+   *  (+1) in the tab bar, for the keyboard move (#40); `null` at either end. */
+  function shiftGroup(tabs, key, delta) {
+    const groups = groupTabs(tabs);
+    const neighbour = groups[groups.findIndex(g => g.key === key) + delta];
+    if (!neighbour || !groups.some(g => g.key === key)) return null;
+    return moveGroup(tabs, key, neighbour.key, delta > 0);
+  }
+
+  /** Whether `ids` is exactly the open tabs `openIds` in some order — each
+   *  once, none missing or extra — i.e. a reorder `reorderTabs` may apply.
+   *  A snapshot taken before a tab opened or closed is not. */
+  function isReorderOf(ids, openIds) {
+    const open = new Set(openIds);
+    return ids.length === open.size && new Set(ids).size === ids.length && ids.every(id => open.has(id));
   }
 
   /** Label of a tab shown on its own, not inside a group (#46): `title` is
@@ -195,6 +252,10 @@
     groupRunState,
     groupTarget,
     membersNewestFirst,
+    moveGroup,
+    moveMember,
+    shiftGroup,
+    isReorderOf,
     tabLabel,
     findProjectTab,
     findConversationTab,

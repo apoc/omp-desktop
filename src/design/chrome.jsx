@@ -83,7 +83,7 @@ function WindowChrome({
 
 // ── Project tabs ─────────────────────────────────────────────────────
 function TabBar({
-  projects, activeId, onSelect, onClose, onRename, onNew, onHistory, onNewInProject,
+  projects, activeId, onSelect, onClose, onRename, onNew, onHistory, onNewInProject, onReorder,
   sidebarOpen, onToggleSidebar,
   profiles = [], appVersion, updateVersion, onUpdate, onCheckUpdate,
 }) {
@@ -95,8 +95,11 @@ function TabBar({
     id === DEFAULT_PROFILE_ID ? null : (profiles.find(p => p.id === id)?.name ?? id);
   // Tab whose name is being edited inline (#32); double-click enters it.
   const [renaming, setRenaming] = React.useState(null);
+  // Drag to reorder (#40): projects along the bar ("projects", keyed by
+  // group), and a group chip's members in its dropdown (see TabGroupChip).
+  const reorder = window.useDragReorder(onReorder);
   return (
-    <div className="tabs">
+    <div className="tabs" onPointerDown={reorder.onPointerDown}>
       <button className={`tab-add ${sidebarOpen ? "on" : ""}`}
         title={`project sidebar (${hintFor("desktop.sidebar.toggle", "Ctrl+B")})`}
         aria-pressed={!!sidebarOpen}
@@ -116,6 +119,7 @@ function TabBar({
               onClose={onClose}
               onNewInProject={onNewInProject}
               onRename={onRename}
+              reorder={reorder}
             />
           );
         }
@@ -124,7 +128,8 @@ function TabBar({
         const profile = profileLabel(p.profile);
         return (
           <div key={p.id}
-            className={`tab ${active ? "active" : ""}`}
+            {...reorder.itemProps("projects", group.key, "x")}
+            className={`tab ${active ? "active" : ""}${reorder.dropClass("projects", group.key)}`}
             // Middle-click closes, as in browsers (#24). WebKit before
             // Safari 18.2 / WebKitGTK 2.46 has no `auxclick` and reports it as
             // a `click` with button 1, hence the check here too; newer engines

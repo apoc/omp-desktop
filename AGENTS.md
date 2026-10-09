@@ -7,7 +7,7 @@ Feature internals (RPC frames, state machines, measured omp behaviour) live in `
 |File|Feature|Code|
 |---|---|---|
 |`session-model.md`|tabs = omp processes, profiles, startup default, per-tab composer/plan state|`profiles.rs`, `app/session-ui.js`|
-|`project-navigation.md`|tab grouping by (profile, folder), recent projects|`app/project-nav.js`, `recent_projects.rs`|
+|`project-navigation.md`|tab grouping by (profile, folder), drag/keyboard reorder, recent projects|`app/project-nav.js`, `app/drag-reorder.js`, `ui/use-drag-reorder.js`, `recent_projects.rs`|
 |`reopening-tabs.md`|`open-tabs.json` persistence and launch restore|`open_tabs.rs`, `live.js` `_restoreOpenTabs`|
 |`session-title.md`|auto/manual `/rename` of tabs|`app/session-title.js`|
 |`recent-models.md`|model picker MRU from omp's `agent.db`|`model_usage.rs`|

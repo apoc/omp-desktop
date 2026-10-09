@@ -39,7 +39,7 @@ function TabLabel({ tab, className, title }) {
   );
 }
 
-function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewInProject, onRename }) {
+function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewInProject, onRename, reorder }) {
   const [open, setOpen] = React.useState(false);
   // Member tab whose name is being edited inline (#32).
   const [renaming, setRenaming] = React.useState(null);
@@ -60,10 +60,14 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
   // The × closes one conversation, the one a click on the chip selects (#45):
   // the focused member, else the newest. Never the whole project.
   const closeTarget = group.tabs.find(t => t.id === groupTarget(group, activeId));
+  // Drag to reorder (#40), on TabBar's `useDragReorder`: the chip moves
+  // along the bar, the dropdown's rows within this project.
+  const members = `members:${group.key}`;
 
   return (
     <div ref={rootRef}
-      className={`tab tab-group ${active ? "active" : ""}`}
+      {...reorder.itemProps("projects", group.key, "x")}
+      className={`tab tab-group ${active ? "active" : ""}${reorder.dropClass("projects", group.key)}`}
       // A middle click never closes a group: it would take several tabs
       // (and their transcripts) with it. Old WebKit reports it as a `click`
       // with button 1 (see TabBar), hence the guard there too; the
@@ -93,9 +97,10 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
       </button>
 
       {open && (
-        <div className="tab-group-pop" role="menu" onClick={e => e.stopPropagation()}>
+        <div className="tab-group-pop" role="menu" data-no-reorder onClick={e => e.stopPropagation()}>
           {membersNewestFirst(group).map(t => (
-            <div key={t.id} className={`tab-group-row ${t.id === activeId ? "active" : ""}`} role="none">
+            <div key={t.id} {...reorder.itemProps(members, t.id, "y")}
+              className={`tab-group-row ${t.id === activeId ? "active" : ""}${reorder.dropClass(members, t.id)}`} role="none">
               {renaming === t.id ? (
                 <span className="tab-group-item tab-group-editing">
                   <span className="tab-group-dot"><TabRunDot state={t.runState} /></span>

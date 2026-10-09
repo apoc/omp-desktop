@@ -103,6 +103,11 @@
        load before all of them. -->
   <script src="app/project-nav.js"></script>
 
+  <!-- Drag-to-reorder geometry (#40): the drop slot under the pointer.
+       Dependency-free IIFE; design/ui/use-drag-reorder.js destructures
+       window.OMP_DRAG_REORDER at load, so it must load before it. -->
+  <script src="app/drag-reorder.js"></script>
+
   <!-- Empty-workspace backdrop: pure digital-rain + ASCII logo geometry.
        Dependency-free IIFE; design/empty-workspace.jsx destructures
        window.OMP_MATRIX at top level, so it must load before it. -->
@@ -156,6 +161,11 @@
   <!-- Outside-click / Escape dismissal shared by the dropdown menus
        (profile-menu.jsx, tab-group-chip.jsx, thinking-menu.jsx). -->
   <script src="design/ui/use-popover-dismiss.js"></script>
+  <!-- Pointer drag-to-reorder (#40) for the tab bar, the group chip's
+       dropdown and the project sidebar: chrome.jsx and project-sidebar.jsx
+       call window.useDragReorder at render time, tab-group-chip.jsx gets
+       TabBar's. Destructures window.OMP_DRAG_REORDER at load. -->
+  <script src="design/ui/use-drag-reorder.js"></script>
   <script type="text/babel" src="design/ui/icons.jsx"></script>
   <!-- Copy buttons (issue #33); markdown.jsx, plan-annotations.jsx and the
        chat/ components destructure its exports at top level. -->
