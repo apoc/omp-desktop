@@ -17,6 +17,7 @@
   const STITLE = window.OMP_SESSION_TITLE;
   const QUEUE = window.OMP_QUEUE;
   const ASK = window.OMP_ASK_DIALOG;
+  const APPROVAL = window.OMP_APPROVAL;
   const TURN = window.OMP_TURN_STATUS;
   const GOAL = window.OMP_GOAL;
   const { tsOf, mergeTranscript } = window.OMP_TRANSCRIPT;
@@ -89,7 +90,8 @@
   let streamingBubble = null;
   let activeToolCards = new Map();    // toolCallId → message index
   const ASK_FLUSH_MS = 150;         // upper bound on how long an ask may stay buffered
-  // Ask bubbles awaiting a flush into state.messages — see _queueAskBubble.
+  // Ask bubbles (and auto-approval rows) awaiting a flush into
+  // state.messages — see _queueAskBubble.
   let pendingAskBubbles    = [];    // FIFO of buffered ask messages
   let pendingAskFlushTimer = null;  // armed while the queue is non-empty
   let tpsSamples      = Array(30).fill(0);
@@ -477,7 +479,7 @@
   }
 
   // Append a synthetic assistant note (process exited, startup failed,
-  // auto-approved-by-rule) and publish it.
+  // a workspace notice) and publish it.
   //
   // Owns two invariants that were previously restated at each call site and
   // got them wrong at two of three:
@@ -2141,11 +2143,13 @@
 
     // Rust-side auto-approval (see approval::RuleBook / reader::try_auto_approve)
     // answered an "Allow tool: X" prompt directly on omp's stdin and never
-    // forwarded the original ask — this synthetic note is the only trace of
-    // it the human sees.
+    // forwarded the original ask — this row, with the prompt's detail lines
+    // (command, path, …), is the only trace of it the human sees (#42). The
+    // prompt arrived just before its tool's `tool_execution_start`, so it
+    // goes through the ask queue for the same [tool_card, row] order; the
+    // queue's flush publishes it.
     if (type === "desktop_auto_approval") {
-      _pushAssistantNote(`Auto-approved **${ev.tool}** via your approval rule.`);
-      notify();
+      _queueAskBubble(APPROVAL.autoApprovalRow(ev, timeNow()));
       return;
     }
 

@@ -273,6 +273,7 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
           else if (m.kind === "tool")      hue = TOOL_META[m.tool]?.color || "var(--fg-4)";
           else if (m.kind === "job")       hue = TOOL_META.job.color;
           else if (m.kind === "goal")      hue = TOOL_META.goal.color;
+          else if (m.kind === "approval")  hue = TOOL_META.approval.color;
 
           // Brightness: assistant cells modulate by log(tokens), others flat.
           let opacity = 0.7;
@@ -306,6 +307,8 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
             title = `retrying · attempt ${m.attempt}${m.maxAttempts ? " of " + m.maxAttempts : ""}`;
           } else if (m.kind === "goal") {
             title = window.OMP_GOAL.rowView(m).title;
+          } else if (m.kind === "approval") {
+            title = `auto-approved · ${m.tool || "tool"}`;
           } else {
             title = m.kind;
           }

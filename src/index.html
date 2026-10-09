@@ -127,6 +127,12 @@
        live.js reads it at its top-level init, so it must load before them. -->
   <script src="app/ask-dialog.js"></script>
 
+  <!-- Tool approvals (#42): the "Allow tool:" prompt split and the
+       auto-approval row. Dependency-free IIFE; design/chat/ask-bubble.jsx
+       and approval-row.jsx destructure window.OMP_APPROVAL at top level and
+       live.js reads it at its top-level init, so it must load before them. -->
+  <script src="app/approval.js"></script>
+
   <!-- Conversation tree (prompt-cache navigator): pure model over the Rust
        `conversation_tree` payload. IIFEs; conversation-tree-graph.js (the
        entry index and lane layout, window.OMP_CONV_GRAPH) must precede
@@ -166,9 +172,11 @@
   <!-- ask-bubble.jsx destructures window.AskDialog at top level. -->
   <script type="text/babel" src="design/chat/ask-dialog.jsx"></script>
   <script type="text/babel" src="design/chat/ask-bubble.jsx"></script>
-  <!-- chat-view.jsx destructures window.RetryRow and window.GoalRow at top level. -->
+  <!-- chat-view.jsx destructures window.RetryRow, window.GoalRow and
+       window.ApprovalRow at top level. -->
   <script type="text/babel" src="design/chat/retry-row.jsx"></script>
   <script type="text/babel" src="design/chat/goal-row.jsx"></script>
+  <script type="text/babel" src="design/chat/approval-row.jsx"></script>
   <script type="text/babel" src="design/chat/chat-view.jsx"></script>
   <!-- Subagent manager UI. bits → controls → inspector (destructures the
        controls) → pane (destructures the inspector) → rail card; all before

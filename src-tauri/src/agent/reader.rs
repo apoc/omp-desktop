@@ -164,9 +164,10 @@ fn strip_trailing_crlf(buf: &mut Vec<u8>) {
 /// If `frame` is a tool-approval prompt matching a currently-granted rule,
 /// answer it directly on `stdin` (never forwarded to the frontend) and
 /// return a synthetic `desktop_auto_approval` frame in its place so the
-/// human still sees *that* it happened. Returns `None` for every frame
-/// that isn't an approval prompt, or is one the rule book doesn't cover —
-/// those fall through to the human exactly as before.
+/// human still sees *what* was approved: the tool and the prompt's detail
+/// lines (`details`, `null` when the title has none). Returns `None` for
+/// every frame that isn't an approval prompt, or is one the rule book
+/// doesn't cover — those fall through to the human exactly as before.
 ///
 /// Generic over the stdin writer (`W: Write`) rather than hard-coded to
 /// `ChildStdin` so unit tests can pass a `Mutex<Vec<u8>>` and assert on the
@@ -196,7 +197,14 @@ fn try_auto_approve<W: std::io::Write>(
         let _ = writeln!(*w, "{response}");
         let _ = w.flush();
     }
-    Some(serde_json::json!({ "type": "desktop_auto_approval", "tool": tool }).to_string())
+    Some(
+        serde_json::json!({
+            "type": "desktop_auto_approval",
+            "tool": tool,
+            "details": approval::approval_details(frame),
+        })
+        .to_string(),
+    )
 }
 
 /// Grouped arguments for [`spawn_stdout_reader`] — bundled into one struct
@@ -785,6 +793,8 @@ mod tests {
         let notice: serde_json::Value = serde_json::from_str(&notice.unwrap()).unwrap();
         assert_eq!(notice["type"], "desktop_auto_approval");
         assert_eq!(notice["tool"], "bash");
+        // What the rule approved reaches the human, not just the tool name.
+        assert_eq!(notice["details"], "Command: ls -la\nCwd: /tmp");
 
         // The wire shape written to stdin must stay compatible with what
         // `src/live.js`'s `answerAsk` sends: a single `extension_ui_response`

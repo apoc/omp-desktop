@@ -6,7 +6,7 @@
    minimap-hover cross-highlight (mm-hot) flows through here via the
    `hoveredMsgIdx` prop. */
 
-const { UserBubble: _CV_UserBubble, ToolCard: _CV_ToolCard, AssistantBubble: _CV_AssistantBubble, AskBubble: _CV_AskBubble, RetryRow: _CV_RetryRow, GoalRow: _CV_GoalRow, Icon: _CV_Icon, TOOL_META: _CV_TOOL_META } = window;
+const { UserBubble: _CV_UserBubble, ToolCard: _CV_ToolCard, AssistantBubble: _CV_AssistantBubble, AskBubble: _CV_AskBubble, RetryRow: _CV_RetryRow, GoalRow: _CV_GoalRow, ApprovalRow: _CV_ApprovalRow, Icon: _CV_Icon, TOOL_META: _CV_TOOL_META } = window;
 const { nextPinned: _CV_nextPinned, shouldRepin: _CV_shouldRepin } = window.OMP_SCROLL_PIN;
 
 // ── Per-bubble memo wrappers ────────────────────────────────────────────────
@@ -202,6 +202,7 @@ function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, 
             if (m.kind === "job")     return <JobRow              key={m._id ?? i} idx={i} highlighted={hl} msg={m} />;
             if (m.kind === "retry")   return <_CV_RetryRow        key={m._id ?? i} idx={i} highlighted={hl} msg={m} onStop={onStopRetry} />;
             if (m.kind === "goal")    return <_CV_GoalRow         key={m._id ?? i} idx={i} highlighted={hl} msg={m} />;
+            if (m.kind === "approval") return <_CV_ApprovalRow    key={m._id ?? i} idx={i} highlighted={hl} msg={m} />;
             if (m.kind === "tool")    return <_CV_ToolCard_M      key={m._id ?? i} idx={i} highlighted={hl} msg={m} onInspectSubagent={onInspectSubagent} />;
             if (m.kind === "ask")     return <_CV_AskBubble_M     key={m._id ?? i} idx={i} highlighted={hl} msg={m} onAnswer={onAskAnswer} onAnswerDialog={onAskDialogAnswer} onConfirm={onConfirmAsk} onCancelAsk={onCancelAsk} onGrant={onGrantApproval} hasProjectPath={hasProjectPath} />;
             return <_CV_AssistantBubble_M key={m._id ?? i} idx={i} highlighted={hl} msg={m}

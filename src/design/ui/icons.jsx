@@ -90,6 +90,7 @@ const TOOL_META = {
   job:     { color: "var(--cyan)",    icon: "refresh",label: "job"  }, // chat-view.jsx JobRow
   retry:   { color: "var(--amber)",   icon: "refresh",label: "retry" }, // chat/retry-row.jsx
   goal:    { color: "var(--lilac)",   icon: "goal",   label: "goal"  }, // chat/goal-row.jsx, design/goal-strip.jsx
+  approval:{ color: "var(--lime)",    icon: "check",  label: "auto-approved" }, // chat/approval-row.jsx
 };
 
 Object.assign(window, { Icon, TOOL_META });

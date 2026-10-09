@@ -12,7 +12,7 @@ Feature internals (RPC frames, state machines, measured omp behaviour) live in `
 |`session-title.md`|auto/manual `/rename` of tabs|`app/session-title.js`|
 |`recent-models.md`|model picker MRU from omp's `agent.db`|`model_usage.rs`|
 |`message-queue.md`|steer/follow-up queue strip|`app/message-queue.js`, `design/queue-strip.jsx`|
-|`ask-dialog.md`|omp's ask tool dialog|`app/ask-dialog.js`, `chat/ask-dialog.jsx`|
+|`ask-dialog.md`|omp's ask tool dialog, tool-approval prompts, auto-approval rows|`app/ask-dialog.js`, `chat/ask-dialog.jsx`, `app/approval.js`, `chat/approval-row.jsx`, `approval.rs`|
 |`turn-status.md`|run state, failed requests, auto-retry rows, job rows|`app/turn-status.js`|
 |`subagents.md`|subagent manager|`app/subagents.js`, `design/subagents/`|
 |`conversation-tree.md`|conversation tree + prompt-cache model, branch/fork|`conversation_tree/`, `app/conversation-tree*.js`|

@@ -24,9 +24,10 @@
 //! `Origin:`/`Reason:` line and whatever the tool's own
 //! `formatApprovalDetails()` returns (path, command, content preview —
 //! elided at 2000 chars). Only the first line identifies the tool, so
-//! everything after the first `\n` is ignored here; matching against the
+//! matching ignores everything after the first `\n`; matching against the
 //! whole title meant [`is_valid_tool_name`] rejected every real prompt and
-//! no rule ever auto-answered.
+//! no rule ever auto-answered. The rest is what [`approval_details`] hands
+//! to the auto-approval notice, so the human sees *what* a rule approved.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -106,6 +107,17 @@ pub fn approval_tool_name(frame: &serde_json::Value) -> Option<&str> {
 /// to construct the `extension_ui_response` that answers it.
 pub fn approval_request_id(frame: &serde_json::Value) -> Option<&str> {
     frame.get("id").and_then(serde_json::Value::as_str)
+}
+
+/// The detail lines after the first line of an `approval_tool_name`-matched
+/// frame's title (origin/reason, command, path, content preview), or `None`
+/// when the title has none. Borrowed verbatim: a CRLF-framed title keeps its
+/// `\r`s here, and the frontend (`OMP_APPROVAL.autoApprovalRow`) drops them,
+/// as it does for a prompt the human answers.
+pub fn approval_details(frame: &serde_json::Value) -> Option<&str> {
+    let title = frame.get("title").and_then(serde_json::Value::as_str)?;
+    let (_, details) = title.split_once('\n')?;
+    (!details.trim().is_empty()).then_some(details)
 }
 
 /// Mirrors the tool-name grammar omp's own approval-prompt formatter uses:
@@ -590,6 +602,38 @@ mod tests {
             "options": ["Approve", "Deny"]
         });
         assert_eq!(approval_tool_name(&frame), None);
+    }
+
+    #[test]
+    fn approval_details_is_the_title_after_its_first_line() {
+        let frame = json!({
+            "type": "extension_ui_request", "method": "select",
+            "title": "Allow tool: bash\nReason: exec tier\nCommand: rm -rf build\n  && make",
+            "options": ["Approve", "Deny"]
+        });
+        assert_eq!(
+            approval_details(&frame),
+            Some("Reason: exec tier\nCommand: rm -rf build\n  && make")
+        );
+        let crlf = json!({ "title": "Allow tool: mcp__x\r\nOrigin: MCP server tool" });
+        assert_eq!(approval_details(&crlf), Some("Origin: MCP server tool"));
+    }
+
+    #[test]
+    fn approval_details_is_none_without_detail_lines() {
+        assert_eq!(
+            approval_details(&json!({ "title": "Allow tool: bash" })),
+            None
+        );
+        assert_eq!(
+            approval_details(&json!({ "title": "Allow tool: bash\n" })),
+            None
+        );
+        assert_eq!(
+            approval_details(&json!({ "title": "Allow tool: bash\n \r\n" })),
+            None
+        );
+        assert_eq!(approval_details(&json!({})), None);
     }
 
     #[test]
