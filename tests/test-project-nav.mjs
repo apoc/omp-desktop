@@ -115,6 +115,33 @@ check("groupTarget prefers the active member, else the last one", () => {
   assert.equal(N.groupTarget(group, "elsewhere"), "c");
 });
 
+check("membersNewestFirst lists the newest-opened member first, without reordering the group", () => {
+  const [group] = N.groupTabs([tab("a", "/p"), tab("b", "/p"), tab("c", "/p")]);
+  assert.deepEqual(N.membersNewestFirst(group).map(t => t.id), ["c", "b", "a"]);
+  assert.deepEqual(group.tabs.map(t => t.id), ["a", "b", "c"]);
+  // The top row is what a click on the chip selects when no member is active.
+  assert.equal(N.membersNewestFirst(group)[0].id, N.groupTarget(group, "elsewhere"));
+});
+
+// ── tabLabel ──────────────────────────────────────────────────────────────
+
+check("tabLabel prefixes a renamed tab with its project folder", () => {
+  assert.deepEqual(N.tabLabel(tab("a", "/home/me/omp-desktop", { name: "fix tab close" })),
+    { prefix: "omp-desktop", title: "fix tab close" });
+  assert.equal(N.tabLabel(tab("a", "C:\\Repo\\", { name: "x" })).prefix, "Repo");
+});
+
+check("tabLabel has no prefix while the title is the folder name, or without a folder", () => {
+  assert.equal(N.tabLabel(tab("a", "/home/me/omp-desktop", { name: "omp-desktop" })).prefix, null);
+  assert.equal(N.tabLabel(tab("a", "", { name: "resumed" })).prefix, null);
+  assert.equal(N.tabLabel(tab("a", null, { name: "new session" })).prefix, null);
+  // A fresh tab is named `basename(path)` (live.js `_tabNameFor`), also for
+  // a drive root or a trailing separator, which a split-and-pop would not.
+  for (const p of ["C:\\", "C:\\Repo\\", "/x/"]) {
+    assert.equal(N.tabLabel(tab("a", p, { name: N.basename(p) })).prefix, null, p);
+  }
+});
+
 // ── findProjectTab ────────────────────────────────────────────────────────
 
 check("findProjectTab prefers the active tab, else the last match", () => {

@@ -6,7 +6,7 @@
    - Ambient rail: TokenGauge, ActivityRadar, subagents card, Minimap
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot, RenameField, THINKING_LEVELS } = window;
+const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot, TabLabel, RenameField, THINKING_LEVELS } = window;
 const { groupTabs } = window.OMP_PROJECT_NAV;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` — same
@@ -144,7 +144,7 @@ function TabBar({
                 onCommit={name => onRename(p.id, name)}
                 onClose={() => setRenaming(null)} />
             ) : (
-              <span className="tab-name" title={`${p.name}\ndouble-click to rename`}>{p.name}</span>
+              <TabLabel tab={p} className="tab-name" title={`${p.name}\ndouble-click to rename`} />
             )}
             {profile && (
               <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>

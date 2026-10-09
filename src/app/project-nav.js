@@ -83,6 +83,21 @@
       : group.tabs[group.tabs.length - 1].id;
   }
 
+  /** A group's members as listed in the chip dropdown and the sidebar,
+   *  newest-opened first (#38). A copy: `group.tabs` keeps registry order,
+   *  which `groupTarget` reads. */
+  function membersNewestFirst(group) {
+    return [...group.tabs].reverse();
+  }
+
+  /** Label of a tab shown on its own, not inside a group (#46): `title` is
+   *  the tab's renameable name; `prefix` is its project folder, or `null`
+   *  while the name is still that folder (a fresh tab) or there is none. */
+  function tabLabel(tab) {
+    const folder = tab.path ? basename(tab.path) : "";
+    return { prefix: folder && folder !== tab.name ? folder : null, title: tab.name };
+  }
+
   /** Id of an open tab on `path` under `profile` — the active one if it
    *  qualifies, else the last — or `null`. */
   function findProjectTab(tabs, path, profile, activeId) {
@@ -179,6 +194,8 @@
     groupTabs,
     groupRunState,
     groupTarget,
+    membersNewestFirst,
+    tabLabel,
     findProjectTab,
     findConversationTab,
     recentRows,

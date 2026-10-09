@@ -1083,11 +1083,10 @@
   }
 
   /** Tab label for a project folder: its last path segment, else
-   *  `fallback`. Pure — proven with an eval-kernel cell (10/10 cases,
-   *  including the pre-existing trailing-slash quirk inherited from
-   *  master's `openSession`) run during PR #4 review remediation. */
+   *  `fallback`. The same `basename` `OMP_PROJECT_NAV.tabLabel` compares
+   *  against, so a fresh tab never shows its own folder as a prefix (#46). */
   function _tabNameFor(cwd, fallback) {
-    return cwd ? cwd.replace(/\\/g, "/").split("/").pop() || cwd : fallback;
+    return cwd ? window.OMP_PROJECT_NAV.basename(cwd) : fallback;
   }
 
   /** Registry fields for a fresh conversation on an existing tab. The

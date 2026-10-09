@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- A tab for a project with one conversation now shows the project's folder before the conversation's title (`omp-desktop · fix tab close`), in the tab bar and the project sidebar (#46). The folder is shortened first when space runs out, and left out while the conversation is still named after its folder.
+- A project's conversations are listed newest-opened first, in the tab-bar dropdown and the project sidebar (#38).
+
+### Fixed
+
+- A project with several conversations now has a close button (×) on its tab-bar chip, like a single tab (#45). It closes one conversation — the one you are in, or the newest when you are in another project — never the whole project; its tooltip names the conversation.
+
 ## [0.6.0] - 2026-10-04
 
 ### Added

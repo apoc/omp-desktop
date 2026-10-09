@@ -8,7 +8,7 @@
    ═════════════════════════════════════════════════════════════════════ */
 
 const { Icon, RenameField } = window;
-const { groupTarget, groupRunState } = window.OMP_PROJECT_NAV;
+const { groupTarget, groupRunState, membersNewestFirst, tabLabel } = window.OMP_PROJECT_NAV;
 
 /** A tab's (or group's) run-state dot; nothing while idle. Shared by the
  *  tab bar and the project sidebar so the titles stay in one place. */
@@ -20,6 +20,23 @@ function TabRunDot({ state }) {
     : state === "retrying" ? "retrying a failed request"
     : "running";
   return <span className={`tab-run-dot ${state}`} title={title} />;
+}
+
+/** Name of a tab shown on its own (#46): `folder · title` once the title
+ *  is no longer the folder name, the folder truncating first. Shared by the
+ *  tab bar and the project sidebar; `className` is the caller's name class. */
+function TabLabel({ tab, className, title }) {
+  const { prefix, title: name } = tabLabel(tab);
+  if (!prefix) return <span className={className} title={title}>{name}</span>;
+  return (
+    <span className={`${className} tab-label`} title={title}>
+      {/* A few letters of the folder stay visible however long the title;
+          a shorter folder keeps its own width, not a padded 4ch box. */}
+      <span className="tab-prefix" style={{ minWidth: `${Math.min(4, prefix.length)}ch` }}>{prefix}</span>
+      <span className="tab-sep">·</span>
+      <span className="tab-title">{name}</span>
+    </span>
+  );
 }
 
 function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewInProject, onRename }) {
@@ -40,6 +57,9 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
 
   const active  = group.tabs.find(t => t.id === activeId);
   const profile = profileLabel(group.profile);
+  // The × closes one conversation, the one a click on the chip selects (#45):
+  // the focused member, else the newest. Never the whole project.
+  const closeTarget = group.tabs.find(t => t.id === groupTarget(group, activeId));
 
   return (
     <div ref={rootRef}
@@ -65,10 +85,16 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
         onClick={e => { e.stopPropagation(); if (open) close(); else setOpen(true); }}>
         <Icon name="chev" size={9} />
       </button>
+      {/* Old WebKit reports a middle click as `click` with button 1 (see the
+          root): it must not close anything, as on the rest of the chip. */}
+      <button className="tab-close" title={`close conversation "${closeTarget.name}"`}
+        onClick={e => { e.stopPropagation(); if (e.button !== 1) onClose?.(closeTarget.id); }}>
+        <Icon name="close" size={9} />
+      </button>
 
       {open && (
         <div className="tab-group-pop" role="menu" onClick={e => e.stopPropagation()}>
-          {group.tabs.map(t => (
+          {membersNewestFirst(group).map(t => (
             <div key={t.id} className={`tab-group-row ${t.id === activeId ? "active" : ""}`} role="none">
               {renaming === t.id ? (
                 <span className="tab-group-item tab-group-editing">
@@ -109,4 +135,4 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
   );
 }
 
-Object.assign(window, { TabGroupChip, TabRunDot });
+Object.assign(window, { TabGroupChip, TabRunDot, TabLabel });

@@ -216,6 +216,17 @@
   max-width: 200px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* `folder · title` on a tab shown on its own (#46), tab bar and sidebar:
+   the folder gives way first, then the title. Flexbox hands each item a
+   share of the overflow weighted by shrink × width, and even a sub-pixel
+   share triggers the title's ellipsis, so the folder's weight is huge
+   (100:1 still clipped the last glyph of a title that fit). Its floor of
+   up to 4ch is set inline by TabLabel, capped at the folder's length. */
+.tab-label { display: flex; align-items: baseline; }
+.tab-label > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-prefix { flex: 0 100000 auto; color: var(--fg-4); }
+.tab-sep { flex: none; margin: 0 5px; color: var(--fg-5); }
+.tab-title { flex: 0 1 auto; min-width: 0; }
 /* Inline conversation-name editor (#32): tab bar, group popover, sidebar. */
 .rename-field { height: 20px; padding: 0 5px; border-color: var(--accent); }
 /* In the tab bar: same footprint as the .tab-name it replaces. */
@@ -254,6 +265,8 @@
 /* Child combinator: a grouped chip's popover rows are descendants of the
    `.tab` too, and must reveal their own × per row, not all at once. */
 .tab:hover > .tab-close { opacity: 1; }
+/* Not a `.btn`, so no global focus ring. */
+.tab > .tab-close:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: -1px; }
 .tab-close:hover { background: var(--bg-active); color: var(--fg); }
 
 .tab-add {

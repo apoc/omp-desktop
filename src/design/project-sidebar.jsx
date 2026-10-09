@@ -9,8 +9,8 @@
    are real buttons, so every action is keyboard-reachable.
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TabRunDot, RenameField } = window;
-const { groupTabs, groupRunState, groupTarget, basename, parentName } = window.OMP_PROJECT_NAV;
+const { Icon, TabRunDot, TabLabel, RenameField } = window;
+const { groupTabs, groupRunState, groupTarget, membersNewestFirst, basename, parentName } = window.OMP_PROJECT_NAV;
 
 // Same guard as chrome.jsx's copy: the registry may not be loaded.
 function sidebarHint(actionId, fallback) {
@@ -61,7 +61,7 @@ function ProjectSidebar({
           const profile = profileLabel(group.profile);
           const editing = !multi && renaming === group.tabs[0].id;
           const folderIcon = <Icon name="folder" size={11} color={containsActive ? "var(--accent)" : "var(--fg-4)"} />;
-          // Single-tab cards show the conversation title, which ellipsizes.
+          // Single-tab cards show `folder · title` (#46), which ellipsizes.
           // The tooltip keeps the full title plus the folder path; multi-tab
           // project rows still tip the path (member rows tip each tab name).
           const cardTip = multi
@@ -90,7 +90,9 @@ function ProjectSidebar({
                     onClick={() => onSelectTab(groupTarget(group, activeId))}
                     onDoubleClick={() => { if (!multi) startRename(group.tabs[0].id); }}>
                     {folderIcon}
-                    <span className="psb-name">{multi ? group.name : group.tabs[0].name}</span>
+                    {multi
+                      ? <span className="psb-name">{group.name}</span>
+                      : <TabLabel tab={group.tabs[0]} className="psb-name" />}
                     {profile && (
                       <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
                     )}
@@ -113,7 +115,7 @@ function ProjectSidebar({
                   )}
                 </span>
               </div>
-              {expanded && group.tabs.map(t => (
+              {expanded && membersNewestFirst(group).map(t => (
                 <div key={t.id} className={`psb-row psb-tab ${t.id === activeId ? "active" : ""}`}>
                   {renaming === t.id ? (
                     <div className="psb-main psb-editing">{renameField(t)}</div>

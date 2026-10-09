@@ -197,12 +197,12 @@
        so this must load before all three. -->
   <script type="text/babel" src="design/rename-field.jsx"></script>
   <!-- Grouped tab-bar chip (#27) — chrome.jsx destructures
-       window.TabGroupChip / window.TabRunDot at top level, so this must load
-       before it. -->
+       window.TabGroupChip / window.TabRunDot / window.TabLabel at top level,
+       so this must load before it. -->
   <script type="text/babel" src="design/tab-group-chip.jsx"></script>
   <script type="text/babel" src="design/chrome.jsx"></script>
-  <!-- Project sidebar (#27); reads window.TabRunDot (tab-group-chip.jsx)
-       and window.OMP_PROJECT_NAV at top level. -->
+  <!-- Project sidebar (#27); reads window.TabRunDot / window.TabLabel
+       (tab-group-chip.jsx) and window.OMP_PROJECT_NAV at top level. -->
   <script type="text/babel" src="design/project-sidebar.jsx"></script>
   <!-- Session column with no tab open; destructures window.MarkdownContent
        and window.OMP_MATRIX at top level. -->
