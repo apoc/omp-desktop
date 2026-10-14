@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use super::cdp::{browser_ws_url, CdpClient};
 use super::emit::{BrowserEmit, Frame, Pick, TabInfo, ViewState};
-use super::tests::manager_with_chromium;
+use super::tests::{manager_with_chromium, CHROMIUM};
 use super::view::{InputEvent, View};
 use super::{lock, BrowserManager};
 
@@ -110,6 +110,7 @@ fn mouse(kind: &str, x: f64, y: f64) -> InputEvent {
 
 #[test]
 fn screencast_emits_frames() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, seen)) = panel("view-frames") else {
         eprintln!("skip: no chromium");
         return;
@@ -143,6 +144,7 @@ fn screencast_emits_frames() {
 
 #[test]
 fn frames_keep_coming_while_the_page_changes() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, seen)) = panel("view-ack") else {
         eprintln!("skip: no chromium");
         return;
@@ -160,17 +162,16 @@ fn frames_keep_coming_while_the_page_changes() {
 
 #[test]
 fn input_reaches_the_page() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, _seen)) = panel("view-input") else {
         eprintln!("skip: no chromium");
         return;
     };
-    let page = "data:text/html,<input id=i autofocus><button onclick=\"document.title='clicked'\" \
+    let page = "data:text/html,<input id=i><button onclick=\"document.title='clicked'\" \
                 style=\"position:absolute;left:100px;top:100px;width:100px;height:50px\">go</button>";
     view.navigate(page).unwrap();
-    eventually(3, || {
-        (view.evaluate_for_test("document.readyState").ok()? == json!("complete")).then_some(())
-    })
-    .expect("page loaded");
+    page_loaded(&view);
+    focus_input(&view);
     view.input(&InputEvent::Text { text: "abc".into() })
         .unwrap();
     let typed = eventually(3, || {
@@ -197,6 +198,7 @@ fn input_reaches_the_page() {
 
 #[test]
 fn tabs_and_history() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, seen)) = panel("view-tabs") else {
         eprintln!("skip: no chromium");
         return;
@@ -288,6 +290,7 @@ fn shows(seen: &Collect, target: &str, frames_before: usize) -> bool {
 
 #[test]
 fn follows_an_agent_that_navigates_an_existing_page() {
+    let _chromium = lock(&CHROMIUM);
     let hold = Duration::from_millis(200);
     let Some((m, _view, seen, a, b)) = panel_on_a_next_to_b("view-follow-nav", hold) else {
         eprintln!("skip: no chromium");
@@ -315,6 +318,7 @@ fn follows_an_agent_that_navigates_an_existing_page() {
 
 #[test]
 fn a_tab_the_user_picked_holds_the_view_for_a_while() {
+    let _chromium = lock(&CHROMIUM);
     let hold = Duration::from_millis(1500);
     let Some((m, _view, seen, a, b)) = panel_on_a_next_to_b("view-follow-hold", hold) else {
         eprintln!("skip: no chromium");
@@ -345,6 +349,7 @@ fn a_tab_the_user_picked_holds_the_view_for_a_while() {
 
 #[test]
 fn follows_a_page_the_agent_creates() {
+    let _chromium = lock(&CHROMIUM);
     let hold = Duration::from_millis(200);
     let Some((m, _view, seen, _a, _b)) = panel_on_a_next_to_b("view-follow-create", hold) else {
         eprintln!("skip: no chromium");
@@ -365,6 +370,7 @@ fn follows_a_page_the_agent_creates() {
 
 #[test]
 fn follows_an_agent_on_a_page_level_connection() {
+    let _chromium = lock(&CHROMIUM);
     let hold = Duration::from_millis(200);
     let Some((m, _view, seen, _a, b)) = panel_on_a_next_to_b("view-follow-page-ws", hold) else {
         eprintln!("skip: no chromium");
@@ -385,6 +391,7 @@ fn follows_an_agent_on_a_page_level_connection() {
 
 #[test]
 fn a_flood_of_follow_reports_costs_one_switch_to_the_last_page() {
+    let _chromium = lock(&CHROMIUM);
     let hold = Duration::from_millis(200);
     let Some((m, view, seen, a, b)) = panel_on_a_next_to_b("view-follow-flood", hold) else {
         eprintln!("skip: no chromium");
@@ -415,6 +422,7 @@ fn a_flood_of_follow_reports_costs_one_switch_to_the_last_page() {
 
 #[test]
 fn a_panel_opened_after_the_agent_browsed_starts_on_its_page() {
+    let _chromium = lock(&CHROMIUM);
     let Some(m) = manager_with_chromium("view-open-on-agent") else {
         eprintln!("skip: no chromium");
         return;
@@ -448,6 +456,7 @@ fn a_panel_opened_after_the_agent_browsed_starts_on_its_page() {
 
 #[test]
 fn release_closes_the_view_before_chromium_goes() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, seen)) = panel("view-release") else {
         eprintln!("skip: no chromium");
         return;
@@ -479,6 +488,7 @@ fn panel_commands_need_an_allocated_browser() {
 
 #[test]
 fn reopening_a_panel_replaces_the_view() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, first, seen)) = panel("view-reopen") else {
         eprintln!("skip: no chromium");
         return;
@@ -514,6 +524,7 @@ fn active_tab(seen: &Collect) -> Option<String> {
 
 #[test]
 fn a_close_during_a_pending_open_wins() {
+    let _chromium = lock(&CHROMIUM);
     let Some(m) = manager_with_chromium("view-open-close") else {
         eprintln!("skip: no chromium");
         return;
@@ -562,8 +573,23 @@ fn page_loaded(view: &View) {
     .expect("page loaded");
 }
 
+/// Document readiness does not imply that Chromium has applied autofocus.
+fn focus_input(view: &View) {
+    view.evaluate_for_test("document.getElementById('i').focus()")
+        .unwrap();
+    eventually(3, || {
+        (view
+            .evaluate_for_test("document.activeElement === document.getElementById('i')")
+            .ok()?
+            == json!(true))
+        .then_some(())
+    })
+    .expect("input focused before sending text");
+}
+
 #[test]
 fn queued_input_is_not_sent_to_the_page_shown_later() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, seen)) = panel("view-stale-input") else {
         eprintln!("skip: no chromium");
         return;
@@ -583,8 +609,7 @@ fn queued_input_is_not_sent_to_the_page_shown_later() {
     view.tab_activate(&b).unwrap();
     drop(paused);
 
-    view.evaluate_for_test("document.getElementById('i').focus()")
-        .unwrap();
+    focus_input(&view);
     // Input is sent in order: once "xyz" has arrived, "abc" has been dealt with.
     view.input(&InputEvent::Text { text: "xyz".into() })
         .unwrap();
@@ -600,6 +625,7 @@ fn queued_input_is_not_sent_to_the_page_shown_later() {
 
 #[test]
 fn a_page_that_cannot_be_attached_leaves_the_shown_one_alone() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, seen)) = panel("view-failed-switch") else {
         eprintln!("skip: no chromium");
         return;

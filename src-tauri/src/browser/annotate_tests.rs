@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use super::annotate::CapturedImage;
 use super::emit::{BrowserEmit, Frame, Pick, Rect, TabInfo, ViewState};
-use super::tests::manager_with_chromium;
+use super::tests::{manager_with_chromium, CHROMIUM};
 use super::view::{InputEvent, View};
 use super::{lock, BrowserManager};
 
@@ -135,6 +135,7 @@ const BUTTON_PAGE: &str = "data:text/html,<main><button class=save \
 
 #[test]
 fn element_pick_reports_selector() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, picks)) = panel("annotate-element") else {
         eprintln!("skip: no chromium");
         return;
@@ -183,6 +184,7 @@ const BUTTONS_PAGE: &str = "data:text/html,<main>\
 
 #[test]
 fn sibling_buttons_get_minimal_selectors() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, picks)) = panel("annotate-siblings") else {
         eprintln!("skip: no chromium");
         return;
@@ -201,6 +203,7 @@ fn sibling_buttons_get_minimal_selectors() {
 
 #[test]
 fn overlapping_sibling_classes_still_resolve_to_the_picked_element() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, picks)) = panel("annotate-overlapping-classes") else {
         eprintln!("skip: no chromium");
         return;
@@ -224,6 +227,7 @@ fn overlapping_sibling_classes_still_resolve_to_the_picked_element() {
 
 #[test]
 fn namespaced_tag_siblings_still_deliver_a_resolvable_pick() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, picks)) = panel("annotate-namespaced-tags") else {
         eprintln!("skip: no chromium");
         return;
@@ -250,6 +254,7 @@ fn namespaced_tag_siblings_still_deliver_a_resolvable_pick() {
 
 #[test]
 fn long_text_pick_keeps_a_complete_pair_at_the_cut_boundary() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, picks)) = panel("annotate-complete-emoji") else {
         eprintln!("skip: no chromium");
         return;
@@ -272,6 +277,7 @@ fn long_text_pick_keeps_a_complete_pair_at_the_cut_boundary() {
 /// pair must not split the pair: the pick still arrives, whole code points.
 #[test]
 fn long_text_pick_keeps_surrogate_pair_intact() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, picks)) = panel("annotate-emoji") else {
         eprintln!("skip: no chromium");
         return;
@@ -297,6 +303,7 @@ fn long_text_pick_keeps_surrogate_pair_intact() {
 
 #[test]
 fn area_pick_reports_rect() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, picks)) = panel("annotate-area") else {
         eprintln!("skip: no chromium");
         return;
@@ -370,6 +377,7 @@ impl Drop for Server {
 
 #[test]
 fn annotate_works_under_strict_csp() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, picks)) = panel("annotate-csp") else {
         eprintln!("skip: no chromium");
         return;
@@ -388,6 +396,7 @@ fn annotate_works_under_strict_csp() {
 
 #[test]
 fn annotate_survives_navigation_and_tab_switches() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, picks)) = panel("annotate-nav") else {
         eprintln!("skip: no chromium");
         return;
@@ -417,6 +426,7 @@ fn annotate_survives_navigation_and_tab_switches() {
 
 #[test]
 fn concurrent_target_switch_and_toggle_leave_shown_overlay_matching_flag() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, picks)) = panel("annotate-toggle-switch") else {
         eprintln!("skip: no chromium");
         return;
@@ -462,6 +472,7 @@ fn concurrent_target_switch_and_toggle_leave_shown_overlay_matching_flag() {
 
 #[test]
 fn capture_returns_png() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, _picks)) = panel("annotate-capture") else {
         eprintln!("skip: no chromium");
         return;
@@ -500,6 +511,7 @@ const TALL_PAGE: &str = "data:text/html,<body style='margin:0;height:2400px'>\
 
 #[test]
 fn capture_scrolled_pick_has_clean_block_pixels() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, picks)) = panel("annotate-capture-scroll") else {
         eprintln!("skip: no chromium");
         return;
@@ -527,8 +539,8 @@ fn capture_scrolled_pick_has_clean_block_pixels() {
         (eval(&view, "!!document.querySelector('#block:hover')") == json!(true)).then_some(())
     })
     .expect("hover input reached the block");
-    // Chromium can return an old compositor tile while parallel browser tests
-    // are starting. Wait on actual pixels, not a fixed delay or DOM readiness.
+    // Chromium may return an old compositor tile after scrolling. Wait on
+    // actual pixels, not a fixed delay or DOM readiness.
     let image = eventually(3, || {
         let image = view.capture(rect).unwrap();
         (center_pixel(&image) == [20, 180, 60]).then_some(image)
@@ -541,6 +553,7 @@ fn capture_scrolled_pick_has_clean_block_pixels() {
 
 #[test]
 fn scroll_to_brings_below_fold_rect_into_view() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, picks)) = panel("annotate-scroll-to") else {
         eprintln!("skip: no chromium");
         return;
@@ -583,6 +596,7 @@ fn scroll_to_brings_below_fold_rect_into_view() {
 
 #[test]
 fn invalid_capture_preserves_annotate_overlay() {
+    let _chromium = lock(&CHROMIUM);
     let Some((m, view, _picks)) = panel("annotate-capture-error") else {
         eprintln!("skip: no chromium");
         return;

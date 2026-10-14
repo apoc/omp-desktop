@@ -4,6 +4,10 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
+/// Real-browser tests share one lock across modules. Hold it from before
+/// fixture creation through teardown; `lock` recovers after a test panics.
+pub(super) static CHROMIUM: Mutex<()> = Mutex::new(());
+
 pub(super) fn tempdir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("omp-browser-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -477,6 +481,7 @@ pub(super) fn manager_with_chromium(name: &str) -> Option<BrowserManager> {
 
 #[test]
 fn relaunch_after_crash_keeps_placeholder_port() {
+    let _chromium = lock(&CHROMIUM);
     let Some(m) = manager_with_chromium("relaunch") else {
         eprintln!("skip: no chromium");
         return;
@@ -502,6 +507,7 @@ fn relaunch_after_crash_keeps_placeholder_port() {
 
 #[test]
 fn release_closes_connections_kills_chromium_removes_profile() {
+    let _chromium = lock(&CHROMIUM);
     let Some(m) = manager_with_chromium("release") else {
         eprintln!("skip: no chromium");
         return;

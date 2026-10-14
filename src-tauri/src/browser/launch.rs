@@ -175,6 +175,8 @@ fn wait_for_port(child: &mut Child, profile: &Path) -> Result<u16, String> {
 #[cfg(test)]
 mod tests {
     use super::super::locate::find_chromium;
+    use super::super::lock;
+    use super::super::tests::CHROMIUM;
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpStream;
@@ -254,6 +256,7 @@ mod tests {
     /// Real Chromium; skipped (passes with a note) when none is found.
     #[test]
     fn start_and_stop_real_chromium() {
+        let _chromium = lock(&CHROMIUM);
         let Some(bin) = find_chromium(None, &home_dir()) else {
             eprintln!("skip: no chromium");
             return;
@@ -287,6 +290,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn concurrent_stops_leave_no_profile_and_no_process() {
+        let _chromium = lock(&CHROMIUM);
         let Some(bin) = find_chromium(None, &home_dir()) else {
             eprintln!("skip: no chromium");
             return;
