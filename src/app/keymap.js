@@ -39,6 +39,7 @@
     { id: "desktop.history.open",    label: "Session history",         group: "View",    scope: "global",   defaultKeys: ["ctrl+h", "super+h"] },
     { id: "desktop.shortcuts.open",  label: "Keyboard shortcuts",      group: "View",    scope: "global",   defaultKeys: ["ctrl+/", "super+/"] },
     { id: "desktop.sidebar.toggle",  label: "Toggle project sidebar",  group: "View",    scope: "global",   defaultKeys: ["ctrl+b", "super+b"] },
+    { id: "desktop.browser.toggle",  label: "Toggle browser panel",    group: "View",    scope: "global",   defaultKeys: ["ctrl+shift+b", "shift+super+b"] },
     { id: "desktop.tab.new",         label: "New tab",                 group: "Tabs",    scope: "global",   defaultKeys: ["ctrl+t", "super+t"] },
     { id: "desktop.tab.close",       label: "Close tab",               group: "Tabs",    scope: "global",   defaultKeys: ["ctrl+w", "super+w"] },
     { id: "desktop.tab.next",        label: "Next tab",                group: "Tabs",    scope: "global",   defaultKeys: ["ctrl+tab"], fromTerminal: true },

@@ -46,6 +46,31 @@ use windows_sys::Win32::System::JobObjects::{
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 
+/// Whether the process identified by `pid` is still alive. On Unix this
+/// sends signal 0 via `kill(2)`, which performs no action beyond an
+/// existence/permission check; `ESRCH` means the process is gone, `EPERM`
+/// means it exists but is owned by someone else (still alive), and any
+/// other outcome is treated conservatively as "alive" so a lock or
+/// directory is never taken over based on an inconclusive check. Reaped
+/// zombies are gone; unreaped ones still count as alive. Non-Unix targets
+/// have no portable liveness probe in `std`, so this always reports
+/// "alive" there and callers fall back to their other staleness rules.
+#[cfg(unix)]
+pub fn pid_is_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 sends no actual signal; it only validates that the
+    // pid exists and is signalable by us. No memory is touched beyond what
+    // `libc::kill`'s FFI signature requires.
+    if unsafe { libc::kill(pid.cast_signed(), 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(not(unix))]
+pub const fn pid_is_alive(_pid: u32) -> bool {
+    true
+}
+
 /// Guarantees the process tree rooted at a spawned child is killed as a
 /// whole, either explicitly via [`kill_tree`](Self::kill_tree) or
 /// implicitly on `Drop`.
@@ -237,7 +262,7 @@ impl Drop for ProcessSupervisor {
 #[cfg(unix)]
 #[cfg(test)]
 mod tests {
-    use super::ProcessSupervisor;
+    use super::{pid_is_alive as process_alive, ProcessSupervisor};
     use std::process::Command;
     use std::time::{Duration, Instant};
 
@@ -255,23 +280,6 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-    }
-
-    /// True while process `pid` still exists and is signal-reachable from
-    /// this process. Uses `kill(pid, 0)` — the POSIX null-signal existence
-    /// probe: it performs the usual permission checks and returns `0` if
-    /// the process exists, without actually delivering a signal to it.
-    /// Portable across every Unix target this crate supports; a
-    /// `/proc/<pid>` existence check only works on Linux and always
-    /// returns `false` on macOS, which silently broke this test there.
-    /// Reaped zombies still respond to signal 0, but for this test the
-    /// distinction doesn't matter: we only care that the descendant was
-    /// actually torn down, not lingering as a runnable process.
-    fn process_alive(pid: u32) -> bool {
-        let pid = libc::pid_t::try_from(pid).unwrap_or(0);
-        // SAFETY: plain-integer FFI call. Signal `0` never actually
-        // signals the target; it only probes existence/permission.
-        unsafe { libc::kill(pid, 0) == 0 }
     }
 
     /// Spawn `sh -c 'sleep 30 & sleep 30 & wait'`, returning the shell's

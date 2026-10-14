@@ -38,6 +38,30 @@ pub fn apply_child_path(cmd: &mut Command) {
     }
 }
 
+/// The first file called `name` in the merged child PATH (inherited entries
+/// first, then [`extra_dirs`]), the lookup `Command` would do for a child
+/// spawned through [`apply_child_path`]. `None` when there is none. Only
+/// Linux browser discovery calls it; macOS finds browsers by app path.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn search_path(name: &str) -> Option<PathBuf> {
+    let merged = merged_path(std::env::var_os("PATH").as_deref(), &extra_dirs())?;
+    find_in(&merged, name)
+}
+
+/// The first `dir/name` that is an executable file, over the entries of
+/// `path`; a non-executable file of that name does not shadow a later one.
+#[cfg(all(unix, any(test, not(target_os = "macos"))))]
+fn find_in(path: &OsStr, name: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(path)
+        .map(|dir| dir.join(name))
+        .find(|candidate| {
+            candidate
+                .metadata()
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+}
+
 /// Install dirs a Finder-launched `.app` (PATH `/usr/bin:/bin:/usr/sbin:/sbin`)
 /// or a `.desktop` launch lacks, while `tauri dev` inherits the terminal's.
 #[cfg(not(windows))]
@@ -289,5 +313,52 @@ mod tests {
             expand(r"%NOPE%%LOCALAPPDATA%"),
             r"%NOPE%C:\Users\me\AppData\Local"
         );
+    }
+
+    #[cfg(unix)]
+    fn write_file(path: &std::path::Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, "").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn find_in_returns_the_first_dir_holding_the_file() {
+        let root = std::env::temp_dir().join(format!("omp-child-path-{}", std::process::id()));
+        let (first, second) = (root.join("a"), root.join("b"));
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        write_file(&second.join("tool"), 0o755);
+        let path = std::env::join_paths([&first, &second]).unwrap();
+        assert_eq!(super::find_in(&path, "tool"), Some(second.join("tool")));
+        write_file(&first.join("tool"), 0o755);
+        assert_eq!(super::find_in(&path, "tool"), Some(first.join("tool")));
+        assert_eq!(super::find_in(&path, "no-such-tool"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn find_in_skips_a_non_executable_file_for_a_later_executable_one() {
+        let root = std::env::temp_dir().join(format!("omp-child-path-exec-{}", std::process::id()));
+        let (first, second) = (root.join("a"), root.join("b"));
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        write_file(&first.join("tool"), 0o644);
+        write_file(&second.join("tool"), 0o755);
+        let path = std::env::join_paths([&first, &second]).unwrap();
+        assert_eq!(super::find_in(&path, "tool"), Some(second.join("tool")));
+        // Only a non-executable file: nothing found.
+        std::fs::remove_file(second.join("tool")).unwrap();
+        assert_eq!(super::find_in(&path, "tool"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn search_path_finds_a_system_binary() {
+        assert!(super::search_path("sh").is_some());
+        assert!(super::search_path("omp-no-such-binary").is_none());
     }
 }

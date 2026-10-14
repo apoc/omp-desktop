@@ -31,6 +31,9 @@ portable-pty = "0.9"
 # Terminal output travels as base64 in JSON event payloads. Already in the
 # tree via tauri (same 0.22 line, so no new package).
 base64 = "0.22"
+# Browser panel's CDP client (`browser/cdp.rs`): plain `ws://` to the loopback
+# Chromium, so `handshake` only - no TLS stack.
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -52,6 +55,11 @@ tauri-plugin-single-instance = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Decode screenshot pixels in real-Chromium annotate regression tests.
+[dev-dependencies]
+base64 = "0.22"
+png = "0.18"
 
 [profile.release]
 opt-level = 3

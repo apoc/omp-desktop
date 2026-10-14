@@ -67,6 +67,7 @@ pub const ACTION_IDS: &[&str] = &[
     "desktop.history.open",
     "desktop.shortcuts.open",
     "desktop.sidebar.toggle",
+    "desktop.browser.toggle",
     "desktop.tab.new",
     "desktop.tab.close",
     "desktop.tab.next",

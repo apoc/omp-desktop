@@ -11,6 +11,9 @@
 
 (function () {
   // `foldThinking` / `foldTools`: null until picked (OMP_COLLAPSE.foldModes).
+  // `browserWidth`: px of the browser panel, 0 = half the stage (OMP_BROWSER.clampWidth).
+  // `browserPath`: Chromium override, "" = find one. `browserLocalhostInPanel`:
+  // a plain click on a localhost chat link opens the panel instead of the system browser.
   const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
     "theme": "aurora",
     "density": "compact",
@@ -32,7 +35,10 @@
     "skippedUpdate": null,
     "sidebar": true,
     "terminalAutoOpen": false,
-    "terminalHeight": 240
+    "terminalHeight": 240,
+    "browserWidth": 0,
+    "browserPath": "",
+    "browserLocalhostInPanel": true
   }/*EDITMODE-END*/;
 
   const NULL_MODEL    = { id: "", name: "–", provider: "", note: "", latency: 0, current: false };

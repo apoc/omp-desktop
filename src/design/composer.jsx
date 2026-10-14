@@ -28,7 +28,7 @@ function hintKeyFor(actionId, fallback) {
 }
 
 // ── The composer (input + plan/steer modes + send) ────────────────────
-function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, planBlocked = "", goalMode = false, goalTint = false, onToggleGoal, goalBlocked = "", goalStrip = null, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued, onSendQueuedNow }) {
+function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, planBlocked = "", goalMode = false, goalTint = false, onToggleGoal, goalBlocked = "", goalStrip = null, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued, onSendQueuedNow, browserChips = [], onRemoveBrowserChip, onBrowserChipClick, extraSendable = false }) {
   // Drafts are per tab (issue #28). The composer stays mounted across tab
   // switches and keeps one draft per session id (app/session-ui.js
   // DRAFT_IDLE): text, pending image attachments (sent alongside the next
@@ -43,11 +43,12 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   const draft = draftEntryOf(drafts, sessionId, DRAFT_IDLE);
   const { text, attachments, pendingImages } = draft;
   // What the draft can send. A goal needs its objective as text; a steer
-  // (mid-turn) can be images alone; a plain send can also be plan
-  // annotations alone (app-live.jsx merges them into the message).
+  // (mid-turn) can be images or browser annotation chips alone — app-live
+  // merges them into the steer, as a plain send does; a plain send can
+  // also be plan annotations alone or chips alone (`extraSendable`).
   const hasText = !!text.trim();
-  const steerable = goalMode ? hasText : hasText || attachments.length > 0;
-  const sendable = steerable || (!goalMode && planMode && annotationCount > 0);
+  const steerable = goalMode ? hasText : hasText || attachments.length > 0 || extraSendable;
+  const sendable = steerable || (!goalMode && (extraSendable || (planMode && annotationCount > 0)));
   const updateDraft = (id, fn) => setDrafts(m => updateDraftEntry(m, id, DRAFT_IDLE, fn));
   // Any text edit ends a prompt-history recall; only the recall step itself
   // (onKey) writes `historyNav` alongside the text.
@@ -591,6 +592,12 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
         onRemove={row => onRemoveQueued(row.text, row.kind)}
         onPromote={row => onPromoteQueued(row.text)}
         onEdit={editQueued} />
+
+      <BrowserChips
+        chips={browserChips}
+        dropped={window.OMP_BROWSER.droppedScreenshots(attachments.length, browserChips)}
+        onRemove={onRemoveBrowserChip}
+        onChipClick={onBrowserChipClick} />
 
       {attachments.length > 0 && (
         <div className="attach-strip">

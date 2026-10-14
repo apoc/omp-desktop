@@ -34,7 +34,7 @@ use ext_ui::ExtUiState;
 use inner::BridgeInner;
 use journal::{EventJournal, Replay};
 use reader::{spawn_stderr_reader, spawn_stdout_reader};
-use spawn::spawn_omp;
+use spawn::{spawn_omp, LaunchOptions};
 
 /// Ring capacity for each session's event journal. 256 lines is generous
 /// headroom for the gap between a tab losing its live listener and
@@ -152,20 +152,19 @@ impl AgentBridge {
     /// auto-answer matching prompts for this session — see
     /// `reader::try_auto_approve`.
     ///
-    /// `profile` selects the omp profile this session's process runs under
-    /// (`None`/`"default"` = omp's own `~/.omp/agent` tree, no flag). It is
-    /// per-session by design: each tab owns one omp process, so two tabs can
-    /// run under different profiles at the same time.
+    /// `launch` carries the cwd, resume target, settings overlay and the omp
+    /// profile this session's process runs under (`None`/`"default"` = omp's
+    /// own `~/.omp/agent` tree, no flag). The profile is per-session by
+    /// design: each tab owns one omp process, so two tabs can run under
+    /// different profiles at the same time.
     pub fn start_session(
         &self,
         session_id: String,
-        cwd: Option<&str>,
-        resume: Option<&str>,
-        profile: Option<&str>,
+        launch: &LaunchOptions,
         app: AppHandle,
         rule_book: Arc<crate::approval::RuleBook>,
     ) -> Result<(), String> {
-        let (mut child, supervisor) = match spawn_omp(cwd, resume, profile) {
+        let (mut child, supervisor) = match spawn_omp(launch) {
             Ok(c) => c,
             Err(e) => {
                 // Cached *and* returned: the caller gets the reason now, the
@@ -184,7 +183,10 @@ impl AgentBridge {
             EVENT_JOURNAL_MAX_BYTES,
         )));
         let ext_ui = Arc::new(Mutex::new(ExtUiState::default()));
-        let project_root = cwd.filter(|c| !c.is_empty()).map(std::path::PathBuf::from);
+        let project_root = launch
+            .cwd
+            .filter(|c| !c.is_empty())
+            .map(std::path::PathBuf::from);
         let gen = self.next_gen.fetch_add(1, Ordering::SeqCst);
         // Liveness flag for this incarnation. Cloned into the map entry
         // (so `reap_and_clear_grants`/supersession can clear it) and into
@@ -534,13 +536,13 @@ mod tests {
     #[test]
     fn every_command_live_js_sends_is_allowed() {
         // Argument prefixes of the call sites that carry no literal type:
-        // the two helper definitions and `_sendWithResponse`'s forwarder.
-        const NON_LITERAL: &[&str] = &["cmd){", "cmd,timeout", "{...cmd,id})"];
+        // the helper definitions and the forwarders inside them.
+        const NON_LITERAL: &[&str] = &["cmd){", "cmd,timeout", "{...cmd,id})", "cmd).then("];
         let flat: String = include_str!("../../../src/live.js")
             .split_whitespace()
             .collect();
         let mut checked = 0;
-        for callee in ["_send(", "_sendWithResponse("] {
+        for callee in ["_send(", "_sendWithResponse(", "_sendPromptAck("] {
             for (idx, _) in flat.match_indices(callee) {
                 let args = &flat[idx + callee.len()..];
                 if let Some(rest) = args.strip_prefix("{type:\"") {

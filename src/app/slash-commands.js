@@ -37,6 +37,7 @@
     { name: "thinking",  hint: "cycle thinking level",                         icon: "✶", group: "Agent"   },
     { name: "login",     hint: "authenticate with a model provider",           icon: "⊙", group: "Agent"   },
     { name: "todo",      hint: "open the kanban surface",                      icon: "▦", group: "View"    },
+    { name: "browser",   hint: "open the browser panel; /browser <url> loads a page", icon: "◍", group: "View"    },
     { name: "export",    hint: "export this session to HTML",                  icon: "⇪", group: "View"    },
     { name: "shortcuts", hint: "view and rebind keyboard shortcuts",           icon: "⌘", group: "View"    },
     { name: "tweaks",    hint: "open the Tweaks panel (look, layout, chat)",   icon: "⚙", group: "View"    },

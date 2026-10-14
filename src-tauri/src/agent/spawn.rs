@@ -1,6 +1,7 @@
 use crate::child_path::apply_child_path;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -239,7 +240,16 @@ pub fn profile_flag(profile: Option<&str>) -> Option<String> {
 ///
 /// `profile` is already resolved (see `profiles::ProfileStore::resolve`)
 /// and turned into its flag via [`profile_flag`].
-fn omp_args(profile: Option<&str>, resume: Option<&str>, cwd: Option<&str>) -> Vec<String> {
+///
+/// `config` is the per-session settings overlay (the browser panel's `cdpUrl`,
+/// see `crate::browser`), passed as one `--config=<path>` token and appended
+/// last, after `--approval-mode=write`.
+fn omp_args(
+    profile: Option<&str>,
+    resume: Option<&str>,
+    cwd: Option<&str>,
+    config: Option<&Path>,
+) -> Vec<String> {
     let mut args = vec!["--mode".to_string(), "rpc-ui".to_string()];
     if let Some(flag) = profile_flag(profile) {
         args.push(flag);
@@ -255,7 +265,24 @@ fn omp_args(profile: Option<&str>, resume: Option<&str>, cwd: Option<&str>) -> V
         }
     }
     args.push("--approval-mode=write".to_string());
+    if let Some(path) = config {
+        args.push(format!("--config={}", path.display()));
+    }
     args
+}
+
+/// What a session's omp process is started with. A struct so the bridge's
+/// `start_session` keeps a sane argument count.
+#[derive(Clone, Copy, Default)]
+pub struct LaunchOptions<'a> {
+    /// Project folder (`None` or empty = omp's default).
+    pub cwd: Option<&'a str>,
+    /// Session file path or id to resume.
+    pub resume: Option<&'a str>,
+    /// Already-resolved profile id (see [`omp_args`]).
+    pub profile: Option<&'a str>,
+    /// Settings overlay file passed as `--config=<path>`.
+    pub config: Option<&'a Path>,
 }
 
 // ── session spawn ─────────────────────────────────────────────────────────────
@@ -323,9 +350,7 @@ fn sanitize_child_env(cmd: &mut Command) {
 /// whole process tree (subagents, tool-call children) can be torn down as
 /// a unit — plain `Child::kill` only signals the direct `omp` process.
 pub(super) fn spawn_omp(
-    cwd: Option<&str>,
-    resume: Option<&str>,
-    profile: Option<&str>,
+    launch: &LaunchOptions,
 ) -> Result<(Child, super::supervisor::ProcessSupervisor), String> {
     // Refused here rather than left to fail later: an omp too old for the
     // RPC surface the frontend uses would start and then break feature by
@@ -334,8 +359,13 @@ pub(super) fn spawn_omp(
     check_omp_version()?;
     // Resolve once so `current_dir` and `--cwd=` (see `resolve_cwd`) can
     // never disagree or compound a relative value into a nested path.
-    let resolved_cwd = cwd.filter(|dir| !dir.is_empty()).map(resolve_cwd);
-    let args = omp_args(profile, resume, resolved_cwd.as_deref());
+    let resolved_cwd = launch.cwd.filter(|dir| !dir.is_empty()).map(resolve_cwd);
+    let args = omp_args(
+        launch.profile,
+        launch.resume,
+        resolved_cwd.as_deref(),
+        launch.config,
+    );
     // On Windows, `Command::new` resolves bare "omp" against PATH and
     // PATHEXT (.exe etc.) via CreateProcess. We try the explicit ".exe"
     // name first because some systems have weird PATHEXT handling, then
@@ -385,6 +415,7 @@ mod tests {
         fmt_version, omp_args, parse_version_line, resolve_cwd, sanitize_child_env,
         version_refusal, Command, MIN_OMP_VERSION,
     };
+    use std::path::Path;
 
     fn version_output(v: [u32; 3]) -> String {
         format!("omp/{}\n", fmt_version(v))
@@ -467,7 +498,7 @@ mod tests {
     #[test]
     fn omp_args_without_resume() {
         assert_eq!(
-            omp_args(None, None, None),
+            omp_args(None, None, None, None),
             vec!["--mode", "rpc-ui", "--approval-mode=write"]
         );
     }
@@ -475,7 +506,7 @@ mod tests {
     #[test]
     fn omp_args_with_empty_resume_is_omitted() {
         assert_eq!(
-            omp_args(None, Some(""), None),
+            omp_args(None, Some(""), None, None),
             vec!["--mode", "rpc-ui", "--approval-mode=write"]
         );
     }
@@ -485,7 +516,7 @@ mod tests {
         // Single `--resume=<value>` token, not two separate argv entries —
         // see `omp_args` doc comment for why this matters.
         assert_eq!(
-            omp_args(None, Some("/tmp/sess.jsonl"), None),
+            omp_args(None, Some("/tmp/sess.jsonl"), None, None),
             vec![
                 "--mode",
                 "rpc-ui",
@@ -500,7 +531,7 @@ mod tests {
         // Even a flag-shaped resume value can't be re-tokenised as a
         // separate argument because it's embedded in one `--resume=` token.
         assert_eq!(
-            omp_args(None, Some("--auto-approve"), None),
+            omp_args(None, Some("--auto-approve"), None, None),
             vec![
                 "--mode",
                 "rpc-ui",
@@ -513,7 +544,7 @@ mod tests {
     #[test]
     fn omp_args_with_cwd_appends_explicit_flag() {
         assert_eq!(
-            omp_args(None, None, Some("/home/dev/project")),
+            omp_args(None, None, Some("/home/dev/project"), None),
             vec![
                 "--mode",
                 "rpc-ui",
@@ -526,7 +557,7 @@ mod tests {
     #[test]
     fn omp_args_with_empty_cwd_is_omitted() {
         assert_eq!(
-            omp_args(None, None, Some("")),
+            omp_args(None, None, Some(""), None),
             vec!["--mode", "rpc-ui", "--approval-mode=write"]
         );
     }
@@ -536,7 +567,7 @@ mod tests {
         // The full flag sequence - the ordering a future insertion is most
         // likely to disturb.
         assert_eq!(
-            omp_args(Some("work"), Some("abc123"), Some("/proj")),
+            omp_args(Some("work"), Some("abc123"), Some("/proj"), None),
             vec![
                 "--mode",
                 "rpc-ui",
@@ -554,8 +585,39 @@ mod tests {
         // defence-in-depth: a bare `--profile=` would send omp to
         // `~/.omp/profiles//agent` or make it error out.
         assert_eq!(
-            omp_args(Some(""), None, None),
+            omp_args(Some(""), None, None, None),
             vec!["--mode", "rpc-ui", "--approval-mode=write"]
+        );
+    }
+
+    #[test]
+    fn omp_args_appends_config_last() {
+        assert_eq!(
+            omp_args(None, None, None, Some(Path::new("/tmp/o.yml"))),
+            vec![
+                "--mode",
+                "rpc-ui",
+                "--approval-mode=write",
+                "--config=/tmp/o.yml"
+            ]
+        );
+        // Also after every other flag: the position a later insertion would disturb.
+        assert_eq!(
+            omp_args(
+                Some("work"),
+                Some("abc"),
+                Some("/proj"),
+                Some(Path::new("/tmp/o.yml"))
+            ),
+            vec![
+                "--mode",
+                "rpc-ui",
+                "--profile=work",
+                "--resume=abc",
+                "--cwd=/proj",
+                "--approval-mode=write",
+                "--config=/tmp/o.yml",
+            ]
         );
     }
 

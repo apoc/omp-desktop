@@ -20,14 +20,15 @@
 const {
   Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar, SubagentPane, ProjectSidebar, EmptyWorkspace,
   StatusBar, AmbientRail, ConversationTree, PlanKanban, HistoryModal, ChangesPanel, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, UpdateModal, useTweaks,
-  TweaksPanel, TweakSection, TweakRow, TweakRadio, TweakToggle, TweakColor, TweakSlider, TweakButton,
+  TweaksPanel, TweakSection, TweakRow, TweakRadio, TweakToggle, TweakColor, TweakSlider, TweakButton, TweakText,
   useWidgets, WidgetCard, WidgetErrorCard, WidgetApprovalCard, WidgetBoundary,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, DEFAULT_PROFILE_ID,
   INTENT_FRAMING, APPROVAL_PROMPT,
   useBridgeSnapshot, useThemeEffect, useSubagentManager, useUpdater, useConversationTree, useGoalMode, useTerminal, TerminalPanels, TerminalTweaks, timeNow,
-  useKeymap, useKeymapDispatch, ShortcutsModal,
+  useKeymap, useKeymapDispatch, ShortcutsModal, useBrowser, BrowserDock,
 } = window;
 const { isCommandInvocation } = window.OMP_SLASH;
+const { sendWithChips: _sendBrowser, normalizeUrl: _normalizeUrl } = window.OMP_BROWSER;
 const { recentRows, groupKey, moveGroup, moveMember, shiftGroup } = window.OMP_PROJECT_NAV;
 const {
   entryOf, updateEntry, pruneEntries,
@@ -135,6 +136,8 @@ function App() {
   React.useEffect(() => {
     bridge?.setPromptHistoryLimit(t.promptHistoryLimit ?? window.OMP_PROMPT_HISTORY.DEFAULT_LIMIT);
   }, [bridge, t.promptHistoryLimit]);
+  // Apply persisted and live tweaks alike; the next tab uses the latest path.
+  React.useEffect(() => { bridge?.setBrowserPath(t.browserPath); }, [bridge, t.browserPath]);
   // Refuse a file or link drop no handler took (`refusesStrayDrop`), so the
   // webview never navigates to it now that Tauri's native file drop is off
   // (#50). The composer's handlers run first and accept their own drops.
@@ -237,11 +240,50 @@ function App() {
 
   const updater = useUpdater({ bridge, autoCheck: t.updateCheck ?? true, skipped: t.skippedUpdate, setTweak });
 
+  // The browser panel (app/use-browser.jsx). `activeProject.id`, like the
+  // widgets below, not `activeSessionId`, which keeps a closed tab's id.
+  const browser = useBrowser({ bridge, activeSessionId: activeProject.id, sessionIds, tweaks: t, setTweak });
+  const stageRef = React.useRef(null);
+  // The tree and the browser panel take the same column as the rail: opening
+  // one closes the other.
+  const showTree = (open) => {
+    if (open && browser.open) browser.close();
+    setTreeOpen(open);
+  };
+  const toggleBrowser = () => {
+    if (!browser.open) setTreeOpen(false);
+    browser.toggle();
+  };
+  // A chip click scrolls the panel to the annotated element — but only
+  // when the panel is open and still on the page the chip was picked from
+  // (`browser.state.url` is the hook's current page, `planKey` the chips'
+  // own tab). A pick from another page has no rect there; a closed panel
+  // has no page to scroll (the bridge call is quiet anyway).
+  const handleBrowserChipClick = (chip) => {
+    if (!browser.open || !chip?.pick?.docRect || chip.pick.url !== browser.state.url) return;
+    bridge?.browserScrollTo(planKey, chip.pick.docRect);
+  };
+  // `/browser [url]`: open the panel, and load the page when one is given.
+  const handleBrowserCommand = (args) => {
+    const raw = args.trim();
+    if (!raw) {
+      if (!browser.open) toggleBrowser();
+      return;
+    }
+    const url = _normalizeUrl(raw);
+    if (!url) {
+      bridge?.addAssistantMessage(`**/browser:** \`${raw.replace(/`/g, "'")}\` is not a web address.`);
+      return;
+    }
+    if (!browser.open) setTreeOpen(false);
+    browser.openUrl(url);
+  };
+
   // `activeProject.id`, not `activeSessionId`: the latter keeps a closed
   // tab's id (see handleSelectProfile below). Widgets only run while the
   // rail is on screen — not in focus layout, not under the conversation tree.
   const widgets = useWidgets({
-    bridge, activeSessionId: activeProject.id, railVisible: t.layout !== "focus" && !treeOpen, tweaks: t,
+    bridge, activeSessionId: activeProject.id, railVisible: t.layout !== "focus" && !treeOpen && !browser.open, tweaks: t,
   });
   // Pushed by omp, not run by the desktop: nothing to schedule, only a
   // Tweaks toggle per card (`widget:ext-status`, `widget:ext:<key>`).
@@ -253,9 +295,16 @@ function App() {
   useKeymapDispatch(handlersRef);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
+  const sendWithBrowserChips = (text, images, isCmd, send) => _sendBrowser({
+    text, images: images ?? [], chips: isCmd ? [] : browser.sendableChips,
+    reserveChips: browser.reserveChips,
+    spendChips: browser.spendChips,
+    releaseChips: browser.releaseChips,
+  }, send);
   const handleSend = (text, images) => {
     const hasAnnotations = Object.keys(plan.annotations).length > 0;
-    if (!text.trim() && !hasAnnotations && !(images && images.length > 0)) return;
+    const chips = browser.sendableChips;
+    if (!text.trim() && !hasAnnotations && !(images && images.length > 0) && chips.length === 0) return;
     let msg = text.trim();
     // A slash command (typed by hand, or inserted by picking a non-desktop
     // entry from the `/` popup or the ⌘K bridge) must reach omp with its
@@ -269,8 +318,11 @@ function App() {
     const isCmd = isCommandInvocation(data.commands, msg);
     // Goal mode (app/use-goal-mode.jsx): the text is the goal's objective.
     // Plan mode cannot be on at the same time; a command still runs as one.
+    // Browser annotations ride along in the objective and are spent once omp
+    // accepts the goal; a refusal hands the typed draft back, chips intact.
     if (goalUi.mode && !isCmd) {
-      goalUi.start(msg, images);
+      sendWithBrowserChips(msg, images, isCmd,
+        out => goalUi.start(out.text, out.images, { text: msg, images }));
       return;
     }
     if (plan.mode && !isCmd) {
@@ -296,13 +348,22 @@ function App() {
         msg = INTENT_FRAMING(text.trim()).trimEnd();
       }
     }
-    if (streaming) {
-      bridge?.steer(msg, images);
-    } else if (bridge?.isConnected) {
-      bridge.send(msg, images);
-    } else {
-      setMessages(prev => [...prev, { kind: "user", time: timeNow(), text: msg, images }]);
-    }
+    // Browser annotations join the message last, after plan framing, so only
+    // what was typed is framed. A command keeps its arguments clean: the
+    // chips wait for the next message. A submit reserves its chips
+    // synchronously, so a second send before the first settles neither
+    // ships them again nor counts them as sendable; they are spent only when
+    // the message is delivered (steer or send resolves `true` — omp's
+    // acknowledgment, not the IPC hand-off) and released on a refusal,
+    // timeout or a locally kept draft (no connection). Chips added while
+    // the send is in flight are left alone.
+    sendWithBrowserChips(msg, images, isCmd, out => {
+      if (streaming) return bridge?.steer(out.text, out.images, isCmd);
+      if (bridge?.isConnected) return bridge.send(out.text, out.images);
+      // A locally kept draft is not delivered; release its chips.
+      setMessages(prev => [...prev, { kind: "user", time: timeNow(), text: out.text, images: out.images }]);
+      return false;
+    });
   };
 
   const handleAbort      = () => { bridge?.abort(); setStreaming(false); };
@@ -343,14 +404,21 @@ function App() {
   // here (mirrors handleSend's `msg = text.trim()`) — expandPastes runs
   // after the composer's own trim and can reintroduce leading/trailing
   // whitespace from the raw pasted content. In goal mode the follow-up
-  // chord starts the goal too, like Enter (handleSend).
+  // chord starts the goal too, like Enter (handleSend). Outside goal mode
+  // the tab's browser annotations ride along, merged the same way a plain
+  // send merges them (same cap and dropped-screenshot note via the merge);
+  // like a send, a submit reserves its chips synchronously and spends them
+  // only on delivery, releasing them on a refusal or timeout.
   const handleFollowUp = (text, images) => {
     const msg = text.trim();
-    if (goalUi.mode && !isCommandInvocation(data.commands, msg)) {
-      goalUi.start(msg, images);
+    const isCmd = isCommandInvocation(data.commands, msg);
+    if (goalUi.mode && !isCmd) {
+      sendWithBrowserChips(msg, images, isCmd,
+        out => goalUi.start(out.text, out.images, { text: msg, images }));
       return;
     }
-    bridge?.followUp(msg, images);
+    sendWithBrowserChips(msg, images, isCmd,
+      out => bridge?.followUp(out.text, out.images, isCmd));
   };
   // Queue strip actions: resolve `true` once omp edited its queue.
   const handleRemoveQueued  = (text, kind) => bridge?.removeQueuedMessage(text, kind);
@@ -401,8 +469,9 @@ function App() {
     // a goal already open), the text still comes back.
     else if (c.name === "goal")      { goalUi.enter(); if (args) setPromptInsert({ text: args, nonce: Date.now() }); }
     else if (c.name === "todo")      { setPlanOpen(true); }
+    else if (c.name === "browser")   { handleBrowserCommand(args); }
     else if (c.name === "compact")   { bridge?.compact(); }
-    else if (c.name === "tree" || c.name === "branch") { setTreeOpen(true); }
+    else if (c.name === "tree" || c.name === "branch") { showTree(true); }
     else if (c.name === "export")    { bridge?.exportHtml(); }
     else if (c.name === "thinking")  { cycleThinking(); }
     else if (c.name === "model")     { openBridge("models"); }
@@ -570,6 +639,7 @@ function App() {
     "desktop.chat.collapseAll": () => handleCollapseAll(true),
     "desktop.chat.expandAll":  () => handleCollapseAll(false),
     "desktop.terminal.toggle": () => terminal.toggle(planKey),
+    "desktop.browser.toggle":  toggleBrowser,
   };
 
   // Profile switch applies to the active tab only: its omp process is
@@ -661,7 +731,7 @@ function App() {
                 onReorder={handleReorder}
               />
             )}
-            <div className={`stage ${treeOpen ? "with-tree" : showRail ? "with-rail" : ""}`}>
+            <div ref={stageRef} className={`stage ${browser.open ? `with-browser${browser.fullView ? " browser-full" : ""}` : treeOpen ? "with-tree" : showRail ? "with-rail" : ""}`}>
               <main className="session">
                 {noTab ? (
                   <EmptyWorkspace notes={workspaceNotes} />
@@ -719,6 +789,10 @@ function App() {
                     onRemoveQueued={handleRemoveQueued}
                     onPromoteQueued={handlePromoteQueued}
                     onSendQueuedNow={handleSendQueuedNow}
+                    browserChips={browser.chips}
+                    onRemoveBrowserChip={browser.removeChip}
+                    onBrowserChipClick={handleBrowserChipClick}
+                    extraSendable={browser.sendableCount > 0}
                   />
                 </>)}
                 <StatusBar
@@ -732,9 +806,11 @@ function App() {
                   onChanges={() => setChangesOpen(true)}
                   onRules={() => setRulesOpen(true)}
                   onStats={() => setStatsOpen(true)}
-                  onTree={() => setTreeOpen(v => !v)}
+                  onTree={() => showTree(!treeOpen)}
                   onTerminal={() => terminal.toggle(planKey)}
                   terminalOpen={_TERM_entryOf(terminal.state, planKey).open}
+                  onBrowser={toggleBrowser}
+                  browserOpen={browser.open}
                   onTweaks={openTweaks}
                   autosave={t.autosave ?? true}
                   onAutosave={v => setTweak("autosave", v)}
@@ -756,7 +832,9 @@ function App() {
                 />
               )}
 
-              {treeOpen ? (
+              {browser.open ? (
+                <BrowserDock ui={browser} stageRef={stageRef} onClose={browser.close} />
+              ) : treeOpen ? (
                 <ConversationTree
                   model={convTree.model} currentFile={convTree.currentFile} error={convTree.error}
                   loading={convTree.loading} treeKey={convTree.key} now={convTree.now} since={convTree.since}
@@ -772,7 +850,7 @@ function App() {
                   subagentPaneOpen={showSplit}
                   onOpenSubagent={subagentUi.open}
                   onToggleSubagentPane={subagentUi.togglePane}
-                  onOpenTree={() => setTreeOpen(true)}
+                  onOpenTree={() => showTree(true)}
                   messages={messages}
                   microcopy={data.microcopy}
                   sparklineValues={sparkline}
@@ -952,6 +1030,13 @@ function App() {
         </TweakSection>
         <TerminalTweaks bridge={bridge} height={terminal.height} autoOpen={t.terminalAutoOpen ?? false}
           onAutoOpen={v => setTweak("terminalAutoOpen", v)} />
+        <TweakSection label="Browser">
+          <TweakText label="chromium path" value={t.browserPath ?? ""} placeholder="automatic"
+            note="applies to new tabs"
+            onChange={v => setTweak("browserPath", v)} />
+          <TweakToggle label="open localhost links in panel" value={t.browserLocalhostInPanel ?? true}
+            onChange={v => setTweak("browserLocalhostInPanel", v)} />
+        </TweakSection>
         <TweakSection label="Session">
           <TweakSlider label="prompt history" value={t.promptHistoryLimit ?? window.OMP_PROMPT_HISTORY.DEFAULT_LIMIT}
             min={window.OMP_PROMPT_HISTORY.MIN_LIMIT} max={window.OMP_PROMPT_HISTORY.MAX_LIMIT} step={10} unit=" prompts"

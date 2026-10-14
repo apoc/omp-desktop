@@ -201,6 +201,17 @@
        window.OMP_TERMINAL_XTERM at top level, so it must load before it. -->
   <script src="app/terminal-xterm.js"></script>
 
+  <!-- Browser panel pure helpers (address normalisation, annotation text and
+       merge into the outgoing message, page coordinates, CDP key events,
+       per-session chips, width clamp). Reads OMP_IMAGES.MAX_ATTACHMENTS at
+       load time (image-attach.js above), and OMP_MARKDOWN.fenceCode at send
+       time; precedes app/use-browser.jsx and app-live.jsx. -->
+  <script src="app/browser.js"></script>
+  <!-- DOM side of the panel: paints the screencast on the canvas and forwards
+       input (createScreen). Dependency-free IIFE; reads window.OMP_BROWSER at
+       call time; app/use-browser.jsx destructures window.OMP_BROWSER_SCREEN. -->
+  <script src="app/browser-screen.js"></script>
+
   <!-- Design components (unchanged — from src/design/ copy) -->
   <script src="design/tweaks/style.js"></script>
   <script src="design/tweaks/use-tweaks.js"></script>
@@ -255,13 +266,21 @@
        window.WidgetBlocks — order matters. -->
   <script type="text/babel" src="design/widgets/widget-blocks.jsx"></script>
   <script type="text/babel" src="design/widgets/widget-card.jsx"></script>
+  <!-- Browser panel: browser-panel.jsx destructures window.BrowserToolbar
+       (browser-toolbar.jsx) at top level; the toolbar destructures
+       window.Icon and window.OMP_BROWSER. browser-dock.jsx (the panel's stage
+       slot and resize handle) destructures window.BrowserPanel. -->
+  <script type="text/babel" src="design/browser-toolbar.jsx"></script>
+  <script type="text/babel" src="design/browser-panel.jsx"></script>
+  <script type="text/babel" src="design/browser-dock.jsx"></script>
   <script type="text/babel" src="design/mention-menu.jsx"></script>
   <!-- Collapsed-paste chips + preview (#31), the steer / follow-up queue
-       strip, and the thinking pill's level menu (#10); composer.jsx renders
-       all three by their global names. -->
+       strip, the thinking pill's level menu (#10) and the browser annotation
+       chips; composer.jsx renders all four by their global names. -->
   <script type="text/babel" src="design/paste-strip.jsx"></script>
   <script type="text/babel" src="design/queue-strip.jsx"></script>
   <script type="text/babel" src="design/thinking-menu.jsx"></script>
+  <script type="text/babel" src="design/browser-chips.jsx"></script>
   <!-- Goal strip above the composer: app/use-goal-mode.jsx destructures
        window.GoalStrip at top level and hands it to composer.jsx as an element. -->
   <script type="text/babel" src="design/goal-strip.jsx"></script>
@@ -344,6 +363,9 @@
        destructures window.OMP_TERMINAL, window.OMP_TERMINAL_STREAM,
        window.OMP_TERMINAL_XTERM and window.OMP_SESSION_UI at top level. -->
   <script type="text/babel" src="app/use-terminal.jsx"></script>
+  <!-- Browser panel hook; destructures window.OMP_BROWSER and
+       window.OMP_BROWSER_SCREEN at top level. -->
+  <script type="text/babel" src="app/use-browser.jsx"></script>
   <script type="text/babel" src="app/use-conversation-tree.jsx"></script>
 
   <script type="text/babel" src="app-live.jsx"></script>

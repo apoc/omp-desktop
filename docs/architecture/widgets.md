@@ -57,7 +57,7 @@ Kill  → registry kill_tree      Changed/Removed → app.emit(widgets://run | w
 - **Run registry.** `Mutex<HashMap<RunKey, Arc<ProcessSupervisor>>>`. The lock is held only to insert, remove or loop over kills, never across a blocking run.
 - **Kill action.** `kill_tree()` on the registered supervisor.
 - **`kill_all()`** kills every registered supervisor synchronously and does not depend on the scheduler thread. It is called:
-  - on the updater relaunch path (which skips `Drop`) and on `RunEvent::Exit`, both through `crate::kill_child_processes`, right after `AgentBridge::shutdown_all`,
+  - on the updater relaunch path (which skips `Drop`) and on `RunEvent::Exit`, both through `crate::kill_child_processes`: `AgentBridge::shutdown_all` runs first, `BrowserManager::shutdown_all` second, then widget plugins are killed,
   - from `Drop`.
 - **Config source of truth.** The config is read once at startup and again on `widgets_reload`, never per run. The config path is `Option<PathBuf>`: `None` when `app_config_dir()` fails. There is no temp-dir fallback; the snapshot's `fatal` says why, and nothing runs.
 
@@ -205,6 +205,6 @@ Frontend handling:
 - **Approval before every spawn.** No code path may start a plugin without a fingerprint check against `ApprovalStore` immediately before spawning.
 - **Triggers and scheduling live in Rust.** No timers, trigger filtering, matching or run queues in React or `live.js`. The frontend only reports view state and renders.
 - **The frontend sends only ids and view state** (`pluginId`, `fingerprint`, `sessionId`, visibility, hidden ids). Never a path, a command, a trigger or a plugin context.
-- **`kill_all` sits beside `AgentBridge::shutdown_all`** in `crate::kill_child_processes`, which both the updater relaunch path (which skips `Drop`) and `RunEvent::Exit` call.
+- **`kill_all` sits beside `AgentBridge::shutdown_all`** in `crate::kill_child_processes`, which both the updater relaunch path (which skips `Drop`) and `RunEvent::Exit` call. Shutdown stops agents, browsers, widget plugins and terminal shells, in that order.
 - **The config is read only at startup and on `widgets_reload`.** A run never re-reads `widgets.json`.
 - **Rail hidden ⇒ nothing starts.** Neither does a card whose `widget:plugin:<id>` tweak is false.

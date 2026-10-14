@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Browser panel: see and interact with the same Chromium the tab's agent drives, with live agent-follow, page tabs, back/forward/reload and an address field. Open it with the status-bar globe, `Ctrl+Shift+B` / `⌘⇧B` (rebindable) or `/browser [url]`; resize its left edge or use full view. Mouse, scroll, keyboard and text paste reach the page. **Annotate** picks an element or dragged area; add a comment and send its chip with your next message — send, steer, follow-up or goal — as text (comment, URL, selector, HTML) and a screenshot when available. Chips are reserved while sending, removed after omp acknowledges the message, and available again if sending fails. Localhost links in chat open in the panel (`⌘`/`Ctrl`+click opens externally). Tweaks → Browser controls this and the Chromium path. Chromium starts only when needed, uses a throwaway profile and ends with the desktop tab or app; the ambient rail hides while the panel is open. Page-derived annotation fields are fenced as untrusted data with command and skill tokens neutralised, while shared chip delivery, live path preferences, clean restart state, discovery Host protection and lifecycle/tap handling keep browser actions consistent.
+
 ## [0.8.0] - 2026-10-13
 
 ### Added

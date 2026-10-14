@@ -87,18 +87,32 @@ function useGoalMode({ bridge, tabId, sessionIds, goal, planMode, profileId, run
   /** The goal-mode send: `goal create` plus, when omp does not start on
    *  its own, the objective as the first prompt (OMP_BRIDGE.goalStart).
    *  Leaves goal mode on success; on a refusal keeps it, shows omp's
-   *  reason in the strip and hands the objective back. */
-  const start = async (text, images) => {
+   *  reason in the strip and hands the objective back — but a goal that
+   *  was already created (`res.created`) leaves goal mode off again,
+   *  since re-sending would `goal create` over the existing goal.
+   *  `back` is what goes
+   *  back into the composer then when it differs from what was sent (the
+   *  objective with browser annotations merged in). Resolves whether omp
+   *  accepted the goal. */
+  const start = async (text, images, back = { text, images }) => {
     const id = tabId;
     const budget = draft.budget;
     update(id, d => (d.error ? { ...d, error: null } : d));
     const res = await bridge?.goalStart(text, budget, images);
     if (res?.ok) {
       update(id, () => _UG_IDLE);
-      return;
+      return true;
     }
-    update(id, d => ({ ...d, mode: true, error: res?.error ?? "Could not start the goal." }));
-    if (tabRef.current === id) onRestoreDraft?.(text, images);
+    // `res.created` (live.js goalStart): the goal create landed but the
+    // objective's delivery failed. The goal exists — goal-create mode is
+    // not re-armed (a re-armed send would `goal create` again, which
+    // would fail), the error shows in the strip, and the objective goes
+    // back for a plain send. The browser chips ride back with it — the
+    // send above released them, it did not spend them (app-live.jsx).
+    const rearm = !res?.created;
+    update(id, d => ({ ...d, mode: rearm, error: res?.error ?? "Could not start the goal." }));
+    if (tabRef.current === id) onRestoreDraft?.(back.text, back.images);
+    return false;
   };
 
   const strip = tabId && shown ? (

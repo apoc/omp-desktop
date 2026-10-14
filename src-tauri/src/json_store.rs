@@ -13,6 +13,7 @@
 //!   staleness recovery, for guarding the read-modify-write cycle around a
 //!   shared file.
 
+use crate::agent::supervisor::pid_is_alive;
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
@@ -441,31 +442,6 @@ fn parse_lock_contents(contents: &str) -> Option<(u32, u64)> {
     let pid = parts.next()?.parse().ok()?;
     let created_at = parts.next()?.parse().ok()?;
     Some((pid, created_at))
-}
-
-/// Whether the process identified by `pid` is still alive. On Unix this
-/// sends signal 0 via `kill(2)`, which performs no action beyond an
-/// existence/permission check; `ESRCH` means the process is gone, `EPERM`
-/// means it exists but is owned by someone else (still alive), and any
-/// other outcome is treated conservatively as "alive" so a lock is never
-/// stolen based on an inconclusive check. Non-Unix targets have no portable
-/// liveness probe in `std`, so this always reports "alive" there and
-/// staleness detection falls back entirely to the timestamp/`stale_after`
-/// comparison in [`lock_is_stale`].
-#[cfg(unix)]
-fn pid_is_alive(pid: u32) -> bool {
-    // SAFETY: signal 0 sends no actual signal; it only validates that the
-    // pid exists and is signalable by us. No memory is touched beyond what
-    // `libc::kill`'s FFI signature requires.
-    if unsafe { libc::kill(pid.cast_signed(), 0) } == 0 {
-        return true;
-    }
-    io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
-}
-
-#[cfg(not(unix))]
-const fn pid_is_alive(_pid: u32) -> bool {
-    true
 }
 
 /// Whether a lock file with the given contents should be considered

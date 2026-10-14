@@ -2,7 +2,7 @@
 
 A native desktop app for [oh-my-pi](https://github.com/can1357/oh-my-pi) (`omp`), the terminal coding agent.
 Every tab runs its own `omp` process in RPC mode; the app shows what the agent is doing as it happens: streamed replies, tool calls, diffs, subagents, plans and what it costs.
-Built on Tauri 2 (Rust + the system webview). It doesn't bundle Electron, doesn't load anything from a CDN, and needs no browser.
+Built on Tauri 2 (Rust + the system webview). It doesn't bundle Electron or load anything from a CDN; chat needs no browser.
 
 ![OMP Desktop: project sidebar, a conversation with an edit diff, a test run and an approval prompt, and the ambient rail](screenshots/hero.webp)
 
@@ -36,6 +36,14 @@ Built on Tauri 2 (Rust + the system webview). It doesn't bundle Electron, doesn'
 - **Subagent manager.** Agents started by a `task` call appear in the rail as they run. Open the manager to get totals, a swimlane timeline, agents grouped by the task call that spawned them, and an inspector for each agent's assignment, tools, output and transcript.
 
 ![Subagent manager: four parallel scouts, their timeline and per-agent cost](screenshots/subagents.webp)
+
+### Browser panel
+
+Open the globe button, `Ctrl+Shift+B` / `⌘⇧B`, or `/browser [url]` to see and interact with the same Chromium the tab's agent drives. The panel follows the agent's page, has page tabs, back/forward/reload and an address field, and supports resizing or full view. **Annotate** picks an element or dragged area: add a comment, then send its chip with your next message as text and a screenshot. Chips stay reserved while sending and are removed only after omp acknowledges the message; a failed send makes them available again. Localhost links in chat open in the panel by default (`⌘`/`Ctrl`+click opens externally). Tweaks → Browser controls this and the Chromium path. The ambient rail hides while the panel is open.
+
+The optional panel requires installed Chrome, Chromium, Edge or an omp-cached Chrome for Testing. It launches lazily with a private throwaway profile, separate from your normal browser; closing a desktop tab or quitting ends it. Pages run in Chromium, never in the app webview. Internals and local CDP trust boundary: [`docs/architecture/browser.md`](docs/architecture/browser.md).
+
+Annotation comments remain user instructions; page URLs, selectors, text and HTML are framed as untrusted web data inside a fence they cannot close. Page-derived command and skill tokens are neutralised before sending, so hidden page content cannot trigger omp's command dispatch.
 
 ### Rail widgets
 
@@ -130,6 +138,7 @@ On macOS, `Ctrl+K`, `Ctrl+H`, `Ctrl+/`, `Ctrl+B`, `Ctrl+T`, `Ctrl+W`, `` Ctrl+` 
 | Conversation history | `Ctrl+H` |
 | Keyboard shortcuts | `Ctrl+/` |
 | Toggle project sidebar | `Ctrl+B` |
+| Toggle browser panel | `Ctrl+Shift+B` / `⌘⇧B` |
 | New tab / close tab | `Ctrl+T` / `Ctrl+W` |
 | Toggle terminal | `` Ctrl+` `` |
 | Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
@@ -145,7 +154,7 @@ The changes, approval-rules, usage, kanban, compact, export and update-check act
 
 ### Slash commands
 
-The desktop adds `/plan`, `/steer`, `/compact`, `/new`, `/history`, `/branch`, `/model`, `/thinking`, `/login`, `/todo`, `/export`, `/shortcuts` and `/check-updates`. Everything else omp offers (`/rename`, `/mcp`, `/skill:<name>`, …) shows up in the same palette.
+The desktop adds `/plan`, `/steer`, `/compact`, `/new`, `/history`, `/branch`, `/model`, `/thinking`, `/login`, `/todo`, `/export`, `/shortcuts`, `/browser [url]` and `/check-updates`. Everything else omp offers (`/rename`, `/mcp`, `/skill:<name>`, …) shows up in the same palette.
 
 ## Development
 
