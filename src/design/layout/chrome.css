@@ -38,9 +38,6 @@
   display: flex; align-items: center; justify-content: center;
   border-radius: 4px; cursor: default;
 }
-.win-close { color: #FF5F57 !important; }
-.win-min   { color: #FEBC2E !important; }
-.win-max   { color: #28C840 !important; }
 .chrome-title { display: flex; align-items: center; gap: 6px; font-size: var(--d-text-sm); flex: 1; justify-content: center; }
 /* align-items is load-bearing. `.win-ctrl` is full-bar height (38px), so this
    flex line's cross size is 38px even though `.chrome` centres the box

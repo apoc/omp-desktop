@@ -71,9 +71,15 @@ function WindowChrome({
         {/* Windows controls — right side, hidden on macOS/Linux */}
         {IS_WIN && (
           <div className="win-controls">
-            <button className="win-ctrl win-min"   title="Minimize">&#8211;</button>
-            <button className="win-ctrl win-max"   title="Maximize / Restore">&#9633;</button>
-            <button className="win-ctrl win-close" title="Close">&#10005;</button>
+            <button className="win-ctrl win-min" title="Minimize">
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1 5h8" stroke="currentColor" strokeWidth="1" /></svg>
+            </button>
+            <button className="win-ctrl win-max" title="Maximize / Restore">
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><rect x="1.5" y="1.5" width="7" height="7" fill="none" stroke="currentColor" strokeWidth="1" /></svg>
+            </button>
+            <button className="win-ctrl win-close" title="Close">
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" strokeWidth="1.1" /></svg>
+            </button>
           </div>
         )}
       </div>

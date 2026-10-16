@@ -32,6 +32,7 @@
 .win-controls {
   display: flex;
   align-items: stretch;
+  gap: 0;
   margin-right: -12px;           /* cancel .chrome padding so controls reach edge */
   position: relative;
   z-index: 1;
@@ -46,6 +47,7 @@
   padding: 0;
   background: transparent;
   border: none;
+  border-radius: 0;
   color: var(--fg-3);
   font-size: 11px;
   line-height: 1;

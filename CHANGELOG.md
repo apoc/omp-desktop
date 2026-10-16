@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Typography on Windows: `--font-sans`, `--font-mono` and `--font-display` now include Windows system UI and monospace fallbacks (`Segoe UI Variable Text`, `Segoe UI`, `Cascadia Mono`, `Cascadia Code`, `Consolas`, `Microsoft YaHei UI`) instead of falling straight through macOS-only fonts to `Arial` or `SimSun`.
+- Windows title-bar buttons (minimize, maximize, close): removed leftover `!important` traffic-light colour rules in `chrome.css` that turned the buttons yellow, green and red on Windows, replaced the text glyphs with crisp 10×10 1px-stroke SVGs, and aligned the 38px caption strip with the top bar.
+
 ## [0.10.0] - 2026-10-15
 
 ### Added

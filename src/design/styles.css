@@ -6,9 +6,9 @@
 
 :root {
   /* type */
-  --font-sans: "Geist", "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
-  --font-mono: "JetBrains Mono", "Berkeley Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  --font-display: "Geist", "Inter", -apple-system, sans-serif;
+  --font-sans: "Geist", "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Berkeley Mono", ui-monospace, "SF Mono", Menlo, "Cascadia Mono", "Cascadia Code", Consolas, "Microsoft YaHei UI", monospace;
+  --font-display: "Geist", "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
 
   /* density (overridden by .density-* on root) */
   --d-row: 28px;
