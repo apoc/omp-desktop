@@ -169,7 +169,7 @@ fn entry(mut info: Value, port: u16) -> Value {
 
 /// `value[key]` moved out (`null` when absent or not an object).
 fn take(value: &mut Value, key: &str) -> Value {
-    value.get_mut(key).map_or_default(Value::take)
+    value.get_mut(key).map(Value::take).unwrap_or_default()
 }
 
 /// `%XX` escapes decoded; anything else, a malformed escape too, kept.

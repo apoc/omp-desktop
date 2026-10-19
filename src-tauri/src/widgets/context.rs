@@ -54,7 +54,8 @@ pub fn session_ctx(project: Option<&Path>) -> SessionCtx {
         .head_name()
         .ok()
         .flatten()
-        .map_or_default(|name| name.shorten().to_string());
+        .map(|name| name.shorten().to_string())
+        .unwrap_or_default();
     // Bound to a local: in edition 2021 the temporaries of a tail expression
     // would outlive `repo`.
     let remote = repo
