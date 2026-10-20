@@ -711,7 +711,11 @@ fn shutdown_cuts_live_websockets() {
     match TcpStream::connect(("127.0.0.1", proxy.port())) {
         Err(_) => {}
         Ok(mut late) => {
-            late.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            // macOS fails `setsockopt` with EINVAL once the peer has reset
+            // the connection, which is exactly the "closed at once" case.
+            if late.set_read_timeout(Some(Duration::from_secs(2))).is_err() {
+                return;
+            }
             let _ = late.write_all(b"GET /json/version HTTP/1.1\r\nHost: localhost\r\n\r\n");
             assert!(
                 matches!(late.read(&mut buf), Ok(0) | Err(_)),
