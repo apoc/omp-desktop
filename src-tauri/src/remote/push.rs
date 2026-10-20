@@ -103,7 +103,10 @@ impl Shared {
 
     /// "Only while locked" is on and the desktop is known to be unlocked.
     fn skip_while_unlocked(&self) -> bool {
-        locked(&self.settings).only_when_locked && (self.lock_probe)() == Some(false)
+        // Read the flag first: the probe asks WindowServer and must not run
+        // under the settings lock that `changed`, `configure` and `test` take.
+        let only_when_locked = locked(&self.settings).only_when_locked;
+        only_when_locked && (self.lock_probe)() == Some(false)
     }
 
     /// Give `tab` its throttle slot back after a push was dropped, unless a

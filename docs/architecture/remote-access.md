@@ -26,9 +26,9 @@ phone page ⇄ TLS/WebSocket ⇄ Rust hub ⇄ Tauri events/commands ⇄ webview 
 
 ## Commands and `Status`
 
-`remote_status`, `remote_interfaces`, `remote_apply_settings` (always the **complete** `RemoteSettings`: enabled, interface name, port, host name, cert `generated | files{cert,key}`, push{enabled, questions, finished, contact}), `remote_pair_start` (→ `{url, svg, expiresAt}`), `remote_pair_cancel`, `remote_device_rename`, `remote_device_revoke`, `remote_regenerate_cert`, `remote_push_test`, `remote_default_contact` (global git `user.email`), `remote_publish`, `remote_action_result`, `remote_ready`.
+`remote_status`, `remote_interfaces`, `remote_apply_settings` (always the **complete** `RemoteSettings`: enabled, interface name, port, host name, cert `generated | files{cert,key}`, push{enabled, questions, finished, onlyWhenLocked, contact}), `remote_pair_start` (→ `{url, svg, expiresAt}`), `remote_pair_cancel`, `remote_device_rename`, `remote_device_revoke`, `remote_regenerate_cert`, `remote_push_test`, `remote_default_contact` (global git `user.email`), `remote_publish`, `remote_action_result`, `remote_ready`.
 
-`Status` carries `enabled`, `listening`, `url`, `ip`, `error`, `fingerprint`, `pushError`, `devices[{id,name,pairedAt,lastSeen,connected,pushSubscribed}]` and the saved `settings`, so the Settings rows prefill from it and refresh on every `remote://status`.
+`Status` carries `enabled`, `listening`, `url`, `ip`, `error`, `fingerprint`, `pushError`, `lockDetection` (whether this platform can tell a locked desktop, macOS only), `devices[{id,name,pairedAt,lastSeen,connected,pushSubscribed}]` and the saved `settings`, so the Settings rows prefill from it and refresh on every `remote://status`.
 
 ## Pairing and auth
 
