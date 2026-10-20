@@ -65,6 +65,12 @@ windows-registry = "0.6"
 [target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
 
+# Screen-lock probe for push-only-while-locked (`remote/lock.rs`). Both crates
+# are already in the tree via tauri/wry; only the feature set is chosen here.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFBase", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGSession"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

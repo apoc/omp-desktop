@@ -3,7 +3,7 @@
    of Settings → Remote access (window.OMP_SETTINGS_ROWS):
      remotePair     one-time QR code dialog
      remoteDevices  paired phones: rename, revoke (asks first)
-     remotePush     Web Push: triggers, VAPID contact, test notification
+     remotePush     Web Push: triggers, only-while-locked (macOS), VAPID contact, test notification
    The QR is an <img> of the SVG as a data URL — never injected as HTML.
    Depends on `rows-remote-shared.jsx` (`_SRR_Icon`, `_SRR_useRemote`,
    `_SRR_useAsync`, `_SRR_Field`, `_SRR_Line`).
@@ -147,6 +147,11 @@ function _SRR_Push({ row, ctx, query }) {
         <_SRR_Line label="A turn finished">
           <Toggle value={!!push?.finished} label="Notify on finished turns" onChange={v => set({ finished: v })} />
         </_SRR_Line>
+        {status?.lockDetection && (
+          <_SRR_Line label="Only while the desktop is locked">
+            <Toggle value={!!push?.onlyWhenLocked} label="Notify only while the desktop is locked" onChange={v => set({ onlyWhenLocked: v })} />
+          </_SRR_Line>
+        )}
         <_SRR_Line label="Contact (VAPID)">
           <_SRR_Field value={contact} label="Push contact" placeholder="you@example.com" width={240} disabled={!push}
             onCommit={text => set({ contact: text.trim() })} />

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use super::devices::DeviceStore;
+use super::lock::screen_locked;
 use super::push_contact::contact_uri;
 use super::push_crypto::Vapid;
 use super::push_send::send;
@@ -59,6 +60,8 @@ struct Message {
     title: String,
     body: &'static str,
     urgency: &'static str,
+    /// When the throttle slot for `tab` was taken.
+    queued_at: Instant,
 }
 
 enum Job {
@@ -75,6 +78,10 @@ struct Shared {
     changed: OnChange,
     /// Checked before every send; tests swap it to reach a local server.
     endpoint_ok: fn(&str) -> bool,
+    /// Read by the worker right before a trigger push is delivered.
+    lock_probe: fn() -> Option<bool>,
+    /// When each tab last had a push queued, for the per-tab throttle.
+    last_sent: Mutex<HashMap<String, Instant>>,
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -93,13 +100,26 @@ impl Shared {
             (self.changed)();
         }
     }
+
+    /// "Only while locked" is on and the desktop is known to be unlocked.
+    fn skip_while_unlocked(&self) -> bool {
+        locked(&self.settings).only_when_locked && (self.lock_probe)() == Some(false)
+    }
+
+    /// Give `tab` its throttle slot back after a push was dropped, unless a
+    /// newer push has taken it since.
+    fn release_throttle(&self, tab: &str, queued_at: Instant) {
+        let mut sent = locked(&self.last_sent);
+        if sent.get(tab) == Some(&queued_at) {
+            sent.remove(tab);
+        }
+    }
 }
 
 pub struct Pusher {
     shared: Arc<Shared>,
     titles: TitleOf,
     tx: SyncSender<Job>,
-    last_sent: Mutex<HashMap<String, Instant>>,
 }
 
 impl Pusher {
@@ -110,15 +130,16 @@ impl Pusher {
         titles: TitleOf,
         changed: OnChange,
     ) -> Self {
-        Self::with_endpoint_check(dir, devices, titles, changed, endpoint_ok)
+        Self::with_probes(dir, devices, titles, changed, endpoint_ok, screen_locked)
     }
 
-    fn with_endpoint_check(
+    fn with_probes(
         dir: std::path::PathBuf,
         devices: Arc<DeviceStore>,
         titles: TitleOf,
         changed: OnChange,
         endpoint_ok: fn(&str) -> bool,
+        lock_probe: fn() -> Option<bool>,
     ) -> Self {
         let shared = Arc::new(Shared {
             dir,
@@ -128,6 +149,8 @@ impl Pusher {
             error: Mutex::new(None),
             changed,
             endpoint_ok,
+            lock_probe,
+            last_sent: Mutex::new(HashMap::new()),
         });
         let (tx, rx) = mpsc::sync_channel(QUEUE);
         let worker = Arc::clone(&shared);
@@ -137,12 +160,7 @@ impl Pusher {
         if let Err(error) = spawned {
             eprintln!("[omp-desktop] could not start the push worker: {error}");
         }
-        Self {
-            shared,
-            titles,
-            tx,
-            last_sent: Mutex::new(HashMap::new()),
-        }
+        Self { shared, titles, tx }
     }
 
     /// Apply the push settings; returns the public key phones subscribe
@@ -181,7 +199,7 @@ impl Pusher {
     /// Queue a push for `tab`; at most one per tab every 30 s.
     pub fn notify(&self, tab: &str, title: &str, kind: Kind) {
         let now = Instant::now();
-        let mut sent = locked(&self.last_sent);
+        let mut sent = locked(&self.shared.last_sent);
         if sent
             .get(tab)
             .is_some_and(|last| now.saturating_duration_since(*last) < THROTTLE)
@@ -199,6 +217,7 @@ impl Pusher {
             title,
             body: kind.body(),
             urgency: kind.urgency(),
+            queued_at: now,
         });
         match self.tx.try_send(job) {
             Ok(()) => {
@@ -274,14 +293,20 @@ fn work(shared: &Shared, jobs: &Receiver<Job>) {
         .map_err(|error| format!("push client: {error}"));
     while let Ok(job) = jobs.recv() {
         let (payload, urgency, reply) = match job {
-            Job::Notify(message) => (
-                json!({
-                    "title": message.title, "body": message.body,
-                    "tag": message.tab, "tab": message.tab,
-                }),
-                message.urgency,
-                None,
-            ),
+            Job::Notify(message) => {
+                if shared.skip_while_unlocked() {
+                    shared.release_throttle(&message.tab, message.queued_at);
+                    continue;
+                }
+                (
+                    json!({
+                        "title": message.title, "body": message.body,
+                        "tag": message.tab, "tab": message.tab,
+                    }),
+                    message.urgency,
+                    None,
+                )
+            }
             Job::Test(reply) => (
                 json!({
                     "title": "OMP", "body": "Test notification", "tag": "test", "tab": "",

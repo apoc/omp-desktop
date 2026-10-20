@@ -78,6 +78,7 @@ impl Core {
             fingerprint: run.map(|run| run.fingerprint.clone()), // owned snapshot
             devices,
             push_error: self.pusher.last_error(),
+            lock_detection: super::super::lock::DETECTION,
             settings: state.settings.clone(), // owned snapshot
         }
     }

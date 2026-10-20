@@ -3863,6 +3863,8 @@ dependencies = [
  "gix",
  "libc",
  "notify",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
  "open",
  "png 0.18.1",
  "portable-pty",

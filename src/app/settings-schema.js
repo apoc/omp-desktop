@@ -169,7 +169,7 @@
         custom("remoteDevices", "Paired phones", "Rename a phone or revoke its access.", "devices revoke rename"),
       ] },
       { name: "Notifications", rows: [
-        custom("remotePush", "Push notifications", "Tell the phone when a question waits or a turn finished, even with the page closed.", "web push vapid notification contact"),
+        custom("remotePush", "Push notifications", "Tell the phone when a question waits or a turn finished, even with the page closed.", "web push vapid notification contact locked lock away screen"),
       ] },
     ] },
     { id: "approvals", icon: "check", title: "Approvals", sep: true, blurb: "When the agent asks before it runs a tool.", groups: [

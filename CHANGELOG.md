@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Remote access, macOS: Settings → Remote access → Notifications has an "Only while the desktop is locked" switch (off by default), so the phone is notified only when you are away from the Mac. "Send test notification" ignores it.
+
 ## [0.12.0] - 2026-10-20
 
 ### Added
