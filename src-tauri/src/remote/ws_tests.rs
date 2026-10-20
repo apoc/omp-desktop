@@ -42,7 +42,18 @@ impl TestServer {
             "GET /ws HTTP/1.1\r\nHost: {host}\r\nOrigin: https://{host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
             host = self.host()
         );
+        // The TLS handshake runs inside this write and reads with the socket's
+        // 100 ms poll timeout; on a loaded runner that times out (macOS reports
+        // it as `WouldBlock`). Give the handshake time, then restore the poll.
+        stream
+            .sock
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         stream.write_all(request.as_bytes()).unwrap();
+        stream
+            .sock
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
         // Byte-wise, so no frame bytes are swallowed with the head.
         let mut head = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(5);
