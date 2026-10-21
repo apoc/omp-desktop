@@ -713,8 +713,15 @@ fn shutdown_cuts_live_websockets() {
         Ok(mut late) => {
             // macOS fails `setsockopt` with EINVAL once the peer has reset
             // the connection, which is exactly the "closed at once" case.
-            if late.set_read_timeout(Some(Duration::from_secs(2))).is_err() {
-                return;
+            match late.set_read_timeout(Some(Duration::from_secs(2))) {
+                Ok(()) => {}
+                Err(error) => {
+                    #[cfg(target_os = "macos")]
+                    if error.raw_os_error() == Some(libc::EINVAL) {
+                        return;
+                    }
+                    panic!("unexpected read-timeout error: {error}");
+                }
             }
             let _ = late.write_all(b"GET /json/version HTTP/1.1\r\nHost: localhost\r\n\r\n");
             assert!(
