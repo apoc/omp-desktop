@@ -14,12 +14,14 @@ const _SRR_left = (expiresAt, now) => Math.max(0, Math.ceil(expiresAt - now / 10
 
 function _SRR_PairDialog({ pair, active = true, onClose }) {
   const [now, setNow] = React.useState(Date.now());
+  const onCloseRef = React.useRef(onClose);
+  onCloseRef.current = onClose;
   React.useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
-    const onKey = e => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } };
+    const onKey = e => { if (e.key === "Escape") { e.stopPropagation(); onCloseRef.current(); } };
     if (active) window.addEventListener("keydown", onKey, true);
     return () => { clearInterval(t); window.removeEventListener("keydown", onKey, true); };
-  }, [active, onClose]);
+  }, [active]);
   const left = _SRR_left(pair.expiresAt, now);
   const src = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(pair.svg)))}`;
   return (
@@ -48,9 +50,9 @@ function _SRR_Pair({ row, ctx, query }) {
   const patch = React.useCallback(p => setState(s => ({ ...s, ...p })), []);
   const base = React.useRef(0);
   const count = status?.devices?.length ?? 0;
-  const close = React.useCallback(() => { patch({ pair: null }); void ctx.bridge.remotePairCancel(); }, [ctx.bridge, patch]);
   const liveRef = React.useRef(true);
   const pairing = React.useRef(false);
+  const close = React.useCallback(() => { pairing.current = false; patch({ pair: null }); void ctx.bridge.remotePairCancel(); }, [ctx.bridge, patch]);
   React.useEffect(() => {
     liveRef.current = true;
     return () => {
@@ -78,7 +80,7 @@ function _SRR_Pair({ row, ctx, query }) {
     <Row label={row.label} desc={row.desc} query={query}>
       <Btn accent onClick={start} disabled={!status?.listening || busy || !!pair}
         title={status?.listening ? undefined : "Enable remote access first"}>Pair a phone…</Btn>
-      {pair && <_SRR_PairDialog pair={pair} active={ctx.active !== false} onClose={() => { pairing.current = false; close(); }} />}
+      {pair && <_SRR_PairDialog pair={pair} active={ctx.active !== false} onClose={close} />}
       {error && <div className="st-row-error">{error}</div>}
     </Row>
   );
