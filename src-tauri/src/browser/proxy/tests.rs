@@ -39,6 +39,10 @@ impl Reported {
     pub(super) fn all(&self) -> Vec<String> {
         lock(&self.0).clone()
     }
+
+    fn wait_for_any(&self, timeout: Duration) {
+        let _ = eventually(timeout, || (!self.all().is_empty()).then_some(()));
+    }
 }
 
 /// A proxy that nobody listens to the agent's pages of.
@@ -114,11 +118,15 @@ fn unvetted_ids(proxy: &Proxy) -> Vec<u64> {
         .collect()
 }
 
+fn connect(proxy: &Proxy) -> TcpStream {
+    TcpStream::connect((Ipv4Addr::LOCALHOST, proxy.port())).unwrap()
+}
+
 /// A connection that sends nothing, once it waits for its head (its peer
 /// check passed).
 fn idle_socket(proxy: &Proxy) -> TcpStream {
     let newest = unvetted_ids(proxy).last().copied();
-    let socket = TcpStream::connect((Ipv4Addr::LOCALHOST, proxy.port())).unwrap();
+    let socket = connect(proxy);
     let waiting = eventually(PEER_CHECK, || {
         (unvetted_ids(proxy).last().copied() != newest).then_some(())
     });
@@ -147,7 +155,7 @@ fn timed_out(e: &io::Error) -> bool {
 
 /// An agent's WebSocket to `path` through `proxy`.
 fn agent_socket(proxy: &Proxy, path: &str) -> WebSocket<TcpStream> {
-    let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, proxy.port())).unwrap();
+    let stream = connect(proxy);
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
@@ -711,7 +719,18 @@ fn shutdown_cuts_live_websockets() {
     match TcpStream::connect(("127.0.0.1", proxy.port())) {
         Err(_) => {}
         Ok(mut late) => {
-            late.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            // macOS fails `setsockopt` with EINVAL once the peer has reset
+            // the connection, which is exactly the "closed at once" case.
+            match late.set_read_timeout(Some(Duration::from_secs(2))) {
+                Ok(()) => {}
+                Err(error) => {
+                    #[cfg(target_os = "macos")]
+                    if error.raw_os_error() == Some(libc::EINVAL) {
+                        return;
+                    }
+                    panic!("unexpected read-timeout error: {error}");
+                }
+            }
             let _ = late.write_all(b"GET /json/version HTTP/1.1\r\nHost: localhost\r\n\r\n");
             assert!(
                 matches!(late.read(&mut buf), Ok(0) | Err(_)),
@@ -889,9 +908,7 @@ fn agent_creates_a_page(before: Vec<Value>) -> (Vec<String>, Vec<Value>) {
     };
     assert_eq!(reply["result"]["targetId"], "T9");
     // The tap is fed before the forward, but observes on its own thread.
-    let _ = eventually(Duration::from_secs(1), || {
-        (!reported.all().is_empty()).then_some(())
-    });
+    reported.wait_for_any(Duration::from_secs(1));
     thread::sleep(Duration::from_millis(100)); // nothing more arrives
     (reported.all(), got)
 }
@@ -936,9 +953,7 @@ fn attach_then_navigate_at_once(client_push_delay_ms: u64) -> Vec<String> {
     assert_eq!(next_text(&mut ws)["result"]["sessionId"], "S1");
     ws.send(Message::text(NAVIGATE)).unwrap();
     assert_eq!(next_text(&mut ws)["sessionId"], "S1");
-    let _ = eventually(Duration::from_secs(3), || {
-        (!reported.all().is_empty()).then_some(())
-    });
+    reported.wait_for_any(Duration::from_secs(3));
     reported.all()
 }
 

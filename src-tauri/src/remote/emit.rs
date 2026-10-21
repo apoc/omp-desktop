@@ -44,6 +44,9 @@ pub struct Status {
     pub devices: Vec<DeviceStatus>,
     /// Why the last push failed (or could not be set up), if it did.
     pub push_error: Option<String>,
+    /// Whether this platform can tell that the desktop is locked, so the
+    /// Settings page offers "only while locked".
+    pub lock_detection: bool,
     /// The saved settings, so the Settings page prefills from them.
     pub settings: RemoteSettings,
 }

@@ -36,11 +36,16 @@ impl CertSetting {
 /// Web Push triggers; the behaviour lives in the push module.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase", default)]
+// Independent switches the Settings page edits one by one.
+#[allow(clippy::struct_excessive_bools)]
 pub struct PushSettings {
     pub enabled: bool,
     pub questions: bool,
     pub finished: bool,
     pub contact: String,
+    /// Send only while the desktop session is locked (`lock::DETECTION`
+    /// platforms; ignored elsewhere).
+    pub only_when_locked: bool,
 }
 
 impl Default for PushSettings {
@@ -50,6 +55,7 @@ impl Default for PushSettings {
             questions: true,
             finished: true,
             contact: String::new(),
+            only_when_locked: false,
         }
     }
 }

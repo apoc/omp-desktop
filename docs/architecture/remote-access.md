@@ -26,9 +26,9 @@ phone page ⇄ TLS/WebSocket ⇄ Rust hub ⇄ Tauri events/commands ⇄ webview 
 
 ## Commands and `Status`
 
-`remote_status`, `remote_interfaces`, `remote_apply_settings` (always the **complete** `RemoteSettings`: enabled, interface name, port, host name, cert `generated | files{cert,key}`, push{enabled, questions, finished, contact}), `remote_pair_start` (→ `{url, svg, expiresAt}`), `remote_pair_cancel`, `remote_device_rename`, `remote_device_revoke`, `remote_regenerate_cert`, `remote_push_test`, `remote_default_contact` (global git `user.email`), `remote_publish`, `remote_action_result`, `remote_ready`.
+`remote_status`, `remote_interfaces`, `remote_apply_settings` (always the **complete** `RemoteSettings`: enabled, interface name, port, host name, cert `generated | files{cert,key}`, push{enabled, questions, finished, onlyWhenLocked, contact}), `remote_pair_start` (→ `{url, svg, expiresAt}`), `remote_pair_cancel`, `remote_device_rename`, `remote_device_revoke`, `remote_regenerate_cert`, `remote_push_test`, `remote_default_contact` (global git `user.email`), `remote_publish`, `remote_action_result`, `remote_ready`.
 
-`Status` carries `enabled`, `listening`, `url`, `ip`, `error`, `fingerprint`, `pushError`, `devices[{id,name,pairedAt,lastSeen,connected,pushSubscribed}]` and the saved `settings`, so the Settings rows prefill from it and refresh on every `remote://status`.
+`Status` carries `enabled`, `listening`, `url`, `ip`, `error`, `fingerprint`, `pushError`, `lockDetection` (whether this platform can tell a locked desktop: macOS, Windows, Linux), `devices[{id,name,pairedAt,lastSeen,connected,pushSubscribed}]` and the saved `settings`, so the Settings rows prefill from it and refresh on every `remote://status`.
 
 ## Pairing and auth
 
@@ -85,6 +85,10 @@ Server → phone: `hello {deviceId,name}`, `tabs`, `view`, `theme {id,tone,accen
 ## Web Push
 
 - Triggers (Settings): a question opened (immediately) and a turn finished (only if it ran ≥ 30 s). At most one push per tab per 30 s; the notification `tag` is the tab id. Title `OMP · <tab title>`, body `Question waiting` / `Finished`; no transcript text. `TTL 3600`, urgency high (question) / normal (finished).
+- **Only while locked** (`PushSettings.onlyWhenLocked`, default off; `Status.lockDetection` tells the Settings page whether to show the switch — macOS, Windows and Linux): the push worker asks `lock::screen_locked()` right before it delivers a question or finished push, not when it is queued. Locked → send; unlocked → drop silently (no retry, and the tab's 30 s throttle slot is given back, so a later push for the same tab is not held off); unknown (`None`, other platforms) → send. "Send test notification" ignores the setting. The probe per platform:
+  - macOS: `CGSessionCopyCurrentDictionary` carries `CGSSessionScreenIsLocked` only while the session is locked.
+  - Windows: `WTSQuerySessionInformationW(WTSSessionInfoEx)` for the app's own session; `SessionFlags` `WTS_SESSIONSTATE_LOCK` → locked, `…_UNLOCK` → unlocked, `…_UNKNOWN` → unknown.
+  - Linux: systemd-logind's (or elogind's) `LockedHint` of `/org/freedesktop/login1/session/auto` over the system bus (zbus, 2 s call timeout; a new connection per probe). No logind or no session → unknown. The hint is set by the screen locker (GNOME, KDE Plasma, and others that call `SetLockedHint`); a locker that never sets it leaves `false`, so with such a locker every push is dropped — the switch only makes sense with a locker that reports to logind. Check with `loginctl show-session auto -p LockedHint` while locked.
 - Needs the VAPID key (generated in the app config dir) and a **real contact** (`mailto:` or `https:`) in Settings; Apple rejects placeholders with 403 `BadJwtToken`. A bare email becomes `mailto:`; the validator checks the complete local part and domain. The Settings row prefills it from global git `user.email`. Without a valid contact nothing is sent and `Status.pushError` says why.
 - Subscriptions come from the page (`push-subscribe`, after a user gesture in the home-screen app); the page registers `/sw.js`, which shows the notification and on tap focuses or opens `/?tab=<id>` (`clients.claim()` on activate; `navigate` rejecting falls back to `openWindow`).
 - **Endpoint allowlist**: a subscription is only stored for `https` endpoints on `fcm.googleapis.com`, `updates.push.services.mozilla.com`, `*.push.apple.com` and `*.notify.windows.com`, so a paired phone cannot make the desktop send requests to arbitrary hosts. 404/410 from the push service deletes the subscription.

@@ -662,6 +662,36 @@ test("two delayed push toggles both survive: nested push merges inside the queue
   assert.deepEqual(own(applies[3].s.push), { enabled: true, questions: true, finished: true, contact: "fresh@omp-desktop.app" });
 });
 
+test("the only-while-locked switch shows only where lock detection exists and patches push", async () => {
+  const { window, reset } = remoteRows();
+  const find = (node, label) => {
+    if (!node || typeof node !== "object") return null;
+    if (node.props?.label === label) return node;
+    for (const child of node.children.flat()) { const hit = find(child, label); if (hit) return hit; }
+    return null;
+  };
+  const LABEL = "Notify only while the desktop is locked";
+  const rendered = async (lockDetection, applies = []) => {
+    const settings = { enabled: true, cert: {}, push: { enabled: true, questions: true, finished: true, contact: "me@example.test", onlyWhenLocked: false } };
+    const bridge = {
+      onRemoteEvent: () => () => {}, remoteStatus: async () => ({ settings, devices: [], lockDetection }),
+      remoteDefaultContact: async () => "",
+      remoteApply: async s => { applies.push(s); return { ok: true, value: { settings: s, devices: [], lockDetection } }; },
+    };
+    const render = () => { reset(); return window.OMP_SETTINGS_ROWS.remotePush({ row: {}, ctx: { bridge }, query: "" }); };
+    render(); await flush(); await flush();
+    return render();
+  };
+  assert.equal(find(await rendered(false), LABEL), null, "hidden without lock detection");
+  const applies = [];
+  const tree = await rendered(true, applies);
+  find(tree, LABEL).props.onChange(true);
+  await flush(); await flush();
+  assert.equal(applies.length, 1);
+  assert.equal(applies[0].push.onlyWhenLocked, true);
+  assert.equal(applies[0].push.contact, "me@example.test", "the rest of push is kept");
+});
+
 // ---- settings: Enter confirms an IME candidate, it does not commit the field --
 test("Enter during IME composition does not blur a settings field", () => {
   const { scope, reset } = remoteRows();

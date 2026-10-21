@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Remote access: Settings → Remote access → Notifications has an "Only while the desktop is locked" switch (off by default), so the phone is notified only when you are away from the computer. Works on macOS, Windows and Linux; on Linux it needs a screen locker that reports the lock to systemd-logind (GNOME and KDE Plasma do). "Send test notification" ignores it.
+
 ## [0.12.0] - 2026-10-20
 
 ### Added

@@ -5,6 +5,7 @@ pub mod devices;
 pub mod emit;
 pub mod http;
 pub mod hub;
+pub mod lock;
 pub mod manager;
 pub mod net;
 pub mod pairing;

@@ -20,3 +20,13 @@ fn a_remote_json_with_the_retired_allow_http_field_still_loads_without_it() {
     assert!(!saved.contains("allowHttp"), "{saved}");
     assert_eq!(RemoteSettings::load(&path), settings);
 }
+
+#[test]
+fn only_when_locked_defaults_off_and_uses_the_camel_case_key() {
+    let old: PushSettings = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+    assert!(!old.only_when_locked);
+    let on: PushSettings = serde_json::from_str(r#"{"onlyWhenLocked":true}"#).unwrap();
+    assert!(on.only_when_locked);
+    let json = serde_json::to_string(&on).unwrap();
+    assert!(json.contains(r#""onlyWhenLocked":true"#), "{json}");
+}
