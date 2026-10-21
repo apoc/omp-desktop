@@ -14,12 +14,11 @@ const _SRR_left = (expiresAt, now) => Math.max(0, Math.ceil(expiresAt - now / 10
 
 function _SRR_PairDialog({ pair, active = true, onClose }) {
   const [now, setNow] = React.useState(Date.now());
-  React.useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
   React.useEffect(() => {
-    if (!active) return undefined;
+    const t = setInterval(() => setNow(Date.now()), 1000);
     const onKey = e => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    if (active) window.addEventListener("keydown", onKey, true);
+    return () => { clearInterval(t); window.removeEventListener("keydown", onKey, true); };
   }, [active, onClose]);
   const left = _SRR_left(pair.expiresAt, now);
   const src = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(pair.svg)))}`;
@@ -45,12 +44,11 @@ function _SRR_PairDialog({ pair, active = true, onClose }) {
 function _SRR_Pair({ row, ctx, query }) {
   const Row = window.SettingsRow, Btn = window.SettingsButton;
   const { status } = _SRR_useRemote(ctx.bridge);
-  const [pair, setPair] = React.useState(null);
-  const [error, setError] = React.useState(null);
-  const [busy, setBusy] = React.useState(false);
+  const [{ pair, error, busy }, setState] = React.useState({ pair: null, error: null, busy: false });
+  const patch = React.useCallback(p => setState(s => ({ ...s, ...p })), []);
   const base = React.useRef(0);
   const count = status?.devices?.length ?? 0;
-  const close = React.useCallback(() => { setPair(null); void ctx.bridge.remotePairCancel(); }, [ctx.bridge]);
+  const close = React.useCallback(() => { patch({ pair: null }); void ctx.bridge.remotePairCancel(); }, [ctx.bridge, patch]);
   const liveRef = React.useRef(true);
   const pairing = React.useRef(false);
   React.useEffect(() => {
@@ -61,20 +59,19 @@ function _SRR_Pair({ row, ctx, query }) {
     };
   }, [ctx.bridge]);
   // A new device while the dialog is up means the code was used.
-  React.useEffect(() => { if (pair && count > base.current) { pairing.current = false; setPair(null); } }, [count, pair]);
+  React.useEffect(() => { if (pair && count > base.current) { pairing.current = false; patch({ pair: null }); } }, [count, pair, patch]);
   const start = async () => {
     if (pairing.current) return;
     pairing.current = true;
-    setBusy(true);
+    patch({ busy: true });
     try {
       const r = await ctx.bridge.remotePairStart();
       if (!liveRef.current) { if (r?.ok !== false) void ctx.bridge.remotePairCancel(); return; }
-      if (r?.ok === false) { pairing.current = false; setError(r.error ?? "failed"); return; }
-      setError(null);
+      if (r?.ok === false) { pairing.current = false; patch({ error: r.error ?? "failed" }); return; }
       base.current = count;
-      setPair(r.value);
+      patch({ pair: r.value, error: null });
     } finally {
-      if (liveRef.current) setBusy(false);
+      if (liveRef.current) patch({ busy: false });
     }
   };
   return (

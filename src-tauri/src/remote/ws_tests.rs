@@ -34,10 +34,11 @@ impl TestServer {
 
     /// Completed upgrade with a same-origin request, not yet authenticated.
     fn ws_connect(&self) -> Client {
-        let tcp = self.tcp();
-        let name = ServerName::try_from("127.0.0.1").unwrap();
-        let connection = rustls::ClientConnection::new(self.client_config(), name).unwrap();
-        let mut stream = rustls::StreamOwned::new(connection, tcp);
+        let tls = rustls::ClientConnection::new(
+            self.client_config(),
+            ServerName::try_from("127.0.0.1").unwrap(),
+        );
+        let mut stream = rustls::StreamOwned::new(tls.unwrap(), self.tcp());
         let request = format!(
             "GET /ws HTTP/1.1\r\nHost: {host}\r\nOrigin: https://{host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
             host = self.host()
@@ -469,6 +470,13 @@ fn push_subscriptions_are_stored_capped_and_acked() {
     assert!(s.devices.list()[0].push.is_empty());
 }
 
+/// A masked 4000-byte text frame (`0x81, 0xFE, 0x0F, 0xA0` + 4-byte mask + 4000 payload bytes).
+fn masked_frame() -> Vec<u8> {
+    let mut frame = vec![0x81, 0xFE, 0x0F, 0xA0];
+    frame.extend(std::iter::repeat_n(0_u8, 4004));
+    frame
+}
+
 /// Bytes trickled to a socket that never authenticates: the server must cut
 /// it at the auth deadline (plus the close grace), not keep reading while
 /// bytes keep coming. The close is observed on the read side: on Windows
@@ -480,9 +488,7 @@ fn trickle_is_cut(s: &TestServer) -> bool {
     let start = Instant::now();
     // A masked 4000-byte text frame, one byte per 10 ms: the socket is never
     // idle long enough for a read timeout to end a poll.
-    let mut bytes = vec![0x81, 0xFE, 0x0F, 0xA0];
-    bytes.extend(std::iter::repeat_n(0_u8, 4004));
-    for byte in bytes {
+    for byte in masked_frame() {
         if start.elapsed() > Duration::from_millis(7500) {
             return false;
         }
@@ -646,9 +652,7 @@ fn authenticated_trickle_is_cut(delay: Duration, name: &str) {
     let mut client = s.authed_socket();
     let watch = client.watch_close();
     let started = Instant::now();
-    let mut frame = vec![0x81, 0xfe, 0x0f, 0xa0];
-    frame.extend(std::iter::repeat_n(0, 4004));
-    for byte in frame {
+    for byte in masked_frame() {
         assert!(
             started.elapsed() < Duration::from_secs(7),
             "authenticated trickled frame kept TCP open"

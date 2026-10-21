@@ -2,6 +2,7 @@ use super::*;
 use crate::remote::devices::PushSubscription;
 use crate::remote::push_contact::CONTACT_ERROR;
 use crate::remote::push_crypto::{decrypt_for_test, encrypt};
+use crate::test_support::eventually;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use std::io::{Read, Write};
@@ -200,12 +201,8 @@ fn setup_full(
     });
     (pusher, devices, key)
 }
-
-fn wait_for(what: &str, condition: impl FnMut() -> bool) {
-    assert!(
-        crate::test_support::wait_until(Duration::from_secs(5), condition),
-        "timed out waiting for {what}"
-    );
+fn wait_for(what: &str, mut condition: impl FnMut() -> bool) {
+    eventually(Duration::from_secs(5), || condition().then_some(())).expect(what);
 }
 
 #[test]
