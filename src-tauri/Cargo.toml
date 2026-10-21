@@ -52,6 +52,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_System_JobObjects",
+    # WTS session flags: the screen-lock probe (`remote/lock.rs`).
+    "Win32_System_RemoteDesktop",
     "Win32_System_Threading",
 ] }
 # Machine/user PATH for omp and git children (`child_path.rs`, #34). Already
@@ -65,11 +67,16 @@ windows-registry = "0.6"
 [target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
 
-# Screen-lock probe for push-only-while-locked (`remote/lock.rs`). Both crates
-# are already in the tree via tauri/wry; only the feature set is chosen here.
+# Screen-lock probe for push-only-while-locked (`remote/lock.rs`). All of
+# these crates are already in the tree (macOS via tauri/wry, zbus via
+# tauri-plugin-single-instance); only the feature set is chosen here.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFBase", "CFDictionary", "CFNumber", "CFString"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGSession"] }
+
+# Linux: logind's `LockedHint` over the system bus.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

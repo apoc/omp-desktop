@@ -3,7 +3,7 @@
    of Settings → Remote access (window.OMP_SETTINGS_ROWS):
      remotePair     one-time QR code dialog
      remoteDevices  paired phones: rename, revoke (asks first)
-     remotePush     Web Push: triggers, only-while-locked (macOS), VAPID contact, test notification
+     remotePush     Web Push: triggers, only-while-locked, VAPID contact, test notification
    The QR is an <img> of the SVG as a data URL — never injected as HTML.
    Depends on `rows-remote-shared.jsx` (`_SRR_Icon`, `_SRR_useRemote`,
    `_SRR_useAsync`, `_SRR_Field`, `_SRR_Line`).

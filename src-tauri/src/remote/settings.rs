@@ -43,7 +43,8 @@ pub struct PushSettings {
     pub questions: bool,
     pub finished: bool,
     pub contact: String,
-    /// Send only while the desktop session is locked (macOS only).
+    /// Send only while the desktop session is locked (`lock::DETECTION`
+    /// platforms; ignored elsewhere).
     pub only_when_locked: bool,
 }
 

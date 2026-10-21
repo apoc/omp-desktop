@@ -3886,6 +3886,7 @@ dependencies = [
  "tungstenite",
  "windows-registry",
  "windows-sys 0.61.2",
+ "zbus",
 ]
 
 [[package]]
