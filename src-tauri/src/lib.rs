@@ -27,6 +27,7 @@ mod model_usage;
 mod navigation_guard;
 mod omp_cli;
 mod open_tabs;
+mod pr_automation;
 mod private_fs;
 mod profiles;
 mod program_setting;
@@ -1684,6 +1685,7 @@ pub fn run() {
             git_browser_commit,
             git_browser_commit_file,
             project_file_read,
+            pr_automation::pr_automation_snapshot,
             workspace_accept,
             workspace_reject,
             widgets_state,

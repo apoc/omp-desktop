@@ -26,7 +26,7 @@ const {
   INTENT_FRAMING, APPROVAL_PROMPT,
   useBridgeSnapshot, useThemeEffect, useSubagentManager, useUpdater, useConversationTree, useGoalMode, useTerminal, TerminalPanels, timeNow,
   useKeymap, useKeymapDispatch, useBrowser, BrowserDock, MarkdownLinkContext: _AL_MdLinkCtx,
-  usePaneWidths, ResizeHandle, useRemote,
+  usePaneWidths, ResizeHandle, useRemote, usePrAutomation, PrAutomationCard,
 } = window;
 const { routeSubmit: _routeSubmit } = window.OMP_SLASH;
 const { mergeIntoMessage: _mergeBrowserChips, browserCommand: _browserCommand, MIN_WIDTH: _AL_BROWSER_MIN } = window.OMP_BROWSER;
@@ -538,14 +538,14 @@ function App() {
     else setMessages(prev => [...prev, { kind: "user", time: timeNow(), text: out.text, images: out.images }]);
   };
 
-  const handleAbort      = () => { bridge?.abort(); setStreaming(false); };
+  const handleAbort      = () => { prAutomation.pause(); bridge?.abort(); setStreaming(false); };
   const handlePickModel  = m  => { setModelState(m); bridge?.setModel(m); };
   const handleAskAnswer  = React.useCallback((id, value) => { bridge?.answerAsk(id, value); }, [bridge]); // bridge = window.OMP_BRIDGE, assigned once before React renders — stable ref
   const handleAskDialogAnswer = React.useCallback((id, answers) => { bridge?.answerAskDialog(id, answers); }, [bridge]);
   const handleConfirmAsk = React.useCallback((id, confirmed) => { bridge?.answerConfirm(id, confirmed); }, [bridge]);
   const handleCancelAsk  = React.useCallback((id) => { bridge?.cancelAsk(id); }, [bridge]);
   const handleGrantApproval = React.useCallback((prompt, scope) => { bridge?.approveAndRemember(prompt, scope); }, [bridge]);
-  const handleStopRetry  = React.useCallback(() => bridge?.stopRetry(), [bridge]);
+  const handleStopRetry  = () => { prAutomation.pause(); bridge?.stopRetry(); };
   const handlePickLogin = async (provider) => {
     if (!bridge) return;
     try {
@@ -644,6 +644,18 @@ function App() {
       if (shown) setPromptInsert({ text, images, nonce: Date.now() });
       browser.restoreChips(chips ?? [], tabId);
     },
+  });
+
+  const prAutomation = usePrAutomation({
+    bridge, tabId: planKey, sessionIds, projectKey: activeProject.path,
+    runState: activeProject.runState,
+    branchKey: activeProject.branch ?? null,
+    conversationKey: JSON.stringify([activeProject.profile, activeProject.sessionFile ?? null]),
+    featureEnabled: t.showChanges ?? true,
+    connected: !!bridge?.isConnected && !stab.active,
+    blocked: !bridge?.isConnected || !activeProject.path || stab.active || plan.mode ||
+      goalUi.mode || !!goalUi.planBlocked ||
+      sessions.some(s => s.id !== planKey && s.path === activeProject.path && window.OMP_TURN_STATUS.isBusyRunState(s.runState)),
   });
 
   // Conversation tree data + actions. A successful "branch here" puts the
@@ -996,7 +1008,7 @@ function App() {
             )}
             {showSidebar && <ResizeHandle className="at-sidebar" {...panes.handle("sidebar")} />}
             <div ref={stageRef} className={`stage ${side === "browser" ? `with-browser${browserFull ? " browser-full" : ""}` : sideRail ? `with-${sideRail}` : ""}`}>
-              <main className="session">
+              <main className="session" onFocusCapture={prAutomation.refresh}>
                 {noTab ? (
                   <EmptyWorkspace notes={workspaceNotes} />
                 ) : (<>
@@ -1121,6 +1133,8 @@ function App() {
                   onMinimapClick={handleMinimapClick}
                   show={{ context: t.showContext ?? true, radar: t.showRadar ?? true, subagents: t.showSubagents ?? true, minimap: t.showMinimap ?? true }}
                 >
+                  {(t.showChanges ?? true) && <PrAutomationCard key={planKey} automation={prAutomation} bridge={bridge}
+                    available={!!activeProject.path && !!bridge?.isConnected} />}
                   {widgets.fatal && <WidgetErrorCard title="widgets.json" error={widgets.fatal} />}
                   {widgets.configErrors.map((e, i) => <WidgetErrorCard key={i} title="widgets.json" error={e} />)}
                   {widgets.approvals.map(a => (
