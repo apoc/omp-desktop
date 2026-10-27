@@ -35,6 +35,7 @@
 .live-voice-phase, .live-voice-head label { color: var(--fg-2); }
 .live-voice-head label { display: inline-flex; align-items: center; gap: 4px; }
 .live-voice-head meter { width: 48px; height: 8px; accent-color: var(--accent); }
+.live-voice-db { min-width: 9ch; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .live-voice-spacer { flex: 1; }
 .live-voice-error { margin-top: 6px; color: var(--rose); overflow-wrap: anywhere; }
 .live-voice-captions { list-style: none; padding: 0; margin: 6px 0 0; max-height: 120px; overflow-y: auto; }
