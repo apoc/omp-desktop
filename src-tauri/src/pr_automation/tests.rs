@@ -299,6 +299,169 @@ fn changed_or_malformed_discovery_cannot_select_an_arbitrary_pr() {
 }
 
 #[test]
+fn changes_outside_a_repository_are_a_definitive_absence() {
+    let dir = std::env::temp_dir().join(format!("omp-changes-not-a-repo-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    if crate::git_browser::discover_optional(&dir)
+        .unwrap()
+        .is_none()
+    {
+        let result = changes(&dir);
+        assert!(result.snapshot.is_none());
+        assert!(result.discovery_error.is_none());
+        assert!(result.local_changes.is_none());
+        assert!(result.local_error.is_none());
+    }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn changes_outcomes_are_independent_and_serialized_with_nulls() {
+    let result = collect_changes(
+        || Err("authentication failed".into()),
+        || {
+            Ok(Some(crate::git_browser::LocalChanges {
+                changed: 3,
+                truncated: false,
+            }))
+        },
+    );
+    assert_eq!(
+        serde_json::to_value(result).unwrap(),
+        json!({
+            "snapshot": null,
+            "discoveryError": "authentication failed",
+            "localChanges": { "changed": 3, "truncated": false },
+            "localError": null
+        })
+    );
+    let result = collect_changes(
+        || {
+            parse_feedback(
+                &feedback(vec![], vec![]),
+                &local(),
+                &selected(PrState::Open),
+            )
+            .map(Some)
+        },
+        || Err("status failed".into()),
+    );
+    let value = serde_json::to_value(result).unwrap();
+    assert_eq!(value["snapshot"]["number"], 12);
+    assert_eq!(value["discoveryError"], Value::Null);
+    assert_eq!(value["localChanges"], Value::Null);
+    assert_eq!(value["localError"], "status failed");
+
+    let result = collect_changes(|| Ok(None), || Ok(None));
+    assert_eq!(
+        serde_json::to_value(result).unwrap(),
+        json!({"snapshot": null, "discoveryError": null, "localChanges": null, "localError": null})
+    );
+}
+
+#[test]
+fn contextual_discovery_distinguishes_ordinary_absence_from_bad_configuration() {
+    let Some(repo) = crate::git_browser::fixture::init("context-discovery") else {
+        return;
+    };
+    repo.write("untracked.txt", "work\n");
+    let unborn = changes(repo.path());
+    assert!(unborn.snapshot.is_none() && unborn.discovery_error.is_none());
+    assert_eq!(unborn.local_changes.unwrap().changed, 1);
+    assert!(unborn.local_error.is_none());
+
+    repo.commit("initial", 1_700_000_000);
+    assert!(contextual_branch(repo.path()).unwrap().is_none());
+    repo.git(&["checkout", "-q", "--detach"]);
+    assert!(contextual_branch(repo.path()).unwrap().is_none());
+    repo.git(&["switch", "-q", "main"]);
+    repo.git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://example.com/alice/project.git",
+    ]);
+    repo.git(&["config", "branch.main.remote", "origin"]);
+    repo.git(&["config", "branch.main.merge", "refs/heads/topic"]);
+    let unsupported = changes(repo.path());
+    assert!(unsupported.snapshot.is_none() && unsupported.discovery_error.is_none());
+    assert_eq!(unsupported.local_changes.unwrap().changed, 1);
+    assert!(unsupported.local_error.is_none());
+
+    repo.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        "https://github.com/alice/project/extra",
+    ]);
+    let malformed = changes(repo.path());
+    assert!(malformed
+        .discovery_error
+        .unwrap()
+        .contains("owner and repository"));
+    assert_eq!(malformed.local_changes.unwrap().changed, 1);
+    assert!(malformed.local_error.is_none());
+
+    repo.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        "https://github.com/alice/project.git",
+    ]);
+    assert_eq!(
+        contextual_branch(repo.path()).unwrap().unwrap().remote_ref,
+        "refs/heads/topic"
+    );
+    repo.git(&["config", "branch.main.merge", "refs/heads/invalid..name"]);
+    assert!(contextual_branch(repo.path()).is_err());
+}
+
+#[test]
+fn contextual_discovery_preserves_config_and_path_errors() {
+    let Some(repo) = crate::git_browser::fixture::init("context-bad-config") else {
+        return;
+    };
+    repo.commit("initial", 1_700_000_000);
+    repo.git(&["config", "branch.main.remote", "missing"]);
+    repo.git(&["config", "branch.main.merge", "refs/heads/topic"]);
+    assert!(contextual_branch(repo.path())
+        .unwrap_err()
+        .contains("remote"));
+    assert!(contextual_branch(&repo.path().join("missing-directory")).is_err());
+    std::fs::write(repo.path().join(".git/config"), "[invalid\n").unwrap();
+    let result = changes(repo.path());
+    assert!(result.discovery_error.is_some());
+    assert!(result.local_error.is_some());
+}
+
+#[test]
+fn contextual_revalidation_keeps_checkout_disappearance_as_an_error() {
+    let Some(repo) = crate::git_browser::fixture::init("context-race") else {
+        return;
+    };
+    repo.commit("initial", 1_700_000_000);
+    repo.git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/alice/project.git",
+    ]);
+    repo.git(&["config", "branch.main.remote", "origin"]);
+    repo.git(&["config", "branch.main.merge", "refs/heads/topic"]);
+    let original = contextual_branch(repo.path()).unwrap().unwrap();
+    let result = with_local_revalidation(
+        &original,
+        || {
+            repo.git(&["checkout", "-q", "--detach"]);
+            Ok(None::<()>)
+        },
+        || local_branch(repo.path()),
+    );
+    assert!(result.is_err());
+    assert!(contextual_branch(repo.path()).unwrap().is_none());
+}
+
+#[test]
 fn local_identity_is_revalidated_after_success_none_and_read_errors() {
     for outcome in 0..3 {
         let read = || match outcome {

@@ -71,7 +71,7 @@ tauri-plugin-single-instance = "2"
 # these crates are already in the tree (macOS via tauri/wry, zbus via
 # tauri-plugin-single-instance); only the feature set is chosen here.
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFBase", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFBase", "CFDictionary", "CFNumber", "CFString", "CFPreferences"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGSession"] }
 
 # Linux: logind's `LockedHint` over the system bus.

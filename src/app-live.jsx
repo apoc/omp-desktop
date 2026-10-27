@@ -951,6 +951,7 @@ function App() {
         <div className={`window scanlines ${showSplit ? "is-split" : ""}`}>
           <WindowChrome
             project={activeProject}
+            prStatus={stab.active ? null : prAutomation.statuses[activeSessionId]}
             onConfigureProject={handleConfigureProject}
             onCmd={() => setBridgeOpen(true)}
             profiles={profiles}
@@ -1134,7 +1135,8 @@ function App() {
                   show={{ context: t.showContext ?? true, radar: t.showRadar ?? true, subagents: t.showSubagents ?? true, minimap: t.showMinimap ?? true }}
                 >
                   {(t.showChanges ?? true) && <PrAutomationCard key={planKey} automation={prAutomation} bridge={bridge}
-                    available={!!activeProject.path && !!bridge?.isConnected} />}
+                    available={!!activeProject.path && !!bridge?.isConnected}
+                    onOpenChanges={() => setGitOpen({ path: null, project: gitProject })} />}
                   {widgets.fatal && <WidgetErrorCard title="widgets.json" error={widgets.fatal} />}
                   {widgets.configErrors.map((e, i) => <WidgetErrorCard key={i} title="widgets.json" error={e} />)}
                   {widgets.approvals.map(a => (

@@ -192,7 +192,7 @@
         };
       },
       onResult: async ({ id, owners, snapshot, error, permission }) => {
-        if (snapshot && snapshot.state !== "OPEN") {
+        if (!error && (!snapshot || snapshot.state !== "OPEN")) {
           for (const owner of owners) {
             const e = grants.get(owner);
             if (e?.enabled) disable(e);
@@ -210,6 +210,10 @@
           e?.enabled &&
           e.token === p.token &&
           ready();
+        const fresh = () => {
+          const status = monitor.statuses()[id];
+          return status?.canEnable && status.snapshot === snapshot;
+        };
         if (!p?.eligible || !current()) return;
         if (error) {
           e.error = error;
@@ -217,13 +221,9 @@
           notify();
           return;
         }
+        if (!fresh()) return;
         e.fixing = false;
         e.seenBusy = false;
-        if (!snapshot) {
-          e.phase = "no-pr";
-          notify();
-          return;
-        }
         const feedback = newFeedback(snapshot, e.handled);
         if (!feedback.checks.length && !feedback.threads.length) {
           e.phase =
@@ -240,10 +240,16 @@
             id,
             makePrompt(snapshot, feedback),
             snapshot,
-            () => current() && snapshot.state === "OPEN",
+            () => current() && fresh(),
           );
           // A handoff already accepted cannot be recalled after a tab switch.
           if (grants.get(id) !== e || !e.enabled || e.token !== p.token) return;
+          // No prompt was attempted when the final read or readiness check
+          // could not complete. Retry only after the next discovery poll.
+          if (sent === null) {
+            e.phase = "pending";
+            return;
+          }
           if (!sent)
             throw new Error(
               "The agent did not accept the fix prompt. Turn off and on to retry.",
@@ -329,8 +335,14 @@
         statuses = monitor.statuses();
       const discovery = statuses[c.tabId] || {
         snapshot: null,
-        loading: false,
+        loading:
+          available(c) &&
+          !session(c)?.preparing &&
+          typeof c.bridge?.changesSnapshot === "function",
         discoveryError: null,
+        localChanges: null,
+        localError: null,
+        canEnable: false,
       };
       const snapshot = discovery.snapshot;
       let status = "Auto-fix is off.";
@@ -354,8 +366,6 @@
         else if (e.phase === "inactive")
           status = "Paused while inactive; waiting to check feedback.";
         else if (discovery.loading) status = "Checking PR feedback…";
-        else if (e.phase === "no-pr")
-          status = "No pull request for the current branch.";
         else if (e.phase === "clean")
           status = "No failed checks or unresolved review threads.";
         else if (e.phase === "handled")
@@ -380,13 +390,19 @@
         s = session(c);
       if (!available(c)) return;
       const e = grant(s),
-        snapshot = monitor.statuses()[s.id]?.snapshot;
+        discovery = monitor.statuses()[s.id];
       if (e.enabled) disable(e);
       else {
-        if (snapshot && snapshot.state !== "OPEN") return;
+        if (!discovery?.canEnable) return;
         for (const other of c.sessions) {
           const old = grants.get(other.id);
-          if (old !== e && old?.enabled && other.path === s.path) disable(old);
+          if (
+            old !== e &&
+            old?.enabled &&
+            window.OMP_PROJECT_NAV.normPath(other.path) ===
+              window.OMP_PROJECT_NAV.normPath(s.path)
+          )
+            disable(old);
         }
         e.token++;
         e.enabled = true;

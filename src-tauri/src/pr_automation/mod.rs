@@ -22,7 +22,7 @@ use feedback::failed_check;
 use feedback::parse_feedback;
 #[cfg(test)]
 use git::github_repo;
-use git::{local_branch, LocalBranch};
+use git::{contextual_branch, local_branch, LocalBranch};
 
 const FIND_QUERY: &str = r"query($owner:String!, $repo:String!, $ref:String!, $branch:String!, $head:String!) {
   repository(owner:$owner, name:$repo) {
@@ -117,6 +117,54 @@ struct ReviewThread {
     url: String,
 }
 
+/// Independent PR discovery and local worktree outcomes for a tab.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangesSnapshot {
+    snapshot: Option<PrAutomationSnapshot>,
+    discovery_error: Option<String>,
+    local_changes: Option<crate::git_browser::LocalChanges>,
+    local_error: Option<String>,
+}
+
+#[tauri::command]
+pub async fn changes_snapshot(
+    session_id: String,
+    terminal: State<'_, Arc<TerminalManager>>,
+) -> Result<ChangesSnapshot, String> {
+    let folder = terminal
+        .folder(&session_id)
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| "Tab has no project folder".to_string())?;
+    crate::off_ipc(move || changes(&folder)).await
+}
+
+fn changes(folder: &Path) -> ChangesSnapshot {
+    collect_changes(
+        || contextual_branch(folder)?.map_or(Ok(None), |local| snapshot_for_local(folder, local)),
+        || crate::git_browser::change_summary(folder),
+    )
+}
+
+fn collect_changes(
+    discovery: impl FnOnce() -> Result<Option<PrAutomationSnapshot>, String>,
+    local: impl FnOnce() -> Result<Option<crate::git_browser::LocalChanges>, String>,
+) -> ChangesSnapshot {
+    let (snapshot, discovery_error) = match discovery() {
+        Ok(snapshot) => (snapshot, None),
+        Err(error) => (None, Some(error)),
+    };
+    let (local_changes, local_error) = match local() {
+        Ok(changes) => (changes, None),
+        Err(error) => (None, Some(error)),
+    };
+    ChangesSnapshot {
+        snapshot,
+        discovery_error,
+        local_changes,
+        local_error,
+    }
+}
 /// Snapshot the project registered for this tab, never a frontend-supplied path.
 #[tauri::command]
 pub async fn pr_automation_snapshot(
@@ -131,7 +179,13 @@ pub async fn pr_automation_snapshot(
 }
 
 fn snapshot(folder: &Path) -> Result<Option<PrAutomationSnapshot>, String> {
-    let local = local_branch(folder)?;
+    snapshot_for_local(folder, local_branch(folder)?)
+}
+
+fn snapshot_for_local(
+    folder: &Path,
+    local: LocalBranch,
+) -> Result<Option<PrAutomationSnapshot>, String> {
     with_local_revalidation(
         &local,
         || {

@@ -63,9 +63,9 @@ function ProjectSidebar({
           const containsActive = group.tabs.some(t => t.id === activeId);
           const profile = profileLabel(group.profile);
           const editing = !multi && renaming === group.tabs[0].id;
-          const prModel = multi
-            ? (!expanded ? window.OMP_PR_STATUS.aggregate(group.tabs.map(t => prStatuses[t.id])) : null)
-            : window.OMP_PR_STATUS.present(prStatuses[group.tabs[0].id]);
+          const prModel = multi && !expanded
+            ? window.OMP_PR_STATUS.aggregate(group.tabs.map(t => prStatuses[t.id]))
+            : null;
           const folderIcon = <Icon name="folder" size={11} color={containsActive ? "var(--accent)" : "var(--fg-4)"} />;
           // Single-tab cards show `folder · title` (#46), which ellipsizes.
           // The tooltip keeps the full title plus the folder path; multi-tab
@@ -73,7 +73,6 @@ function ProjectSidebar({
           const cardTip = [
             multi ? (group.path || group.name) : group.tabs[0].name,
             !multi && group.path,
-            prModel?.description,
           ].filter(Boolean).join("\n");
           const members = `members:${group.key}`;
           return (
@@ -94,7 +93,6 @@ function ProjectSidebar({
                   <div className="psb-main psb-editing">
                     {folderIcon}
                     {renameField(group.tabs[0])}
-                    <window.PrStatus status={prStatuses[group.tabs[0].id]} />
                   </div>
                 ) : (
                   <button className="psb-main" title={cardTip}
@@ -103,18 +101,18 @@ function ProjectSidebar({
                     {folderIcon}
                     {multi
                       ? <span className="psb-name">{group.name}</span>
-                      : <TabLabel tab={group.tabs[0]} className="psb-name" title={[group.tabs[0].name, prModel?.description].filter(Boolean).join("\n")} />}
-                    {!multi && <WorktreeIndicator tab={group.tabs[0]} />}
+                      : <TabLabel tab={group.tabs[0]} className="psb-name" title={group.tabs[0].name} />}
                     {profile && (
                       <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
                     )}
                     <TabRunDot state={groupRunState(group.tabs)} />
-                    {multi
-                      ? !expanded && <window.PrStatus model={prModel} />
-                      : <window.PrStatus status={prStatuses[group.tabs[0].id]} />}
                     {multi && <span className="tab-count psb-count">{group.tabs.length}</span>}
                   </button>
                 )}
+                {!multi && <WorktreeIndicator tab={group.tabs[0]} />}
+                {multi
+                  ? !expanded && <window.PrStatus model={prModel} />
+                  : <window.PrStatus status={prStatuses[group.tabs[0].id]} />}
                 <span className="psb-actions">
                   {group.path && (
                     <button className="psb-act" title="new conversation here"
@@ -142,17 +140,16 @@ function ProjectSidebar({
                   {renaming === t.id ? (
                     <div className="psb-main psb-editing">
                       {renameField(t)}
-                      <window.PrStatus status={prStatuses[t.id]} />
                     </div>
                   ) : (
-                    <button className="psb-main" title={[window.OMP_PROJECT_NAV.memberLabel(t), window.OMP_PR_STATUS.present(prStatuses[t.id])?.description].filter(Boolean).join("\n")} onClick={() => onSelectTab(t.id)}
+                    <button className="psb-main" title={window.OMP_PROJECT_NAV.memberLabel(t)} onClick={() => onSelectTab(t.id)}
                       onDoubleClick={() => startRename(t.id)}>
                       <span className="psb-name">{window.OMP_PROJECT_NAV.memberLabel(t)}</span>
-                      <WorktreeIndicator tab={t} />
                       <TabRunDot state={t.runState} />
-                      <window.PrStatus status={prStatuses[t.id]} />
                     </button>
                   )}
+                  <WorktreeIndicator tab={t} />
+                  <window.PrStatus status={prStatuses[t.id]} />
                   <span className="psb-actions">
                     {renaming !== t.id && renameButton(t)}
                     <button className="psb-act" title="close tab" onClick={() => onCloseTab(t.id)}>

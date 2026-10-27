@@ -66,32 +66,31 @@
   font-size: var(--d-text-sm);
 }
 
-/* Current-branch PR: quiet metadata, explicit opt-in in the overflow menu. */
+/* Contextual local changes and PR metadata, with explicit opt-in automation. */
 .pr-changes { gap: 5px; padding: 8px 10px; }
 .pr-changes-head { display: flex; align-items: center; justify-content: space-between; }
 .pr-changes button { border: 0; background: none; font: inherit; cursor: pointer; }
 .pr-changes-heading { display: flex; align-items: center; gap: 5px; padding: 3px 0; color: var(--fg); font-size: var(--d-text-sm) !important; }
 .pr-changes-heading svg { color: var(--fg-3); }
-.pr-changes-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) 24px; column-gap: 8px; align-items: center; padding: 2px 0 4px; }
+.pr-changes-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 8px; align-items: center; padding: 2px 0 4px; }
 .pr-changes-title { text-align: left; min-width: 0; padding: 4px 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--fg); font-size: var(--d-text-sm) !important; }
-.pr-changes-more { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; color: var(--fg-3); border-radius: 5px; }
+.pr-changes-more { padding: 4px 5px; color: var(--fg-3); border-radius: 5px; white-space: nowrap; font-size: var(--d-text-xs) !important; }
 .pr-changes-more:hover, .pr-changes-more.active { background: var(--bg-hover); color: var(--fg); }
-.pr-changes-meta { grid-column: 2; display: flex; gap: 5px; min-width: 0; color: var(--fg-3); font-size: var(--d-text-xs); font-variant-numeric: tabular-nums; }
+.pr-changes-meta { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; color: var(--fg-3); font-size: var(--d-text-xs); font-variant-numeric: tabular-nums; }
 .pr-changes-repo { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .pr-changes-added { color: var(--diff-add-fg); flex: none; }
 .pr-changes-deleted { color: var(--diff-rm-fg); flex: none; }
-.pr-changes-dot { grid-column: 3; justify-self: center; width: 6px; height: 6px; border-radius: 50%; background: var(--diff-add-fg); }
-.pr-changes-dot.error { background: var(--rose); }
-.pr-changes-empty, .pr-changes-error { margin: 0; font-size: var(--d-text-xs); line-height: 1.5; overflow-wrap: anywhere; }
-.pr-changes-empty { padding: 3px 0; color: var(--fg-3); }
-.pr-changes-error { color: var(--rose); }
-.pr-changes-disable { padding: 3px 0; color: var(--fg-2); text-align: left; font-size: var(--d-text-xs) !important; }
-.pr-changes-disable:hover { color: var(--fg); }
+.pr-changes-autofix-indicator { grid-column: 2 / -1; color: var(--fg-3); font-size: var(--d-text-xs); }
+.pr-changes-local { padding: 3px 0; color: var(--fg-2); font-size: var(--d-text-xs); }
+.pr-changes-local-link { padding: 0; color: inherit; text-align: left; }
+.pr-changes-local-link:hover { color: var(--fg); text-decoration: underline; }
+.pr-changes-error { margin: 0; color: var(--rose); font-size: var(--d-text-xs); line-height: 1.5; overflow-wrap: anywhere; }
 .pr-changes-menu { position: fixed; z-index: 1000; box-sizing: border-box; width: min(250px, calc(100vw - 16px)); padding: 5px; overflow-y: auto; border: 1px solid var(--line-bright); border-radius: 10px; background: var(--bg-elevated); color: var(--fg); box-shadow: var(--shadow-pop); font-size: var(--d-text-sm); }
 .pr-changes-menu > button { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 28px; padding: 5px 7px; border: 0; border-radius: 5px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .pr-changes-menu > button:hover, .pr-changes-menu > button:focus-visible { background: var(--bg-hover); outline: none; }
 .pr-changes-menu > button:disabled { opacity: .4; cursor: default; }
 .pr-changes-separator { height: 1px; margin: 4px 5px; background: var(--line); }
+.pr-changes-menu-heading { margin: 7px 7px 3px; color: var(--fg-3); font-size: var(--d-text-xs); font-weight: 600; }
 .pr-changes-checkbox { display: grid; place-items: center; width: 13px; height: 13px; border: 1px solid var(--fg-4); border-radius: 3px; flex: none; }
 .pr-changes-autofix[aria-checked="true"] .pr-changes-checkbox { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .pr-changes-menu-note, .pr-changes-menu-status { margin: 4px 7px; color: var(--fg-3); font-size: var(--d-text-xs); line-height: 1.5; }

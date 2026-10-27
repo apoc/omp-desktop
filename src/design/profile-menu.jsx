@@ -199,7 +199,7 @@ function ProfileMenu({
       <button
         ref={triggerRef}
         className="btn ghost outlined profile-trigger"
-        title="omp profile for this tab (auth, sessions, settings)"
+        title={`omp profile for this tab: ${active.name} (auth, sessions, settings)`}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => (open ? close() : setOpen(true))}>

@@ -1,27 +1,37 @@
 /* One compact visual language for PR state in navigation and Changes. */
 :root, .theme-aurora, .theme-phosphor { --pr-neutral: #a4a8b1; --pr-pending: var(--amber); }
 .theme-daylight { --pr-neutral: #626773; --pr-pending: #9c6100; }
-.pr-status, .pr-status-summary {
-  display: inline-flex; align-items: center; gap: 3px; flex: none;
+.pr-status {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
   white-space: nowrap; vertical-align: middle;
   font-family: var(--font-mono); font-size: var(--d-text-xs); line-height: 1;
   font-variant-numeric: tabular-nums;
 }
+.status-detail { display: inline-flex; align-items: center; gap: 3px; min-width: 0; border-radius: 3px; }
+.status-detail:focus-visible, .status-detail > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.status-detail-tooltip {
+  position: fixed; z-index: 1100; box-sizing: border-box;
+  max-width: min(320px, calc(100vw - 16px)); overflow: auto;
+  padding: 6px 9px; border: 1px solid var(--line-bright); border-radius: 6px;
+  background: var(--bg-elevated); color: var(--fg); box-shadow: var(--shadow-pop);
+  font: normal var(--d-text-sm)/1.4 var(--font-sans); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.pr-status-identity { flex: none; }
 .pr-status-glyph { width: 14px; height: 14px; flex: none; }
 .pr-status-open { color: var(--diff-add-fg); }
 .pr-status-draft, .pr-status-mixed { color: var(--pr-neutral); }
 .pr-status-merged { color: var(--lilac); }
-.pr-status-closed, .pr-status-failure, .pr-status-error { color: var(--diff-rm-fg); }
-.pr-status.is-stale > .pr-status-glyph, .pr-status.is-stale .pr-status-summary > .pr-status-glyph { color: var(--pr-neutral); }
-.pr-status-ci, .pr-status-stale, .pr-status-multiple {
+.pr-status-closed { color: var(--diff-rm-fg); }
+.pr-status.is-stale .pr-status-identity { color: var(--pr-neutral); }
+.pr-status-ci, .pr-status-stale {
   display: inline-flex; align-items: center; justify-content: center;
-  min-width: 13px; height: 13px; padding: 0 2px; box-sizing: border-box;
+  min-width: 13px; min-height: 13px; padding: 0 2px; box-sizing: border-box;
   border: 1px solid currentColor; border-radius: 4px; font-size: 9px; font-weight: 700;
 }
 .pr-status-ci.failure { color: var(--diff-rm-fg); }
 .pr-status-ci.pending, .pr-status-stale { color: var(--pr-pending); }
 .pr-status-ci.success { color: var(--diff-add-fg); }
-.pr-status-ci.none, .pr-status-ci.unknown, .pr-status-multiple, .pr-status.is-stale .pr-status-ci.success { color: var(--pr-neutral); }
+.pr-status-ci.none, .pr-status-ci.unknown, .pr-status.is-stale .pr-status-ci.success { color: var(--pr-neutral); }
 .pr-status-review {
   display: inline-flex; align-items: center; gap: 2px; flex: none;
   color: var(--fg-2); font: inherit; line-height: 1;

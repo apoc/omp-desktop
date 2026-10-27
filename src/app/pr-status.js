@@ -152,30 +152,24 @@
     }
     const stale = errors.size > 0;
     const freshness = stale
-      ? `; Status may be stale: ${[...errors].sort().join("; ")}`
+      ? `; Last known status may be stale: ${[...errors].sort().join("; ")}`
       : "";
     const summaries = [...groups.entries()]
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([, reports]) => summarize(reports));
-    if (!summaries.length) {
-      if (!stale) return null;
-      return {
-        glyph: "error",
-        tone: "error",
-        label: "Pull request unavailable",
-        description: `Pull request status unavailable${freshness}`,
-        checksState: "unknown",
-        failedCount: 0,
-        threadCount: 0,
-        stale,
-        prCount: 0,
-      };
-    }
+    if (!summaries.length) return null;
     if (summaries.length === 1 && !noPrCount) {
       const group = summaries[0];
       return {
         ...lifecycle(group),
         description: groupDescription(group, false) + freshness,
+        number: group.number,
+        repository: group.repository,
+        lifecycleLabel: lifecycle(group).label,
+        lifecycleDescription: `${stale ? "Last known: " : ""}${lifecycle(group).label} pull request #${group.number} (${group.repository})`,
+        checksDescription: checksText(group.checksState, group.failedCount),
+        reviewDescription: countText(group.threadCount, "unresolved review thread", "unresolved review threads"),
+        refreshDescription: stale ? `Last known PR status; refresh failed: ${[...errors].sort().join("; ")}` : null,
         checksState: group.checksState,
         failedCount: group.failedCount,
         threadCount: group.threadCount,
@@ -217,6 +211,13 @@
       tone: failed ? "failure" : "mixed",
       label,
       description: `${heading}; ${details}${noPr}${freshness}`,
+      number: null,
+      repository: null,
+      lifecycleLabel: label,
+      lifecycleDescription: `${stale ? "Last known: " : ""}${heading}; ${details}${noPr}`,
+      checksDescription: checksState ? checksText(checksState, failedCount) : null,
+      reviewDescription: countText(threadCount, "unresolved review thread", "unresolved review threads"),
+      refreshDescription: stale ? `Last known PR status; refresh failed: ${[...errors].sort().join("; ")}` : null,
       checksState,
       failedCount,
       threadCount,

@@ -31,10 +31,9 @@ function WorktreeIndicator({ tab, showLabel = false }) {
     `Branch: ${tab.branch || "unknown"}`,
     `Selected base: ${tab.workspace.baseRef || "not recorded"}`,
   ].join("\n");
-  return <span className={`worktree-indicator${showLabel ? " chip muted" : ""}`} role="img" aria-label="Isolated worktree" aria-description={detail} title={detail}>
-    <Icon name="branch" size={11} dotColor="currentColor" aria-hidden="true" />
-    {showLabel && <span className="worktree-label">worktree</span>}
-  </span>;
+  return <window.StatusDetail className={`worktree-indicator${showLabel ? " chip muted" : ""}`} text={`Isolated worktree\n${detail}`}>
+    <span className="worktree-label">Worktree</span>
+  </window.StatusDetail>;
 }
 
 /** Name of a tab shown on its own (#46): `folder · title` once the title
@@ -75,7 +74,7 @@ function TabGroupChip({ group, activeId, profileLabel, prStatuses = {}, onSelect
   const active  = group.tabs.find(t => t.id === activeId);
   const profile = profileLabel(group.profile);
   const prModel = window.OMP_PR_STATUS.aggregate(group.tabs.map(t => prStatuses[t.id]));
-  const groupTip = [group.path || group.name, prModel?.description].filter(Boolean).join("\n");
+  const groupTip = group.path || group.name;
   // The × closes one conversation, the one a click on the chip selects (#45):
   // the focused member, else the newest. Never the whole project.
   const closeTarget = group.tabs.find(t => t.id === groupTarget(group, activeId));
@@ -97,13 +96,13 @@ function TabGroupChip({ group, activeId, profileLabel, prStatuses = {}, onSelect
       onAuxClick={e => { if (e.button === 1) e.preventDefault(); }}>
       <span className="tab-bar-mark" style={{ background: active ? active.color : "transparent" }} />
       <Icon name="folder" size={11} color={active ? active.color : "var(--fg-4)"} />
-      <TabRunDot state={groupRunState(group.tabs)} />
-      <window.PrStatus model={prModel} />
-      <span className="tab-name" title={groupTip}>{group.name}</span>
-      <span className="tab-count">{group.tabs.length}</span>
+      <span className="tab-name" title={group.path || group.name}>{group.name}</span>
       {profile && (
         <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
       )}
+      <window.PrStatus model={prModel} />
+      <TabRunDot state={groupRunState(group.tabs)} />
+      <span className="tab-count">{group.tabs.length}</span>
       <button ref={triggerRef} className="tab-group-trigger"
         title="conversations in this project"
         aria-haspopup="menu" aria-expanded={open}
@@ -128,18 +127,17 @@ function TabGroupChip({ group, activeId, profileLabel, prStatuses = {}, onSelect
                   <RenameField value={t.name}
                     onCommit={name => onRename(t.id, name)}
                     onClose={() => setRenaming(null)} />
-                  <window.PrStatus status={prStatuses[t.id]} />
                 </span>
               ) : (
                 <button className="tab-group-item" role="menuitem"
-                  title={[window.OMP_PROJECT_NAV.memberLabel(t), window.OMP_PR_STATUS.present(prStatuses[t.id])?.description].filter(Boolean).join("\n")}
+                  title={window.OMP_PROJECT_NAV.memberLabel(t)}
                   onClick={() => { onSelect(t.id); close(); }}>
                   <span className="tab-group-dot"><TabRunDot state={t.runState} /></span>
                   <span className="tab-name">{window.OMP_PROJECT_NAV.memberLabel(t)}</span>
-                  <WorktreeIndicator tab={t} />
-                  <window.PrStatus status={prStatuses[t.id]} />
                 </button>
               )}
+              <WorktreeIndicator tab={t} />
+              <window.PrStatus status={prStatuses[t.id]} />
               {onRename && renaming !== t.id && (
                 <button className="tab-close" title="rename conversation"
                   onClick={() => { onSelect(t.id); setRenaming(t.id); }}>

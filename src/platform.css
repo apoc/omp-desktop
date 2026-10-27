@@ -20,6 +20,9 @@
   max-height: 100%;              /* fill full height                           */
 }
 
+/* NSWindow's real traffic lights overlay the toolbar on macOS. */
+.native-macos .chrome { padding-left: 88px; }
+
 /* The aurora backdrop should fill the whole screen, not the inner window rect */
 .tauri-native .app-backdrop {
   z-index: -1;                   /* already fixed; keep behind content         */

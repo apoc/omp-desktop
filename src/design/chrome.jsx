@@ -23,16 +23,18 @@ const IS_WIN = typeof navigator !== "undefined" &&
 
 // ── Window chrome ─────────────────────────────────────────────────────
 function WindowChrome({
-  project, onCmd, onConfigureProject,
+  project, prStatus, onCmd, onConfigureProject,
   profiles, activeProfileId, startupProfileId,
   onSelectProfile, onCreateProfile, onRenameProfile, onDeleteProfile, onSetStartupProfile,
 }) {
   const sourcePath = window.OMP_PROJECT_NAV.projectPath(project);
   const projectName = sourcePath ? window.OMP_PROJECT_NAV.basename(sourcePath) : project.name;
+  const titlePr = window.OMP_PR_STATUS.present(prStatus);
+  const nativeMac = document.documentElement.classList.contains("native-macos");
   return (
-    <div className="chrome" data-tauri-drag-region>
-      {/* macOS traffic lights — left side, hidden on Windows */}
-      {!IS_WIN && (
+    <div className="chrome" data-tauri-drag-region={nativeMac ? "false" : true}>
+      {/* Native macOS traffic lights belong to NSWindow, not the webview. */}
+      {!IS_WIN && !nativeMac && (
         <div className="chrome-lights">
           <span className="light red" />
           <span className="light amber" />
@@ -45,12 +47,19 @@ function WindowChrome({
         <span className="mono chrome-brand" style={{ color: "var(--fg-5)" }}>·</span>
         <span className="chrome-project-name" title={sourcePath || undefined}>{projectName}</span>
         {project.branch && (
-          <span className="chip muted chrome-branch" title={`Current branch: ${project.branch}`}>
+          <window.StatusDetail className="chip muted chrome-branch" text={`Current branch: ${project.branch}`}>
             <Icon name="branch" size={10} color="var(--fg-3)" />
             <span className="mono">{project.branch}</span>
-          </span>
+          </window.StatusDetail>
         )}
         <WorktreeIndicator tab={project} showLabel />
+        {titlePr && (
+          <span className="chrome-pr">
+            <window.PrStatus model={titlePr} mode="icon" />
+            <span className="chrome-pr-label">{titlePr.stale ? "Last known · " : ""}{titlePr.label}</span>
+            <window.PrStatus model={titlePr} mode="badges" />
+          </span>
+        )}
         {sourcePath && onConfigureProject && (
           <button className="chrome-project-config" title="project defaults" aria-label="project defaults"
             onClick={() => onConfigureProject(sourcePath, project.profile)}>
@@ -159,30 +168,29 @@ function TabBar({
         const p = group.tabs[0];
         const active = p.id === activeId;
         const profile = profileLabel(p.profile);
-        const prDescription = window.OMP_PR_STATUS.present(prStatuses[p.id])?.description;
         return (
           <div key={p.id}
             {...reorder.itemProps("projects", group.key, "x")}
             className={`tab ${active ? "active" : ""}${reorder.dropClass("projects", group.key)}`}
-            title={[p.name, p.path, prDescription].filter(Boolean).join("\n")}
+            title={[p.name, p.path].filter(Boolean).join("\n")}
             {...tabClickProps(() => onSelect(p.id), () => onClose?.(p.id))}
             // The first click of the pair already selected the tab.
             onDoubleClick={e => { if (onRename && !e.target.closest(".tab-close")) setRenaming(p.id); }}>
             <span className="tab-bar-mark" style={{ background: active ? p.color : "transparent" }} />
             <Icon name="folder" size={11} color={active ? p.color : "var(--fg-4)"} />
-            <TabRunDot state={p.runState} />
-            <window.PrStatus status={prStatuses[p.id]} />
             {renaming === p.id ? (
               <RenameField value={p.name}
                 onCommit={name => onRename(p.id, name)}
                 onClose={() => setRenaming(null)} />
             ) : (
-              <TabLabel tab={p} className="tab-name" title={[p.name, "double-click to rename", prDescription].filter(Boolean).join("\n")} />
+              <TabLabel tab={p} className="tab-name" title={[p.name, "double-click to rename"].filter(Boolean).join("\n")} />
             )}
             <WorktreeIndicator tab={p} />
             {profile && (
               <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
             )}
+            <window.PrStatus status={prStatuses[p.id]} />
+            <TabRunDot state={p.runState} />
             {group.path && onConfigureProject && (
               <button className="tab-close" title="project defaults" aria-label="project defaults"
                 onClick={e => { e.stopPropagation(); onConfigureProject(group.path, group.profile); }}>

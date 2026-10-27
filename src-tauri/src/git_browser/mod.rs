@@ -27,7 +27,7 @@ mod status;
 pub use commit::{commit, commit_file, CommitView};
 pub use file::{file, is_binary, FileView};
 pub use log::{log, LogView};
-pub use status::{status, StatusView};
+pub use status::{change_summary, status, LocalChanges, StatusView};
 
 use std::path::{Path, PathBuf};
 
@@ -50,6 +50,29 @@ use std::path::{Path, PathBuf};
 /// reads on the repository.
 pub fn open(path: &Path) -> Result<(crate::spawn_gate::Shared, gix::Repository, PathBuf), String> {
     let (gate, mut repo, work_dir) = crate::workspace::discover(path)?;
+    sanitize_filters(&mut repo)?;
+    Ok((gate, repo, work_dir))
+}
+
+/// Discover without treating an ordinary directory outside Git as an error.
+/// Keep all other discovery and configuration errors intact.
+pub fn discover_optional(
+    path: &Path,
+) -> Result<Option<(crate::spawn_gate::Shared, gix::Repository)>, String> {
+    let gate = crate::spawn_gate::shared();
+    #[allow(clippy::disallowed_methods)] // the gate is held
+    match gix::discover(path) {
+        Ok(repo) => Ok(Some((gate, repo))),
+        Err(gix::discover::Error::Discover(
+            gix::discover::upwards::Error::NoGitRepository { .. }
+            | gix::discover::upwards::Error::NoGitRepositoryWithinCeiling { .. }
+            | gix::discover::upwards::Error::NoGitRepositoryWithinFs { .. },
+        )) => Ok(None),
+        Err(error) => Err(format!("Could not open Git repository: {error}")),
+    }
+}
+
+fn sanitize_filters(repo: &mut gix::Repository) -> Result<(), String> {
     // Collected first: the read borrows the config the removal replaces.
     let local: Vec<_> = repo
         .config_snapshot()
@@ -70,7 +93,7 @@ pub fn open(path: &Path) -> Result<(crate::spawn_gate::Shared, gix::Repository, 
             .commit()
             .map_err(fail("failed to configure git filters"))?;
     }
-    Ok((gate, repo, work_dir))
+    Ok(())
 }
 
 /// Files a tree carries before it is cut off and marked `truncated` —

@@ -3209,19 +3209,36 @@
     const { getCurrentWindow } = window.__TAURI__.window;
     const win  = getCurrentWindow();
     const isWin = navigator.userAgent.includes("Windows") || navigator.platform.startsWith("Win");
+    const isMac = navigator.platform.startsWith("Mac");
+    const chromeControl = "a, button, input, select, textarea, [tabindex], .profile-pop, .chrome-lights, .win-controls";
 
     // Drag: delegate from document so it works regardless of React render timing.
     // startDragging() must be called synchronously within the mousedown handler.
     document.addEventListener("mousedown", e => {
-      if (!e.target.closest(".chrome")) return;
+      if (e.button !== 0 || !e.target.closest(".chrome") || (isMac && e.detail === 2)) return;
       // Interactive chrome content (the profile popover's text inputs, and
       // the popover itself for padding/hints/row clicks) must never start a
       // window drag — a mousedown there is a caret placement or a
       // drag-select, and starting an OS window move instead swallows it.
       // Any future interactive .chrome content needs the same exclusion.
-      if (e.target.closest("button, input, textarea, .profile-pop, .chrome-lights, .win-controls")) return;
+      if (e.target.closest(chromeControl)) return;
       win.startDragging().catch(() => {});
     });
+    if (isMac) {
+      document.addEventListener("dblclick", async e => {
+        if (e.button !== 0 || !e.target.closest(".chrome") || e.target.closest(chromeControl)) return;
+        try {
+          const action = await window.__TAURI__.core.invoke("window_titlebar_action");
+          if (action === "minimize") await win.minimize();
+          else if (action === "zoom") {
+            if (await win.isMaximized()) await win.unmaximize();
+            else await win.maximize();
+          }
+        } catch (error) {
+          console.error("[live] native title-bar action failed:", error);
+        }
+      });
+    }
 
     if (isWin) {
       document.addEventListener("click", e => {
@@ -3229,7 +3246,7 @@
         else if (e.target.closest(".win-max"))   win.isMaximized().then(m => m ? win.unmaximize() : win.maximize());
         else if (e.target.closest(".win-close")) void _requestQuit();
       });
-    } else {
+    } else if (!isMac) {
       document.addEventListener("click", e => {
         const t = e.target.closest(".light");
         if (!t) return;
@@ -3682,11 +3699,34 @@
     return op.promise;
   }
 
+  // Both read-only checkout views reject results for a replaced conversation.
+  // Capture identity fields by value: registry entries can mutate during IPC.
+  async function _readCheckout(sessionId, command) {
+    const owner = sessionRegistry.get(sessionId);
+    const { path, branch, profile, sessionFile, processStartedAt, conversationVersion } = owner || {};
+    const current = () => {
+      const entry = sessionRegistry.get(sessionId);
+      return !!window.__TAURI__ && !!owner && !!entry && !entry.preparing &&
+        !_respawning.has(sessionId) && entry.path === path && entry.branch === branch &&
+        entry.profile === profile && entry.sessionFile === sessionFile &&
+        entry.processStartedAt === processStartedAt && entry.conversationVersion === conversationVersion;
+    };
+    if (!current()) return null;
+    const result = await window.__TAURI__.core.invoke(command, { sessionId });
+    return current() ? result : null;
+  }
+
   // ── OMP_BRIDGE public API ─────────────────────────────────────────────────
   window.OMP_BRIDGE = {
-    get isConnected() { return !!window.__TAURI__ && !!activeSessionId; },
-    get activeSessionId() { return activeSessionId; },
-    waitForActivation() { return _switchPromise; },
+    get isConnected() {
+      return !!window.__TAURI__ && !!activeSessionId;
+    },
+    get activeSessionId() {
+      return activeSessionId;
+    },
+    waitForActivation() {
+      return _switchPromise;
+    },
 
     // Native realtime voice is independent of the persisted chat transcript.
     liveStart: _liveStart,
@@ -3695,41 +3735,52 @@
     liveStop: () => _liveStop(),
     liveMute: _liveMute,
     dictationStart: _dictationStart,
-    stopActiveVoice() { return state.dictation.active || _dictationStopPending ? _dictationStop() : state.liveVoice.active || _liveStopPending ? _livePause() : Promise.resolve({ ok: true }); },
+    stopActiveVoice() {
+      return state.dictation.active || _dictationStopPending
+        ? _dictationStop()
+        : state.liveVoice.active || _liveStopPending
+          ? _livePause()
+          : Promise.resolve({ ok: true });
+    },
     dictationStop: _dictationStop,
     ackDictation(captureIds) {
       const ids = new Set(captureIds);
-      const remaining = _dictationCompleted.filter(item => !ids.has(item.captureId));
-      if (remaining.length !== _dictationCompleted.length) { _dictationCompleted = remaining; notify(); }
+      const remaining = _dictationCompleted.filter(
+        (item) => !ids.has(item.captureId),
+      );
+      if (remaining.length !== _dictationCompleted.length) {
+        _dictationCompleted = remaining;
+        notify();
+      }
     },
 
     // ── Messaging ────────────────────────────────────────────────────────────
     // The bubble shows at once; omp's echo (`message_start`) ties it to the
     // persisted message. A command omp runs locally sends no echo, so its
     // bubble keeps no `ts` and the get_messages merge leaves it in place.
-    send(text, images) { return _sendPrompt(text, images); },
+    send(text, images) {
+      return _sendPrompt(text, images);
+    },
     // Monitoring is read-only. Only the selected, fully settled tab may
     // receive remediation; recheck here after the asynchronous GitHub read.
-    async prAutomationSnapshot(sessionId) {
-      const owner = sessionRegistry.get(sessionId);
-      const current = () => {
-        const entry = sessionRegistry.get(sessionId);
-        return !!window.__TAURI__ && !!owner && !!entry && !entry.preparing &&
-          !_respawning.has(sessionId) &&
-          entry.path === owner.path && entry.branch === owner.branch &&
-          entry.profile === owner.profile && entry.sessionFile === owner.sessionFile &&
-          entry.processStartedAt === owner.processStartedAt &&
-          entry.conversationVersion === owner.conversationVersion;
-      };
-      if (!current()) return null;
-      const result = await window.__TAURI__.core.invoke(
-        "pr_automation_snapshot", { sessionId },
-      );
-      return current() ? result : null;
+    prAutomationSnapshot(sessionId) {
+      return _readCheckout(sessionId, "pr_automation_snapshot");
     },
+    changesSnapshot(sessionId) {
+      return _readCheckout(sessionId, "changes_snapshot");
+    },
+    // true = accepted, false = attempted but refused, null = not attempted.
     async prAutomationSend(sessionId, text, expected, canSend) {
-      if (expected?.state !== "OPEN" || !expected.url || !expected.branch || !expected.head || typeof canSend !== "function") return false;
-      const context = sessionContext, switchGen = _switchGen;
+      if (
+        expected?.state !== "OPEN" ||
+        !expected.url ||
+        !expected.branch ||
+        !expected.head ||
+        typeof canSend !== "function"
+      )
+        return null;
+      const context = sessionContext,
+        switchGen = _switchGen;
       const branch = sessionRegistry.get(sessionId)?.branch;
       const current = () =>
         !!window.__TAURI__ &&
@@ -3744,28 +3795,54 @@
       const ready = () => {
         const entry = sessionRegistry.get(sessionId);
         return (
-          canSend() && current() && !!entry?.path &&
-          !userAbortInFlight && !entry.autoRenameInFlight &&
-          state.rpcState?.isSettled === true && runStateCached(state) === "idle" &&
-          !state.queueSending.length && !(state.rpcState?.queuedMessageCount > 0) &&
-          !state.queue.steering.length && !state.queue.followUp.length &&
+          canSend() &&
+          current() &&
+          !!entry?.path &&
+          !userAbortInFlight &&
+          !entry.autoRenameInFlight &&
+          state.rpcState?.isSettled === true &&
+          runStateCached(state) === "idle" &&
+          !state.queueSending.length &&
+          !(state.rpcState?.queuedMessageCount > 0) &&
+          !state.queue.steering.length &&
+          !state.queue.followUp.length &&
           !GOAL.isOpen(state.goal) &&
-          !_sessionsView().some(s => s.id !== sessionId && s.path === entry.path && TURN.isBusyRunState(s.runState))
+          !_sessionsView().some(
+            (s) =>
+              s.id !== sessionId &&
+              s.path === entry.path &&
+              TURN.isBusyRunState(s.runState),
+          )
         );
       };
-      if (!ready()) return false;
+      if (!ready()) return null;
       // Re-read Rust's current branch/HEAD immediately before the handoff;
       // a displayed snapshot is not permission to fix a different revision.
-      const latest = await window.__TAURI__.core.invoke(
-        "pr_automation_snapshot", { sessionId },
-      );
-      if (!ready() || latest?.state !== "OPEN" || latest.url.toLowerCase() !== expected.url.toLowerCase() || latest.branch !== expected.branch || latest.head !== expected.head) return false;
-      return _sendPrompt(text, undefined, undefined, ready).then(sent => sent && current());
+      let latest;
+      try {
+        latest = await window.__TAURI__.core.invoke("pr_automation_snapshot", {
+          sessionId,
+        });
+      } catch {
+        return null;
+      }
+      if (
+        !ready() ||
+        latest?.state !== "OPEN" ||
+        latest.url.toLowerCase() !== expected.url.toLowerCase() ||
+        latest.branch !== expected.branch ||
+        latest.head !== expected.head
+      )
+        return null;
+      return _sendPrompt(text, undefined, undefined, ready);
     },
     // No id on purpose: a pending-id match returns before the command
     // switch, and the abort response is what releases a cancelled
     // auto-rename. See `_releaseAutoRenameAfterAbort`.
-    abort()            { userAbortInFlight = true; return _send({ type: "abort" }); },
+    abort() {
+      userAbortInFlight = true;
+      return _send({ type: "abort" });
+    },
     /** Stops omp's automatic retries of the active tab's failed request.
      *  While omp waits between attempts `abort_retry` ends the run on the
      *  last failure and touches nothing else. An attempt already in flight
@@ -3796,12 +3873,16 @@
     followUp(text, images) {
       const imgs = images ?? [];
       const isCmd = isCommandInvocation(state.commands, text);
-      return _sendQueued("followUp", text, imgs, () => _sendWithResponse(queuedFrame("followUp", text, imgs, isCmd)));
+      return _sendQueued("followUp", text, imgs, () =>
+        _sendWithResponse(queuedFrame("followUp", text, imgs, isCmd)),
+      );
     },
     steer(text, images) {
       const imgs = images ?? [];
       const isCmd = isCommandInvocation(state.commands, text);
-      return _sendQueued("steering", text, imgs, () => _sendWithResponse(queuedFrame("steer", text, imgs, isCmd)));
+      return _sendQueued("steering", text, imgs, () =>
+        _sendWithResponse(queuedFrame("steer", text, imgs, isCmd)),
+      );
     },
     /** ✕ / ✎ on a queue-strip row (`queue`: "steering" | "followUp"):
      *  `true` once omp removed the message, `false` when it was no longer
@@ -3813,14 +3894,21 @@
      *  (long) timeout: a reply held back by a tab switch is replayed on the
      *  way back, and ✎ only restores the text once it is seen. */
     async removeQueuedMessage(text, queue) {
-      const data = await _sendWithResponse({ type: "remove_queued_message", message: text, queue });
+      const data = await _sendWithResponse({
+        type: "remove_queued_message",
+        message: text,
+        queue,
+      });
       return data?.removed === true;
     },
     /** ↑ on a follow-up row: move it to the end of the steering queue.
      *  While idle (e.g. after an abort) omp starts a turn with it right
      *  away. Same result contract as `removeQueuedMessage`. */
     async promoteQueuedMessage(text) {
-      const data = await _sendWithResponse({ type: "promote_queued_message", message: text });
+      const data = await _sendWithResponse({
+        type: "promote_queued_message",
+        message: text,
+      });
       return data?.promoted === true;
     },
     /** ⚡ on a queue-strip row (#47): promote a follow-up to a steer, then
@@ -3833,8 +3921,10 @@
      *  `removeQueuedMessage`. */
     async sendQueuedNow(text, queue) {
       const gen = _switchGen;
-      if (queue === "followUp" && !(await this.promoteQueuedMessage(text))) return false;
-      if (_switchGen === gen && state.isStreaming && !userAbortInFlight) this.abort();
+      if (queue === "followUp" && !(await this.promoteQueuedMessage(text)))
+        return false;
+      if (_switchGen === gen && state.isStreaming && !userAbortInFlight)
+        this.abort();
       return true;
     },
     // ── Goal mode (app/goal.js) ──────────────────────────────────────────────
@@ -3864,14 +3954,22 @@
       if (!origin) return { ok: false, error: "Not connected" };
       const wasStreaming = state.isStreaming;
       try {
-        const data = await _sendWithResponse(
-          { type: "goal", op: "create", objective: text, ...(tokenBudget ? { token_budget: tokenBudget } : {}) },
-        );
+        const data = await _sendWithResponse({
+          type: "goal",
+          op: "create",
+          objective: text,
+          ...(tokenBudget ? { token_budget: tokenBudget } : {}),
+        });
         if (origin === activeSessionId) _applyGoalResult(data);
       } catch (e) {
         // No answer is not a refusal: omp may still create the goal, whose
         // frame then shows it in the strip.
-        if (e?.timedOut) return { ok: false, error: "omp has not answered yet; if the goal starts, it shows here." };
+        if (e?.timedOut)
+          return {
+            ok: false,
+            error:
+              "omp has not answered yet; if the goal starts, it shows here.",
+          };
         return { ok: false, error: String(e?.message ?? e) };
       }
       if (origin !== activeSessionId) return { ok: true };
@@ -3884,7 +3982,10 @@
       try {
         rpcState = await _sendWithResponse({ type: "get_state" });
       } catch (e) {
-        console.warn("[live] get_state after goal create failed; sending the objective:", e);
+        console.warn(
+          "[live] get_state after goal create failed; sending the objective:",
+          e,
+        );
       }
       if (origin !== activeSessionId) return { ok: true };
       // Nothing started, but omp is not settled either (a background job or
@@ -3900,17 +4001,28 @@
       if (GOAL.ompStartedTurn(rpcState)) {
         if (imgs.length > 0 || message !== text) bridge.steer(message, imgs);
       } else if (rpcState?.isSettled === false) {
-        _sendQueued("steering", message, imgs,
-          () => _sendWithResponse({ type: "prompt", message, images: imgs, streamingBehavior: "steer" }));
+        _sendQueued("steering", message, imgs, () =>
+          _sendWithResponse({
+            type: "prompt",
+            message,
+            images: imgs,
+            streamingBehavior: "steer",
+          }),
+        );
       } else _sendPrompt(message, imgs, "steer");
       return { ok: true };
     },
     /** `pause` / `resume` / `drop` the active tab's goal. */
-    goalOp(op) { return _goalOp(op); },
+    goalOp(op) {
+      return _goalOp(op);
+    },
     /** Clears a completed goal's summary from the strip (local only). */
     goalDismiss() {
       const next = GOAL.dismiss(state.goal);
-      if (next !== state.goal) { state.goal = next; notify(); }
+      if (next !== state.goal) {
+        state.goal = next;
+        notify();
+      }
     },
     /** omp's auto-continue setting for `profile` (src-tauri goal_config.rs):
      *  `{ok, value}` (true / false) or `{ok: false, error}` with omp's
@@ -3945,14 +4057,22 @@
       if (!rename || !sessionRegistry.has(id)) return;
       if (id !== activeSessionId) await window.OMP_BRIDGE.activateSession(id);
       if (id !== activeSessionId || !sessionRegistry.has(id)) {
-        console.warn(`[live] rename of '${id}' dropped — the tab could not be activated`);
+        console.warn(
+          `[live] rename of '${id}' dropped — the tab could not be activated`,
+        );
         return;
       }
       _disarmAutoRename(rename.command);
       const entry = sessionRegistry.get(id);
-      sessionRegistry.set(id, { ...entry, renameNotes: [...(entry.renameNotes ?? []), rename.note] });
+      sessionRegistry.set(id, {
+        ...entry,
+        renameNotes: [...(entry.renameNotes ?? []), rename.note],
+      });
       try {
-        await _sendWithResponse({ type: "prompt", message: rename.command }, QUICK_CMD_TIMEOUT_MS);
+        await _sendWithResponse(
+          { type: "prompt", message: rename.command },
+          QUICK_CMD_TIMEOUT_MS,
+        );
       } catch (e) {
         if (activeSessionId === id) {
           _pushAssistantNote(`Rename failed: ${e?.message ?? e}`);
@@ -3969,7 +4089,9 @@
       const rest = STITLE.dropPendingNote(cur?.renameNotes, rename.note);
       if (rest) sessionRegistry.set(id, { ...cur, renameNotes: rest });
     },
-    setModel(model)    { _send({ type: "set_model", provider: model.provider, modelId: model.id }); },
+    setModel(model) {
+      _send({ type: "set_model", provider: model.provider, modelId: model.id });
+    },
     /** Model keys (`provider/modelId`) `profile` used most recently, newest
      *  first: omp's own MRU table in its `agent.db` (#11), so switches made
      *  in the terminal UI count too. `[]` when unreadable or when `profile`
@@ -3977,30 +4099,53 @@
      *  result with: `_activeProfileId()` falls back to the startup profile
      *  while `activeSessionId` is null (a profile respawn's detach), which
      *  would read one profile's list under another's tag. */
-    recentModels(profile = _activeProfileId()) { return _invokeSafe("model_usage_list", { profile }, []); },
-    cycleModel()       { _send({ type: "cycle_model" }); },
-    cycleThinking()    { _send({ type: "cycle_thinking_level" }); },
+    recentModels(profile = _activeProfileId()) {
+      return _invokeSafe("model_usage_list", { profile }, []);
+    },
+    cycleModel() {
+      _send({ type: "cycle_model" });
+    },
+    cycleThinking() {
+      _send({ type: "cycle_thinking_level" });
+    },
     /** The thinking levels the active tab's model supports, `off` first:
      *  omp's own list, which leaves out its `auto` selector. */
     async thinkingLevels() {
-      const data = await _sendWithResponse({ type: "get_available_thinking_levels" }, QUICK_CMD_TIMEOUT_MS);
-      return Array.isArray(data?.levels) ? data.levels.filter(l => typeof l === "string") : [];
+      const data = await _sendWithResponse(
+        { type: "get_available_thinking_levels" },
+        QUICK_CMD_TIMEOUT_MS,
+      );
+      return Array.isArray(data?.levels)
+        ? data.levels.filter((l) => typeof l === "string")
+        : [];
     },
     /** Applies a level from `thinkingLevels()` to the active tab. The
      *  response carries nothing; the level omp applied (it may clamp the
      *  pick) arrives before it, as `thinking_level_changed`. */
     setThinkingLevel(level) {
-      return _sendWithResponse({ type: "set_thinking_level", level }, QUICK_CMD_TIMEOUT_MS);
+      return _sendWithResponse(
+        { type: "set_thinking_level", level },
+        QUICK_CMD_TIMEOUT_MS,
+      );
     },
     compact() {
-      const id  = "cmpct-" + (_nextCmdId++);
-      state.messages = [...state.messages, { kind: "compact", status: "pending", id, time: timeNow() }];
+      const id = "cmpct-" + _nextCmdId++;
+      state.messages = [
+        ...state.messages,
+        { kind: "compact", status: "pending", id, time: timeNow() },
+      ];
       notify();
       _send({ type: "compact", id });
     },
-    newSession()       { _send({ type: "new_session" }); },
-    exportHtml()       { _send({ type: "export_html" }); },
-    refreshModels()    { _initFetch(); },
+    newSession() {
+      _send({ type: "new_session" });
+    },
+    exportHtml() {
+      _send({ type: "export_html" });
+    },
+    refreshModels() {
+      _initFetch();
+    },
 
     // ── Subagent manager ──────────────────────────────────────────────────────
 
@@ -4010,7 +4155,10 @@
       const next = !!on;
       if (next === subagentInspecting) return;
       subagentInspecting = next;
-      _send({ type: "set_subagent_subscription", level: SUB.subscriptionLevelFor({ inspecting: next }) });
+      _send({
+        type: "set_subagent_subscription",
+        level: SUB.subscriptionLevelFor({ inspecting: next }),
+      });
     },
 
     /** Fetch (or tail, from the cached byte offset) one agent's persisted
@@ -4021,19 +4169,32 @@
     async loadSubagentTranscript(agentId) {
       const prev = state.subagentTranscripts[agentId];
       if (!activeSessionId || prev?.status === "loading") return;
-      const req  = ++_transcriptReq;
-      const keep = { messages: prev?.messages ?? [], nextByte: prev?.nextByte ?? 0 };
-      state.subagentTranscripts = { ...state.subagentTranscripts, [agentId]: { ...keep, status: "loading", error: null, req } };
+      const req = ++_transcriptReq;
+      const keep = {
+        messages: prev?.messages ?? [],
+        nextByte: prev?.nextByte ?? 0,
+      };
+      state.subagentTranscripts = {
+        ...state.subagentTranscripts,
+        [agentId]: { ...keep, status: "loading", error: null, req },
+      };
       notify();
       let entry;
       try {
-        const data = await _sendWithResponse({ type: "get_subagent_messages", subagentId: agentId, fromByte: keep.nextByte });
+        const data = await _sendWithResponse({
+          type: "get_subagent_messages",
+          subagentId: agentId,
+          fromByte: keep.nextByte,
+        });
         entry = SUB.mergeTranscript(prev ? keep : undefined, data ?? {});
       } catch (e) {
         entry = { ...keep, status: "error", error: String(e?.message ?? e) };
       }
       if (state.subagentTranscripts[agentId]?.req !== req) return;
-      state.subagentTranscripts = { ...state.subagentTranscripts, [agentId]: entry };
+      state.subagentTranscripts = {
+        ...state.subagentTranscripts,
+        [agentId]: entry,
+      };
       notify();
     },
 
@@ -4045,14 +4206,21 @@
      *  The message itself joins the agent's event stream on delivery
      *  (`summarizeEvent`'s `user` line). */
     async steerSubagent(agentId, text) {
-      await _sendWithResponse({ type: "steer_subagent", subagentId: agentId, message: text });
+      await _sendWithResponse({
+        type: "steer_subagent",
+        subagentId: agentId,
+        message: text,
+      });
     },
     /** Hard-stop a running subagent: the parent gets an aborted result for
      *  it and its own turn goes on. `false` when it was no longer running,
      *  so a repeat is harmless; the record ends with omp's `aborted`
      *  lifecycle frame, never locally. */
     async cancelSubagent(agentId) {
-      const data = await _sendWithResponse({ type: "cancel_subagent", subagentId: agentId });
+      const data = await _sendWithResponse({
+        type: "cancel_subagent",
+        subagentId: agentId,
+      });
       return data?.cancelled === true;
     },
 
@@ -4093,9 +4261,16 @@
      */
     async login(providerId) {
       const seededProfile = sessionRegistry.get(activeSessionId)?.profile;
-      const res = await _sendWithResponse({ type: "login", providerId }, 300000);
+      const res = await _sendWithResponse(
+        { type: "login", providerId },
+        300000,
+      );
       if (seededProfile) {
-        await _invokeSafe("clear_profile_bootstrap", { id: seededProfile }, null);
+        await _invokeSafe(
+          "clear_profile_bootstrap",
+          { id: seededProfile },
+          null,
+        );
       }
       return res;
     },
@@ -4171,13 +4346,19 @@
      * @param {string} text  Markdown text.
      */
     addAssistantMessage(text) {
-      state.messages = [...state.messages, {
-        kind: "assistant",
-        time: timeNow(),
-        model: state.model?.name ?? null,
-        blocks: [{ type: "text", text }],
-        thought: null, lead: null, streaming: false, completed: true,
-      }];
+      state.messages = [
+        ...state.messages,
+        {
+          kind: "assistant",
+          time: timeNow(),
+          model: state.model?.name ?? null,
+          blocks: [{ type: "text", text }],
+          thought: null,
+          lead: null,
+          streaming: false,
+          completed: true,
+        },
+      ];
       notify();
     },
 
@@ -4213,18 +4394,29 @@
       if (!sessionId || sessionId !== activeSessionId || !prompt.id) return;
       if (!_settleAsk(prompt.id, { answered: true, answer: "Approve" })) return;
       const gen = _switchGen;
-      const res = await _invokeResult("approval_approve_and_grant", { sessionId, requestId: prompt.id, scope });
+      const res = await _invokeResult("approval_approve_and_grant", {
+        sessionId,
+        requestId: prompt.id,
+        scope,
+      });
       const unsaved = res.ok ? res.value : null;
       if (res.ok && !unsaved) return;
       if (_switchGen !== gen || activeSessionId !== sessionId) {
-        console.warn(`[live] approve and remember for '${sessionId}':`, res.ok ? unsaved : res.error);
+        console.warn(
+          `[live] approve and remember for '${sessionId}':`,
+          res.ok ? unsaved : res.error,
+        );
         return;
       }
       if (!res.ok) {
         _reopenAsk(prompt.id);
-        _pushAssistantNote(`**Approve and remember failed:** ${res.error}. The prompt is open again.`);
+        _pushAssistantNote(
+          `**Approve and remember failed:** ${res.error}. The prompt is open again.`,
+        );
       } else {
-        _pushAssistantNote(`**Approved, but the rule was not saved:** ${unsaved}`);
+        _pushAssistantNote(
+          `**Approved, but the rule was not saved:** ${unsaved}`,
+        );
       }
       notify();
     },
@@ -4233,16 +4425,24 @@
     async revokeApprovalRule(tool, scope) {
       if (!activeSessionId) return;
       await _invokeSafe("approval_rules_revoke", {
-        sessionId: activeSessionId, projectRoot: _activeProjectPath(), tool, scope,
+        sessionId: activeSessionId,
+        projectRoot: _activeProjectPath(),
+        tool,
+        scope,
       });
     },
 
     /** List rules currently in effect for the active session/project. */
     async listApprovalRules() {
       if (!activeSessionId) return [];
-      const rules = await _invokeSafe("approval_rules_list", {
-        sessionId: activeSessionId, projectRoot: _activeProjectPath(),
-      }, []);
+      const rules = await _invokeSafe(
+        "approval_rules_list",
+        {
+          sessionId: activeSessionId,
+          projectRoot: _activeProjectPath(),
+        },
+        [],
+      );
       return rules || [];
     },
 
@@ -4284,7 +4484,10 @@
      *  the tab id and the path cross. `path` may be absolute inside it. */
     readProjectFile(path) {
       if (!activeSessionId) return Promise.resolve(null);
-      return _invokeResult("project_file_read", { sessionId: activeSessionId, path });
+      return _invokeResult("project_file_read", {
+        sessionId: activeSessionId,
+        path,
+      });
     },
 
     /** Stage a file's changes (`git add`). */
@@ -4338,10 +4541,19 @@
      *  falls between the two — to an unlisten for all of them. */
     async onWidgetsEvent(handler) {
       if (!window.__TAURI__) return () => {};
-      const unlistens = await Promise.all(["config", "run", "removed", "active"].map(kind =>
-        window.__TAURI__.event.listen(`widgets://${kind}`, ev => handler(kind, ev.payload))
-          .catch(err => { console.error(`[live] widgets://${kind} listener failed:`, err); return null; })));
-      return () => { for (const u of unlistens) u?.(); };
+      const unlistens = await Promise.all(
+        ["config", "run", "removed", "active"].map((kind) =>
+          window.__TAURI__.event
+            .listen(`widgets://${kind}`, (ev) => handler(kind, ev.payload))
+            .catch((err) => {
+              console.error(`[live] widgets://${kind} listener failed:`, err);
+              return null;
+            }),
+        ),
+      );
+      return () => {
+        for (const u of unlistens) u?.();
+      };
     },
 
     // ── Phone remote access ──────────────────────────────────────────────
@@ -4391,9 +4603,12 @@
     },
     /** Resolves to an unlisten; callbacks receive payloads only. */
     async onRemoteEvent(kind, cb) {
-      if (!window.__TAURI__ || !["watch", "action", "status"].includes(kind)) return () => {};
+      if (!window.__TAURI__ || !["watch", "action", "status"].includes(kind))
+        return () => {};
       try {
-        return await window.__TAURI__.event.listen(`remote://${kind}`, ev => cb(ev.payload));
+        return await window.__TAURI__.event.listen(`remote://${kind}`, (ev) =>
+          cb(ev.payload),
+        );
       } catch {
         return () => {};
       }
@@ -4410,7 +4625,11 @@
      *  x `rows`; a live or starting shell is returned as is. Resolves
      *  `{ ok: true, status }` (Rust's `TerminalStatus`) or `{ ok: false, error }`. */
     async terminalOpen(sessionId, cols, rows) {
-      const res = await _invokeResult("terminal_open", { sessionId, cols, rows });
+      const res = await _invokeResult("terminal_open", {
+        sessionId,
+        cols,
+        rows,
+      });
       return res.ok ? { ok: true, status: res.value } : res;
     },
 
@@ -4425,9 +4644,18 @@
      *  `instance` is the current one even when `instance` asked for an older
      *  shell (then everything is replayed). */
     async terminalReplay(sessionId, instance, afterSeq) {
-      const r = await _invokeSafe("terminal_replay", { sessionId, instance, afterSeq }, null);
+      const r = await _invokeSafe(
+        "terminal_replay",
+        { sessionId, instance, afterSeq },
+        null,
+      );
       if (!r) return null;
-      return { instance: r.instance, bytes: _b64Bytes(r.b64), headSeq: r.headSeq, dropped: r.dropped };
+      return {
+        instance: r.instance,
+        bytes: _b64Bytes(r.b64),
+        headSeq: r.headSeq,
+        dropped: r.dropped,
+      };
     },
 
     /** `n` bytes of `instance`'s output were rendered (flow control). */
@@ -4448,15 +4676,17 @@
      *  pty produced them (feed straight to `Terminal.write`, which
      *  reassembles split UTF-8). Returns `{ stop, ready }`. */
     onTerminalData(sessionId, cb) {
-      return _listen(`terminal://data/${sessionId}`,
-        p => cb({ instance: p.instance, seq: p.seq, bytes: _b64Bytes(p.b64) }));
+      return _listen(`terminal://data/${sessionId}`, (p) =>
+        cb({ instance: p.instance, seq: p.seq, bytes: _b64Bytes(p.b64) }),
+      );
     },
 
     /** A shell exited: `cb({ instance, code })`, `code` null when a signal
      *  killed it. Returns `{ stop, ready }`. */
     onTerminalExit(sessionId, cb) {
-      return _listen(`terminal://exit/${sessionId}`,
-        p => cb({ instance: p.instance, code: p.code ?? null }));
+      return _listen(`terminal://exit/${sessionId}`, (p) =>
+        cb({ instance: p.instance, code: p.code ?? null }),
+      );
     },
 
     /** The saved shell setting: `{ shell, defaultShell, shells }` (`shell`
@@ -4470,7 +4700,9 @@
     /** Save the shell for new terminals ("" = default). Rust validates and
      *  persists it: `{ ok: true, settings }` or `{ ok: false, error }`. */
     async setTerminalShell(shell) {
-      const res = await _invokeResult("terminal_set_shell", { shell: typeof shell === "string" ? shell : "" });
+      const res = await _invokeResult("terminal_set_shell", {
+        shell: typeof shell === "string" ? shell : "",
+      });
       return res.ok ? { ok: true, settings: res.value } : res;
     },
 
@@ -4494,7 +4726,9 @@
     /** Save the Chromium path ("" = automatic). Rust validates and persists
      *  it: `{ ok: true, settings }` or `{ ok: false, error }`. */
     async browserSetPath(path) {
-      const res = await _invokeResult("browser_set_path", { path: typeof path === "string" ? path : "" });
+      const res = await _invokeResult("browser_set_path", {
+        path: typeof path === "string" ? path : "",
+      });
       return res.ok ? { ok: true, settings: res.value } : res;
     },
 
@@ -4523,9 +4757,17 @@
      *  sent, so the backend's first `state` (during the open) arrives too;
      *  a later open (restart) replaces the channel. */
     browserOpenPanel(sid, width, height, dpr, onMessage) {
-      const events = window.__TAURI__ ? new window.__TAURI__.core.Channel() : null;
+      const events = window.__TAURI__
+        ? new window.__TAURI__.core.Channel()
+        : null;
       if (events) events.onmessage = onMessage;
-      return _invokeSafe("browser_open_panel", { sessionId: sid, width, height, dpr, events });
+      return _invokeSafe("browser_open_panel", {
+        sessionId: sid,
+        width,
+        height,
+        dpr,
+        events,
+      });
     },
     /** Stops the screencast; Chromium stays. Best effort: after the tab's
      *  release there is no browser left to close, which is not an error. */
@@ -4533,7 +4775,12 @@
       return _invokeResult("browser_close_panel", { sessionId: sid });
     },
     browserResize(sid, width, height, dpr) {
-      return _invokeSafe("browser_resize", { sessionId: sid, width, height, dpr });
+      return _invokeSafe("browser_resize", {
+        sessionId: sid,
+        width,
+        height,
+        dpr,
+      });
     },
     /** `{ok}` | `{ok: false, error}` — a refused load (connection refused …)
      *  is the user's page, not a bridge fault, so nothing is logged. */
@@ -4631,17 +4878,31 @@
     },
 
     setProjectWorkspaceDefaults(path, profile, { baseRef, worktree }) {
-      return _invokeResult("conversation_workspace_defaults_set", { path, profile, baseRef, worktree });
+      return _invokeResult("conversation_workspace_defaults_set", {
+        path,
+        profile,
+        baseRef,
+        worktree,
+      });
     },
 
     async startConversationSetup(requestId, workspace) {
       const request = conversationSetups[0];
-      if (!request || request.view.id !== requestId) return { ok: false, error: "Conversation setup is no longer open" };
-      if (request.view.configure) return { ok: false, error: "Save project defaults without starting a conversation" };
-      if (request.busy) return { ok: false, error: "Conversation is already starting" };
+      if (!request || request.view.id !== requestId)
+        return { ok: false, error: "Conversation setup is no longer open" };
+      if (request.view.configure)
+        return {
+          ok: false,
+          error: "Save project defaults without starting a conversation",
+        };
+      if (request.busy)
+        return { ok: false, error: "Conversation is already starting" };
       request.busy = true;
       try {
-        const id = await _startProjectSession(request.view.path, { profile: request.view.profile, workspace });
+        const id = await _startProjectSession(request.view.path, {
+          profile: request.view.profile,
+          workspace,
+        });
         conversationSetups.shift();
         request.resolve(id);
         notify();
@@ -4654,7 +4915,8 @@
 
     cancelConversationSetup(requestId) {
       const request = conversationSetups[0];
-      if (!request || request.view.id !== requestId || request.busy) return false;
+      if (!request || request.view.id !== requestId || request.busy)
+        return false;
       conversationSetups.shift();
       request.resolve(null);
       notify();
@@ -4669,7 +4931,10 @@
     async openProject(path) {
       const profile = _activeProfileId();
       const id = window.OMP_PROJECT_NAV.findProjectTab(
-        [...sessionRegistry.values()], path, profile, activeSessionId,
+        [...sessionRegistry.values()],
+        path,
+        profile,
+        activeSessionId,
       );
       if (id) {
         await window.OMP_BRIDGE.activateSession(id);
@@ -4680,7 +4945,10 @@
 
     /** Drop `path` from the active profile's recent projects. */
     async forgetRecentProject(path) {
-      await _recentsCall("recent_projects_remove", { path, profile: _activeProfileId() });
+      await _recentsCall("recent_projects_remove", {
+        path,
+        profile: _activeProfileId(),
+      });
     },
 
     /** Switch the active tab. Resets state and re-fetches from the session's omp. */
@@ -4698,7 +4966,9 @@
       // let this call and the in-flight respawn's own reclaim both call
       // _switchToSession(id) for the same tab.
       if (_respawning.has(id)) {
-        console.warn(`[live] ignoring activateSession('${id}') — respawn in flight`);
+        console.warn(
+          `[live] ignoring activateSession('${id}') — respawn in flight`,
+        );
         return;
       }
       await _switchToSession(id);
@@ -4711,9 +4981,14 @@
      *  so listing another profile's history here would offer entries this
      *  tab cannot resume. */
     async listSavedSessions(cwd = null) {
-      const sessions = await _invokeSafe("list_saved_sessions", {
-        cwd: cwd || null, profile: _activeProfileId(),
-      }, []);
+      const sessions = await _invokeSafe(
+        "list_saved_sessions",
+        {
+          cwd: cwd || null,
+          profile: _activeProfileId(),
+        },
+        [],
+      );
       return sessions || [];
     },
 
@@ -4721,19 +4996,30 @@
      *  Resolves to the `Payload` struct or `null` on error (network or
      *  corrupt overlay — the frontend falls back to omp + registry defaults). */
     async listKeybindings() {
-      return _invokeSafe("keybindings_list", { profile: _activeProfileId() }, null);
+      return _invokeSafe(
+        "keybindings_list",
+        { profile: _activeProfileId() },
+        null,
+      );
     },
 
     /** Bind `action` to `keys` in the desktop overlay. Resolves to
      *  `{ok:true, value: Payload}` or `{ok:false, error: string}`. */
     async setKeybinding(action, keys) {
-      return _invokeResult("keybindings_set", { action, keys, profile: _activeProfileId() });
+      return _invokeResult("keybindings_set", {
+        action,
+        keys,
+        profile: _activeProfileId(),
+      });
     },
 
     /** Remove `action` from the desktop overlay (reset to omp/default).
      *  Resolves to `{ok:true, value: Payload}` or `{ok:false, error: string}`. */
     async resetKeybinding(action) {
-      return _invokeResult("keybindings_reset", { action, profile: _activeProfileId() });
+      return _invokeResult("keybindings_reset", {
+        action,
+        profile: _activeProfileId(),
+      });
     },
 
     /** Resume a saved session under the active tab's profile (the profile
@@ -4748,24 +5034,36 @@
       if (!session || !session.path) return null;
       const profile = _activeProfileId();
       const open = window.OMP_PROJECT_NAV.findConversationTab(
-        [...sessionRegistry.values()], session.path, profile,
+        [...sessionRegistry.values()],
+        session.path,
+        profile,
       );
       if (open) {
         await window.OMP_BRIDGE.activateSession(open);
         return open;
       }
-      const workspaceBinding = await _recoverWorkspaceBinding(session.cwd || "", profile);
+      const workspaceBinding = await _recoverWorkspaceBinding(
+        session.cwd || "",
+        profile,
+      );
       // Metadata recovery yields, so another resume may have registered this file.
       const resumed = window.OMP_PROJECT_NAV.findConversationTab(
-        [...sessionRegistry.values()], session.path, profile,
+        [...sessionRegistry.values()],
+        session.path,
+        profile,
       );
       if (resumed) {
         await window.OMP_BRIDGE.activateSession(resumed);
         return resumed;
       }
-      const generated = workspaceBinding?.worktree && session.title === _tabNameFor(session.cwd, "");
+      const generated =
+        workspaceBinding?.worktree &&
+        session.title === _tabNameFor(session.cwd, "");
       return _openReported(session.cwd || "", {
-        resume: session.path, name: generated ? null : session.title, profile, workspaceBinding,
+        resume: session.path,
+        name: generated ? null : session.title,
+        profile,
+        workspaceBinding,
       });
     },
 
@@ -4784,7 +5082,9 @@
      *  `{ok: true, text}` (the prompt, for the composer),
      *  `{ok: false, cancelled: true}` or `{ok: false, error}`. */
     branchAt(entryId) {
-      return _moveToNewFile(() => _sendWithResponse({ type: "branch", entryId }));
+      return _moveToNewFile(() =>
+        _sendWithResponse({ type: "branch", entryId }),
+      );
     },
     /** Continue after a message (a turn's last reply): same move as
      *  `branchAt`, nothing to re-ask. omp refuses (`session_busy`) unless idle. */
@@ -4832,7 +5132,10 @@
       // The unlist already committed server-side either way, so this can
       // only warn, not undo it.
       const raced = _profilesInUse(id, [...sessionRegistry.values()]);
-      if (raced) console.warn(`[live] deleteProfile('${id}') raced with a new tab: ${raced}`);
+      if (raced)
+        console.warn(
+          `[live] deleteProfile('${id}') raced with a new tab: ${raced}`,
+        );
       return res;
     },
 
@@ -4856,8 +5159,10 @@
       // Any registered tab, not just the active one: an open in flight has
       // registered its tab but not activated it yet, and has already chosen
       // its profile — acknowledging the pick would silently drop it.
-      if (sessionRegistry.size > 0) return { ok: false, error: "a tab is open" };
-      if (!profiles.some(p => p.id === id)) return { ok: false, error: `unknown profile '${id}'` };
+      if (sessionRegistry.size > 0)
+        return { ok: false, error: "a tab is open" };
+      if (!profiles.some((p) => p.id === id))
+        return { ok: false, error: `unknown profile '${id}'` };
       _noTabProfileId = id;
       _syncRecentsProfile();
       notify();
@@ -4876,19 +5181,25 @@
       const entry = sessionRegistry.get(id);
       if (!entry) return { ok: false, error: "unknown tab" };
       if (entry.profile === profileId) return { ok: true }; // already on this profile
-      if (!profiles.some(p => p.id === profileId)) {
+      if (!profiles.some((p) => p.id === profileId)) {
         const error = `unknown profile '${profileId}'`;
         console.warn(`[live] ${error} — ignoring switch`);
         return { ok: false, error };
       }
-      return _respawnSession(id, { profile: profileId, resume: null, fresh: true });
+      return _respawnSession(id, {
+        profile: profileId,
+        resume: null,
+        fresh: true,
+      });
     },
 
     // ── Tool approval mode (app/approval-mode.js, approval_mode.rs) ─────────
 
     /** Re-fetch the `{ default, projects }` view, store it in the snapshot
      *  (`approvalModes`) and resolve to it (null before any read worked). */
-    approvalModes() { return _refreshApprovalModes(); },
+    approvalModes() {
+      return _refreshApprovalModes();
+    },
     /** Set the global default mode, then restart the open tabs it changes
      *  (idle now, busy at their next idle point). Resolves to
      *  `{ ok, error?, restarted: [ids], deferred: [ids] }`. */
@@ -4898,7 +5209,10 @@
     /** Set (`mode`) or remove (`null`) the override for project folder
      *  `path` (a tab's canonical `entry.path`); same result as above. */
     setApprovalModeProject(path, mode) {
-      return _setApprovalModes("approval_mode_set_project", { projectRoot: path, mode: mode ?? null });
+      return _setApprovalModes("approval_mode_set_project", {
+        projectRoot: path,
+        mode: mode ?? null,
+      });
     },
 
     /** Close a tab after stopping its microphone; a failed stop leaves the
@@ -4907,30 +5221,40 @@
       if (!sessionRegistry.has(id) || _closingVoiceTabs.has(id)) return false;
       _closingVoiceTabs.add(id);
       try {
-        if (id === activeSessionId && (state.dictation.active || _dictationStopPending || state.liveVoice.active)) {
+        if (
+          id === activeSessionId &&
+          (state.dictation.active ||
+            _dictationStopPending ||
+            state.liveVoice.active)
+        ) {
           const stopped = await window.OMP_BRIDGE.stopActiveVoice();
-          if (!stopped.ok && id === activeSessionId && (state.dictation.active || state.liveVoice.active)) return false;
+          if (
+            !stopped.ok &&
+            id === activeSessionId &&
+            (state.dictation.active || state.liveVoice.active)
+          )
+            return false;
           if (!sessionRegistry.has(id)) return false;
         }
-      _closeTab(id);
-      sessionRegistry.delete(id);
-      promptHistories.delete(id);
-      _modeRestartMissed.delete(id);
-      if (id === activeSessionId) {
-        const remaining = [...sessionRegistry.keys()];
-        if (remaining.length > 0) {
-          await _switchToSession(remaining[remaining.length - 1]);
+        _closeTab(id);
+        sessionRegistry.delete(id);
+        promptHistories.delete(id);
+        _modeRestartMissed.delete(id);
+        if (id === activeSessionId) {
+          const remaining = [...sessionRegistry.keys()];
+          if (remaining.length > 0) {
+            await _switchToSession(remaining[remaining.length - 1]);
+          } else {
+            // No sessions left — reset to empty state
+            await _detachActiveSession();
+            // No active tab: the active profile falls back to the startup one.
+            _syncRecentsProfile();
+            notify();
+          }
         } else {
-          // No sessions left — reset to empty state
-          await _detachActiveSession();
-          // No active tab: the active profile falls back to the startup one.
-          _syncRecentsProfile();
-          notify();
+          notify(); // tab list changed
         }
-      } else {
-        notify(); // tab list changed
-      }
-      return true;
+        return true;
       } finally {
         _closingVoiceTabs.delete(id);
       }
@@ -4960,13 +5284,22 @@
      *  anything here. */
     setSessionPrefs(values) {
       // fromTweaks keeps only PREFS.KEYS, so the whole tweaks object may come in.
-      const next = PREFS.fromTweaks({ ...sessionPrefs, ...values }, window.TWEAK_DEFAULTS);
+      const next = PREFS.fromTweaks(
+        { ...sessionPrefs, ...values },
+        window.TWEAK_DEFAULTS,
+      );
       const changed = PREFS.changedKeys(sessionPrefs, next);
       if (changed.length === 0) return;
       sessionPrefs = next;
-      if (changed.includes("autoCompaction")) _sendToAll({ type: "set_auto_compaction", enabled: next.autoCompaction });
-      if (changed.includes("autoRetry")) _sendToAll({ type: "set_auto_retry", enabled: next.autoRetry });
-      if (changed.includes("confirmBusyClose")) _syncCloseGuard(_sessionsView());
+      if (changed.includes("autoCompaction"))
+        _sendToAll({
+          type: "set_auto_compaction",
+          enabled: next.autoCompaction,
+        });
+      if (changed.includes("autoRetry"))
+        _sendToAll({ type: "set_auto_retry", enabled: next.autoRetry });
+      if (changed.includes("confirmBusyClose"))
+        _syncCloseGuard(_sessionsView());
     },
 
     /** Put the tabs in `ids` order (#40): a drag in the tab bar, the group
@@ -4978,8 +5311,9 @@
      *  untouched: they only ever `set` existing keys, which keeps the new
      *  position. `notify` persists the order (`open-tabs.json`). */
     reorderTabs(ids) {
-      if (!window.OMP_PROJECT_NAV.isReorderOf(ids, [...sessionRegistry.keys()])) return false;
-      const entries = ids.map(id => [id, sessionRegistry.get(id)]);
+      if (!window.OMP_PROJECT_NAV.isReorderOf(ids, [...sessionRegistry.keys()]))
+        return false;
+      const entries = ids.map((id) => [id, sessionRegistry.get(id)]);
       sessionRegistry.clear();
       for (const [id, entry] of entries) sessionRegistry.set(id, entry);
       notify();
@@ -5027,8 +5361,11 @@
     async installUpdate(onProgress) {
       if (!window.__TAURI__) return { ok: false, error: "not connected" };
       const unlisten = await window.__TAURI__.event
-        .listen("update://progress", ev => onProgress(ev.payload))
-        .catch(err => { console.error("[live] update progress listener failed:", err); return null; });
+        .listen("update://progress", (ev) => onProgress(ev.payload))
+        .catch((err) => {
+          console.error("[live] update progress listener failed:", err);
+          return null;
+        });
       try {
         return await _invokeResult("app_update_install");
       } finally {
@@ -5055,7 +5392,10 @@
      *  here, which this file has no harness to assert on. */
     setPromptHistoryLimit(n) {
       promptHistoryLimit = window.OMP_PROMPT_HISTORY.clampLimit(n);
-      if (window.OMP_PROMPT_HISTORY.trimAll(promptHistories, promptHistoryLimit)) notify();
+      if (
+        window.OMP_PROMPT_HISTORY.trimAll(promptHistories, promptHistoryLimit)
+      )
+        notify();
     },
 
     /** Subscribe to state snapshots. Returns an unsubscribe function. */
@@ -5065,12 +5405,15 @@
       return () => subscribers.delete(cb);
     },
 
-    getState() { return state; },
+    getState() {
+      return state;
+    },
   };
 
   // ── Connect to Tauri IPC ──────────────────────────────────────────────────
   if (window.__TAURI__) {
     document.documentElement.classList.add("tauri-native");
+    if (navigator.platform.startsWith("Mac")) document.documentElement.classList.add("native-macos");
 
     // No tab at launch: `lib.rs::setup` spawns nothing. Load the persisted
     // profile list + ticked default first — with no tab to inherit from, it

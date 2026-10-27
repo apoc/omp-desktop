@@ -35,13 +35,17 @@
       c.featureEnabled !== false &&
       c.connected !== false &&
       c.bridge?.isConnected !== false &&
-      typeof c.bridge?.prAutomationSnapshot === "function";
+      typeof c.bridge?.changesSnapshot === "function";
     const readable = (c, t) =>
       available(c) &&
       (c.visible !== false || (c.autoFixActive && t.owners.has(c.tabId)));
     const notify = () => {
       if (running) onChange?.();
     };
+    const message = (error, fallback) =>
+      (typeof error === "string" && error) ||
+      (typeof error?.message === "string" && error.message) ||
+      fallback;
     const cancelTimer = () => {
       if (timer !== null) clearTimer(timer);
       timer = null;
@@ -82,9 +86,21 @@
             loading: false,
             snapshot: null,
             discoveryError: null,
+            localChanges: null,
+            localError: null,
+            pendingOwners: new Map(),
+            invalidated: false,
           };
           targets.set(key, t);
         } else {
+          for (const id of t.pendingOwners.keys())
+            if (!owners.has(id)) t.pendingOwners.delete(id);
+          for (const [id, stamp] of owners) {
+            if (t.owners.get(id) === stamp) continue;
+            t.pendingOwners.set(id, { pr: true, local: true, attempted: false });
+            t.version++;
+            t.requested = true;
+          }
           t.owners = owners;
         }
         if (changedScope) {
@@ -157,32 +173,97 @@
       flight = t;
       notify();
       try {
-        const snapshot = await bridge.prAutomationSnapshot(id);
-        if (!current()) return;
-        if (snapshot !== null) {
-          validate(snapshot);
-          const owner = context().sessions.find((s) => s.id === id);
-          if (owner.branch && snapshot.branch !== owner.branch)
-            throw new Error("PR snapshot does not match the current branch.");
+        let result;
+        try {
+          result = await bridge.changesSnapshot(id);
+        } catch {
+          // A missed IPC/network read is not a PR or working-tree update.
+          if (current()) t.invalidated = true;
+          return;
         }
-        t.snapshot = snapshot;
-        t.discoveryError = null;
+        if (!current()) return;
+        // The bridge discards a read whose session identity changed. It is not
+        // evidence that either the PR or the working tree is absent.
+        if (result === null) {
+          t.invalidated = true;
+          return;
+        }
+        if (!result || typeof result !== "object" || Array.isArray(result))
+          throw new Error("Invalid changes snapshot.");
+
+        try {
+          if (result.discoveryError !== null) {
+            if (
+              typeof result.discoveryError !== "string" ||
+              !result.discoveryError
+            )
+              throw new Error("Invalid PR discovery result.");
+            t.invalidated = true;
+          } else {
+            if (result.snapshot !== null) {
+              validate(result.snapshot);
+              const owner = context().sessions.find((s) => s.id === id);
+              if (owner.branch && result.snapshot.branch !== owner.branch)
+                throw new Error(
+                  "PR snapshot does not match the current branch.",
+                );
+            }
+            t.snapshot = result.snapshot;
+            t.discoveryError = null;
+            t.invalidated = false;
+          }
+        } catch (error) {
+          t.discoveryError = message(error, "PR discovery failed.");
+          t.invalidated = false;
+        }
+
+        try {
+          if (result.localError !== null) {
+            if (typeof result.localError !== "string" || !result.localError)
+              throw new Error("Invalid local changes result.");
+            throw new Error(result.localError);
+          }
+          const local = result.localChanges;
+          if (
+            local !== null &&
+            (!local ||
+              typeof local !== "object" ||
+              Array.isArray(local) ||
+              !Number.isSafeInteger(local.changed) ||
+              local.changed < 0 ||
+              typeof local.truncated !== "boolean")
+          )
+            throw new Error("Invalid local changes result.");
+          t.localChanges = local;
+          t.localError = null;
+        } catch (error) {
+          t.localError = message(error, "Local changes could not be read.");
+        }
+        for (const [owner, pending] of t.pendingOwners) {
+          pending.attempted = true;
+          if (!t.discoveryError && !t.invalidated) pending.pr = false;
+          if (!t.localError) pending.local = false;
+          if (!pending.pr && !pending.local) t.pendingOwners.delete(owner);
+        }
         t.loading = false;
         notify();
         // Await a possible selected-tab handoff so all native reads remain
         // single-flight, including revalidation immediately before a send.
-        await onResult?.({
-          id,
-          owners: [...t.owners.keys()],
-          snapshot,
-          permission,
-        });
+        if (!t.invalidated)
+          await onResult?.({
+            id,
+            owners: [...t.owners.keys()],
+            snapshot: t.discoveryError ? undefined : t.snapshot,
+            error: t.discoveryError,
+            permission,
+          });
       } catch (error) {
         if (current()) {
-          t.discoveryError =
-            typeof error === "string"
-              ? error
-              : error?.message || "PR discovery failed.";
+          t.discoveryError = message(error, "PR discovery failed.");
+          t.localError = message(error, "Local changes could not be read.");
+          for (const pending of t.pendingOwners.values())
+            pending.attempted = true;
+          t.invalidated = false;
           t.loading = false;
           notify();
           await onResult?.({
@@ -226,10 +307,22 @@
       for (const s of sessions(c)) {
         const t = targets.get(checkoutKey(s));
         if (t?.owners.get(s.id) !== identity(s)) continue;
+        const pending = t.pendingOwners.get(s.id);
         result[s.id] = {
-          snapshot: t.snapshot,
-          loading: t.loading || t.requested,
-          discoveryError: t.discoveryError,
+          snapshot: pending?.pr ? null : t.snapshot,
+          loading: t.loading || t.requested || t.invalidated,
+          discoveryError:
+            pending?.pr && !pending.attempted ? null : t.discoveryError,
+          localChanges: pending?.local ? null : t.localChanges,
+          localError:
+            pending?.local && !pending.attempted ? null : t.localError,
+          canEnable:
+            !pending?.pr &&
+            !t.loading &&
+            !t.requested &&
+            !t.invalidated &&
+            !t.discoveryError &&
+            t.snapshot?.state === "OPEN",
         };
       }
       return result;

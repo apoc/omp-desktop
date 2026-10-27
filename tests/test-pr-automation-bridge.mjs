@@ -22,6 +22,13 @@ const snapshot = (over = {}) => ({
   state: "OPEN",
   ...over,
 });
+const changes = (over = {}) => ({
+  snapshot: null,
+  discoveryError: null,
+  localChanges: null,
+  localError: null,
+  ...over,
+});
 const permit = () => true;
 
 function harness() {
@@ -29,6 +36,7 @@ function harness() {
     journal = new Map(),
     commands = [],
     reads = [],
+    changesReads = [],
     prompts = [];
   const w = {
     OMP_SLASH: { LOCAL_COMMANDS: [] },
@@ -72,6 +80,7 @@ function harness() {
     clearTimeout,
   );
   let snapshotResult = null,
+    changesResult = null,
     snapshot;
   function emit(id, frame) {
     const entries = journal.get(id) ?? [];
@@ -121,6 +130,10 @@ function harness() {
         if (command === "pr_automation_snapshot") {
           reads.push(args.sessionId);
           return snapshotResult;
+        }
+        if (command === "changes_snapshot") {
+          changesReads.push(args.sessionId);
+          return changesResult;
         }
         if (command === "send_command") {
           const cmd = { ...JSON.parse(args.json), sessionId: args.sessionId };
@@ -178,10 +191,14 @@ function harness() {
     clean,
     commands,
     reads,
+    changesReads,
     prompts,
     snapshot: () => snapshot,
     setResult: (value) => {
       snapshotResult = value;
+    },
+    setChangesResult: (value) => {
+      changesResult = value;
     },
   };
 }
@@ -236,7 +253,7 @@ await check(
       h.setResult(changed);
       assert.equal(
         await h.bridge.prAutomationSend(id, "stale fixes", expected, permit),
-        false,
+        null,
       );
     }
     assert.deepEqual(h.prompts, []);
@@ -259,6 +276,28 @@ await check(
     );
   },
 );
+await check(
+  "a failed final GitHub fetch skips publication without a bubble and can recover",
+  async () => {
+    const h = harness();
+    const id = await h.bridge.openSession("/project");
+    await flush();
+    h.clean();
+    h.setResult(Promise.reject(new Error("gh request timed out")));
+    assert.equal(
+      await h.bridge.prAutomationSend(id, "fix feedback", snapshot(), permit),
+      null,
+    );
+    assert.deepEqual(h.prompts, []);
+    assert.deepEqual(h.bridge.getState().messages, []);
+    h.setResult(snapshot());
+    assert.equal(
+      await h.bridge.prAutomationSend(id, "fix feedback", snapshot(), permit),
+      true,
+    );
+    assert.deepEqual(h.prompts, [{ sessionId: id, text: "fix feedback" }]);
+  },
+);
 
 await check(
   "idle, queue, ask and goal guards prevent automatic fix publication",
@@ -275,11 +314,11 @@ await check(
         snapshot(),
         permit,
       ),
-      false,
+      null,
     );
     assert.equal(
       await h.bridge.prAutomationSend(id, "missing target", undefined, permit),
-      false,
+      null,
     );
     for (const patch of [
       { rpcState: null },
@@ -297,7 +336,7 @@ await check(
       Object.assign(h.bridge.getState(), patch);
       assert.equal(
         await h.bridge.prAutomationSend(id, "must wait", snapshot(), permit),
-        false,
+        null,
         JSON.stringify(patch),
       );
     }
@@ -326,7 +365,7 @@ await check(
     );
     h.setBranch(id, "other");
     release(snapshot());
-    assert.equal(await sending, false);
+    assert.equal(await sending, null);
     assert.deepEqual(h.prompts, []);
   },
 );
@@ -352,7 +391,7 @@ await check(
     );
     Object.assign(h.bridge.getState(), { isStreaming: true });
     release(snapshot());
-    assert.equal(await sending, false);
+    assert.equal(await sending, null);
     assert.deepEqual(h.prompts, []);
   },
 );
@@ -379,7 +418,7 @@ await check(
     );
     allowed = false;
     release(snapshot());
-    assert.equal(await sending, false);
+    assert.equal(await sending, null);
     assert.deepEqual(h.prompts, []);
   },
 );
@@ -399,7 +438,7 @@ await check(
     h.setResult(snapshot());
     assert.equal(
       await h.bridge.prAutomationSend(a, "must wait", snapshot(), permit),
-      false,
+      null,
     );
     assert.deepEqual(h.prompts, []);
   },
@@ -459,7 +498,7 @@ await check(
     assert.equal((await stale).state, "OPEN");
     assert.equal(
       await h.bridge.prAutomationSend(b, "other tab", snapshot(), permit),
-      false,
+      null,
     );
   },
 );
@@ -478,7 +517,7 @@ await check(
     assert.equal((await h.bridge.prAutomationSnapshot(a)).state, "OPEN");
     assert.equal(
       await h.bridge.prAutomationSend(a, "must wait", snapshot(), permit),
-      false,
+      null,
     );
     await switching;
     assert.deepEqual(h.prompts, []);
@@ -600,10 +639,115 @@ await check(
           snapshot({ state }),
           permit,
         ),
-        false,
+        null,
       );
     assert.deepEqual(h.reads, []);
     assert.deepEqual(h.prompts, []);
+  },
+);
+
+await check(
+  "changes discovery returns independent local and PR results without sending prompts",
+  async () => {
+    const h = harness();
+    const a = await h.bridge.openSession("/a");
+    const b = await h.bridge.openSession("/b");
+    await flush();
+    for (const result of [
+      changes(),
+      changes({ localChanges: { changed: 3, truncated: false } }),
+      changes({
+        discoveryError: "GitHub unavailable",
+        localChanges: { changed: 2, truncated: true },
+      }),
+      changes({ snapshot: snapshot(), localError: "Cannot read status" }),
+    ]) {
+      h.setChangesResult(result);
+      assert.equal(await h.bridge.changesSnapshot(a), result);
+    }
+    assert.equal(h.snapshot().activeSessionId, b);
+    assert.deepEqual(h.changesReads, [a, a, a, a]);
+    assert.deepEqual(h.reads, []);
+    assert.deepEqual(h.prompts, []);
+  },
+);
+
+await check(
+  "changes discovery never replaces fresh PR validation before a fix",
+  async () => {
+    const h = harness();
+    const id = await h.bridge.openSession("/project");
+    await flush();
+    h.clean();
+    const displayed = snapshot();
+    h.setChangesResult(changes({ snapshot: displayed }));
+    assert.equal((await h.bridge.changesSnapshot(id)).snapshot, displayed);
+    h.setResult(snapshot({ state: "MERGED" }));
+    assert.equal(
+      await h.bridge.prAutomationSend(id, "stale fix", displayed, permit),
+      null,
+    );
+    assert.deepEqual(h.changesReads, [id]);
+    assert.deepEqual(h.reads, [id]);
+    assert.deepEqual(h.prompts, []);
+  },
+);
+
+await check("changes discovery is discarded after a branch change", async () => {
+  const h = harness();
+  const id = await h.bridge.openSession("/project");
+  await flush();
+  let release;
+  h.setChangesResult(new Promise((resolve) => (release = resolve)));
+  const reading = h.bridge.changesSnapshot(id);
+  h.setBranch(id, "other");
+  release(changes({ localChanges: { changed: 2, truncated: false } }));
+  assert.equal(await reading, null);
+});
+
+await check(
+  "changes discovery discards reads after replacing the conversation or profile",
+  async () => {
+    for (const replacement of ["new_session", "fork", "profile"]) {
+      const h = harness();
+      if (replacement === "profile") await h.bridge.createProfile("Other");
+      const id = await h.bridge.openSession("/project");
+      await flush();
+      let release;
+      h.setChangesResult(new Promise((resolve) => (release = resolve)));
+      const reading = h.bridge.changesSnapshot(id);
+      if (replacement === "profile") {
+        const switched = await h.bridge.switchSessionProfile(id, "other");
+        assert.equal(switched.ok, true);
+      } else {
+        if (replacement === "new_session") h.bridge.newSession();
+        h.emit(id, { type: "response", command: replacement, success: true, data: {} });
+      }
+      await flush();
+      release(changes({ snapshot: snapshot() }));
+      assert.equal(await reading, null, replacement);
+      const current = changes({ localChanges: { changed: 1, truncated: false } });
+      h.setChangesResult(current);
+      assert.equal(await h.bridge.changesSnapshot(id), current, replacement);
+    }
+  },
+);
+
+await check(
+  "closing a tab discards its pending changes discovery",
+  async () => {
+    const h = harness();
+    const a = await h.bridge.openSession("/a");
+    await h.bridge.openSession("/b");
+    await flush();
+    let release;
+    h.setChangesResult(new Promise((resolve) => (release = resolve)));
+    const reading = h.bridge.changesSnapshot(a);
+    await h.bridge.closeSession(a);
+    release(changes({ localChanges: { changed: 1, truncated: false } }));
+    assert.equal(await reading, null);
+    assert.equal(await h.bridge.changesSnapshot(a), null);
+    assert.deepEqual(h.changesReads, [a]);
   },
 );
 

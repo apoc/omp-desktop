@@ -40,8 +40,8 @@
 }
 .chrome-title {
   display: flex; align-items: center; gap: 6px;
-  flex: 1; min-width: 0; justify-content: center;
-  font-size: var(--d-text-sm); white-space: nowrap;
+  flex: 1 1 auto; min-width: 0; justify-content: center;
+  overflow: hidden; font-size: var(--d-text-sm); white-space: nowrap;
 }
 .chrome-project-name, .chrome-branch .mono, .chrome-title .worktree-label {
   min-width: 0; overflow: hidden; text-overflow: ellipsis;
@@ -49,11 +49,12 @@
 .chrome-project-name { color: var(--fg-2); }
 .chrome-title .chrome-branch, .chrome-title .worktree-indicator { min-width: 0; flex: 0 1 auto; }
 .chrome-title svg, .chrome-brand, .chrome-project-config { flex: none; }
-.chrome-lights, .chrome-right, .chrome > .profile-menu { flex: none; }
+.chrome-pr { display: inline-flex; align-items: center; gap: 4px; min-width: 0; flex: 0 1 auto; }
+.chrome-pr-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg-2); }
+.chrome-lights, .chrome-right { flex: none; }
+.chrome > .profile-menu { min-width: 0; flex: 0 1 auto; }
 @media (max-width: 720px) {
   .chrome-brand { display: none; }
-  .chrome > .profile-menu { max-width: 96px; }
-  .chrome .profile-trigger { max-width: 100%; }
 }
 @media (max-width: 640px) {
   .chrome-command-label, .chrome-command .kbd { display: none; }
@@ -67,7 +68,7 @@
 .chrome-project-config:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
 .worktree-indicator {
   display: inline-flex; align-items: center; justify-content: center;
-  flex: none; color: var(--fg-4);
+  flex: none; color: var(--fg-4); font-size: var(--d-text-xs);
 }
 .worktree-indicator:hover { color: var(--fg-2); }
 /* align-items is load-bearing. `.win-ctrl` is full-bar height (38px), so this
@@ -80,8 +81,9 @@
 
 /* ── Per-tab profile selector ─────────────────────────────────────────── */
 .profile-menu { position: relative; display: flex; align-items: center; }
-.profile-trigger { display: flex; align-items: center; gap: 6px; max-width: 220px; }
-.profile-trigger-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-trigger { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.profile-trigger-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-trigger svg { flex: none; }
 /* Dropdown chrome shared by the profile, tab-group and thinking menus
    (thinking-menu.jsx, positioned in composer.css) and the browser panel's
    annotate popover (positioned in browser.css). */
@@ -262,12 +264,10 @@
 .tab > .rename-field { flex: none; width: 200px; }
 .tab-group-editing { cursor: default; }
 .tab-profile {
-  /* `.chip` is inline-flex, on which `text-overflow` is inert - the label
-     would hard-clip mid-glyph at max-width instead of ellipsizing. Single
-     text child here, so `.chip`'s align-items/gap are unused anyway. */
-  display: inline-block;
+  /* Inline-block permits an ellipsis; flex shrink shares real pressure with
+     the conversation name rather than imposing a permanent name cap. */
+  display: inline-block; flex: 0 1 auto; min-width: 0;
   padding: 1px 6px;
-  max-width: 84px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .tab-run-dot {

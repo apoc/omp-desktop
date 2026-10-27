@@ -34,6 +34,32 @@ pub struct StatusView {
     pub truncated: bool,
 }
 
+/// Bounded count of changed paths, without constructing the file tree.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalChanges {
+    pub changed: usize,
+    pub truncated: bool,
+}
+
+pub fn change_summary(path: &Path) -> Result<Option<LocalChanges>, String> {
+    let Some((_gate, mut repo)) = super::discover_optional(path)? else {
+        return Ok(None);
+    };
+    if repo.workdir().is_none() {
+        return Ok(None);
+    }
+    super::sanitize_filters(&mut repo)?;
+    Ok(Some(summarize_count(changes(&repo)?.kinds.len())))
+}
+
+fn summarize_count(count: usize) -> LocalChanges {
+    LocalChanges {
+        changed: count.min(MAX_FILES),
+        truncated: count > MAX_FILES,
+    }
+}
+
 /// What one status item says about one path, layer-independent.
 #[derive(Debug, PartialEq, Eq)]
 struct Event {
@@ -312,7 +338,10 @@ pub(super) fn fold(files: impl IntoIterator<Item = (String, Option<StatusKind>)>
 
 #[cfg(test)]
 mod tests {
-    use super::{fold, listed, merge, status, Event, StatusKind, TreeNode};
+    use super::{
+        change_summary, fold, listed, merge, status, summarize_count, Event, LocalChanges,
+        StatusKind, TreeNode, MAX_FILES,
+    };
     use crate::git_browser::fixture;
     use std::borrow::Cow;
     use std::collections::BTreeMap;
@@ -501,6 +530,13 @@ mod tests {
         assert_eq!(view.changed, 5);
         assert_eq!(tree.changed, 5);
         assert!(!view.truncated);
+        assert_eq!(
+            change_summary(repo.path()).unwrap(),
+            Some(LocalChanges {
+                changed: 5,
+                truncated: false
+            })
+        );
 
         assert_eq!(view.repo.branch.as_deref(), Some("main"));
         assert_eq!(
@@ -530,6 +566,13 @@ mod tests {
         assert_eq!(
             status_of(&view.tree, "sub/b.txt"),
             Some(StatusKind::Untracked)
+        );
+        assert_eq!(
+            change_summary(&repo.path().join("sub")).unwrap(),
+            Some(LocalChanges {
+                changed: 2,
+                truncated: false
+            })
         );
     }
 
@@ -602,6 +645,51 @@ mod tests {
     }
 
     #[test]
+    fn summary_counts_clean_and_dirty_without_running_repository_filters() {
+        let Some(repo) = fixture::init("summary-filter") else {
+            return;
+        };
+        repo.write("file.txt", "one\n");
+        repo.git(&["add", "."]);
+        repo.commit("initial", 1_700_000_000);
+        assert_eq!(
+            change_summary(repo.path()).unwrap(),
+            Some(LocalChanges {
+                changed: 0,
+                truncated: false
+            })
+        );
+        let marker = repo.arm_clean_filter(".git");
+        repo.write("file.txt", "two\n");
+        assert_eq!(
+            change_summary(repo.path()).unwrap(),
+            Some(LocalChanges {
+                changed: 1,
+                truncated: false
+            })
+        );
+        assert!(!marker.exists(), "repository clean filter ran");
+    }
+
+    #[test]
+    fn summary_cap_is_about_changed_paths_only() {
+        assert_eq!(
+            summarize_count(MAX_FILES),
+            LocalChanges {
+                changed: MAX_FILES,
+                truncated: false
+            }
+        );
+        assert_eq!(
+            summarize_count(MAX_FILES + 1),
+            LocalChanges {
+                changed: MAX_FILES,
+                truncated: true
+            }
+        );
+    }
+
+    #[test]
     fn status_outside_a_repository_is_an_error() {
         let dir =
             std::env::temp_dir().join(format!("omp-git-browser-not-a-repo-{}", std::process::id()));
@@ -611,6 +699,7 @@ mod tests {
         if gix::discover(&dir).is_err() {
             let err = status(&dir).expect_err("not a repo");
             assert!(err.starts_with("not a git repository"), "{err}");
+            assert_eq!(change_summary(&dir).unwrap(), None);
         }
         std::fs::remove_dir_all(&dir).ok();
     }

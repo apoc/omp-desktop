@@ -46,6 +46,7 @@ mod test_support;
 mod text;
 mod updater;
 mod widgets;
+mod window_chrome;
 mod workspace;
 
 use agent::AgentBridge;
@@ -1628,6 +1629,13 @@ pub fn run() {
     // an `unused_mut` warning (and so a lint-gate error) on macOS.
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     let builder = builder.plugin(single_instance_plugin());
+    let context = tauri::generate_context!();
+    #[cfg(target_os = "macos")]
+    let context = {
+        let mut context = context;
+        window_chrome::configure(context.config_mut());
+        context
+    };
     let app = with_plugins_and_state(builder)
         .invoke_handler(tauri::generate_handler![
             send_command,
@@ -1686,6 +1694,7 @@ pub fn run() {
             git_browser_commit_file,
             project_file_read,
             pr_automation::pr_automation_snapshot,
+            pr_automation::changes_snapshot,
             workspace_accept,
             workspace_reject,
             widgets_state,
@@ -1715,6 +1724,7 @@ pub fn run() {
             app_update_check,
             app_update_install,
             set_close_guard,
+            window_chrome::window_titlebar_action,
             remote::commands::remote_status,
             remote::commands::remote_interfaces,
             remote::commands::remote_apply_settings,
@@ -1733,7 +1743,7 @@ pub fn run() {
             setup(app);
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     app.run(handle_run_event);

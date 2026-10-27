@@ -1,5 +1,5 @@
-// Shows the checked-out branch's PR; Auto-fix is explicitly opt-in.
-function PrAutomationCard({ automation, available = true, bridge }) {
+// Shows local changes and the checked-out branch's known PR.
+function PrAutomationCard({ automation, available = true, bridge, onOpenChanges }) {
   const [collapsed, setCollapsed] = React.useState(false);
   const [menu, setMenu] = React.useState(null);
   const [actionError, setActionError] = React.useState(null);
@@ -77,15 +77,11 @@ function PrAutomationCard({ automation, available = true, bridge }) {
     if (await window.copyText(pr.url)) close();
     else setActionError("Could not copy the PR link.");
   };
-  const error = automation.error || automation.discoveryError;
-  const status = window.OMP_PR_STATUS.present(automation);
-  const summary = !available
-    ? "Open a connected project tab to see its pull request."
-    : automation.loading
-      ? "Updating the current branch's pull request…"
-      : error
-        ? "Could not update pull request."
-        : "No pull request for the current branch.";
+  const localCount = automation.localChanges?.changed || 0;
+  const localSummary = `${automation.localError ? "Last known · " : ""}${automation.localChanges?.truncated ? "At least " : ""}${localCount} changed ${localCount === 1 ? "file" : "files"}`;
+  if (!pr && localCount <= 0) return null;
+
+  const status = pr ? window.OMP_PR_STATUS.present(automation) : null;
 
   return (
     <section className="rail-card glass pr-changes" aria-label="Changes">
@@ -98,76 +94,70 @@ function PrAutomationCard({ automation, available = true, bridge }) {
           Changes <window.Icon name={collapsed ? "chevR" : "chev"} size={11} />
         </button>
       </div>
-      {!collapsed &&
-        (pr ? (
-          <div className="pr-changes-row">
-            <window.PrStatus model={status} mode="icon" />
-            <button
-              className="pr-changes-title"
-              title={pr.title}
-              onClick={() => openUrl("")}
-            >
-              {pr.title}
-            </button>
-            <button
-              ref={triggerRef}
-              className={`pr-changes-more${menu ? " active" : ""}`}
-              onClick={openMenu}
-              aria-label={`Actions for pull request #${pr.number}`}
-              aria-haspopup="menu"
-              aria-expanded={!!menu}
-              aria-controls={menu ? menuId : undefined}
-            >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 14 14"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <circle cx="7" cy="3" r="1" />
-                <circle cx="7" cy="7" r="1" />
-                <circle cx="7" cy="11" r="1" />
-              </svg>
-            </button>
-            <div className="pr-changes-meta">
-              <span className="pr-changes-repo" title={pr.repository}>
-                {pr.repository?.split("/").at(-1)} #{pr.number}
-              </span>
-              <span className="pr-changes-lifecycle">{status.stale ? "Last known · " : ""}{status.label}</span>
-              <span className="pr-changes-added">+{pr.additions}</span>
-              <span className="pr-changes-deleted">−{pr.deletions}</span>
-              <window.PrStatus model={status} mode="badges" onReview={() => openUrl("#discussion_bucket", false)} />
-            </div>
-            {automation.enabled && (
-              <span
-                className={`pr-changes-dot${error ? " error" : ""}`}
-                role="status"
-                aria-label={error || automation.status}
-                title={`Auto-fix · ${error || automation.status}`}
-              />
-            )}
-          </div>
-        ) : (
-          <p
-            className="pr-changes-empty"
-            role="status"
-            title={error || undefined}
+      {!collapsed && pr && (
+        <div className="pr-changes-row">
+          <window.PrStatus model={status} mode="icon" />
+          <button
+            className="pr-changes-title"
+            title={pr.title}
+            onClick={() => openUrl("")}
           >
-            {summary}
-          </p>
-        ))}
-      {!collapsed && error && (
+            {pr.title}
+          </button>
+          <button
+            ref={triggerRef}
+            className={`pr-changes-more${menu ? " active" : ""}`}
+            onClick={openMenu}
+            aria-label={`PR actions for pull request #${pr.number}`}
+            aria-haspopup="menu"
+            aria-expanded={!!menu}
+            aria-controls={menu ? menuId : undefined}
+          >
+            PR actions
+          </button>
+          <div className="pr-changes-meta">
+            <span className="pr-changes-repo" title={pr.repository}>
+              {pr.repository?.split("/").at(-1)}
+            </span>
+            <span className="pr-changes-lifecycle">{status.stale ? "Last known · " : ""}{status.label}</span>
+            <span className="pr-changes-added">+{pr.additions}</span>
+            <span className="pr-changes-deleted">−{pr.deletions}</span>
+            <window.PrStatus model={status} mode="badges" onReview={() => openUrl("#discussion_bucket", false)} />
+          </div>
+          {automation.enabled && (
+            <span className="pr-changes-autofix-indicator" title={automation.status}>
+              Auto-fix on
+            </span>
+          )}
+        </div>
+      )}
+      {!collapsed && localCount > 0 && (
+        <div className="pr-changes-local">
+          {onOpenChanges ? (
+            <button className="pr-changes-local-link" onClick={onOpenChanges}>
+              {localSummary}
+            </button>
+          ) : (
+            <span>{localSummary}</span>
+          )}
+        </div>
+      )}
+      {!collapsed && pr && automation.discoveryError && (
         <p className="pr-changes-error" role="alert">
-          {error}
+          PR refresh failed: {automation.discoveryError}
         </p>
       )}
-      {!collapsed && !pr && automation.enabled && (
-        <button className="pr-changes-disable" onClick={automation.toggle}>
-          Turn off Auto-fix
-        </button>
+      {!collapsed && automation.localError && (
+        <p className="pr-changes-error" role="alert">
+          Local changes refresh failed: {automation.localError}
+        </p>
       )}
-      {actionError && !menu && (
+      {!collapsed && pr && automation.enabled && automation.error && (
+        <p className="pr-changes-error" role="alert">
+          Auto-fix error: {automation.error}
+        </p>
+      )}
+      {pr && actionError && !menu && (
         <p className="pr-changes-error" role="alert">
           {actionError}
         </p>
@@ -202,31 +192,34 @@ function PrAutomationCard({ automation, available = true, bridge }) {
             >
               Open review comments
             </button>
-            <div className="pr-changes-separator" role="separator" />
-            <button
-              className="pr-changes-autofix"
-              role="menuitemcheckbox"
-              aria-checked={automation.enabled}
-              disabled={!available || pr.state !== "OPEN"}
-              aria-describedby={descriptionId}
-              onClick={automation.toggle}
-            >
-              <span className="pr-changes-checkbox" aria-hidden="true">
-                {automation.enabled && <window.Icon name="check" size={10} />}
-              </span>
-              Auto-fix
-            </button>
-            <p id={descriptionId} className="pr-changes-menu-note">
-              {pr.state === "OPEN"
-                ? "Fix CI and review feedback. May commit, push and resolve addressed threads; tool approvals still apply."
-                : "Auto-fix is unavailable for merged or closed pull requests."}
-            </p>
-            <p className="pr-changes-menu-status" role="status">
-              {automation.status}
-            </p>
-            <p className="pr-changes-menu-note">
-              This tab only. Stop also turns Auto-fix off.
-            </p>
+            {pr.state === "OPEN" && (
+              <>
+                <div className="pr-changes-separator" role="separator" />
+                <p className="pr-changes-menu-heading">Automation</p>
+                <button
+                  className="pr-changes-autofix"
+                  role="menuitemcheckbox"
+                  aria-checked={automation.enabled}
+                  disabled={!automation.enabled && (!available || !automation.canEnable)}
+                  aria-describedby={descriptionId}
+                  onClick={automation.toggle}
+                >
+                  <span className="pr-changes-checkbox" aria-hidden="true">
+                    {automation.enabled && <window.Icon name="check" size={10} />}
+                  </span>
+                  Auto-fix
+                </button>
+                <p id={descriptionId} className="pr-changes-menu-note">
+                  Fix CI and review feedback. May commit, push and resolve addressed threads; tool approvals still apply.
+                </p>
+                <p className="pr-changes-menu-status" role="status">
+                  {automation.status}
+                </p>
+                <p className="pr-changes-menu-note">
+                  This tab only. Stop also turns Auto-fix off.
+                </p>
+              </>
+            )}
             {actionError && (
               <p className="pr-changes-error" role="alert">
                 {actionError}
