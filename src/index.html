@@ -192,6 +192,8 @@
        live.js reads it at its top-level init, so it must load before all
        of them. -->
   <script src="app/goal.js"></script>
+  <!-- Per-tab PR feedback deduplication and cancellable monitoring. -->
+  <script src="app/pr-automation.js"></script>
 
   <!-- Rail widget plugin output contract (schema v1, insert/append text, run
        bookkeeping). Dependency-free IIFE; app/use-widgets.jsx,
@@ -349,6 +351,7 @@
        window.WidgetBlocks — order matters. -->
   <script type="text/babel" src="design/widgets/widget-blocks.jsx"></script>
   <script type="text/babel" src="design/widgets/widget-card.jsx"></script>
+  <script type="text/babel" src="design/pr-automation-card.jsx"></script>
   <!-- Browser panel: browser-panel.jsx destructures window.BrowserToolbar
        (browser-toolbar.jsx) at top level; the toolbar destructures
        window.Icon and window.OMP_BROWSER. browser-dock.jsx (the panel's stage
@@ -477,6 +480,7 @@
        window.OMP_SESSION_UI, window.OMP_GOAL and window.OMP_TURN_STATUS
        at top level. -->
   <script type="text/babel" src="app/use-goal-mode.jsx"></script>
+  <script type="text/babel" src="app/use-pr-automation.jsx"></script>
   <!-- Rail widgets hook; destructures window.OMP_WIDGETS at top level. -->
   <script type="text/babel" src="app/use-widgets.jsx"></script>
   <!-- Per-tab terminal lifecycle (xterm instances, pty listeners);

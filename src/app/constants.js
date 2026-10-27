@@ -34,6 +34,7 @@
     "showContext": true,
     "showRadar": true,
     "showSubagents": true,
+    "showChanges": true,
     "showMinimap": true,
     "fontSize":  100,
     "promptHistoryLimit": 100,

@@ -6,12 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The ambient rail has a compact **Changes** card for the GitHub PR on the project's checked-out branch, with its title, repository/number, draft state and diff counts. Click the title to open it in your browser; the menu offers GitHub links, copy link, changed files, review comments and opt-in **Auto-fix** for failed CI and unresolved reviews. Discovery works with Auto-fix off and refreshes automatically on tab or branch changes, turn completion and returning focus, without a manual Refresh button. Only enabled Auto-fix tabs keep checking in the background. **Settings → Rail → Changes** uses the same persisted toggle as the other built-in cards; turning it off hides the card, stops monitoring and revokes Auto-fix in every tab. No GitHub App, webhook server or tunnel is required. Auto-fix asks the agent to fix, verify, commit and push changes and resolve only addressed threads. It is off by default, active-tab only, with existing tool approvals unchanged; requires authenticated GitHub CLI and a synchronized upstream branch. Turning it off prevents new fixes, and Stop disables it too.
+
 ### Changed
 
 - Streaming replies use omp's delta `message_update` frames: each frame carries only the new text instead of the whole reply so far. Replaying a recorded 8.7 MB session into a release build: 944 MB → 25 MB sent from omp to the window, a background tab catches up 6.7× faster (11.5 s → 1.7 s) with 4× less window CPU, and the window's JavaScript memory drops from 3 GB to 150 MB. A tab that comes back to a reply still streaming after a long time in the background shows it whole.
 - OMP Desktop now requires omp 18.13.2 or newer. A tab started against an older omp does not start; its note names the installed and the required version, and an `omp update` takes effect for the next tab without restarting the app.
 - Endless status animations (the tab's running dot, live dots, the activity radar, "running" chips, shimmer text) step through a few frames per keyframe interval instead of redrawing at the display's refresh rate, and the status bar and model pill dots and the activity radar move only while the agent is working (the dots used to pulse all the time, the radar until the next tool call). Together with the delta frames, the window's CPU use while the agent streams drops by three quarters (11.0 s → 2.8 s per 30 s, most of it in the GPU process), and an idle window no longer keeps the GPU busy (3.5 s → 0.08 s per 15 s).
-
 ## [0.12.1] - 2026-10-21
 
 ### Added

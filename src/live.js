@@ -95,6 +95,8 @@
     extWidgets:     EXT.EMPTY,
   };
 
+  // Cancels in-flight reads and sends when the tab's conversation is replaced.
+  let sessionContext = {};
   let streamingBubble = null;
   // The streaming message's content, rebuilt from delta frames
   // (app/stream-delta.js `accFor`): `{ mid, blocks, seed }` — omp's
@@ -791,6 +793,7 @@
       goal:          GOAL.UNKNOWN,
       extWidgets:    EXT.EMPTY,
     });
+    sessionContext = {};
     streamingBubble = null;
     streamAcc       = null;
     streamSnapshot  = null;
@@ -842,6 +845,7 @@
       goal:          state.goal,
       extWidgets:    state.extWidgets,
       // volatile vars
+      sessionContext,
       streamingBubble,
       streamAcc,
       activeToolCards: new Map(activeToolCards),
@@ -883,6 +887,7 @@
       goal:          snap.goal ?? GOAL.UNKNOWN,
       extWidgets:    snap.extWidgets ?? EXT.EMPTY,
     });
+    sessionContext = snap.sessionContext ?? {};
     streamingBubble = snap.streamingBubble;
     streamAcc       = snap.streamAcc ?? null;
     activeToolCards = snap.activeToolCards;
@@ -907,14 +912,16 @@
   // state after a newer switch already took over; guarded stale call detects
   // the generation mismatch and bails without touching shared state).
   let _switchGen = 0;
+  let _switchAwayFrom = null;
   let _switchPromise = Promise.resolve();
   async function _switchToSession(id) {
     if (!window.__TAURI__) return;
     let done;
     const p = new Promise(resolve => { done = resolve; });
     _switchPromise = p;
-    try {
     const myGen = ++_switchGen;
+    _switchAwayFrom = activeSessionId !== id ? activeSessionId : null;
+    try {
 
     // Snapshot current session so we can restore it when switching back
     _saveCurrentSession();
@@ -1092,6 +1099,7 @@
     _initFetch();
     notify();
     } finally {
+      if (_switchGen === myGen) _switchAwayFrom = null;
       done();
     }
   }
@@ -2875,10 +2883,11 @@
     // (activeSessionId moves only after the switch's awaits), and its
     // subscription line would undo the switch's downgrade of that process.
     const gen = _switchGen;
+    const conversation = sessionContext;
     _sendWithResponse({ type: "negotiate_protocol", protocolVersion: 2 })
       .catch(() => {})
       .finally(() => {
-        if (_switchGen !== gen) return;
+        if (_switchGen !== gen || sessionContext !== conversation) return;
         // omp's ask dialog is off by default and per process: a respawned
         // process falls back to one `select` per question until told again.
         _sendWithResponse({ type: "set_ask_dialog", enabled: true })
@@ -3280,11 +3289,12 @@
   /** `OMP_BRIDGE.send`: the user bubble at once, then `prompt`. A
    *  `streamingBehavior` tells omp what to do if a turn is running by the
    *  time the prompt arrives; idle, omp ignores it and runs the prompt. */
-  function _sendPrompt(text, images, streamingBehavior) {
+  function _sendPrompt(text, images, streamingBehavior, canSend) {
     state.messages = [...state.messages, { kind: "user", time: timeNow(), text, images: images ?? [] }];
     _disarmAutoRename(text);
     _recordPrompt(text);
     notify();
+    if (canSend && !canSend()) return Promise.resolve(false);
     return _send({ type: "prompt", message: text, images: images ?? [], ...(streamingBehavior ? { streamingBehavior } : {}) });
   }
 
@@ -3321,6 +3331,62 @@
     // persisted message. A command omp runs locally sends no echo, so its
     // bubble keeps no `ts` and the get_messages merge leaves it in place.
     send(text, images) { return _sendPrompt(text, images); },
+    // Monitoring is read-only. Only the selected, fully settled tab may
+    // receive remediation; recheck here after the asynchronous GitHub read.
+    async prAutomationSnapshot(sessionId) {
+      const context = sessionContext, switchGen = _switchGen;
+      const branch = sessionRegistry.get(sessionId)?.branch;
+      const current = () =>
+        !!window.__TAURI__ &&
+        sessionRegistry.has(sessionId) &&
+        sessionId === activeSessionId &&
+        !_replayBuffer &&
+        _switchAwayFrom !== sessionId &&
+        !_respawning.has(sessionId) &&
+        sessionContext === context &&
+        _switchGen === switchGen &&
+        sessionRegistry.get(sessionId)?.branch === branch;
+      if (!current()) return null;
+      const result = await window.__TAURI__.core.invoke(
+        "pr_automation_snapshot", { sessionId },
+      );
+      return current() ? result : null;
+    },
+    async prAutomationSend(sessionId, text, expected, canSend) {
+      if (!expected?.url || !expected.branch || !expected.head || typeof canSend !== "function") return false;
+      const context = sessionContext, switchGen = _switchGen;
+      const branch = sessionRegistry.get(sessionId)?.branch;
+      const current = () =>
+        !!window.__TAURI__ &&
+        sessionRegistry.has(sessionId) &&
+        sessionId === activeSessionId &&
+        !_replayBuffer &&
+        _switchAwayFrom !== sessionId &&
+        !_respawning.has(sessionId) &&
+        sessionContext === context &&
+        _switchGen === switchGen &&
+        sessionRegistry.get(sessionId)?.branch === branch;
+      const ready = () => {
+        const entry = sessionRegistry.get(sessionId);
+        return (
+          canSend() && current() && !!entry?.path &&
+          !userAbortInFlight && !entry.autoRenameInFlight &&
+          state.rpcState?.isSettled === true && runStateCached(state) === "idle" &&
+          !state.queueSending.length && !(state.rpcState?.queuedMessageCount > 0) &&
+          !state.queue.steering.length && !state.queue.followUp.length &&
+          !GOAL.isOpen(state.goal) &&
+          !_sessionsView().some(s => s.id !== sessionId && s.path === entry.path && TURN.isBusyRunState(s.runState))
+        );
+      };
+      if (!ready()) return false;
+      // Re-read Rust's current branch/HEAD immediately before the handoff;
+      // a displayed snapshot is not permission to fix a different revision.
+      const latest = await window.__TAURI__.core.invoke(
+        "pr_automation_snapshot", { sessionId },
+      );
+      if (!ready() || !latest || latest.url.toLowerCase() !== expected.url.toLowerCase() || latest.branch !== expected.branch || latest.head !== expected.head) return false;
+      return _sendPrompt(text, undefined, undefined, ready).then(sent => sent && current());
+    },
     // No id on purpose: a pending-id match returns before the command
     // switch, and the abort response is what releases a cancelled
     // auto-rename. See `_releaseAutoRenameAfterAbort`.
