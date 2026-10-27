@@ -14,6 +14,7 @@ mod browser;
 mod child_path;
 mod config_file;
 mod conversation_tree;
+mod conversation_workspace;
 mod external_open;
 mod files;
 mod git;
@@ -30,6 +31,7 @@ mod private_fs;
 mod profiles;
 mod program_setting;
 mod project_file;
+mod project_workspaces;
 mod recent_projects;
 mod redaction;
 mod remote;
@@ -90,65 +92,170 @@ struct StartSessionArgs {
     /// Which omp profile this tab runs under (`None`/`"default"` = omp's own
     /// `~/.omp/agent` tree); resolved by `profiles::ProfileStore::resolve`.
     profile: Option<String>,
+    /// Present only for an explicitly prepared new conversation.
+    workspace: Option<conversation_workspace::WorkspaceOptions>,
 }
 
-/// Register the tab with the terminal, start an omp process for it, then
-/// tell the widget host (which computes the project's git context on its own
-/// thread). The terminal comes first so a failed omp spawn still leaves the
-/// tab a working shell; registering an existing tab (a profile switch or an
-/// approval-mode restart) keeps its shell. The approval mode is resolved here
-/// for the tab's folder, never sent by the frontend; `Ok` is the mode omp was
-/// started with (`"always-ask" | "write" | "yolo"`).
+/// Prepare and register the tab before spawning omp. All process and
+/// filesystem work and lifecycle lock acquisition happen off the IPC thread.
 #[tauri::command]
-fn start_session(
+async fn start_session(
     args: StartSessionArgs,
-    bridge: State<'_, AgentBridge>,
-    rule_book: State<'_, Arc<RuleBook>>,
-    store: State<'_, Arc<profiles::ProfileStore>>,
-    widget_host: State<'_, Arc<widgets::WidgetHost>>,
-    terminal: State<'_, Arc<terminal::TerminalManager>>,
-    app: tauri::AppHandle,
-) -> Result<String, String> {
+    app: AppHandle,
+) -> Result<conversation_workspace::StartResponse, String> {
+    let ticket = app
+        .state::<conversation_workspace::WorkspaceManager>()
+        .ticket(&args.session_id)?;
+    off_ipc(move || start_session_blocking(args, &app, ticket)).await?
+}
+
+fn start_session_blocking(
+    args: StartSessionArgs,
+    app: &AppHandle,
+    ticket: conversation_workspace::Admission,
+) -> Result<conversation_workspace::StartResponse, String> {
+    let manager = app.state::<conversation_workspace::WorkspaceManager>();
+    let mut registry = manager.lock();
+    manager.check_ticket(&ticket)?;
+    let store = app.state::<Arc<profiles::ProfileStore>>();
     let profile = store.resolve(args.profile.as_deref())?;
-    if let Some(r) = args.resume.as_deref() {
-        saved_sessions::validate_resume(&app, r, profile)?;
+    if let Some(resume) = args.resume.as_deref() {
+        if args.workspace.is_some() {
+            return Err("workspace preparation is not allowed when resuming".to_string());
+        }
+        saved_sessions::validate_resume(app, resume, profile)?;
     }
-    let cwd_opt = if args.cwd.is_empty() {
-        None
-    } else {
-        Some(args.cwd.as_str())
-    };
-    // Through `app` rather than an eighth `State` parameter (clippy's
-    // `too_many_arguments`); `app` is moved into the bridge below.
+    let data = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .filter(|path| path.is_absolute());
+    let prepared = registry.prepare_for_start(
+        &args.session_id,
+        &args.cwd,
+        args.workspace,
+        conversation_workspace::StartContext {
+            data: data.as_deref(),
+            manager: &manager,
+            ticket: &ticket,
+            profile,
+        },
+    )?;
+    if let Err(error) = manager.check_ticket(&ticket) {
+        return Err(
+            if prepared
+                .workspace
+                .as_ref()
+                .is_some_and(|binding| binding.worktree)
+            {
+                format!(
+                    "{error}. The created worktree was retained at {}",
+                    prepared.path
+                )
+            } else {
+                error
+            },
+        );
+    }
+    let cwd = (!prepared.path.is_empty()).then_some(prepared.path.as_str());
     let mode = app
         .state::<Arc<ApprovalModeStore>>()
-        .resolve(cwd_opt.map(Path::new));
-    terminal.register_tab(&args.session_id, cwd_opt.map(Path::new));
-    // The tab's browser (idempotent: a respawn under the same tab id reuses
-    // it). Which Chromium it runs is Rust's `browser.json` setting, read at
-    // launch time. Only an app run with no managed browsers at all starts omp
-    // without `--config`; a tab whose browser can't be set up (a respawn
-    // racing the tab's close: "still closing") fails to start, and the
-    // frontend's rollback closes it.
+        .resolve(cwd.map(Path::new));
+    app.state::<Arc<terminal::TerminalManager>>()
+        .register_tab(&args.session_id, cwd.map(Path::new));
+    let retained = |error: String| {
+        if prepared
+            .workspace
+            .as_ref()
+            .is_some_and(|binding| binding.worktree)
+        {
+            format!(
+                "{error}. The created worktree was retained at {}",
+                prepared.path
+            )
+        } else {
+            error
+        }
+    };
+    // The tab owns its browser and shell across profile/approval respawns.
     let overlay = app
         .state::<browser::BrowserManager>()
         .allocate_if_available(&args.session_id)
-        .map_err(|e| format!("browser: {e}"))?;
-    bridge.start_session(
-        // Owned by the bridge's map; the widget hook below still needs the id.
-        args.session_id.clone(),
-        agent::Launch {
-            cwd: cwd_opt,
-            resume: args.resume.as_deref(),
-            profile,
-            mode,
-            config: overlay.as_deref(),
-        },
-        app,
-        Arc::clone(rule_book.inner()),
-    )?;
-    widget_host.session_started(&args.session_id, cwd_opt.map(Path::new));
-    Ok(mode.as_str().to_string())
+        .map_err(|e| retained(format!("browser: {e}")))?;
+    let rule_book = app.state::<Arc<RuleBook>>();
+    app.state::<AgentBridge>()
+        .start_session(
+            // The bridge owns this id; the widget hook still needs it.
+            args.session_id.clone(),
+            agent::Launch {
+                cwd,
+                resume: args.resume.as_deref(),
+                profile,
+                mode,
+                config: overlay.as_deref(),
+            },
+            app.clone(), // the bridge's readers own an app handle
+            Arc::clone(rule_book.inner()),
+        )
+        .map_err(retained)?;
+    app.state::<Arc<widgets::WidgetHost>>()
+        .session_started(&args.session_id, cwd.map(Path::new));
+    let response = conversation_workspace::StartResponse {
+        approval_mode: mode.as_str().to_string(),
+        path: prepared.path,
+        workspace: prepared.workspace,
+    };
+    // Keep ownership serialized through registration and the actual spawn.
+    drop(registry);
+    Ok(response)
+}
+
+#[tauri::command]
+async fn conversation_workspace_inspect(
+    path: String,
+    profile: Option<String>,
+    app: AppHandle,
+) -> Result<conversation_workspace::WorkspaceInfo, String> {
+    off_ipc(move || {
+        let profiles = app.state::<Arc<profiles::ProfileStore>>();
+        let profile = profiles.resolve_owned(profile)?;
+        let mut preview = conversation_workspace::inspect(&path)?;
+        preview.defaults = app
+            .state::<Arc<project_workspaces::WorkspaceDefaultsStore>>()
+            .get(&preview.project_path, profile.as_deref());
+        Ok(preview)
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn conversation_workspace_status(
+    path: String,
+    app: AppHandle,
+) -> Result<conversation_workspace::WorkspaceStatus, String> {
+    off_ipc(move || {
+        let manager = app.state::<conversation_workspace::WorkspaceManager>();
+        conversation_workspace::status(&manager, &path)
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn conversation_workspace_defaults_set(
+    path: String,
+    profile: Option<String>,
+    base_ref: Option<String>,
+    worktree: bool,
+    app: AppHandle,
+) -> Result<Option<project_workspaces::WorkspaceDefaults>, String> {
+    off_ipc(move || {
+        let profiles = app.state::<Arc<profiles::ProfileStore>>();
+        let profile = profiles.resolve_owned(profile)?;
+        let preview = conversation_workspace::inspect(&path)?;
+        app.state::<Arc<project_workspaces::WorkspaceDefaultsStore>>()
+            .set(&preview, profile.as_deref(), base_ref, worktree)
+    })
+    .await?
 }
 
 /// Run blocking `work` (file or process I/O, a long scan) off Tauri's IPC
@@ -330,14 +437,17 @@ async fn conversation_tree(
 /// respawns omp while its shell and Chromium stay. Both end only through
 /// [`end_tabs`] and [`kill_child_processes`].
 #[tauri::command]
-fn stop_session(
-    session_id: String,
-    bridge: State<'_, AgentBridge>,
-    rule_book: State<'_, Arc<RuleBook>>,
-    widget_host: State<'_, Arc<widgets::WidgetHost>>,
-) {
-    bridge.stop_session(&session_id, &rule_book);
-    widget_host.session_closed(&session_id);
+async fn stop_session(session_id: String, app: AppHandle) -> Result<(), String> {
+    off_ipc(move || {
+        let manager = app.state::<conversation_workspace::WorkspaceManager>();
+        let _registry = manager.lock();
+        let rule_book = app.state::<Arc<RuleBook>>();
+        app.state::<AgentBridge>()
+            .stop_session(&session_id, &rule_book);
+        app.state::<Arc<widgets::WidgetHost>>()
+            .session_closed(&session_id);
+    })
+    .await
 }
 
 /// End tabs for good: their omp processes (with their session grants),
@@ -346,6 +456,17 @@ fn stop_session(
 /// the browsers (Chromium kill, profile removal) and the shells (one shared
 /// hang-up grace, `TerminalManager::close_tabs`).
 fn end_tabs<S: AsRef<str> + Sync>(app: &AppHandle, ids: &[S]) {
+    let manager = app.state::<conversation_workspace::WorkspaceManager>();
+    manager.cancel_pending(ids);
+    let mut registry = manager.lock();
+    end_tabs_locked(app, ids, &mut registry);
+}
+
+fn end_tabs_locked<S: AsRef<str> + Sync>(
+    app: &AppHandle,
+    ids: &[S],
+    registry: &mut conversation_workspace::Registry,
+) {
     let rule_book = app.state::<Arc<RuleBook>>();
     let bridge = app.state::<AgentBridge>();
     let widgets = app.state::<Arc<widgets::WidgetHost>>();
@@ -362,6 +483,7 @@ fn end_tabs<S: AsRef<str> + Sync>(app: &AppHandle, ids: &[S]) {
         app.state::<Arc<terminal::TerminalManager>>()
             .close_tabs(ids);
     });
+    registry.release(ids);
 }
 
 /// Close a tab (the frontend's `closeSession`) — see [`end_tabs`]. `async` +
@@ -374,15 +496,20 @@ async fn close_tab(session_id: String, app: AppHandle) -> Result<(), String> {
 /// End every tab the backend knows. Called by the webview at boot, before
 /// it restores its tabs: tab ids are never reused across a reload, so
 /// whatever is registered then belongs to a previous document and would
-/// otherwise run on unseen. The terminal's registry is the tab set:
-/// [`start_session`] registers the tab before it spawns omp, and only
-/// [`end_tabs`] (or an app exit) unregisters it. Only the tabs registered at
-/// the start end: one started meanwhile keeps its terminal and browser.
+/// otherwise run on unseen. Invalidate queued starts first, then take the
+/// workspace guard before snapshotting terminal ids: a start already
+/// preparing finishes its registration before this snapshot and is closed.
 #[tauri::command]
 async fn close_all_tabs(app: AppHandle) -> Result<(), String> {
+    app.state::<conversation_workspace::WorkspaceManager>()
+        .invalidate_pending();
     off_ipc(move || {
-        let ids = app.state::<Arc<terminal::TerminalManager>>().tab_ids();
-        end_tabs(&app, &ids);
+        let manager = app.state::<conversation_workspace::WorkspaceManager>();
+        let mut registry = manager.lock();
+        let mut ids = app.state::<Arc<terminal::TerminalManager>>().tab_ids();
+        registry.include_registered_ids(&mut ids);
+        end_tabs_locked(&app, &ids, &mut registry);
+        drop(registry);
     })
     .await
 }
@@ -399,8 +526,16 @@ async fn terminal_open(
     app: AppHandle,
     terminal: State<'_, Arc<terminal::TerminalManager>>,
 ) -> Result<terminal::TerminalStatus, String> {
+    let ticket = app
+        .state::<conversation_workspace::WorkspaceManager>()
+        .ticket(&session_id)?;
     with_blocking(&terminal, move |t| {
-        t.open(terminal::TauriEmit(app), &session_id, cols, rows)
+        // A pending shell spawn must settle before final tab teardown releases
+        // its checkout for another conversation's branch switch.
+        let manager = app.state::<conversation_workspace::WorkspaceManager>();
+        let _registry = manager.lock();
+        manager.check_ticket(&ticket)?;
+        t.open(terminal::TauriEmit(app.clone()), &session_id, cols, rows) // shell threads own their app handle
     })
     .await
 }
@@ -1217,6 +1352,13 @@ async fn app_update_install(
 /// (app exit, the updater relaunch); on Unix each tree sits in its own process
 /// group or session and would outlive us. Every step is idempotent.
 pub(crate) fn kill_child_processes(app: &AppHandle) {
+    let manager = app.try_state::<conversation_workspace::WorkspaceManager>();
+    if let Some(manager) = &manager {
+        manager.shutdown();
+    }
+    // A native checkout already in flight must finish before children are
+    // killed; admission is permanently closed so it cannot spawn afterwards.
+    let _registry = manager.as_ref().map(|manager| manager.lock());
     remote::bridge::stop(app);
     app.state::<AgentBridge>().shutdown_all();
     if let Some(browser) = app.try_state::<browser::BrowserManager>() {
@@ -1311,6 +1453,10 @@ fn setup(app: &tauri::App) {
     app.manage(Arc::new(ApprovalModeStore::load(config_file(
         "approval-mode.json",
     ))));
+    // Per-project launch defaults are private to the resolved profile.
+    app.manage(Arc::new(project_workspaces::WorkspaceDefaultsStore::load(
+        config_file("project-workspaces.json"),
+    )));
     // The browser panel's Chromium setting: <app_config_dir>/browser.json.
     // No temp-dir fallback: another account could plant the browser this one
     // runs; without a config dir the setting stays in memory. An
@@ -1458,6 +1604,7 @@ fn with_plugins_and_state(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder
             );
         })
         .manage(AgentBridge::new())
+        .manage(conversation_workspace::WorkspaceManager::default())
         .manage(GitWatcherState::new())
         .manage(OpenProjectState::new())
         .manage(updater::UpdaterState::default())
@@ -1484,6 +1631,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             send_command,
             start_session,
+            conversation_workspace_inspect,
+            conversation_workspace_status,
+            conversation_workspace_defaults_set,
             stop_session,
             terminal_open,
             terminal_status,
@@ -1632,7 +1782,7 @@ fn announce_held_close(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{config_dir, holds_close, StartSessionArgs};
+    use super::{config_dir, conversation_workspace, holds_close, StartSessionArgs};
     use std::path::PathBuf;
 
     #[test]
@@ -1681,6 +1831,48 @@ mod tests {
         assert_eq!(args.cwd, "/home/dev/project");
         assert_eq!(args.resume, None);
         assert_eq!(args.profile.as_deref(), Some("work"));
+    }
+    #[test]
+    fn workspace_start_payload_and_response_use_the_shared_camel_case_contract() {
+        let payload = serde_json::json!({
+            "sessionId": "session-2",
+            "cwd": "/project",
+            "resume": null,
+            "profile": null,
+            "workspace": {
+                "baseRef": "refs/heads/main",
+                "baseCommit": "0123456789012345678901234567890123456789",
+                "worktree": true,
+                "acknowledgeShared": false
+            }
+        });
+        let args: StartSessionArgs = serde_json::from_value(payload).unwrap();
+        let options = args.workspace.unwrap();
+        assert_eq!(options.base_ref.as_deref(), Some("refs/heads/main"));
+        assert!(options.worktree);
+        let response = conversation_workspace::StartResponse {
+            approval_mode: "write".into(),
+            path: "/actual/sub".into(),
+            workspace: Some(conversation_workspace::WorkspaceBinding {
+                project_path: "/project/sub".into(),
+                base_ref: options.base_ref,
+                base_commit: options.base_commit,
+                worktree: true,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({
+                "approvalMode": "write",
+                "path": "/actual/sub",
+                "workspace": {
+                    "projectPath": "/project/sub",
+                    "baseRef": "refs/heads/main",
+                    "baseCommit": "0123456789012345678901234567890123456789",
+                    "worktree": true
+                }
+            })
+        );
     }
 
     /// The contract `deny_unknown_fields` exists for (see the attribute's

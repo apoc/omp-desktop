@@ -29,7 +29,6 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use tauri::AppHandle;
 
 use approvals::PendingApprovals;
@@ -499,13 +498,12 @@ impl Drop for AgentBridge {
     }
 }
 
-/// Reap `prev`'s process tree off-thread (so the Tauri command thread is
-/// never blocked by a stuck process) and drop its session-scoped
-/// approval grants. A session id being replaced means a brand-new
-/// process is taking over; whatever the previous occupant's user was
-/// granted (e.g. "always allow bash for this session") must not
-/// silently carry over and auto-approve prompts the new process never
-/// actually got consent for. Used for both halves of a session's life:
+/// Kill and reap `prev`'s process tree before returning, and drop its
+/// session-scoped approval grants. Callers run off the IPC thread; completing
+/// teardown is the barrier before another conversation may switch this checkout.
+/// A replacement process must not inherit grants (e.g. "always allow bash
+/// for this session") its user never approved for it. Used for both halves
+/// of a session's life:
 /// [`AgentBridge::stop_session`] tearing one down, and `start_session`
 /// displacing a previous occupant of the same id. Extracted as its own
 /// function so this is unit-testable without spawning a real child
@@ -529,17 +527,12 @@ fn reap_and_clear_grants(
     // so a replacement session's state cannot be wiped after the lock drops.
     rule_book.clear_session(session_id);
     prev.stdin = None;
-    let prev_supervisor = prev.supervisor.take();
-    if let Some(mut c) = prev.child.take() {
-        // The supervisor moves in too: its Drop kills the whole tree
-        // (subagents, tool-call children) before the direct
-        // child.kill()/wait() below reaps the now-dead process's zombie
-        // entry.
-        thread::spawn(move || {
-            drop(prev_supervisor);
-            let _ = c.kill();
-            let _ = c.wait();
-        });
+    // Signal the tree now, then wait for the direct child. A detached reaper
+    // would release workspace ownership while this process could still write.
+    drop(prev.supervisor.take());
+    if let Some(mut child) = prev.child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -803,6 +796,36 @@ mod tests {
         assert!(
             !proc_dir.exists(),
             "shutdown_all must kill and reap the child, not leave it running or a zombie"
+        );
+    }
+
+    #[test]
+    fn stop_session_returns_only_after_its_child_has_been_reaped() {
+        let bridge = AgentBridge::new();
+        let dir = crate::test_support::TempDir::new("agent-stop", "workspace-barrier");
+        let rule_book = crate::approval::RuleBook::new(dir.path().to_path_buf());
+        let script = if cfg!(windows) {
+            "ping -n 30 127.0.0.1 >nul"
+        } else {
+            "sleep 30"
+        };
+        let mut command = crate::test_support::shell(script);
+        crate::supervisor::ProcessSupervisor::prepare(&mut command);
+        let child = command.spawn().expect("spawn writer");
+        let pid = child.id();
+        let supervisor = crate::supervisor::ProcessSupervisor::attach(&child);
+        bridge.sessions.lock().unwrap().insert(
+            "writer".into(),
+            BridgeInner {
+                child: Some(child),
+                supervisor: Some(supervisor),
+                ..idle_inner(Arc::new(AtomicBool::new(true)))
+            },
+        );
+        bridge.stop_session("writer", &rule_book);
+        assert!(
+            !crate::supervisor::pid_is_alive(pid),
+            "a replacement checkout must not race the old agent"
         );
     }
 

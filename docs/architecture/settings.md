@@ -28,6 +28,7 @@ Code: `src/app/settings-schema.js` (`window.OMP_SETTINGS`), `src/app/settings-ta
 | Chromium | `<app config>/browser.json` (`browser.md`) |
 | approval mode default + project overrides | `<app config>/approval-mode.json` (`approval-mode.md`) |
 | startup profile | `<app config>/profiles.json` (`setStartupProfile`) |
+| project/profile conversation defaults (base branch + Worktree) | `<app config>/project-workspaces.json`, edited through the project's gear or new-conversation setup; not an omp profile setting (`session-model.md`) |
 | remote access settings, paired phones, TLS & VAPID keys | `<app config>/remote.json`, `<app config>/remote-devices.json`, `<app config>/remote/` (`remote-access.md`) |
 | key bindings | `<app config>/keybindings.json` (omp's `keybindings.yml` as base layer) |
 | widget plugins | `<app config>/widgets.json` (`docs/widgets.md`) |

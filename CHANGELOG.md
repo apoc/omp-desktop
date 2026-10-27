@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New conversations now show inline **Start from** branch selection and a **Worktree** option before launching the agent. Worktree creates a new working branch and isolated folder through native omp; the source checkout's uncommitted changes stay untouched. In-place branch changes are refused while the checkout is dirty or used by another conversation. Conversations keep their actual working folder across tab switches, restarts and restores; worktrees are retained when tabs close.
+- Worktree conversations now stay grouped under their source project and profile. Generated working-folder names are hidden behind a small worktree indicator; hover it for the actual folder, branch and base. Each project/profile has separate saved conversation defaults, such as **main + Worktree**, editable from the project's gear button without starting an agent or moving existing conversations.
 - The composer has separate one-click buttons for **Voice to text** and **Live conversation**. Live conversation (#68) connects to the native omp call with state, levels, captions, mute, pause, resume and end controls. Voice to text uses the profile's omp speech-to-text engine, previews dictation and appends the final text to the originating draft without sending a prompt or playing a reply. Switching tabs or opening Settings pauses live conversation and stops dictation; closing a tab ends capture. A failed stop keeps the active control visible for retry.
 
 ### Changed
@@ -23,6 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Live conversation captions automatically scroll to the latest speech as new turns arrive or the current transcript grows, instead of leaving ongoing dialogue below the visible history.
 - Live conversation keeps the tab's spoken discussion across pauses, tab switches, reconnects and ended calls. Pause turns off microphone and speaker; Resume explicitly reconnects. Every connection includes the current coding-chat history plus prior voice discussion, so a call started mid-chat knows the existing task, decisions and reported results instead of starting from no context. Voice history is memory-only for the tab's current coding conversation; oversized context is marked as truncated.
 - macOS microphone access (#68): the app now declares its microphone usage description and signs with the hardened-runtime audio-input entitlement, so native omp voice capture can request microphone access on behalf of OMP Desktop.
+- Project selection now loads branch metadata separately from checkout safety checks instead of building the Git browser's file tree and upstream history. Branch selection and cancellation remain available while status is checked; selecting a project already open in a worktree focuses that conversation instead of starting another one.
+- Repeated clicks to resume a saved conversation now share one tab and agent instead of starting competing processes for the same session file.
+- Closing a tab cancels its queued agent and terminal starts. Checkout ownership is rechecked against live folders, including repositories initialized around a running conversation.
 
 ## [0.12.1] - 2026-10-21
 

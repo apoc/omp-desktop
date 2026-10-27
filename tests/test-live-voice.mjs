@@ -210,12 +210,12 @@ function bridgeHarness() {
     OMP_SESSION_PREFS: { fromTweaks: () => ({ autoCompaction: true, autoRetry: true }), closeGuardArmed: () => false },
     OMP_TWEAKS_STORE: { read: () => ({}) },
     OMP_TURN_STATUS: { runStateOf: () => "idle", isBusyRunState: () => false, retryCleared: messages => messages },
-    OMP_PROJECT_NAV: { basename: path => path.split("/").at(-1), findConversationTab: () => null },
     DEFAULT_PROFILE_ID: "default", INTENT_FRAMING: () => "", timeNow: () => "00:00",
   };
   // Use the real context builder; the fake transport only supplies omp data.
   new Function("window", readFileSync(join(root, "src/app/live-context.js"), "utf8"))(w);
   new Function("window", readFileSync(join(root, "src/app/approval-mode.js"), "utf8"))(w);
+  new Function("window", readFileSync(join(root, "src/app/project-nav.js"), "utf8"))(w);
   // The fake is attached after bridge initialization, so no boot restore or
   // real process is started. Only timers for other bridge commands are unref'd.
   const timeout = (fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; };
@@ -249,7 +249,7 @@ function bridgeHarness() {
         approvalMode = args.mode;
         return Promise.resolve({ default: approvalMode, projects: {} });
       }
-      if (command === "start_session") return Promise.resolve(approvalMode);
+      if (command === "start_session") return Promise.resolve({ approvalMode, path: args.args.cwd, workspace: null });
       if (command === "replay_events") return Promise.resolve({ dropped: false, events: (journal.get(args.sessionId) ?? []).filter(e => e.seq > args.afterSeq) });
       if (command === "send_command") {
         const cmd = { ...JSON.parse(args.json), sessionId: args.sessionId };
@@ -275,7 +275,14 @@ function bridgeHarness() {
   let snapshot;
   w.OMP_BRIDGE.onUpdate(s => { snapshot = s; });
   return {
-    bridge: w.OMP_BRIDGE, emit, reply, waitCommand, commands, invocations,
+    bridge: {
+      ...w.OMP_BRIDGE,
+      async openSession(cwd) {
+        const opened = w.OMP_BRIDGE.openSession(cwd);
+        await w.OMP_BRIDGE.startConversationSetup(snapshot.conversationSetup.id, null);
+        return opened;
+      },
+    }, emit, reply, waitCommand, commands, invocations,
     snapshot: () => snapshot,
     holdStart: () => { holdStart = true; },
     releaseStart: () => { holdStart = false; releaseStart(); },

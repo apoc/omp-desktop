@@ -9,7 +9,7 @@
    are real buttons, so every action is keyboard-reachable.
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TabRunDot, TabLabel, RenameField } = window;
+const { Icon, TabRunDot, TabLabel, RenameField, WorktreeIndicator } = window;
 const { groupTabs, groupRunState, groupTarget, membersNewestFirst, basename, parentName } = window.OMP_PROJECT_NAV;
 
 // Same guard as chrome.jsx's copy: the registry may not be loaded.
@@ -19,7 +19,7 @@ function sidebarHint(actionId, fallback) {
 
 function ProjectSidebar({
   tabs, activeId, recents, profileLabel,
-  onSelectTab, onCloseTab, onRenameTab, onNewInProject, onOpenRecent, onForgetRecent, onOpenFolder, onHide, onReorder,
+  onSelectTab, onCloseTab, onRenameTab, onNewInProject, onConfigureProject, onOpenRecent, onForgetRecent, onOpenFolder, onHide, onReorder,
 }) {
   // Group keys the user folded. Not persisted: tab ids (and so pathless
   // groups' keys) don't survive a restart anyway.
@@ -98,6 +98,7 @@ function ProjectSidebar({
                     {multi
                       ? <span className="psb-name">{group.name}</span>
                       : <TabLabel tab={group.tabs[0]} className="psb-name" />}
+                    {!multi && <WorktreeIndicator tab={group.tabs[0]} />}
                     {profile && (
                       <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
                     )}
@@ -110,6 +111,12 @@ function ProjectSidebar({
                     <button className="psb-act" title="new conversation here"
                       onClick={() => onNewInProject(group.path, group.profile)}>
                       <Icon name="plus" size={10} />
+                    </button>
+                  )}
+                  {group.path && onConfigureProject && (
+                    <button className="psb-act" title="project defaults" aria-label="project defaults"
+                      onClick={() => onConfigureProject(group.path, group.profile)}>
+                      <Icon name="cog" size={10} />
                     </button>
                   )}
                   {!multi && !editing && renameButton(group.tabs[0])}
@@ -126,9 +133,10 @@ function ProjectSidebar({
                   {renaming === t.id ? (
                     <div className="psb-main psb-editing">{renameField(t)}</div>
                   ) : (
-                    <button className="psb-main" title={t.name} onClick={() => onSelectTab(t.id)}
+                    <button className="psb-main" title={window.OMP_PROJECT_NAV.memberLabel(t)} onClick={() => onSelectTab(t.id)}
                       onDoubleClick={() => startRename(t.id)}>
-                      <span className="psb-name">{t.name}</span>
+                      <span className="psb-name">{window.OMP_PROJECT_NAV.memberLabel(t)}</span>
+                      <WorktreeIndicator tab={t} />
                       <TabRunDot state={t.runState} />
                     </button>
                   )}

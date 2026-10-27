@@ -50,6 +50,9 @@ pub struct OpenTab {
     /// Tab label at save time, shown until omp reports the session's title.
     #[serde(default)]
     pub name: Option<String>,
+    /// Origin/base metadata is display-only; `path` remains the execution folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<crate::conversation_workspace::WorkspaceBinding>,
 }
 
 /// The persisted layout: tabs in order plus the active tab's index.
@@ -226,6 +229,7 @@ mod tests {
             profile: Some("work".to_owned()),
             session_file: session_file.map(str::to_owned),
             name: Some("label".to_owned()),
+            workspace: None,
         }
     }
 
@@ -246,6 +250,46 @@ mod tests {
         assert_eq!(got.layout.tabs, vec![tab(&a, None), tab(&b, Some(&conv))]);
         assert_eq!(got.layout.active, Some(1));
         assert_eq!(got.skipped, Vec::<String>::new());
+    }
+
+    #[test]
+    fn worktree_metadata_never_replaces_the_execution_folder_on_restore() {
+        let (store, dir) = scratch_store();
+        let working = dir.folder("isolated");
+        let origin = dir.missing("source-no-longer-present");
+        let payload = serde_json::json!({
+            "tabs": [{ "path": working, "workspace": {
+                "projectPath": origin, "baseRef": "refs/heads/main",
+                "baseCommit": "a".repeat(40), "worktree": true
+            }}], "active": 0
+        });
+        store
+            .save(&serde_json::from_value(payload).expect("layout"))
+            .expect("save");
+        let restored = serde_json::to_value(store.load()).expect("serialize");
+        assert_eq!(restored["tabs"][0]["path"], working);
+        assert_eq!(restored["tabs"][0]["workspace"]["projectPath"], origin);
+        assert_eq!(restored["active"], 0);
+    }
+
+    #[test]
+    fn a_missing_worktree_is_skipped_even_when_its_source_exists() {
+        let (store, dir) = scratch_store();
+        let source = dir.folder("source");
+        let missing = dir.missing("missing-worktree");
+        let payload = serde_json::json!({
+            "tabs": [{ "path": missing, "workspace": {
+                "projectPath": source, "baseRef": "refs/heads/main",
+                "baseCommit": "a".repeat(40), "worktree": true
+            }}], "active": 0
+        });
+        store
+            .save(&serde_json::from_value(payload).expect("layout"))
+            .expect("save");
+        let restored = store.load();
+        assert_eq!(restored.layout.tabs, Vec::<OpenTab>::new());
+        assert_eq!(restored.skipped, vec![missing]);
+        assert_eq!(restored.layout.active, None);
     }
 
     #[test]
@@ -362,6 +406,7 @@ mod tests {
                 profile: Some(String::new()),
                 session_file: Some(String::new()),
                 name: Some(String::new()),
+                workspace: None,
             }],
             active: Some(0),
         });

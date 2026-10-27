@@ -6,10 +6,9 @@
 // for plain <script> tags (see AGENTS.md "IIFE rule").
 //
 // A "tab" is a snapshot `sessions` entry: `{id, name, path, profile, color,
-// runState, sessionFile}`. A project is identified by (profile, folder): the
-// same folder opened under two profiles is two projects, because each runs
-// against its own omp tree. Pathless tabs (a resumed session with no
-// recorded cwd) never group.
+// runState, sessionFile, workspace}`. A project is identified by its profile
+// and source folder, while `path` remains the conversation's actual cwd.
+// Pathless tabs (a resumed session with no recorded cwd) never group.
 (function () {
   const { DEFAULT_PROFILE_ID } = window; // app/constants.js
   const RUN_STATE_RANK = { idle: 0, background: 1, running: 2, retrying: 3, "waiting-user": 4, failed: 5 };
@@ -38,23 +37,88 @@
     return parts.length > 1 ? parts[parts.length - 2] : "";
   }
 
+  /** Source project for a tab, without changing its execution folder. */
+  function projectPath(tab) {
+    return tab.path ? (tab.workspace?.projectPath || tab.path) : tab.path;
+  }
+
+  /** Collapse legacy worktree-to-worktree bindings to their source project.
+   *  Cyclic bindings are left alone because none identifies a source. The
+   *  input array, tabs and workspace objects are reused wherever unchanged. */
+  function normalizeWorkspaces(tabs) {
+    const links = new Map();
+    for (const tab of tabs) {
+      const origin = tab.workspace?.projectPath;
+      if (!tab.path || !origin || normPath(tab.path) === normPath(origin)) continue;
+      const key = normPath(tab.path);
+      if (!links.has(key)) links.set(key, []);
+      links.get(key).push(tab);
+    }
+
+    let result = tabs;
+    tabs.forEach((tab, i) => {
+      const origin = tab.workspace?.projectPath;
+      if (!tab.path || !origin) return;
+      let source = origin;
+      const actual = normPath(tab.path);
+      const seen = new Set([actual]);
+      let cyclic = false;
+      while (normPath(source) !== actual || seen.size > 1) {
+        const key = normPath(source);
+        if (seen.has(key)) {
+          cyclic = true;
+          break;
+        }
+        seen.add(key);
+        const candidates = links.get(key);
+        if (!candidates) break;
+        const next = candidates.find(t => t.profile === tab.profile) || candidates[0];
+        source = next.workspace.projectPath;
+      }
+      if (cyclic) return;
+      const changedPath = normPath(source) !== normPath(origin);
+      const sourceName = basename(source);
+      const defaultName = tab.name && (tab.name === basename(tab.path) || tab.name === basename(origin));
+      const changedName = defaultName && sourceName && tab.name !== sourceName;
+      if (!changedPath && !changedName) return;
+      if (result === tabs) result = tabs.slice();
+      result[i] = {
+        ...tab,
+        ...(changedName ? { name: sourceName } : {}),
+        ...(changedPath ? { workspace: { ...tab.workspace, projectPath: source } } : {}),
+      };
+    });
+    return result;
+  }
+
+  /** Conversation name in a project member list, distinct from its folder. */
+  function memberLabel(tab) {
+    const name = tab.name;
+    if (!name || (tab.path && (name === basename(tab.path) || name === basename(projectPath(tab))))) {
+      return "New conversation";
+    }
+    return name;
+  }
+
   function groupKey(tab) {
-    return tab.path ? `${tab.profile}|${normPath(tab.path)}` : `tab:${tab.id}`;
+    const path = projectPath(tab);
+    return path ? `${tab.profile}|${normPath(path)}` : `tab:${tab.id}`;
   }
 
   /** Tabs grouped by project, groups in order of their first member, members
    *  in input order: `[{ key, path, profile, name, tabs }]`. */
   function groupTabs(tabs) {
     const groups = new Map();
-    for (const tab of tabs) {
+    for (const tab of normalizeWorkspaces(tabs)) {
+      const path = projectPath(tab);
       const key = groupKey(tab);
       let group = groups.get(key);
       if (!group) {
         group = {
           key,
-          path: tab.path || null,
+          path: path || null,
           profile: tab.profile,
-          name: tab.path ? basename(tab.path) : tab.name,
+          name: path ? basename(path) : tab.name,
           tabs: [],
         };
         groups.set(key, group);
@@ -99,13 +163,22 @@
     return ids.every((id, i) => id === tabs[i].id) ? null : ids;
   }
 
+  // A caller may still hold a key from before legacy bindings were collapsed.
+  function resolvedGroupKey(tabs, groups, key) {
+    if (groups.some(g => g.key === key)) return key;
+    const tab = tabs.find(t => groupKey(t) === key);
+    return groups.find(g => g.tabs.some(t => t.id === tab?.id))?.key || key;
+  }
+
   /** Tab ids in the order that puts project `key` before (or, with `after`,
    *  behind) project `targetKey` in the tab bar (#40). Every group comes
    *  out contiguous, which `groupTabs` renders the same as before. `null`
    *  for an unknown key or when the order would not change. */
   function moveGroup(tabs, key, targetKey, after) {
-    if (key === targetKey) return null;
     const groups = groupTabs(tabs);
+    key = resolvedGroupKey(tabs, groups, key);
+    targetKey = resolvedGroupKey(tabs, groups, targetKey);
+    if (key === targetKey) return null;
     const from = groups.findIndex(g => g.key === key);
     if (from < 0 || !groups.some(g => g.key === targetKey)) return null;
     const [moved] = groups.splice(from, 1);
@@ -134,6 +207,7 @@
    *  (+1) in the tab bar, for the keyboard move (#40); `null` at either end. */
   function shiftGroup(tabs, key, delta) {
     const groups = groupTabs(tabs);
+    key = resolvedGroupKey(tabs, groups, key);
     const neighbour = groups[groups.findIndex(g => g.key === key) + delta];
     if (!neighbour || !groups.some(g => g.key === key)) return null;
     return moveGroup(tabs, key, neighbour.key, delta > 0);
@@ -147,12 +221,12 @@
     return ids.length === open.size && new Set(ids).size === ids.length && ids.every(id => open.has(id));
   }
 
-  /** Label of a tab shown on its own, not inside a group (#46): `title` is
-   *  the tab's renameable name; `prefix` is its project folder, or `null`
-   *  while the name is still that folder (a fresh tab) or there is none. */
+  /** Label of a tab shown on its own, not inside a group (#46). */
   function tabLabel(tab) {
-    const folder = tab.path ? basename(tab.path) : "";
-    return { prefix: folder && folder !== tab.name ? folder : null, title: tab.name };
+    const folder = projectPath(tab) ? basename(projectPath(tab)) : "";
+    const generated = tab.path && (tab.name === basename(tab.path) || tab.name === folder);
+    const title = generated || (!tab.name && folder) ? folder : tab.name;
+    return { prefix: folder && folder !== title ? folder : null, title };
   }
 
   /** Id of an open tab on `path` under `profile` — the active one if it
@@ -160,7 +234,11 @@
   function findProjectTab(tabs, path, profile, activeId) {
     if (!path) return null;
     const want = normPath(path);
-    const matches = tabs.filter(t => t.path && t.profile === profile && normPath(t.path) === want);
+    const normalized = normalizeWorkspaces(tabs);
+    const sourceMatches = normalized.filter(t =>
+      projectPath(t) && t.profile === profile && normPath(projectPath(t)) === want);
+    const matches = sourceMatches.length ? sourceMatches : normalized.filter(t =>
+      t.path && t.profile === profile && normPath(t.path) === want);
     if (!matches.length) return null;
     return matches.some(t => t.id === activeId) ? activeId : matches[matches.length - 1].id;
   }
@@ -176,7 +254,13 @@
 
   /** `recents` minus projects already open under `profile`. */
   function recentRows(recents, tabs, profile) {
-    return recents.filter(r => findProjectTab(tabs, r.path, profile, null) === null);
+    const open = new Set();
+    for (const tab of normalizeWorkspaces(tabs)) {
+      if (tab.profile !== profile) continue;
+      if (projectPath(tab)) open.add(normPath(projectPath(tab)));
+      if (tab.path) open.add(normPath(tab.path));
+    }
+    return recents.filter(r => !r.path || !open.has(normPath(r.path)));
   }
 
   /** History-panel filter chips (issue #35): one per distinct folder among
@@ -221,6 +305,7 @@
         profile: t.profile ?? null,
         sessionFile: t.sessionFile || null,
         name: t.name || null,
+        ...(t.workspace ? { workspace: t.workspace } : {}),
       })),
       active: active < 0 ? null : active,
     };
@@ -240,6 +325,7 @@
       // No saved profile is the built-in one: the tab must record the
       // profile its process actually runs under.
       profile: tab.profile || DEFAULT_PROFILE_ID,
+      ...(tab.workspace ? { workspaceBinding: tab.workspace } : {}),
     };
   }
 
@@ -247,6 +333,9 @@
     normPath,
     basename,
     parentName,
+    projectPath,
+    normalizeWorkspaces,
+    memberLabel,
     groupKey,
     groupTabs,
     groupRunState,

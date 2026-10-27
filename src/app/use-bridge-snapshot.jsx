@@ -40,6 +40,7 @@ function useBridgeSnapshot(bridge, setters) {
       setters.setWorkspaceNotes(snap.workspaceNotes ?? []);
       setters.setApprovalModes(snap.approvalModes ?? null);
       setters.setCloseConfirm(snap.closeConfirm ?? null);
+      setters.setConversationSetup(snap.conversationSetup ?? null);
       if (snap.activeSessionId) setters.setActiveSessionId(snap.activeSessionId);
     });
     return unsub;

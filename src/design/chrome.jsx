@@ -6,7 +6,7 @@
    - Ambient rail: TokenGauge, ActivityRadar, subagents card, Minimap
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot, TabLabel, RenameField } = window;
+const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot, TabLabel, RenameField, WorktreeIndicator } = window;
 const { groupTabs } = window.OMP_PROJECT_NAV;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` — same
@@ -23,10 +23,12 @@ const IS_WIN = typeof navigator !== "undefined" &&
 
 // ── Window chrome ─────────────────────────────────────────────────────
 function WindowChrome({
-  project, onCmd,
+  project, onCmd, onConfigureProject,
   profiles, activeProfileId, startupProfileId,
   onSelectProfile, onCreateProfile, onRenameProfile, onDeleteProfile, onSetStartupProfile,
 }) {
+  const sourcePath = window.OMP_PROJECT_NAV.projectPath(project);
+  const projectName = sourcePath ? window.OMP_PROJECT_NAV.basename(sourcePath) : project.name;
   return (
     <div className="chrome" data-tauri-drag-region>
       {/* macOS traffic lights — left side, hidden on Windows */}
@@ -41,12 +43,19 @@ function WindowChrome({
       <div className="chrome-title">
         <span className="mono" style={{ color: "var(--fg-3)" }}>OMP</span>
         <span className="mono" style={{ color: "var(--fg-5)" }}>·</span>
-        <span style={{ color: "var(--fg-2)" }}>{project.name}</span>
-        {project.branch && (
+        <span style={{ color: "var(--fg-2)" }} title={sourcePath || undefined}>{projectName}</span>
+        <WorktreeIndicator tab={project} />
+        {!project.workspace?.worktree && project.branch && (
           <span className="chip muted" style={{ marginLeft: 6 }}>
             <Icon name="branch" size={9} color="var(--fg-3)" />
             <span className="mono" style={{ color: "var(--fg-3)" }}>{project.branch}</span>
           </span>
+        )}
+        {sourcePath && onConfigureProject && (
+          <button className="chrome-project-config" title="project defaults" aria-label="project defaults"
+            onClick={() => onConfigureProject(sourcePath, project.profile)}>
+            <Icon name="cog" size={11} />
+          </button>
         )}
       </div>
 
@@ -103,7 +112,7 @@ function tabClickProps(onSelect, onClose) {
 }
 
 function TabBar({
-  projects, activeId, onSelect, onClose, onRename, onNew, onHistory, onNewInProject, onReorder,
+  projects, activeId, onSelect, onClose, onRename, onNew, onHistory, onNewInProject, onConfigureProject, onReorder,
   sidebarOpen, onToggleSidebar,
   profiles = [], appVersion, updateVersion, onUpdate, onCheckUpdate,
   settings, onSelectSettings, onCloseSettings,
@@ -139,6 +148,7 @@ function TabBar({
               onSelect={onSelect}
               onClose={onClose}
               onNewInProject={onNewInProject}
+              onConfigureProject={onConfigureProject}
               onRename={onRename}
               reorder={reorder}
             />
@@ -164,8 +174,15 @@ function TabBar({
             ) : (
               <TabLabel tab={p} className="tab-name" title={`${p.name}\ndouble-click to rename`} />
             )}
+            <WorktreeIndicator tab={p} />
             {profile && (
               <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
+            )}
+            {group.path && onConfigureProject && (
+              <button className="tab-close" title="project defaults" aria-label="project defaults"
+                onClick={e => { e.stopPropagation(); onConfigureProject(group.path, group.profile); }}>
+                <Icon name="cog" size={10} />
+              </button>
             )}
             <button className="tab-close" onClick={e => { e.stopPropagation(); onClose?.(p.id); }}><Icon name="close" size={9} /></button>
           </div>

@@ -94,7 +94,7 @@ Settings → Rail has one toggle per enabled plugin, under the toggles for the b
 | `intervalMs` | no | Periodic refresh. Absent or `0` means none. Clamped to 15000..3600000 (15 s to 1 h). |
 | `enabled` | no | Default `true`. A disabled plugin is never offered for approval and never runs, and it has no Settings toggle. |
 | `scope` | no | `"tab"` (default) or `"global"`; anything else rejects the entry. A `tab` plugin keeps one result per tab. A `global` plugin keeps one result for the whole app, computed with the active tab's context. |
-| `insert` | no | Where a click on an item's `+` button puts its text: `{ "target": "draft" \| "new-tab", "project": "<path>" }`. `draft` (default, the same as leaving `insert` out) appends to the active tab's draft. `new-tab` opens a **new** tab in `project` and puts the text into that tab's draft. `project` is required for `new-tab`: an absolute path, or `~/…` (expanded like `command`), naming an existing directory when the config is loaded (canonicalised). There is no `send` option: a click never submits a prompt. See [Insert target](#insert-target). |
+| `insert` | no | Where a click on an item's `+` button puts its text: `{ "target": "draft" \| "new-tab", "project": "<path>" }`. `draft` (default) appends to the active tab's draft. `new-tab` opens new-conversation setup for `project`; after you confirm its branch/worktree choice, the text is put into that new tab's draft. Cancelling setup discards that insertion without changing another tab's draft. `project` is required: an absolute path, or `~/…`, naming an existing directory when config loads (canonicalised). A click never submits a prompt. See [Insert target](#insert-target). |
 
 How the file is read:
 
@@ -113,7 +113,7 @@ How the file is read:
   "insert": { "target": "new-tab", "project": "~/GIT/work/inbox" } }
 ```
 
-With `new-tab`, clicking `+` on a list item or `text` block opens a new tab in `project` (always a new tab, even when one for that folder is already open), moves focus to it and puts the insert text into its prompt box. The text is not sent. Holding ⌥ (Alt) while clicking uses the default instead: the text is appended to the active tab's draft. The `+` button's tooltip says so (`Click: new tab in inbox · ⌥-click: insert here`). The `url` button of an item still opens the URL; only the insert action follows the target. If the new tab cannot start (for example `omp` is missing), the usual open-failure note appears and nothing is inserted.
+With `new-tab`, clicking `+` on a list item or `text` block opens new-conversation setup for `project`, even when that folder already has an open tab. Confirming the branch/worktree choice launches a new tab, moves focus to it and puts the insert text into its prompt box; cancelling inserts nothing. The text is never sent. Holding ⌥ (Alt) while clicking instead appends to the active tab's draft. The `url` button still opens the item's URL; only insertion follows this target. A launch failure remains visible in setup and inserts nothing until a launch succeeds.
 
 The target comes **only** from `widgets.json`. Plugin output is untrusted and cannot choose or change it: an `insert` key in the output is ignored like any other unknown field, so a plugin cannot open tabs in folders you did not configure.
 
@@ -173,7 +173,7 @@ Scheduling happens in the desktop's Rust backend. The rules:
   - A trigger that arrives while a run is in flight is coalesced into at most one follow-up run. An `interval` never replaces a queued non-interval trigger.
   - Before the follow-up starts, it is checked again: it must still be runnable. An interval follow-up also needs the window visible and, for a tab plugin, its tab still active.
 - **At most 4 plugins run at once across the whole app.** Further runs wait in a first-in, first-out queue. A waiting card shows as running.
-- **Closing a tab** kills that tab's running plugins and drops its results. Quitting the app, or relaunching it after an update, kills every running plugin.
+- **Closing a tab** kills and waits for plugins running with that tab's context, including a global plugin using its folder, before allowing another conversation to switch that checkout. Tab-scoped results are dropped; global result slots remain shared. Quitting the app, or relaunching it after an update, kills every running plugin.
 
 ## Input: session information
 
