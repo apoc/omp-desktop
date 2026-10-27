@@ -155,6 +155,9 @@
         tweak("confirmBusyClose", "toggle", "Ask before closing a working tab", "Closing a tab whose agent is mid-turn stops it. Ask first, also when quitting.", "confirm quit close"),
         tweak("autoName", "toggle", "Name tabs automatically", "omp titles a new conversation from its first turns (one small model call). `/rename` always wins.", "rename title"),
       ] },
+      { name: "Desktop notifications", rows: [
+        custom("desktopNotifications", "Desktop notifications", "Local alerts for conversations in another tab or while the app is unfocused. Both off by default. Separate from phone Web Push.", "desktop notification alert completion done finished turn user input ask question permission approval waiting attention", { keys: ["notifyFinished", "notifyQuestions"] }),
+      ] },
       { name: "Updates", rows: [
         tweak("updateCheck", "toggle", "Check for updates", "Look for a new release shortly after launch and every 6 hours. You choose when to install; “Check now” works either way.", "version release"),
         custom("version", "Version", "The installed OMP Desktop and the newest release.", "version update check skipped"),

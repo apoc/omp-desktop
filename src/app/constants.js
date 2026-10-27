@@ -59,6 +59,8 @@
     "pasteCollapseLines": 5,
     "restoreTabs": true,
     "confirmBusyClose": false,
+    "notifyFinished": false,
+    "notifyQuestions": false,
     "autoName": true,
     "autoCompaction": true,
     "autoRetry": true

@@ -6,8 +6,11 @@ pub fn configure(config: &mut tauri::utils::config::Config) {
         window.decorations = true;
         window.title_bar_style = tauri::TitleBarStyle::Overlay;
         window.hidden_title = true;
+        // Tao/Wry use y to set the titlebar container's height, not directly
+        // the button's top edge. With AppKit's 14pt buttons at local y=9,
+        // 20.5 puts their centres at 18.5pt, the 38px toolbar's content centre.
         window.traffic_light_position =
-            Some(tauri::utils::config::LogicalPosition { x: 12.0, y: 12.0 });
+            Some(tauri::utils::config::LogicalPosition { x: 12.0, y: 20.5 });
     }
 }
 

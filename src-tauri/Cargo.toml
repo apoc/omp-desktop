@@ -66,6 +66,7 @@ windows-registry = "0.6"
 # `RunEvent::Opened` and needs no plugin - see `src/external_open.rs`.
 [target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
+tauri-plugin-notification = "2"
 
 # Screen-lock probe for push-only-while-locked (`remote/lock.rs`). All of
 # these crates are already in the tree (macOS via tauri/wry, zbus via
@@ -73,6 +74,11 @@ tauri-plugin-single-instance = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFBase", "CFDictionary", "CFNumber", "CFString", "CFPreferences"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGSession"] }
+# Native authorization and local delivery (no APNs entitlement or Developer ID).
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError", "NSObject", "NSBundle"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationSettings", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger"] }
 
 # Linux: logind's `LockedHint` over the system bus.
 [target.'cfg(target_os = "linux")'.dependencies]

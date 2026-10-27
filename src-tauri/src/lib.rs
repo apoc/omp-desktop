@@ -25,6 +25,7 @@ mod json_store;
 mod keybindings;
 mod model_usage;
 mod navigation_guard;
+mod notifications;
 mod omp_cli;
 mod open_tabs;
 mod pr_automation;
@@ -1362,6 +1363,7 @@ pub(crate) fn kill_child_processes(app: &AppHandle) {
     // killed; admission is permanently closed so it cannot spawn afterwards.
     let _registry = manager.as_ref().map(|manager| manager.lock());
     remote::bridge::stop(app);
+    notifications::stop(app);
     app.state::<AgentBridge>().shutdown_all();
     if let Some(browser) = app.try_state::<browser::BrowserManager>() {
         browser.shutdown_all();
@@ -1539,7 +1541,8 @@ fn setup(app: &tauri::App) {
     ))));
     // Phone remote access: settings in <app_config_dir>/remote.json, devices
     // in remote-devices.json; started once from the saved settings.
-    remote::bridge::install(app, resolved_config_dir.clone()); // `config_file` still borrows it
+    let remote_sink = remote::bridge::install(app, resolved_config_dir.clone()); // `config_file` still borrows it
+    notifications::install(app, remote_sink);
 
     // A cold start *is* how Windows and Linux file managers open a
     // folder, so the launch argv is the third delivery path into the
@@ -1595,6 +1598,8 @@ fn single_instance_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 /// commands read. Split out of [`run`], whose command list alone nears
 /// the function-length lint.
 fn with_plugins_and_state(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_notification::init());
     builder
         .plugin(navigation_guard::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1604,6 +1609,11 @@ fn with_plugins_and_state(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder
                 webview,
                 matches!(payload.event(), tauri::webview::PageLoadEvent::Started),
             );
+            if webview.label() == "main"
+                && matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
+            {
+                notifications::reset(webview.app_handle());
+            }
         })
         .manage(AgentBridge::new())
         .manage(conversation_workspace::WorkspaceManager::default())
@@ -1639,6 +1649,8 @@ pub fn run() {
     let app = with_plugins_and_state(builder)
         .invoke_handler(tauri::generate_handler![
             send_command,
+            notifications::desktop_notifications_configure,
+            notifications::desktop_notifications_permission,
             start_session,
             conversation_workspace_inspect,
             conversation_workspace_status,
@@ -1753,6 +1765,11 @@ pub fn run() {
 fn handle_run_event(app: &AppHandle, event: tauri::RunEvent) {
     match &event {
         tauri::RunEvent::Exit => kill_child_processes(app),
+        tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::Focused(focused),
+            ..
+        } if label == "main" => notifications::focus_changed(app, *focused),
         // The OS close (title-bar menu, Alt+F4, taskbar) of a window the
         // [`CloseGuard`] holds: the webview confirms, then closes it itself.
         tauri::RunEvent::WindowEvent {

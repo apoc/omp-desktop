@@ -448,6 +448,7 @@
   <script type="text/babel" src="design/settings/rows-programs.jsx"></script>
   <script type="text/babel" src="design/settings/rows-agent.jsx"></script>
   <script type="text/babel" src="design/settings/rows-session.jsx"></script>
+  <script type="text/babel" src="design/settings/rows-notifications.jsx"></script>
   <script type="text/babel" src="design/settings/rows-approvals.jsx"></script>
   <script type="text/babel" src="design/settings/rows-remote-shared.jsx"></script>
   <script type="text/babel" src="design/settings/rows-remote-server.jsx"></script>
@@ -502,6 +503,9 @@
   <!-- Phone publisher and actions; follows live.js and app/remote-view.js,
        exports useRemote for app-live.jsx. -->
   <script type="text/babel" src="app/use-remote.jsx"></script>
+  <!-- Desktop notification preferences and tab labels; native tracking runs
+       independently of the active conversation or phone remote access. -->
+  <script type="text/babel" src="app/use-notifications.jsx"></script>
   <script type="text/babel" src="app/use-conversation-tree.jsx"></script>
   <!-- Git browser data flow; destructures window.OMP_GIT_BROWSER at top
        level. -->

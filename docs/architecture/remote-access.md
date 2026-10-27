@@ -59,6 +59,7 @@ Per omp session, independent of the active webview tab: `busy`, `turn_started`, 
 - `extension_ui_request` with `method: "cancel"` and a `targetId` (omp itself withdrawing a dialog) closes that question.
 - An answer written and flushed by `AgentBridge::send` / the approval-and-grant path removes the id (`on_answered`); process exit, stop and replacement remove the session. Auto-approved tool prompts and retired readers are excluded.
 - **The hook must stay O(1) and non-blocking**: stream deltas and non-dialog traffic classify to `None` and take no lock; question membership is a hash set; the sink is called with both mutexes released and must only enqueue (transport and push belong to the manager's worker).
+- The app installs a desktop-notification dispatcher as the tracker sink. It forwards changes to the existing phone fan-out independently of local notification preferences, and only queues opted-in local alerts. Local alerts work without a remote manager/config directory. Phone Web Push settings, duration threshold, throttle, TLS and VAPID rules are unchanged; desktop authorization is documented in `settings.md`.
 
 ## Publisher (webview)
 

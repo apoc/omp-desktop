@@ -20,8 +20,9 @@
   max-height: 100%;              /* fill full height                           */
 }
 
-/* NSWindow's real traffic lights overlay the toolbar on macOS. */
-.native-macos .chrome { padding-left: 88px; }
+/* The native green button ends at 72px (12px inset, 23px spacing, 14px
+   width); leave 16px before toolbar content. Keep its 38px row on resize. */
+.native-macos .chrome { flex-shrink: 0; padding-left: 88px; }
 
 /* The aurora backdrop should fill the whole screen, not the inner window rect */
 .tauri-native .app-backdrop {

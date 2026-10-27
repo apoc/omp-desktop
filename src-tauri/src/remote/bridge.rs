@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter, Manager, Webview};
 use super::emit::{Action, RemoteEmit, Status};
 use super::hub::Hub;
 use super::manager::RemoteManager;
-use super::tracker::{tracker, TrackerSink, Transition};
+use super::tracker::{TrackerSink, Transition};
 
 /// The webview whose listeners answer phone requests.
 const MAIN_WINDOW: &str = "main";
@@ -181,21 +181,24 @@ impl Drop for FanOut {
     }
 }
 
-/// Create the manager, route the tracker through it and start the saved
-/// configuration. Without a config dir there is nothing to persist to, so
-/// the feature stays unavailable (its commands say so).
-pub fn install(app: &tauri::App, config_dir: Option<std::path::PathBuf>) {
+/// Create the manager and start the saved configuration. Its tracker sink is
+/// combined with desktop notifications by the app. Without a config directory,
+/// phone access stays unavailable but desktop notifications remain independent.
+pub fn install(
+    app: &tauri::App,
+    config_dir: Option<std::path::PathBuf>,
+) -> Option<Arc<dyn TrackerSink>> {
     let Some(dir) = config_dir else {
         eprintln!("[omp-desktop] remote access is unavailable without an app config dir");
-        return;
+        return None;
     };
     let manager = Arc::new(RemoteManager::new(
         dir,
         Arc::new(TauriRemoteEmit(app.handle().clone())), // the handle is a cheap shared clone
     ));
-    if let Some(sink) = manager.tracker_sink() {
-        tracker().set_sink(sink as Arc<dyn TrackerSink>);
-    }
+    let sink = manager
+        .tracker_sink()
+        .map(|sink| sink as Arc<dyn TrackerSink>);
     app.manage(Arc::clone(&manager));
     // Binding and certificate work must not delay the window.
     let started = std::thread::Builder::new()
@@ -206,6 +209,7 @@ pub fn install(app: &tauri::App, config_dir: Option<std::path::PathBuf>) {
     if let Err(error) = started {
         eprintln!("[omp-desktop] could not start remote access: {error}");
     }
+    sink
 }
 
 /// The app is exiting: stop the tracker fan-out, close the listener and the

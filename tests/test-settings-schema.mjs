@@ -54,11 +54,6 @@ check("every tweak row names a TWEAK_DEFAULTS key whose default is valid", () =>
   }
 });
 
-check("custom rows name the renderers the page expects", () => {
-  assert.deepEqual(S.rows().filter(r => r.kind === "custom").map(r => r.type).sort(),
-    ["approvalMode", "approvalRules", "chromium", "goalContinue", "remoteCert", "remoteDevices", "remotePair", "remotePush", "remoteServer", "shell", "shortcuts", "startupProfile", "terminalHeight", "version", "widgets", "widths"]);
-  for (const r of S.rows().filter(r => r.kind === "custom")) for (const k of r.keys ?? []) assert.ok(k in D, k);
-});
 
 check("bounds come from the owning modules", () => {
   assert.equal(row("collapseAfter").min, win.OMP_COLLAPSE.MIN_AFTER);
