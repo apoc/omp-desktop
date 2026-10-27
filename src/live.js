@@ -155,6 +155,7 @@
   // respawns only that tab (see switchSessionProfile).
   const sessionRegistry = new Map();
   const sessionSnapshots = new Map(); // id -> saved state + volatile vars
+  const respawnVoice = new Map(); // same-conversation voice awaiting a fresh process activation
   const gitListeners = new Map();  // session_id → Tauri unlisten fn for git://branch/{id}
   // Prompt history — one list per tab, newest-first, in memory only. Never
   // persisted to disk/localStorage: filled as the user sends (_recordPrompt)
@@ -276,7 +277,7 @@
    * @param {object}  cmd         Command body (type + args, no id).
    * @param {number}  [timeout]   Ms to wait before rejecting (0 = no timeout).
    */
-  function _sendWithResponse(cmd, timeout = 120000) {
+  function _sendWithResponse(cmd, timeout = 120000, idPrefix = "d") {
     let handedOff = Promise.resolve(false);
     let commandId = null;
     const response = new Promise((resolve, reject) => {
@@ -284,7 +285,7 @@
         reject(new Error("Not connected"));
         return;
       }
-      const id = commandId = `d${_nextCmdId++}`;
+      const id = commandId = `${idPrefix}${_nextCmdId++}`;
       let timer;
       if (timeout > 0) {
         timer = setTimeout(() => {
@@ -964,7 +965,7 @@
     _switchAwayFrom = previous !== id ? previous : null;
     try {
     if (previous && previous !== id && state.liveVoice.active) {
-      const stopped = await _liveStop();
+      const stopped = await _livePause();
       if (_switchIntent !== intent || activeSessionId !== previous) return;
       // A failed stop might still be recording. Do not background that tab.
       if (!stopped.ok && state.liveVoice.active) return;
@@ -998,6 +999,10 @@
     // Restore cached snapshot (preserves streaming messages) or start fresh
     if (!_restoreSession(id)) {
       _resetSessionVars();
+    }
+    if (respawnVoice.has(id)) {
+      state.liveVoice = respawnVoice.get(id);
+      respawnVoice.delete(id);
     }
     if (workspaceNotes.length > 0) {
       for (const note of workspaceNotes) _pushAssistantNote(note);
@@ -1326,6 +1331,7 @@
     _dictationCompleted = _dictationCompleted.filter(item => item.sessionId !== id);
     const closed = _invokeSafe("close_tab", { sessionId: id });
     _dropGitListener(id);
+    respawnVoice.delete(id);
     sessionSnapshots.delete(id);
     return closed;
   }
@@ -1435,6 +1441,12 @@
         if (!stopped.ok && state.dictation.active) return stopped;
         if (!sessionRegistry.has(id)) return { ok: false, error: "tab closed" };
       }
+      // Only a resumed coding conversation can retain its tab-local voice
+      // history. Killing the process itself closes its native transport.
+      let savedVoice = !fresh && resume ? (id === activeSessionId ? state.liveVoice : sessionSnapshots.get(id)?.liveVoice) : null;
+      if (savedVoice?.active) {
+        savedVoice = LIVE.apply(LIVE.apply(savedVoice, { type: "stop" }), { type: "stop_success", paused: true });
+      }
       // Awaited: `stop_session` must have removed the old incarnation from
       // the backend's session map before `_spawnSession` installs the new
       // one under the same id, or the late remove would reap the fresh
@@ -1502,6 +1514,7 @@
       // spawned or registered, so the second `start_session` starts clean.)
       if (spawnError && resume && spawnError.includes("resume path does not exist") && sessionRegistry.has(id)) {
         sessionRegistry.set(id, { ...sessionRegistry.get(id), sessionFile: null });
+        savedVoice = null;
         spawnError = null;
         try {
           await _spawnSession(id, entry.path, { profile, resume: null });
@@ -1530,6 +1543,11 @@
           notify();
         }
         return spawnError ? { ok: false, error: spawnError } : { ok: true };
+      }
+      if (savedVoice) {
+        if (id === activeSessionId) state.liveVoice = savedVoice;
+        else if (sessionSnapshots.has(id)) sessionSnapshots.set(id, { ...sessionSnapshots.get(id), liveVoice: savedVoice });
+        else respawnVoice.set(id, savedVoice);
       }
       // The folder is now open under `profile`, so it belongs in that
       // profile's recents (a mode restart keeps the profile: nothing new).
@@ -2038,6 +2056,9 @@
       }
       return;
     }
+    // A cancelled or timed-out contextual history request must not be
+    // treated as the ordinary, uncorrelated transcript refresh on replay.
+    if (resp.command === "get_messages" && typeof resp.id === "string" && resp.id.startsWith("live-history-")) return;
     // Compact — handle success and failure both (must come before early-return below)
     if (resp.command === "compact") {
       let idx = -1;
@@ -2205,6 +2226,13 @@
     const time = timeNow();
     if (type === "live_phase" || type === "live_levels" || type === "live_transcript" || type === "live_end") {
       const before = state.liveVoice;
+      // The new controller emits connecting before its own transcripts.
+      // Discard queued frames from an older call while fetching history or
+      // before that marker; native frames do not carry a call id.
+      if (_liveStartPending && !_liveStartPending.acceptFrames) {
+        if (!_liveStartPending.request || type !== "live_phase" || ev.phase !== "connecting") return;
+        _liveStartPending.acceptFrames = true;
+      }
       const next = LIVE.apply(before, ev);
       if (next !== before) {
         state.liveVoice = next;
@@ -3338,6 +3366,8 @@
     if (state.liveVoice.active) void _liveStop();
     if (state.dictation.active) void _dictationStop();
     _resetSessionVars(true);
+    state.liveVoice = LIVE.apply(state.liveVoice, { type: "forget" });
+    if (id) respawnVoice.delete(id);
     state.extWidgets = extWidgets;
     if (keepTurnOutcome) lastTurnOk = turnOk;
     _initFetch();
@@ -3432,6 +3462,7 @@
   function _cancelLiveRequests(reason = "Live voice session ended") {
     ++_liveGen;
     for (const op of [_liveStartPending, _liveStopPending, _liveMutePending]) {
+      op?.history?.cancel(reason);
       op?.request?.cancel(reason);
     }
     _liveStartPending = _liveStopPending = _liveMutePending = null;
@@ -3447,27 +3478,32 @@
     if (_replayBuffer || _switchAwayFrom === activeSessionId || _respawning.has(activeSessionId) || _closingVoiceTabs.has(activeSessionId)) return Promise.resolve({ ok: false, error: "Tab is not ready" });
     if (state.dictation.active || _dictationStopPending) return Promise.resolve({ ok: false, error: "Voice to text is active" });
     if (state.liveVoice.active) {
-      if (state.liveVoice.phase === "connecting" && _liveStartPending) return _liveStartPending.promise;
+      if (_liveStartPending && state.liveVoice.phase !== "stopping") return _liveStartPending.promise;
       return Promise.resolve({ ok: false, error: state.liveVoice.phase === "stopping" ? "Live voice is stopping" : "Live voice is already active" });
     }
-    const id = activeSessionId;
-    const gen = ++_liveGen;
+    if (_liveStopPending) return Promise.resolve({ ok: false, error: "Live voice is stopping" });
+    const id = activeSessionId, gen = ++_liveGen, wasPaused = state.liveVoice.paused;
     state.liveVoice = LIVE.apply(state.liveVoice, { type: "start" });
-    // Connecting can take arbitrarily long; a stop or process exit cancels
-    // this waiter and sends live_stop even while the start is in progress.
-    const request = _sendWithResponse({ type: "live_start" }, 0);
-    const op = { request, promise: null };
+    const op = { history: null, request: null, promise: null, acceptFrames: false };
     _liveStartPending = op;
     op.promise = (async () => {
       try {
-        await request;
+        // Fetch omp's raw conversation every time: the desktop transcript can
+        // be trimmed or miss activity that happened while this tab was away.
+        const data = await (op.history = _sendWithResponse({ type: "get_messages" }, QUICK_CMD_TIMEOUT_MS, "live-history-"));
+        if (id !== activeSessionId || gen !== _liveGen || !state.liveVoice.active) return { ok: false, error: "Live voice session ended" };
+        if (!Array.isArray(data?.messages)) throw new Error("Invalid conversation history response");
+        const instructions = window.OMP_LIVE_CONTEXT.instructions({ messages: data.messages, voice: state.liveVoice.transcripts, project: sessionRegistry.get(id)?.path || "" });
+        op.request = _sendWithResponse({ type: "live_start", instructions }, 0);
+        await op.request;
+        op.acceptFrames = true;
         if (id !== activeSessionId || gen !== _liveGen || !state.liveVoice.active) {
           return { ok: false, error: id === activeSessionId && state.liveVoice.error || "Live voice session ended" };
         }
         return { ok: true };
       } catch (e) {
         const error = String(e?.message ?? e);
-        if (id === activeSessionId && gen === _liveGen) _voiceUpdate({ type: "start_failure", error });
+        if (id === activeSessionId && gen === _liveGen) _voiceUpdate({ type: "start_failure", error, paused: wasPaused });
         return { ok: false, error: id === activeSessionId && state.liveVoice.error || error };
       } finally {
         if (_liveStartPending === op) _liveStartPending = null;
@@ -3477,29 +3513,34 @@
     return op.promise;
   }
 
-  function _liveStop() {
+  function _liveStop(paused = false) {
     if (_liveStopPending) return _liveStopPending.promise;
-    if (!state.liveVoice.active) return Promise.resolve({ ok: true });
+    if (!state.liveVoice.active) {
+      if (!paused) _voiceUpdate({ type: "stop" });
+      return Promise.resolve({ ok: true });
+    }
     const id = activeSessionId;
     const gen = ++_liveGen;
-    // A concurrent IPC handoff could otherwise deliver stop before start,
-    // leaving a recorder running after the tab was backgrounded.
-    const startHandoff = _liveStartPending?.request.handedOff;
-    _liveStartPending?.request.cancel("Live voice was stopped");
+    // Only a native start needs a stop, but wait for its IPC handoff to
+    // prevent the stop overtaking it. A history fetch never opens audio.
+    const starting = _liveStartPending;
+    const startHandoff = starting?.request?.handedOff;
+    starting?.history?.cancel("Live voice was stopped");
+    starting?.request?.cancel("Live voice was stopped");
     _liveMutePending?.request.cancel("Live voice was stopped");
     state.liveVoice = LIVE.apply(state.liveVoice, { type: "stop" });
     const op = { request: null, promise: null };
     _liveStopPending = op;
     op.promise = (async () => {
       try {
-        const sent = startHandoff ? await startHandoff : true;
+        const sent = await (starting ? startHandoff || false : true);
         if (id !== activeSessionId || gen !== _liveGen) return { ok: false, error: "Live voice session ended" };
         if (sent) {
           op.request = _sendWithResponse({ type: "live_stop" }, QUICK_CMD_TIMEOUT_MS);
           await op.request;
         }
         if (id !== activeSessionId || gen !== _liveGen) return { ok: false, error: "Live voice session ended" };
-        _voiceUpdate({ type: "stop_success" });
+        _voiceUpdate({ type: "stop_success", paused });
         return { ok: true };
       } catch (e) {
         const error = String(e?.message ?? e);
@@ -3512,6 +3553,8 @@
     notify();
     return op.promise;
   }
+
+  function _livePause() { return _liveStop(true); }
 
   function _liveMute(muted) {
     if (typeof muted !== "boolean") return Promise.resolve({ ok: false, error: "Mute requires a boolean" });
@@ -3646,10 +3689,12 @@
 
     // Native realtime voice is independent of the persisted chat transcript.
     liveStart: _liveStart,
-    liveStop: _liveStop,
+    liveResume: _liveStart,
+    livePause: _livePause,
+    liveStop: () => _liveStop(),
     liveMute: _liveMute,
     dictationStart: _dictationStart,
-    stopActiveVoice() { return state.dictation.active || _dictationStopPending ? _dictationStop() : state.liveVoice.active ? _liveStop() : Promise.resolve({ ok: true }); },
+    stopActiveVoice() { return state.dictation.active || _dictationStopPending ? _dictationStop() : state.liveVoice.active || _liveStopPending ? _livePause() : Promise.resolve({ ok: true }); },
     dictationStop: _dictationStop,
     ackDictation(captureIds) {
       const ids = new Set(captureIds);

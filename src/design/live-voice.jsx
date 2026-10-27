@@ -1,9 +1,10 @@
-/* Live voice controls and ephemeral captions for the active tab. */
-function LiveVoicePanel({ voice, error, onAction }) {
+/* Live voice controls and captions for the active tab. */
+function LiveVoicePanel({ voice, error, onAction, dictationActive }) {
   const active = !!voice?.active;
+  const paused = !!voice?.paused;
   const phase = voice?.phase ?? "idle";
   const transcripts = voice?.transcripts ?? [];
-  if (!active && !voice?.error && !error && !transcripts.length) return null;
+  if (!active && !paused && !voice?.error && !error && !transcripts.length) return null;
 
   const level = value => Math.max(0, Math.min(1, Number(value) || 0));
   return (
@@ -20,8 +21,15 @@ function LiveVoicePanel({ voice, error, onAction }) {
           <button className="btn outlined" onClick={() => onAction(voice.muted ? "unmute" : "mute")}
             disabled={phase === "connecting" || phase === "stopping"}
             aria-pressed={!!voice.muted}>{voice.muted ? "unmute" : "mute"}</button>
+          <button className="btn outlined" onClick={() => onAction("pause")}
+            disabled={phase === "connecting" || phase === "stopping"} aria-label="Pause live conversation">pause</button>
           <button className="btn outlined" onClick={() => onAction("stop")}
-            disabled={phase === "stopping"}>{phase === "connecting" ? "cancel" : "end"}</button>
+            disabled={phase === "stopping"} aria-label={phase === "connecting" ? "Cancel live conversation" : "End live conversation"}>{phase === "connecting" ? "cancel" : "end"}</button>
+        </> : paused ? <>
+          <button className="btn outlined" onClick={() => onAction("resume")}
+            disabled={dictationActive} aria-label="Resume live conversation">resume</button>
+          <button className="btn outlined" onClick={() => onAction("stop")}
+            aria-label="End live conversation">end</button>
         </> : null}
       </div>
       {(error || voice?.error) && <div className="live-voice-error" role="alert">{error || voice.error}</div>}
@@ -38,10 +46,11 @@ function LiveVoicePanel({ voice, error, onAction }) {
 function VoiceModeButton({ live, dictation, onLiveAction, onDictationAction }) {
   const dictating = !!dictation?.active;
   const calling = !!live?.active;
+  const paused = !!live?.paused;
   const dictationBusy = dictating && (dictation.phase === "starting" || dictation.phase === "stopping");
   const liveBusy = calling && (live.phase === "connecting" || live.phase === "stopping");
   const dictationLabel = dictating ? (dictation.phase === "starting" ? "Cancel voice to text" : "Stop voice to text") : "Start voice to text";
-  const liveLabel = calling ? (live.phase === "connecting" ? "Cancel live conversation" : "Stop live conversation") : "Start live conversation";
+  const liveLabel = calling ? (live.phase === "connecting" ? "Cancel live conversation" : "Stop live conversation") : paused ? "Resume live conversation" : "Start live conversation";
   return <>
     <button className={`btn icon ghost${dictating ? " live-voice-mic-on" : ""}`}
       title={dictationLabel} aria-label={dictationLabel} aria-pressed={dictating} aria-busy={dictationBusy}
@@ -52,7 +61,7 @@ function VoiceModeButton({ live, dictation, onLiveAction, onDictationAction }) {
     <button className={`btn icon ghost${calling ? " live-voice-mic-on" : ""}`}
       title={liveLabel} aria-label={liveLabel} aria-pressed={calling} aria-busy={liveBusy}
       disabled={dictating || (calling && live.phase === "stopping")}
-      onClick={() => onLiveAction(calling ? "stop" : "start")}>
+      onClick={() => onLiveAction(calling ? "stop" : paused ? "resume" : "start")}>
       <window.Icon name="conversation" size={13} />
     </button>
   </>;

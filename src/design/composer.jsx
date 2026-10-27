@@ -590,7 +590,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
       )}
       {/* Goal mode (goal-strip.jsx): built by app-live.jsx, keyed by tab. */}
       {goalStrip}
-      <LiveVoicePanel voice={liveVoice} error={liveError} onAction={onLiveAction} />
+      <LiveVoicePanel voice={liveVoice} error={liveError} onAction={onLiveAction} dictationActive={!!dictation?.active} />
       <DictationPanel dictation={dictation} error={dictationError} onAction={onDictationAction} />
 
       {showSlash && (
