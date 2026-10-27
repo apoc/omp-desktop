@@ -1,4 +1,4 @@
-/* ui/icons.jsx — OMP Icon Pack v1 (59 icons) + Icon component +
+/* ui/icons.jsx — OMP Icon Pack v1 + Icon component +
    TOOL_META map (tool name → colour, icon, label). */
 
 // Each icon has a single accent dot. Props: name, size, color, dotColor.
@@ -30,6 +30,7 @@ const _ICON_PATHS = {
   bolt:    { p: ['<path d="M9 1L3 9h4l-1 6 6-8H8z"/>'],                                                                                                                                                                                       d: [12,3]    },
   radar:   { p: ['<circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="3"/><path d="M8 8l4-3"/>'],                                                                                                                                           d: [12,5]    },
   voice:   { p: ['<rect x="6" y="2" width="4" height="8" rx="2"/><path d="M3 8a5 5 0 0 0 10 0M8 13v2"/>'],                                                                                                                                    d: [8,2]     },
+  conversation: { p: ['<path d="M14 9a3 3 0 0 1-3 3H6l-4 2V5a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3z"/><path d="M5 6v2M8 4.5v5M11 6v2"/>'], d: [13,3] },
   context: { p: ['<circle cx="8" cy="8" r="6"/><path d="M8 8 L8 2 A6 6 0 0 1 13 11 Z" fill="currentColor" fill-opacity=".15" stroke-width="0"/><circle cx="8" cy="8" r="6"/>'],                                                             d: [13,11]   },
   tokens:  { p: ['<circle cx="5" cy="8" r="3"/><circle cx="11" cy="8" r="3"/>'],                                                                                                                                                              d: [11,8]    },
   cost:    { p: ['<circle cx="8" cy="8" r="6"/><path d="M10 6H7a1.5 1.5 0 0 0 0 3h2a1.5 1.5 0 0 1 0 3H6"/><path d="M8 4v8"/>'],                                                                                                             d: [8,4]     },

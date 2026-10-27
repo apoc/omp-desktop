@@ -56,6 +56,7 @@ function harness() {
     "app/prompt-history.js",
     "app/session-title.js",
     "app/turn-status.js",
+    "app/live-voice.js",
     "app/transcript-merge.js",
     "adapter.js",
     "app/pr-automation.js",

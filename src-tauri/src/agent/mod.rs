@@ -86,6 +86,13 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     // Retry row's Stop while omp waits between automatic retries: ends the
     // run on the last failure without `abort`'s other effects.
     "abort_retry",
+    // Native realtime voice session controlled by the active desktop tab.
+    "live_start",
+    "live_stop",
+    "live_mute",
+    // Draft-only native microphone capture and transcription.
+    "dictation_start",
+    "dictation_stop",
     "follow_up",
     "steer",
     // Queue strip above the composer: edit omp's pending steer/follow-up

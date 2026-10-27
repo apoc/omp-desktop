@@ -19,6 +19,10 @@
   widget plugins) to OMP Desktop. Without a usage description macOS never asks
   and drops their LAN connections silently (kernel log: `tcp drop outgoing …
   reason: NECP`), even with the app switched on under Local Network.
+
+  NSMicrophoneUsageDescription: omp captures voice conversations and dictation
+  in a child process; macOS attributes its microphone request to this app bundle.
+  The hardened-runtime audio-input entitlement is in Entitlements.plist.
 -->
 <plist version="1.0">
 <dict>
@@ -39,5 +43,7 @@
   </array>
   <key>NSLocalNetworkUsageDescription</key>
   <string>OMP Desktop and the agents, tools and widgets it starts connect to services on your local network, such as Kubernetes clusters.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>OMP Desktop uses your microphone for live conversations and voice-to-text dictation.</string>
 </dict>
 </plist>

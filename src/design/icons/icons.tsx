@@ -32,6 +32,7 @@ export type IconName =
   | "bolt"
   | "radar"
   | "voice"
+  | "conversation"
   | "context"
   | "tokens"
   | "cost"
@@ -199,6 +200,11 @@ const PATHS: Record<IconName, { paths: string[]; dot: [number, number]; purpose:
     paths: ["<rect x=\"6\" y=\"2\" width=\"4\" height=\"8\" rx=\"2\"/><path d=\"M3 8a5 5 0 0 0 10 0M8 13v2\"/>"],
     dot: [8, 2],
     purpose: "Voice / dictation mode in the composer.",
+  },
+  conversation: {
+    paths: ['<path d="M14 9a3 3 0 0 1-3 3H6l-4 2V5a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3z"/><path d="M5 6v2M8 4.5v5M11 6v2"/>'],
+    dot: [13, 3],
+    purpose: "Live voice conversation with the agent; speech bubble with an audio waveform.",
   },
   context: {
     paths: ["<circle cx=\"8\" cy=\"8\" r=\"6\"/><path d=\"M8 8 L8 2 A6 6 0 0 1 13 11 Z\" fill=\"currentColor\" fill-opacity=\".15\" stroke-width=\"0\"/><circle cx=\"8\" cy=\"8\" r=\"6\"/>"],

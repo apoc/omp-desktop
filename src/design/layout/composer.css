@@ -24,6 +24,26 @@
   margin-bottom: 6px;
 }
 
+/* Live voice stays inside the composer; captions are ephemeral, not chat. */
+.live-voice {
+  margin: 0 2px 8px; padding: 8px;
+  border: 1px solid var(--line-bright); border-radius: 8px;
+  background: var(--bg-elevated); font-size: var(--d-text-xs);
+}
+.live-voice-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.live-voice-title { color: var(--accent); font-family: var(--font-mono); }
+.live-voice-phase, .live-voice-head label { color: var(--fg-2); }
+.live-voice-head label { display: inline-flex; align-items: center; gap: 4px; }
+.live-voice-head meter { width: 48px; height: 8px; accent-color: var(--accent); }
+.live-voice-spacer { flex: 1; }
+.live-voice-error { margin-top: 6px; color: var(--rose); overflow-wrap: anywhere; }
+.live-voice-captions { list-style: none; padding: 0; margin: 6px 0 0; max-height: 120px; overflow-y: auto; }
+.live-voice-captions li { display: flex; gap: 8px; padding: 3px 0; color: var(--fg-2); overflow-wrap: anywhere; }
+.live-voice-role { flex: none; min-width: 4.5em; color: var(--fg-3); font-family: var(--font-mono); }
+.live-voice-interim { color: var(--fg-3); }
+.btn.icon.live-voice-mic-on { color: var(--accent); background: var(--accent-soft); }
+.dictation-preview { margin-top: 6px; max-height: 120px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-2); }
+
 /* Image attachments, and the collapsed-paste chips (#31) under the same layout.
    The queue strip below shares their spacing. */
 .attach-strip, .paste-strip, .queue-strip { padding: 0 2px 8px; }

@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The composer has separate one-click buttons for **Voice to text** and **Live conversation**. Live conversation (#68) connects to the native omp call with state, levels, captions, mute and end controls; `/live` keeps its existing behavior. Voice to text uses the profile's omp speech-to-text engine, previews dictation and appends the final text to the originating draft without sending a prompt or playing a reply. Switching tabs, closing a tab or opening Settings stops capture first; a failed stop keeps the active control visible for retry.
+
+### Changed
+
+- Live conversation uses a speech-bubble-and-waveform icon rather than a recording symbol, distinct from the dictation microphone.
+
+### Fixed
+
+- macOS microphone access (#68): the app now declares its microphone usage description and signs with the hardened-runtime audio-input entitlement, so native omp voice capture can request microphone access on behalf of OMP Desktop.
+
 ## [0.13.0] - 2026-10-31
 
 ### Added

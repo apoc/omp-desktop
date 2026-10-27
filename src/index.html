@@ -157,6 +157,8 @@
        app/use-goal-mode.jsx and app-live.jsx destructure
        window.OMP_SESSION_UI at top level, so it must load before them. -->
   <script src="app/session-ui.js"></script>
+  <!-- Live voice RPC state reducer, read by live.js at startup. -->
+  <script src="app/live-voice.js"></script>
   <!-- Accent tokens (#37): the soft/glow/deep shades derived from a picked
        accent. Dependency-free IIFE; app/use-bridge-snapshot.jsx's
        useThemeEffect calls window.OMP_ACCENT at effect time. -->
@@ -385,6 +387,8 @@
   <!-- Goal strip above the composer: app/use-goal-mode.jsx destructures
        window.GoalStrip at top level and hands it to composer.jsx as an element. -->
   <script type="text/babel" src="design/goal-strip.jsx"></script>
+  <!-- Composer's live voice status, controls and ephemeral captions. -->
+  <script type="text/babel" src="design/live-voice.jsx"></script>
   <script type="text/babel" src="design/composer.jsx"></script>
   <!-- Per-tab profile selector — toolbar.jsx destructures window.ProfileMenu
        at top level, so this must load before it. -->
