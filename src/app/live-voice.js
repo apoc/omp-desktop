@@ -8,6 +8,15 @@
   });
   const PHASES = new Set(["connecting", "listening", "working", "speaking", "muted", "error"]);
   const level = n => typeof n === "number" && Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
+  // RMS amplitude from omp, not sample peaks: this cannot detect clipping.
+  function meterLevel(amplitude) {
+    const rms = level(amplitude);
+    const db = rms > 0 ? 20 * Math.log10(rms) : -Infinity;
+    return {
+      value: Math.max(-60, db),
+      text: rms === 0 ? "−∞ dBFS" : db < -60 ? "<−60 dBFS" : `${Math.round(db)} dBFS`,
+    };
+  }
   function bounded(text) {
     if (text.length <= LIMITS.text) return text;
     let end = LIMITS.text;
@@ -124,5 +133,5 @@
     }
   }
   const DICTATION = Object.freeze({ EMPTY: DICTATION_EMPTY, apply: applyDictation });
-  window.OMP_LIVE_VOICE = { EMPTY, LIMITS, apply, DICTATION };
+  window.OMP_LIVE_VOICE = { EMPTY, LIMITS, apply, DICTATION, meterLevel };
 })();

@@ -4,17 +4,23 @@ function LiveVoicePanel({ voice, error, onAction, dictationActive }) {
   const paused = !!voice?.paused;
   const phase = voice?.phase ?? "idle";
   const transcripts = voice?.transcripts ?? [];
+  const captionsRef = React.useRef(null);
+  React.useLayoutEffect(() => {
+    const captions = captionsRef.current;
+    if (captions) captions.scrollTop = captions.scrollHeight;
+  }, [voice?.transcripts]);
   if (!active && !paused && !voice?.error && !error && !transcripts.length) return null;
 
-  const level = value => Math.max(0, Math.min(1, Number(value) || 0));
+  const input = window.OMP_LIVE_VOICE.meterLevel(voice?.input);
+  const output = window.OMP_LIVE_VOICE.meterLevel(voice?.output);
   return (
     <section className="live-voice" aria-label="Live voice">
       <div className="live-voice-head">
         <span className="live-voice-title">live voice</span>
         <span className="live-voice-phase" role="status">{phase}</span>
         {active && <>
-          <label>mic <meter min="0" max="1" value={level(voice.input)} aria-label="Microphone level" /></label>
-          <label>speaker <meter min="0" max="1" value={level(voice.output)} aria-label="Speaker level" /></label>
+          <label title="Microphone RMS level; 0 dBFS is full scale. Sample-peak clipping is not reported.">mic <meter min="-60" max="0" high="-6" optimum="-20" value={input.value} aria-label="Microphone level" aria-valuetext={`${input.text} RMS`} /><span className="live-voice-db">{input.text}</span></label>
+          <label title="Speaker RMS level; 0 dBFS is full scale. Sample-peak clipping is not reported.">speaker <meter min="-60" max="0" high="-6" optimum="-20" value={output.value} aria-label="Speaker level" aria-valuetext={`${output.text} RMS`} /><span className="live-voice-db">{output.text}</span></label>
         </>}
         <span className="live-voice-spacer" />
         {active ? <>
@@ -33,7 +39,7 @@ function LiveVoicePanel({ voice, error, onAction, dictationActive }) {
         </> : null}
       </div>
       {(error || voice?.error) && <div className="live-voice-error" role="alert">{error || voice.error}</div>}
-      {transcripts.length > 0 && <ol className="live-voice-captions" aria-label="Live voice captions">
+      {transcripts.length > 0 && <ol ref={captionsRef} className="live-voice-captions" aria-label="Live voice captions">
         {transcripts.map(item => <li key={`${item.role}-${item.turn}`}>
           <span className="live-voice-role">{item.role === "user" ? "you" : "assistant"}</span>
           <span>{item.text}</span>{!item.final && <span className="live-voice-interim">…</span>}

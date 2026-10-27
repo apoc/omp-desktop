@@ -21,6 +21,22 @@ const apply = (state, ...events) => events.reduce(V.apply, state);
 const start = () => apply(V.EMPTY, { type: "start" });
 const caption = (role, turn, text, final = false) => ({ type: "live_transcript", role, turn, text, final });
 
+check("voice meter uses dBFS rather than linear amplitude for ordinary speech", () => {
+  assert.equal(V.meterLevel(0.1).value, -20);
+  assert.equal(V.meterLevel(0.01).value, -40);
+  assert.equal(V.meterLevel(1).value, 0);
+  assert.equal(V.meterLevel(0.1).text, "-20 dBFS");
+});
+check("voice meter handles silence, invalid input and full-scale boundaries", () => {
+  for (const value of [0, -1, NaN, Infinity, undefined]) {
+    assert.deepEqual(V.meterLevel(value), { value: -60, text: "−∞ dBFS" });
+  }
+  assert.deepEqual(V.meterLevel(0.00001), { value: -60, text: "<−60 dBFS" });
+  assert.deepEqual(V.meterLevel(2), { value: 0, text: "0 dBFS" });
+  const nearFullScale = V.meterLevel(10 ** (-3 / 20));
+  assert.ok(Math.abs(nearFullScale.value + 3) < 1e-10);
+  assert.equal(nearFullScale.text, "-3 dBFS");
+});
 check("start opens a connecting call and each phase is visible", () => {
   let s = start();
   assert.deepEqual(s, { active: true, paused: false, phase: "connecting", muted: false, input: 0, output: 0, transcripts: [], error: null, turnOffset: 0, discardTranscripts: false });
