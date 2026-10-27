@@ -19,6 +19,7 @@ const snapshot = (over = {}) => ({
   url: A,
   branch: "feature",
   head: "abc123",
+  state: "OPEN",
   ...over,
 });
 const permit = () => true;
@@ -92,7 +93,11 @@ function harness() {
     core: {
       async invoke(command, args) {
         if (command === "start_session")
-          return { approvalMode: "write", path: args.args.cwd, workspace: null };
+          return {
+            approvalMode: "write",
+            path: args.args.cwd,
+            workspace: null,
+          };
         if (command === "start_git_watch") return "feature";
         if (command === "stop_session") {
           journal.delete(args.sessionId);
@@ -142,7 +147,10 @@ function harness() {
     ...w.OMP_BRIDGE,
     async openSession(cwd, profile) {
       const opened = w.OMP_BRIDGE.openSession(cwd, profile);
-      await w.OMP_BRIDGE.startConversationSetup(snapshot.conversationSetup.id, null);
+      await w.OMP_BRIDGE.startConversationSetup(
+        snapshot.conversationSetup.id,
+        null,
+      );
       return opened;
     },
   };
@@ -222,6 +230,8 @@ await check(
       snapshot({ url: B }),
       snapshot({ branch: "other" }),
       snapshot({ head: "next" }),
+      snapshot({ state: "MERGED" }),
+      snapshot({ state: "CLOSED" }),
     ]) {
       h.setResult(changed);
       assert.equal(
@@ -429,7 +439,7 @@ await check(
 );
 
 await check(
-  "tab switches discard in-flight discovery and reject publication to another tab",
+  "tab switches preserve read-only discovery but reject publication to another tab",
   async () => {
     const h = harness(),
       a = await h.bridge.openSession("/a");
@@ -446,7 +456,7 @@ await check(
     await h.bridge.activateSession(a);
     await flush();
     release(snapshot());
-    assert.equal(await stale, null);
+    assert.equal((await stale).state, "OPEN");
     assert.equal(
       await h.bridge.prAutomationSend(b, "other tab", snapshot(), permit),
       false,
@@ -455,7 +465,7 @@ await check(
 );
 
 await check(
-  "a tab being left cannot start discovery or automatic fixes",
+  "a tab being left can read status but cannot start automatic fixes",
   async () => {
     const h = harness();
     const a = await h.bridge.openSession("/a");
@@ -465,7 +475,7 @@ await check(
     h.clean();
     h.setResult(snapshot());
     const switching = h.bridge.activateSession(b);
-    assert.equal(await h.bridge.prAutomationSnapshot(a), null);
+    assert.equal((await h.bridge.prAutomationSnapshot(a)).state, "OPEN");
     assert.equal(
       await h.bridge.prAutomationSend(a, "must wait", snapshot(), permit),
       false,
@@ -542,4 +552,59 @@ await check(
     assert.equal(await h.bridge.prAutomationSnapshot(id), current);
   },
 );
+await check(
+  "inactive tabs can read status without activation or agent prompts",
+  async () => {
+    const h = harness();
+    const a = await h.bridge.openSession("/a");
+    const b = await h.bridge.openSession("/b");
+    await flush();
+    h.setResult(snapshot());
+    assert.equal((await h.bridge.prAutomationSnapshot(a)).state, "OPEN");
+    assert.equal(h.snapshot().activeSessionId, b);
+    assert.deepEqual(h.prompts, []);
+  },
+);
+
+await check("a closed tab cannot accept an in-flight status read", async () => {
+  const h = harness();
+  const a = await h.bridge.openSession("/a");
+  await h.bridge.openSession("/b");
+  await flush();
+  let release;
+  h.setResult(
+    new Promise((resolve) => {
+      release = resolve;
+    }),
+  );
+  const reading = h.bridge.prAutomationSnapshot(a);
+  await h.bridge.closeSession(a);
+  release(snapshot());
+  assert.equal(await reading, null);
+  assert.deepEqual(h.prompts, []);
+});
+
+await check(
+  "terminal and unknown expected lifecycles are rejected before native revalidation",
+  async () => {
+    const h = harness();
+    const id = await h.bridge.openSession("/project");
+    await flush();
+    h.clean();
+    h.setResult(snapshot());
+    for (const state of ["MERGED", "CLOSED", undefined])
+      assert.equal(
+        await h.bridge.prAutomationSend(
+          id,
+          "must not send",
+          snapshot({ state }),
+          permit,
+        ),
+        false,
+      );
+    assert.deepEqual(h.reads, []);
+    assert.deepEqual(h.prompts, []);
+  },
+);
+
 console.log(`pr-automation-bridge: ${passed} checks passed`);

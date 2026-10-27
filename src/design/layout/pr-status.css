@@ -1,0 +1,36 @@
+/* One compact visual language for PR state in navigation and Changes. */
+:root, .theme-aurora, .theme-phosphor { --pr-neutral: #a4a8b1; --pr-pending: var(--amber); }
+.theme-daylight { --pr-neutral: #626773; --pr-pending: #9c6100; }
+.pr-status, .pr-status-summary {
+  display: inline-flex; align-items: center; gap: 3px; flex: none;
+  white-space: nowrap; vertical-align: middle;
+  font-family: var(--font-mono); font-size: var(--d-text-xs); line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.pr-status-glyph { width: 14px; height: 14px; flex: none; }
+.pr-status-open { color: var(--diff-add-fg); }
+.pr-status-draft, .pr-status-mixed { color: var(--pr-neutral); }
+.pr-status-merged { color: var(--lilac); }
+.pr-status-closed, .pr-status-failure, .pr-status-error { color: var(--diff-rm-fg); }
+.pr-status.is-stale > .pr-status-glyph, .pr-status.is-stale .pr-status-summary > .pr-status-glyph { color: var(--pr-neutral); }
+.pr-status-ci, .pr-status-stale, .pr-status-multiple {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 13px; height: 13px; padding: 0 2px; box-sizing: border-box;
+  border: 1px solid currentColor; border-radius: 4px; font-size: 9px; font-weight: 700;
+}
+.pr-status-ci.failure { color: var(--diff-rm-fg); }
+.pr-status-ci.pending, .pr-status-stale { color: var(--pr-pending); }
+.pr-status-ci.success { color: var(--diff-add-fg); }
+.pr-status-ci.none, .pr-status-ci.unknown, .pr-status-multiple, .pr-status.is-stale .pr-status-ci.success { color: var(--pr-neutral); }
+.pr-status-review {
+  display: inline-flex; align-items: center; gap: 2px; flex: none;
+  color: var(--fg-2); font: inherit; line-height: 1;
+}
+.pr-status-review svg { width: 13px; height: 13px; flex: none; }
+.pr-changes .pr-status-review { padding: 2px; color: var(--fg-2); border-radius: 4px; }
+.pr-changes .pr-status-review:hover { color: var(--fg); background: var(--bg-hover); }
+.pr-changes-row > .pr-status { grid-column: 1; align-self: center; }
+.pr-changes-row > .pr-status .pr-status-glyph { width: 16px; height: 16px; }
+.pr-changes-lifecycle { flex: none; color: var(--fg-2); }
+.pr-changes-meta { flex-wrap: wrap; align-items: center; }
+.pr-changes-meta .pr-status { min-height: 16px; }

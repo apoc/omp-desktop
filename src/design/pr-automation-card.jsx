@@ -62,13 +62,13 @@ function PrAutomationCard({ automation, available = true, bridge }) {
     });
     setActionError(null);
   };
-  const openUrl = async (suffix) => {
+  const openUrl = async (suffix, refocus = true) => {
     setActionError(null);
     try {
       const result = await bridge.openExternalUrl(pr.url + suffix);
       if (!result?.ok)
         throw new Error(result?.error || "Could not open GitHub.");
-      close();
+      close(refocus);
     } catch (error) {
       setActionError(error?.message || String(error));
     }
@@ -78,13 +78,14 @@ function PrAutomationCard({ automation, available = true, bridge }) {
     else setActionError("Could not copy the PR link.");
   };
   const error = automation.error || automation.discoveryError;
+  const status = window.OMP_PR_STATUS.present(automation);
   const summary = !available
     ? "Open a connected project tab to see its pull request."
     : automation.loading
       ? "Updating the current branch's pull request…"
       : error
         ? "Could not update pull request."
-        : "No open pull request for the current branch.";
+        : "No pull request for the current branch.";
 
   return (
     <section className="rail-card glass pr-changes" aria-label="Changes">
@@ -100,27 +101,7 @@ function PrAutomationCard({ automation, available = true, bridge }) {
       {!collapsed &&
         (pr ? (
           <div className="pr-changes-row">
-            <span
-              className={`pr-changes-icon${pr.isDraft ? " draft" : ""}`}
-              aria-label={
-                pr.isDraft ? "Draft pull request" : "Open pull request"
-              }
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.4"
-                aria-hidden="true"
-              >
-                <circle cx="4" cy="3" r="1.5" />
-                <circle cx="4" cy="13" r="1.5" />
-                <circle cx="12" cy="13" r="1.5" />
-                <path d="M4 4.5v7M12 11.5V6a3 3 0 0 0-3-3H8m2-2L8 3l2 2" />
-              </svg>
-            </span>
+            <window.PrStatus model={status} mode="icon" />
             <button
               className="pr-changes-title"
               title={pr.title}
@@ -153,8 +134,10 @@ function PrAutomationCard({ automation, available = true, bridge }) {
               <span className="pr-changes-repo" title={pr.repository}>
                 {pr.repository?.split("/").at(-1)} #{pr.number}
               </span>
+              <span className="pr-changes-lifecycle">{status.stale ? "Last known · " : ""}{status.label}</span>
               <span className="pr-changes-added">+{pr.additions}</span>
               <span className="pr-changes-deleted">−{pr.deletions}</span>
+              <window.PrStatus model={status} mode="badges" onReview={() => openUrl("#discussion_bucket", false)} />
             </div>
             {automation.enabled && (
               <span
@@ -224,7 +207,7 @@ function PrAutomationCard({ automation, available = true, bridge }) {
               className="pr-changes-autofix"
               role="menuitemcheckbox"
               aria-checked={automation.enabled}
-              disabled={!available}
+              disabled={!available || pr.state !== "OPEN"}
               aria-describedby={descriptionId}
               onClick={automation.toggle}
             >
@@ -234,8 +217,9 @@ function PrAutomationCard({ automation, available = true, bridge }) {
               Auto-fix
             </button>
             <p id={descriptionId} className="pr-changes-menu-note">
-              Fix CI and review feedback. May commit, push and resolve addressed
-              threads; tool approvals still apply.
+              {pr.state === "OPEN"
+                ? "Fix CI and review feedback. May commit, push and resolve addressed threads; tool approvals still apply."
+                : "Auto-fix is unavailable for merged or closed pull requests."}
             </p>
             <p className="pr-changes-menu-status" role="status">
               {automation.status}

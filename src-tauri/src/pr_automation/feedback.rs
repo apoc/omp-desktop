@@ -1,18 +1,19 @@
 //! Fail-closed normalization of GitHub GraphQL feedback.
-use super::{FailedCheck, LocalBranch, PrAutomationSnapshot, ReviewThread};
+use super::discovery::SelectedPr;
+use super::{ChecksState, FailedCheck, LocalBranch, PrAutomationSnapshot, PrState, ReviewThread};
 use serde_json::Value;
 
-fn field<'a>(v: &'a Value, key: &str) -> Result<&'a Value, String> {
+pub(super) fn field<'a>(v: &'a Value, key: &str) -> Result<&'a Value, String> {
     v.get(key)
         .ok_or_else(|| format!("GitHub response is missing {key}"))
 }
-fn string<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
+pub(super) fn string<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
     field(v, key)?
         .as_str()
         .filter(|s| !s.is_empty())
         .ok_or_else(|| format!("GitHub response has invalid {key}"))
 }
-fn boolean(v: &Value, key: &str) -> Result<bool, String> {
+pub(super) fn boolean(v: &Value, key: &str) -> Result<bool, String> {
     field(v, key)?
         .as_bool()
         .ok_or_else(|| format!("GitHub response has invalid {key}"))
@@ -22,7 +23,7 @@ fn unsigned(v: &Value, key: &str) -> Result<u64, String> {
         .as_u64()
         .ok_or_else(|| format!("GitHub response has invalid {key}"))
 }
-fn connection<'a>(v: &'a Value, name: &str) -> Result<&'a Vec<Value>, String> {
+pub(super) fn connection<'a>(v: &'a Value, name: &str) -> Result<&'a Vec<Value>, String> {
     if boolean(field(v, "pageInfo")?, "hasNextPage")? {
         return Err(format!(
             "GitHub {name} exceeds the 100-item limit; auto-fix paused"
@@ -44,104 +45,50 @@ fn optional_url(v: &Value, key: &str, fallback: &str) -> Result<String, String> 
         _ => Err(format!("GitHub response has invalid {key}")),
     }
 }
-fn same_repo(v: &Value, local: &LocalBranch) -> Result<bool, String> {
+pub(super) fn same_repo(v: &Value, local: &LocalBranch) -> Result<bool, String> {
     let repo = field(v, "headRepository")?;
     if repo.is_null() {
         return Ok(false);
     }
-    Ok(string(repo, "nameWithOwner")?
+    let name = string(repo, "nameWithOwner")?;
+    let (owner, name) = name
         .split_once('/')
-        .is_some_and(|(owner, name)| {
-            owner.eq_ignore_ascii_case(&local.owner) && name.eq_ignore_ascii_case(&local.repo)
-        }))
+        .filter(|(owner, name)| !owner.is_empty() && !name.is_empty() && !name.contains('/'))
+        .ok_or_else(|| "GitHub response has invalid head repository identity".to_string())?;
+    Ok(owner.eq_ignore_ascii_case(&local.owner) && name.eq_ignore_ascii_case(&local.repo))
 }
-fn upstream_branch(local: &LocalBranch) -> &str {
+pub(super) fn upstream_branch(local: &LocalBranch) -> &str {
     local.remote_ref.strip_prefix("refs/heads/").unwrap_or("")
 }
 
-pub(super) fn select_pr(
-    result: &Value,
-    local: &LocalBranch,
-) -> Result<Option<(String, String)>, String> {
-    let data = field(result, "data")?;
-    let repo = field(data, "repository")?;
-    if repo.is_null() {
-        return Err("GitHub repository was not found or is inaccessible".into());
+pub(super) fn pr_state(v: &Value) -> Result<PrState, String> {
+    match string(v, "state")? {
+        "OPEN" => Ok(PrState::Open),
+        "MERGED" => Ok(PrState::Merged),
+        "CLOSED" => Ok(PrState::Closed),
+        _ => Err("GitHub returned an unknown PR state".into()),
     }
-    let reference = field(repo, "ref")?;
-    if reference.is_null() {
-        return Err("Upstream branch was not found on GitHub".into());
-    }
-    let target = field(reference, "target")?;
-    let head = string(target, "oid")?;
-    if head != local.head {
-        return Err(
-            "Local HEAD differs from the upstream branch on GitHub; synchronize before auto-fix"
-                .into(),
-        );
-    }
-    let mut connections = [
-        connection(
-            field(target, "associatedPullRequests")?,
-            "associated pull requests",
-        )?
-        .as_slice(),
-        connection(field(repo, "pullRequests")?, "repository pull requests")?.as_slice(),
-        &[],
-    ];
-    let parent = field(repo, "parent")?;
-    if boolean(repo, "isFork")? && parent.is_null() {
-        return Err("GitHub fork parent is unavailable; cannot safely select a PR".into());
-    }
-    if !parent.is_null() {
-        connections[2] =
-            connection(field(parent, "pullRequests")?, "parent pull requests")?.as_slice();
-    }
-    let mut selected: Option<&str> = None;
-    let mut completed = false;
-    for pr in connections.into_iter().flatten() {
-        let state = string(pr, "state")?;
-        let branch = string(pr, "headRefName")?;
-        let pr_head = string(pr, "headRefOid")?;
-        if matches!(state, "CLOSED" | "MERGED")
-            && branch == upstream_branch(local)
-            && pr_head == head
-            && same_repo(pr, local)?
-        {
-            completed = true;
-        }
-        if state == "OPEN" && branch == upstream_branch(local) && same_repo(pr, local)? {
-            if pr_head != head {
-                return Err(
-                    "PR head differs from the upstream branch; retry after GitHub updates".into(),
-                );
-            }
-            let id = string(pr, "id")?;
-            if selected.is_some_and(|previous| previous != id) {
-                return Err("Multiple open PRs match this upstream branch; auto-fix paused".into());
-            }
-            selected = Some(id);
-        }
-    }
-    if selected.is_none() && !completed && boolean(repo, "isFork")? {
-        return Err("No PR found in the head repository or its parent; PRs targeting other forks cannot be ruled out".into());
-    }
-    Ok(selected.map(|id| (id.to_owned(), head.to_owned())))
 }
 
 pub(super) fn parse_feedback(
     result: &Value,
     local: &LocalBranch,
-    head: &str,
+    selected: &SelectedPr,
 ) -> Result<PrAutomationSnapshot, String> {
     let data = field(result, "data")?;
     let pr = field(data, "node")?;
-    if string(pr, "state")? != "OPEN"
-        || string(pr, "headRefOid")? != head
+    let state = pr_state(pr)?;
+    if string(pr, "id")? != selected.id
+        || string(pr, "headRefOid")? != local.head
         || string(pr, "headRefName")? != upstream_branch(local)
         || !same_repo(pr, local)?
+        || !string(field(pr, "repository")?, "nameWithOwner")?
+            .eq_ignore_ascii_case(&selected.repository)
     {
-        return Err("PR head or branch changed while loading feedback".into());
+        return Err("PR identity, head or branch changed while loading feedback".into());
+    }
+    if selected.state != PrState::Open && state == PrState::Open {
+        return Err("PR reopened while loading feedback; retry to validate its open branch".into());
     }
     let number = field(pr, "number")?
         .as_u64()
@@ -160,18 +107,33 @@ pub(super) fn parse_feedback(
         return Err("GitHub did not return the latest PR commit".into());
     }
     let object = field(&commits[0], "commit")?;
-    if string(object, "oid")? != head {
+    if string(object, "oid")? != local.head {
         return Err("GitHub returned feedback for a different commit".into());
     }
     let mut failed_checks = Vec::new();
     let rollup = field(object, "statusCheckRollup")?;
-    if !rollup.is_null() {
+    let rollup_state = if rollup.is_null() {
+        ChecksState::None
+    } else {
+        let state = match string(rollup, "state")? {
+            "ERROR" | "FAILURE" => ChecksState::Failure,
+            "PENDING" => ChecksState::Pending,
+            "SUCCESS" => ChecksState::Success,
+            "EXPECTED" => ChecksState::Unknown,
+            _ => return Err("GitHub returned an unknown check rollup state".into()),
+        };
         for check in connection(field(rollup, "contexts")?, "check contexts")? {
             if let Some(check) = failed_check(check, &url)? {
                 failed_checks.push(check);
             }
         }
-    }
+        state
+    };
+    let checks_state = if failed_checks.is_empty() {
+        rollup_state
+    } else {
+        ChecksState::Failure
+    };
     let mut threads = Vec::new();
     for thread in connection(field(pr, "reviewThreads")?, "review threads")? {
         let resolved = boolean(thread, "isResolved")?;
@@ -200,8 +162,10 @@ pub(super) fn parse_feedback(
         additions,
         deletions,
         is_draft,
-        head: head.into(),
-        // The snapshot owns its branch; local remains for the post-query race check.
+        state,
+        checks_state,
+        // The snapshot owns both identifiers; local stays borrowed for revalidation.
+        head: local.head.clone(),
         branch: local.branch.clone(),
         failed_checks,
         threads,

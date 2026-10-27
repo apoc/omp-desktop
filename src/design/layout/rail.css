@@ -73,8 +73,6 @@
 .pr-changes-heading { display: flex; align-items: center; gap: 5px; padding: 3px 0; color: var(--fg); font-size: var(--d-text-sm) !important; }
 .pr-changes-heading svg { color: var(--fg-3); }
 .pr-changes-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) 24px; column-gap: 8px; align-items: center; padding: 2px 0 4px; }
-.pr-changes-icon { grid-column: 1; color: var(--diff-add-fg); display: flex; }
-.pr-changes-icon.draft { color: var(--fg-3); }
 .pr-changes-title { text-align: left; min-width: 0; padding: 4px 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--fg); font-size: var(--d-text-sm) !important; }
 .pr-changes-more { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; color: var(--fg-3); border-radius: 5px; }
 .pr-changes-more:hover, .pr-changes-more.active { background: var(--bg-hover); color: var(--fg); }

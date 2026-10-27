@@ -23,7 +23,7 @@ function TabRunDot({ state }) {
 }
 
 /** Details belong to the running conversation, not its project's defaults. */
-function WorktreeIndicator({ tab }) {
+function WorktreeIndicator({ tab, showLabel = false }) {
   if (!tab.workspace?.worktree) return null;
   const detail = [
     `Source project: ${window.OMP_PROJECT_NAV.projectPath(tab) || "unknown"}`,
@@ -31,8 +31,9 @@ function WorktreeIndicator({ tab }) {
     `Branch: ${tab.branch || "unknown"}`,
     `Selected base: ${tab.workspace.baseRef || "not recorded"}`,
   ].join("\n");
-  return <span className="worktree-indicator" role="img" aria-label="Isolated worktree" aria-description={detail} title={detail}>
+  return <span className={`worktree-indicator${showLabel ? " chip muted" : ""}`} role="img" aria-label="Isolated worktree" aria-description={detail} title={detail}>
     <Icon name="branch" size={11} dotColor="currentColor" aria-hidden="true" />
+    {showLabel && <span className="worktree-label">worktree</span>}
   </span>;
 }
 
@@ -55,7 +56,7 @@ function TabLabel({ tab, className, title }) {
   );
 }
 
-function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewInProject, onConfigureProject, onRename, reorder }) {
+function TabGroupChip({ group, activeId, profileLabel, prStatuses = {}, onSelect, onClose, onNewInProject, onConfigureProject, onRename, reorder }) {
   const [open, setOpen] = React.useState(false);
   // Member tab whose name is being edited inline (#32).
   const [renaming, setRenaming] = React.useState(null);
@@ -73,6 +74,8 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
 
   const active  = group.tabs.find(t => t.id === activeId);
   const profile = profileLabel(group.profile);
+  const prModel = window.OMP_PR_STATUS.aggregate(group.tabs.map(t => prStatuses[t.id]));
+  const groupTip = [group.path || group.name, prModel?.description].filter(Boolean).join("\n");
   // The × closes one conversation, the one a click on the chip selects (#45):
   // the focused member, else the newest. Never the whole project.
   const closeTarget = group.tabs.find(t => t.id === groupTarget(group, activeId));
@@ -84,6 +87,7 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
     <div ref={rootRef}
       {...reorder.itemProps("projects", group.key, "x")}
       className={`tab tab-group ${active ? "active" : ""}${reorder.dropClass("projects", group.key)}`}
+      title={groupTip}
       // A middle click never closes a group: it would take several tabs
       // (and their transcripts) with it. Old WebKit reports it as a `click`
       // with button 1 (see TabBar), hence the guard there too; the
@@ -94,7 +98,8 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
       <span className="tab-bar-mark" style={{ background: active ? active.color : "transparent" }} />
       <Icon name="folder" size={11} color={active ? active.color : "var(--fg-4)"} />
       <TabRunDot state={groupRunState(group.tabs)} />
-      <span className="tab-name" title={group.path}>{group.name}</span>
+      <window.PrStatus model={prModel} />
+      <span className="tab-name" title={groupTip}>{group.name}</span>
       <span className="tab-count">{group.tabs.length}</span>
       {profile && (
         <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
@@ -123,13 +128,16 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
                   <RenameField value={t.name}
                     onCommit={name => onRename(t.id, name)}
                     onClose={() => setRenaming(null)} />
+                  <window.PrStatus status={prStatuses[t.id]} />
                 </span>
               ) : (
                 <button className="tab-group-item" role="menuitem"
+                  title={[window.OMP_PROJECT_NAV.memberLabel(t), window.OMP_PR_STATUS.present(prStatuses[t.id])?.description].filter(Boolean).join("\n")}
                   onClick={() => { onSelect(t.id); close(); }}>
                   <span className="tab-group-dot"><TabRunDot state={t.runState} /></span>
-                  <span className="tab-name" title={window.OMP_PROJECT_NAV.memberLabel(t)}>{window.OMP_PROJECT_NAV.memberLabel(t)}</span>
+                  <span className="tab-name">{window.OMP_PROJECT_NAV.memberLabel(t)}</span>
                   <WorktreeIndicator tab={t} />
+                  <window.PrStatus status={prStatuses[t.id]} />
                 </button>
               )}
               {onRename && renaming !== t.id && (

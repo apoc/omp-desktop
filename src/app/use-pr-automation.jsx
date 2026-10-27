@@ -3,28 +3,26 @@
 function usePrAutomation({
   bridge,
   tabId,
-  sessionIds,
+  sessions,
   runState,
   blocked,
-  projectKey,
-  branchKey = null,
-  conversationKey = null,
   featureEnabled = true,
   connected = bridge?.isConnected ?? true,
 }) {
   const [, redraw] = React.useState(0);
+  const [visible, setVisible] = React.useState(
+    window.document?.visibilityState !== "hidden",
+  );
   const context = React.useRef(null);
   context.current = {
     bridge,
     tabId,
-    sessionIds,
+    sessions,
     runState,
     blocked,
-    projectKey,
     connected,
-    branchKey,
-    conversationKey,
     featureEnabled,
+    visible,
   };
   const controller = React.useRef(null);
   if (!controller.current) {
@@ -44,19 +42,21 @@ function usePrAutomation({
     automation,
     bridge,
     tabId,
-    sessionIds,
+    sessions,
     runState,
     blocked,
-    projectKey,
     connected,
-    branchKey,
-    conversationKey,
     featureEnabled,
+    visible,
   ]);
   React.useEffect(() => {
     const onFocus = () => automation.refresh();
     const onVisibilityChange = () => {
-      if (window.document?.visibilityState === "visible") automation.refresh();
+      const shown = window.document?.visibilityState !== "hidden";
+      context.current.visible = shown;
+      setVisible(shown);
+      automation.sync();
+      if (shown) automation.refresh();
     };
     window.addEventListener?.("focus", onFocus);
     window.document?.addEventListener("visibilitychange", onVisibilityChange);

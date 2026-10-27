@@ -76,7 +76,7 @@ Toggle plan mode (`Shift+Alt+P`, `/plan` or the composer pill) and the agent dra
 - The composer has separate one-click **Voice to text** (microphone) and **Live conversation** (speech bubble with an audio waveform) buttons. Live conversation talks to the agent, with connection state, microphone/speaker levels, captions, mute, pause, resume and end controls. `/live` starts, ends an active call, or resumes a paused one; explicit `/live start`, `/live pause`, `/live resume`, `/live stop`, `/live mute` and `/live unmute` are also available. It requires an OpenAI Codex login in the tab's profile (`/login`).
 - Switching tabs or opening Settings **pauses live conversation** and turns off its microphone and speaker. Returning shows **Resume**, never an automatically reopened microphone. Each connection receives the current coding-chat history and the tab's earlier spoken discussion, so starting mid-chat or reconnecting does not start from a blank conversation. End stops audio without forgetting the spoken discussion in that tab. Voice history stays in memory until a new coding conversation, profile change, tab close or app restart. Context is bounded: the original objective, compacted summaries and recent exchanges take priority; omitted/truncated history is marked for the voice agent. Private thinking and image/audio payloads are not sent as history.
 - Voice to text uses the tab profile's configured omp speech-to-text engine. Speak, then stop to append the transcript to that tab's existing draft; nothing is sent and no reply is played. The composer shows recording/transcribing state, a preview and any error. Dictation stops before switching tabs or opening Settings; if stopping either mode fails, the tab stays visible so you can retry. On macOS, allow OMP Desktop under System Settings → Privacy & Security → Microphone.
-- **Development prerequisite:** dictation RPC is not yet released in omp. This desktop build currently requires the locally modified, unreleased `18.13.1-dev` omp build; installing or updating to a stable omp alone does not provide it.
+- **Requirement:** omp **18.13.2 or newer** includes the released dictation RPC. No locally patched build is needed.
 
 ![Command bridge (Ctrl+K)](screenshots/command-bridge.webp)
 
@@ -122,7 +122,7 @@ Settings → Remote access lets a phone on your network (or VPN) open the app's 
 
 ### Requirements
 
-`omp` must be installed and on your `PATH` (on Windows it is usually `%LOCALAPPDATA%\omp\omp.exe`). This unreleased desktop build currently requires the locally modified `18.13.1-dev` omp with dictation RPC; stable `omp update` alone is not sufficient until that RPC is released. An older or unreadable version is refused when a tab starts. On macOS, GUI apps get a minimal `PATH`, so the app also looks in Homebrew, `~/.local/bin` and `~/.cargo/bin`.
+`omp` **18.13.2 or newer** must be installed and on your `PATH` (on Windows it is usually `%LOCALAPPDATA%\omp\omp.exe`). Update with `omp update`; the released version includes dictation RPC without local patches. An older or unreadable version is refused when a tab starts. On macOS, GUI apps get a minimal `PATH`, so the app also looks in Homebrew, `~/.local/bin` and `~/.cargo/bin`.
 
 ### Download
 

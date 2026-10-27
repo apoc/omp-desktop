@@ -647,12 +647,10 @@ function App() {
   });
 
   const prAutomation = usePrAutomation({
-    bridge, tabId: planKey, sessionIds, projectKey: activeProject.path,
+    bridge, tabId: planKey, sessions,
     runState: activeProject.runState,
-    branchKey: activeProject.branch ?? null,
-    conversationKey: JSON.stringify([activeProject.profile, activeProject.sessionFile ?? null]),
     featureEnabled: t.showChanges ?? true,
-    connected: !!bridge?.isConnected && !stab.active,
+    connected: !!bridge?.isConnected,
     blocked: !bridge?.isConnected || !activeProject.path || stab.active || plan.mode ||
       goalUi.mode || !!goalUi.planBlocked ||
       sessions.some(s => s.id !== planKey && s.path === activeProject.path && window.OMP_TURN_STATUS.isBusyRunState(s.runState)),
@@ -967,6 +965,7 @@ function App() {
           <TabBar
             profiles={profiles}
             projects={sessions}
+            prStatuses={prAutomation.statuses}
             activeId={stab.active ? null : activeSessionId}
             onSelect={handleSelectTab}
             onNew={handleNewProject}
@@ -991,6 +990,7 @@ function App() {
             {showSidebar && (
               <ProjectSidebar
                 tabs={sessions}
+                prStatuses={prAutomation.statuses}
                 activeId={stab.active ? null : activeSessionId}
                 recents={recentRows(recentProjects, sessions, activeProfileId)}
                 profileLabel={profileLabel}

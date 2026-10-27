@@ -3374,7 +3374,7 @@
     const id = activeSessionId;
     if (id && sessionRegistry.has(id)) {
       const entry = sessionRegistry.get(id);
-      sessionRegistry.set(id, { ...entry, ...fieldsOf(entry) });
+      sessionRegistry.set(id, { ...entry, ...fieldsOf(entry), conversationVersion: (entry.conversationVersion ?? 0) + 1 });
     }
     const turnOk = lastTurnOk;
     // The process keeps running its extensions, and omp sends no clear on a
@@ -3711,18 +3711,16 @@
     // Monitoring is read-only. Only the selected, fully settled tab may
     // receive remediation; recheck here after the asynchronous GitHub read.
     async prAutomationSnapshot(sessionId) {
-      const context = sessionContext, switchGen = _switchGen;
-      const branch = sessionRegistry.get(sessionId)?.branch;
-      const current = () =>
-        !!window.__TAURI__ &&
-        sessionRegistry.has(sessionId) &&
-        sessionId === activeSessionId &&
-        !_replayBuffer &&
-        _switchAwayFrom !== sessionId &&
-        !_respawning.has(sessionId) &&
-        sessionContext === context &&
-        _switchGen === switchGen &&
-        sessionRegistry.get(sessionId)?.branch === branch;
+      const owner = sessionRegistry.get(sessionId);
+      const current = () => {
+        const entry = sessionRegistry.get(sessionId);
+        return !!window.__TAURI__ && !!owner && !!entry && !entry.preparing &&
+          !_respawning.has(sessionId) &&
+          entry.path === owner.path && entry.branch === owner.branch &&
+          entry.profile === owner.profile && entry.sessionFile === owner.sessionFile &&
+          entry.processStartedAt === owner.processStartedAt &&
+          entry.conversationVersion === owner.conversationVersion;
+      };
       if (!current()) return null;
       const result = await window.__TAURI__.core.invoke(
         "pr_automation_snapshot", { sessionId },
@@ -3730,7 +3728,7 @@
       return current() ? result : null;
     },
     async prAutomationSend(sessionId, text, expected, canSend) {
-      if (!expected?.url || !expected.branch || !expected.head || typeof canSend !== "function") return false;
+      if (expected?.state !== "OPEN" || !expected.url || !expected.branch || !expected.head || typeof canSend !== "function") return false;
       const context = sessionContext, switchGen = _switchGen;
       const branch = sessionRegistry.get(sessionId)?.branch;
       const current = () =>
@@ -3761,7 +3759,7 @@
       const latest = await window.__TAURI__.core.invoke(
         "pr_automation_snapshot", { sessionId },
       );
-      if (!ready() || !latest || latest.url.toLowerCase() !== expected.url.toLowerCase() || latest.branch !== expected.branch || latest.head !== expected.head) return false;
+      if (!ready() || latest?.state !== "OPEN" || latest.url.toLowerCase() !== expected.url.toLowerCase() || latest.branch !== expected.branch || latest.head !== expected.head) return false;
       return _sendPrompt(text, undefined, undefined, ready).then(sent => sent && current());
     },
     // No id on purpose: a pending-id match returns before the command

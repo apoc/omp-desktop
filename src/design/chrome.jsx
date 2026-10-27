@@ -41,16 +41,16 @@ function WindowChrome({
       )}
 
       <div className="chrome-title">
-        <span className="mono" style={{ color: "var(--fg-3)" }}>OMP</span>
-        <span className="mono" style={{ color: "var(--fg-5)" }}>·</span>
-        <span style={{ color: "var(--fg-2)" }} title={sourcePath || undefined}>{projectName}</span>
-        <WorktreeIndicator tab={project} />
-        {!project.workspace?.worktree && project.branch && (
-          <span className="chip muted" style={{ marginLeft: 6 }}>
-            <Icon name="branch" size={9} color="var(--fg-3)" />
-            <span className="mono" style={{ color: "var(--fg-3)" }}>{project.branch}</span>
+        <span className="mono chrome-brand" style={{ color: "var(--fg-3)" }}>OMP</span>
+        <span className="mono chrome-brand" style={{ color: "var(--fg-5)" }}>·</span>
+        <span className="chrome-project-name" title={sourcePath || undefined}>{projectName}</span>
+        {project.branch && (
+          <span className="chip muted chrome-branch" title={`Current branch: ${project.branch}`}>
+            <Icon name="branch" size={10} color="var(--fg-3)" />
+            <span className="mono">{project.branch}</span>
           </span>
         )}
+        <WorktreeIndicator tab={project} showLabel />
         {sourcePath && onConfigureProject && (
           <button className="chrome-project-config" title="project defaults" aria-label="project defaults"
             onClick={() => onConfigureProject(sourcePath, project.profile)}>
@@ -72,8 +72,9 @@ function WindowChrome({
       />
 
       <div className="chrome-right">
-        <button className="btn ghost outlined" onClick={onCmd}>
-          <Icon name="command" size={11} /> bridge{" "}
+        <button className="btn ghost outlined chrome-command" onClick={onCmd}
+          aria-label="command bridge" title={`command bridge (${hintFor("desktop.commands.open", IS_WIN ? "^K" : "⌘K")})`}>
+          <Icon name="command" size={11} /> <span className="chrome-command-label">bridge</span>
           <span className="kbd">{hintFor("desktop.commands.open", IS_WIN ? "^K" : "⌘K")}</span>
         </button>
 
@@ -113,7 +114,7 @@ function tabClickProps(onSelect, onClose) {
 
 function TabBar({
   projects, activeId, onSelect, onClose, onRename, onNew, onHistory, onNewInProject, onConfigureProject, onReorder,
-  sidebarOpen, onToggleSidebar,
+  sidebarOpen, onToggleSidebar, prStatuses = {},
   profiles = [], appVersion, updateVersion, onUpdate, onCheckUpdate,
   settings, onSelectSettings, onCloseSettings,
 }) {
@@ -145,6 +146,7 @@ function TabBar({
               group={group}
               activeId={activeId}
               profileLabel={profileLabel}
+              prStatuses={prStatuses}
               onSelect={onSelect}
               onClose={onClose}
               onNewInProject={onNewInProject}
@@ -157,22 +159,25 @@ function TabBar({
         const p = group.tabs[0];
         const active = p.id === activeId;
         const profile = profileLabel(p.profile);
+        const prDescription = window.OMP_PR_STATUS.present(prStatuses[p.id])?.description;
         return (
           <div key={p.id}
             {...reorder.itemProps("projects", group.key, "x")}
             className={`tab ${active ? "active" : ""}${reorder.dropClass("projects", group.key)}`}
+            title={[p.name, p.path, prDescription].filter(Boolean).join("\n")}
             {...tabClickProps(() => onSelect(p.id), () => onClose?.(p.id))}
             // The first click of the pair already selected the tab.
             onDoubleClick={e => { if (onRename && !e.target.closest(".tab-close")) setRenaming(p.id); }}>
             <span className="tab-bar-mark" style={{ background: active ? p.color : "transparent" }} />
             <Icon name="folder" size={11} color={active ? p.color : "var(--fg-4)"} />
             <TabRunDot state={p.runState} />
+            <window.PrStatus status={prStatuses[p.id]} />
             {renaming === p.id ? (
               <RenameField value={p.name}
                 onCommit={name => onRename(p.id, name)}
                 onClose={() => setRenaming(null)} />
             ) : (
-              <TabLabel tab={p} className="tab-name" title={`${p.name}\ndouble-click to rename`} />
+              <TabLabel tab={p} className="tab-name" title={[p.name, "double-click to rename", prDescription].filter(Boolean).join("\n")} />
             )}
             <WorktreeIndicator tab={p} />
             {profile && (

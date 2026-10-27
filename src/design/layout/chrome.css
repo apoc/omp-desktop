@@ -38,7 +38,26 @@
   display: flex; align-items: center; justify-content: center;
   border-radius: 4px; cursor: default;
 }
-.chrome-title { display: flex; align-items: center; gap: 6px; font-size: var(--d-text-sm); flex: 1; justify-content: center; }
+.chrome-title {
+  display: flex; align-items: center; gap: 6px;
+  flex: 1; min-width: 0; justify-content: center;
+  font-size: var(--d-text-sm); white-space: nowrap;
+}
+.chrome-project-name, .chrome-branch .mono, .chrome-title .worktree-label {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis;
+}
+.chrome-project-name { color: var(--fg-2); }
+.chrome-title .chrome-branch, .chrome-title .worktree-indicator { min-width: 0; flex: 0 1 auto; }
+.chrome-title svg, .chrome-brand, .chrome-project-config { flex: none; }
+.chrome-lights, .chrome-right, .chrome > .profile-menu { flex: none; }
+@media (max-width: 720px) {
+  .chrome-brand { display: none; }
+  .chrome > .profile-menu { max-width: 96px; }
+  .chrome .profile-trigger { max-width: 100%; }
+}
+@media (max-width: 640px) {
+  .chrome-command-label, .chrome-command .kbd { display: none; }
+}
 .chrome-project-config {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px;

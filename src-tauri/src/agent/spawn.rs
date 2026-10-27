@@ -104,10 +104,8 @@ pub fn omp_command_in<S: AsRef<OsStr>>(cwd: &Path, args: &[S]) -> Result<Command
 
 // ── omp version floor ───────────────────────────────────────────────────────
 
-/// Development floor for the unreleased dictation RPC. Until upstream ships
-/// it, this requires the locally modified omp 18.13.1-dev build; the numeric
-/// check alone cannot establish that an arbitrary binary contains the RPC.
-const MIN_OMP_VERSION: [u32; 3] = [18, 13, 1];
+/// First stable release with the draft-only dictation RPC (upstream #17158).
+const MIN_OMP_VERSION: [u32; 3] = [18, 13, 2];
 
 /// The binary whose `omp --version` check passed. Only a pass is
 /// remembered, and only for that path: after a refusal the next tab start
@@ -150,14 +148,14 @@ fn version_refusal(output: &str) -> Option<String> {
     match output.lines().find_map(parse_version_line) {
         Some(found) if found >= MIN_OMP_VERSION => None,
         Some(found) => Some(format!(
-            "omp {} is older than OMP Desktop supports ({} or newer). Dictation currently requires a locally modified, unreleased omp 18.13.1-dev build.",
+            "omp {} is older than OMP Desktop supports ({} or newer). Run `omp update` to upgrade.",
             fmt_version(found),
             fmt_version(MIN_OMP_VERSION)
         )),
         None => {
             let printed: String = output.trim().chars().take(200).collect();
             Some(format!(
-                "could not read the omp version (`omp --version` printed {printed:?}). OMP Desktop currently requires the locally modified, unreleased omp 18.13.1-dev build (version {} or newer).",
+                "could not read the omp version (`omp --version` printed {printed:?}). OMP Desktop requires omp version {} or newer; install or update omp and retry.",
                 fmt_version(MIN_OMP_VERSION)
             ))
         }

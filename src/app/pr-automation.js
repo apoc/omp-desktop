@@ -51,6 +51,10 @@
       !Number.isSafeInteger(snapshot.deletions) ||
       snapshot.deletions < 0 ||
       typeof snapshot.isDraft !== "boolean" ||
+      !["OPEN", "MERGED", "CLOSED"].includes(snapshot.state) ||
+      !["none", "pending", "success", "failure", "unknown"].includes(
+        snapshot.checksState,
+      ) ||
       !Array.isArray(snapshot.failedChecks) ||
       !Array.isArray(snapshot.threads) ||
       !snapshot.failedChecks.every((c) => c && nonempty(c.id)) ||
@@ -95,9 +99,9 @@
     return error?.message || "PR automation failed.";
   }
 
-  /** getContext supplies the latest committed tab, bridge and gates, including
-   * optional projectKey (the canonical folder). The clock is injectable so
-   * decisions, races and actual dispatches can be exercised without GitHub. */
+  // Grants are tab-local; discovery below is shared by checkout. A read may
+  // update inactive navigation, but only its captured selected-tab grant may
+  // publish an agent prompt.
   function createController({
     getContext,
     onChange,
@@ -105,286 +109,117 @@
     clearTimer = clearTimeout,
     intervalMs = INTERVAL_MS,
   }) {
-    const tabs = new Map();
-    let previous = null;
-    let generation = 0;
-    let timer = null;
-    let timerEntry = null;
-    let flight = null;
-    let active = false;
-    let refreshRequested = false;
-
+    const grants = new Map();
+    let active = false,
+      generation = 0,
+      previous = null;
+    const ctx = () => getContext() || {};
+    const session = (c = ctx()) => c.sessions.find((s) => s.id === c.tabId);
+    const stamp = (s) =>
+      JSON.stringify([
+        s.path,
+        s.branch ?? null,
+        s.profile ?? null,
+        s.sessionFile ?? null,
+        s.processStartedAt ?? null,
+        s.conversationVersion ?? 0,
+      ]);
     const notify = () => {
       if (active) onChange?.();
     };
-    const ctx = () => getContext() || {};
-    const open = (c, id) =>
-      !!id && Array.isArray(c.sessionIds) && c.sessionIds.includes(id);
-    const discoverable = (c) =>
-      open(c, c.tabId) &&
+    const available = (c) =>
       c.featureEnabled !== false &&
-      !!c.projectKey &&
       c.connected !== false &&
       c.bridge?.isConnected !== false &&
-      typeof c.bridge?.prAutomationSnapshot === "function";
-    const ready = (c) =>
-      discoverable(c) &&
+      !!session(c)?.path;
+    const ready = (c = ctx()) =>
+      available(c) &&
       c.blocked === false &&
       c.runState === "idle" &&
       typeof c.bridge?.prAutomationSend === "function";
-    const cancelTimer = () => {
-      if (timer !== null) {
-        clearTimer(timer);
-        timer = null;
-        if (timerEntry) timerEntry.loading = false;
-        timerEntry = null;
-      }
-    };
-    const entryFor = (id) => {
-      let e = tabs.get(id);
-      if (!e) {
-        e = {
-          enabled: false,
-          token: 0,
-          projectKey: null,
-          handled: new Set(),
-          phase: "pending",
-          error: null,
-          number: null,
-          url: null,
-          fixing: false,
-          seenBusy: false,
-          snapshot: null,
-          loading: false,
-          discoveryError: null,
-          conversationKey: null,
-          branchKey: null,
-        };
-        tabs.set(id, e);
-      }
-      return e;
-    };
     const disable = (e) => {
       e.enabled = false;
       e.token++;
-      e.phase = "pending";
       e.error = null;
-      e.number = null;
-      e.url = null;
       e.fixing = false;
-      e.loading = false;
       e.seenBusy = false;
+      e.phase = "pending";
       e.handled.clear();
     };
-
-    function view() {
-      const c = ctx();
-      const currentEntry = open(c, c.tabId) ? tabs.get(c.tabId) : null;
-      const e =
-        c.featureEnabled !== false &&
-        currentEntry?.projectKey === (c.projectKey || null) &&
-        currentEntry?.conversationKey === (c.conversationKey || null) &&
-        currentEntry?.branchKey === (c.branchKey || null)
-          ? currentEntry
-          : null;
-      const discovery = {
-        snapshot: discoverable(c) ? (e?.snapshot ?? null) : null,
-        loading: discoverable(c) ? !e || e.loading || refreshRequested : false,
-        discoveryError: e?.discoveryError ?? null,
-      };
-      if (!e?.enabled)
-        return {
+    const grant = (s) => {
+      if (!s) return null;
+      let e = grants.get(s.id);
+      if (!e || e.stamp !== stamp(s)) {
+        if (e) disable(e);
+        e = {
+          stamp: stamp(s),
           enabled: false,
-          status: "Auto-fix is off.",
+          token: 0,
           error: null,
-          number: null,
-          url: null,
-          ...discovery,
+          phase: "pending",
+          fixing: false,
+          seenBusy: false,
+          handled: new Set(),
         };
-      let status;
-      if (e.error) status = "Paused after an error. Turn off and on to retry.";
-      else if (c.blocked !== false)
-        status = "Paused while another mode or project tab is active.";
-      else if (e.phase === "sending") status = "Sending fix prompt…";
-      else if (c.runState !== "idle")
-        status =
-          e.fixing && c.runState !== "failed"
-            ? "Fix prompt sent; waiting for the agent to be idle."
-            : "Paused while the agent is not idle.";
-      else if (!ready(c)) status = "Paused until the agent is connected.";
-      else if (e.phase === "checking") status = "Checking PR feedback…";
-      else if (e.fixing) status = "Fix prompt sent; awaiting the agent.";
-      else if (e.phase === "inactive")
-        status = "Paused while inactive; waiting to check feedback.";
-      else if (e.phase === "no-pr")
-        status = "No open pull request for the current branch.";
-      else if (e.phase === "clean")
-        status = "No failed checks or unresolved review threads.";
-      else if (e.phase === "handled")
-        status = "Feedback already sent; awaiting new feedback.";
-      else status = "Waiting to check PR feedback.";
-      return {
-        enabled: true,
-        status,
-        error: e.error,
-        number: e.number,
-        url: e.url,
-        ...discovery,
-      };
-    }
-
-    function schedule(delay) {
-      const c = ctx();
-      if (!active || timer !== null || flight || !discoverable(c)) return;
-      const e = tabs.get(c.tabId);
-      if (!e || (e.enabled && e.error && !refreshRequested)) return;
-      const immediate = refreshRequested || delay === 0;
-      if (!immediate && !e.enabled) return;
-      timerEntry = e;
-      timer = setTimer(
-        () => {
-          timer = null;
-          timerEntry = null;
-          const forced = refreshRequested;
-          refreshRequested = false;
-          poll(forced);
-        },
-        immediate ? 0 : delay,
-      );
-      if (immediate && !e.loading) {
-        e.loading = true;
-        notify();
+        grants.set(s.id, e);
       }
-    }
+      return e;
+    };
+    const currentGrant = () => {
+      const s = session(),
+        e = s && grants.get(s.id);
+      return e?.stamp === (s && stamp(s)) ? e : null;
+    };
 
-    // Reconcile inputs before scheduling and after every awaited bridge call.
-    // A generation change cancels a stale snapshot even if a tab is revisited.
-    function reconcile() {
-      const c = ctx();
-      const ids = Array.isArray(c.sessionIds) ? c.sessionIds : [];
-      for (const id of tabs.keys()) if (!ids.includes(id)) tabs.delete(id);
-      const next = {
-        tabId: c.tabId,
-        bridge: c.bridge,
-        runState: c.runState,
-        blocked: c.blocked,
-        connected: c.connected,
-        bridgeConnected: c.bridge?.isConnected,
-        projectKey: c.projectKey,
-        conversationKey: c.conversationKey,
-        branchKey: c.branchKey,
-        featureEnabled: c.featureEnabled,
-        ids: JSON.stringify(ids),
-      };
-      const changed =
-        !previous || Object.keys(next).some((k) => next[k] !== previous[k]);
-      if (!changed) return false;
-      if (previous && previous.tabId !== c.tabId) {
-        refreshRequested = false;
-        const old = tabs.get(previous.tabId);
-        if (
-          old?.enabled &&
-          !old.error &&
-          !old.fixing &&
-          old.phase !== "sending"
-        )
-          old.phase = "inactive";
-      }
-      previous = next;
-      generation++;
-      cancelTimer();
-      if (flight) flight.entry.loading = false;
-      if (c.featureEnabled === false)
-        for (const entry of tabs.values()) disable(entry);
-      const e = open(c, c.tabId) && entryFor(c.tabId);
-      if (e) {
-        if (
-          e.projectKey !== (c.projectKey || null) ||
-          e.conversationKey !== (c.conversationKey || null) ||
-          e.branchKey !== (c.branchKey || null)
-        ) {
-          disable(e);
-          e.projectKey = c.projectKey || null;
-          e.conversationKey = c.conversationKey || null;
-          e.branchKey = c.branchKey || null;
-          e.snapshot = null;
-          e.discoveryError = null;
-        }
-        if (e.enabled && e.fixing && c.runState !== "idle") e.seenBusy = true;
-        if (e.enabled && e.fixing && e.seenBusy && c.runState === "idle") {
-          e.fixing = false;
-          e.seenBusy = false;
-          e.phase = "handled";
-        }
-        if (e.phase === "checking") e.phase = "pending";
-      }
-      notify();
-      return true;
-    }
-
-    function sync() {
-      const changed = reconcile();
-      if (changed) schedule(0);
-    }
-
-    function stillCurrent(id, e, token, stamp, bridge, projectKey) {
-      const c = ctx();
-      return (
-        active &&
-        generation === stamp &&
-        tabs.get(id) === e &&
-        e.token === token &&
-        c.tabId === id &&
-        c.bridge === bridge &&
-        c.projectKey === projectKey &&
-        (c.branchKey || null) === e.branchKey &&
-        (c.conversationKey || null) === e.conversationKey &&
-        discoverable(c)
-      );
-    }
-
-    async function poll(forced = false) {
-      if (!active || flight || !discoverable(ctx())) return;
-      const c = ctx();
-      const id = c.tabId;
-      const e = tabs.get(id);
-      if (!e || (e.enabled && e.error && !forced)) return;
-      const token = e.token;
-      const stamp = generation;
-      const bridge = c.bridge;
-      const projectKey = c.projectKey;
-      const dispatchEligible = e.enabled && !e.error && ready(c);
-      const operation = { entry: e };
-      flight = operation;
-      e.loading = true;
-      if (dispatchEligible) e.phase = "checking";
-      notify();
-      let stale = false;
-      let dispatchStarted = false;
-      try {
-        const snapshot = await bridge.prAutomationSnapshot(id);
-        if (!stillCurrent(id, e, token, stamp, bridge, projectKey)) {
-          stale = true;
+    const monitor = window.OMP_PR_DISCOVERY.createMonitor({
+      getContext: () => ({
+        ...ctx(),
+        autoFixActive: !!currentGrant()?.enabled && !currentGrant()?.error,
+      }),
+      onChange: notify,
+      validate: validateSnapshot,
+      setTimer,
+      clearTimer,
+      intervalMs,
+      onBegin: (id) => {
+        const c = ctx(),
+          e = currentGrant();
+        return {
+          e,
+          token: e?.token,
+          generation,
+          eligible: id === c.tabId && !!e?.enabled && !e.error && ready(c),
+        };
+      },
+      onResult: async ({ id, owners, snapshot, error, permission }) => {
+        if (snapshot && snapshot.state !== "OPEN") {
+          for (const owner of owners) {
+            const e = grants.get(owner);
+            if (e?.enabled) disable(e);
+          }
+          notify();
           return;
         }
-        if (snapshot !== null) validateSnapshot(snapshot);
-        if (snapshot && c.branchKey && snapshot.branch !== c.branchKey) {
-          throw new Error("PR snapshot does not match the current branch.");
-        }
-        e.snapshot = snapshot;
-        e.discoveryError = null;
-        e.loading = false;
-        if (e.enabled) {
-          e.number = snapshot?.number ?? null;
-          e.url = snapshot?.url ?? null;
-        }
-        if (!dispatchEligible) {
+        const p = permission,
+          e = p?.e;
+        const current = () =>
+          active &&
+          p.generation === generation &&
+          ctx().tabId === id &&
+          currentGrant() === e &&
+          e?.enabled &&
+          e.token === p.token &&
+          ready();
+        if (!p?.eligible || !current()) return;
+        if (error) {
+          e.error = error;
+          e.fixing = false;
           notify();
           return;
         }
         e.fixing = false;
         e.seenBusy = false;
-        if (snapshot === null) {
+        if (!snapshot) {
           e.phase = "no-pr";
           notify();
           return;
@@ -398,38 +233,21 @@
           notify();
           return;
         }
-        // The bridge independently checks active tab and strict idle at the
-        // actual send, closing the gap between this guard and the RPC write.
-        if (
-          !stillCurrent(id, e, token, stamp, bridge, projectKey) ||
-          !e.enabled ||
-          !ready(ctx())
-        ) {
-          stale = true;
-          return;
-        }
         e.phase = "sending";
-        e.fixing = false;
         notify();
-        dispatchStarted = true;
-        const sent = await bridge.prAutomationSend(
-          id,
-          makePrompt(snapshot, feedback),
-          snapshot,
-          () =>
-            stillCurrent(id, e, token, stamp, bridge, projectKey) &&
-            e.enabled &&
-            ready(ctx()),
-        );
-        // A send already handed to the bridge cannot be recalled. Record a
-        // successful dispatch for this enabled incarnation even if the user
-        // switched tabs while its acknowledgement was in flight.
-        if (
-          sent === true &&
-          tabs.get(id) === e &&
-          e.enabled &&
-          e.token === token
-        ) {
+        try {
+          const sent = await ctx().bridge.prAutomationSend(
+            id,
+            makePrompt(snapshot, feedback),
+            snapshot,
+            () => current() && snapshot.state === "OPEN",
+          );
+          // A handoff already accepted cannot be recalled after a tab switch.
+          if (grants.get(id) !== e || !e.enabled || e.token !== p.token) return;
+          if (!sent)
+            throw new Error(
+              "The agent did not accept the fix prompt. Turn off and on to retry.",
+            );
           for (const item of feedback.checks)
             e.handled.add(feedbackKey(snapshot, "check", item));
           for (const item of feedback.threads)
@@ -437,111 +255,177 @@
           e.fixing = true;
           e.seenBusy = ctx().tabId === id && ctx().runState !== "idle";
           e.phase = "handled";
-          notify();
-        } else if (sent !== true) {
-          throw new Error(
-            "The agent did not accept the fix prompt. Turn off and on to retry.",
-          );
-        }
-      } catch (error) {
-        if (
-          dispatchStarted &&
-          tabs.get(id) === e &&
-          e.enabled &&
-          e.token === token
-        ) {
-          e.fixing = false;
-          e.error = errorMessage(error);
-          e.phase = "error";
-          notify();
-        } else if (
-          stillCurrent(id, e, token, stamp, bridge, projectKey) &&
-          (!dispatchEligible || ready(ctx()))
-        ) {
-          e.loading = false;
-          e.discoveryError = errorMessage(error);
-          if (dispatchEligible) {
+        } catch (error) {
+          if (grants.get(id) === e && e.enabled && e.token === p.token) {
             e.fixing = false;
-            e.error = e.discoveryError;
-            e.phase = "error";
+            e.error = errorMessage(error);
           }
-          notify();
-        } else stale = true;
-      } finally {
-        e.loading = false;
-        if (flight === operation) flight = null;
-        const changed = reconcile();
-        schedule(changed || stale || generation !== stamp ? 0 : intervalMs);
+        }
+        notify();
+      },
+    });
+
+    function sync() {
+      const c = ctx();
+      const ids = new Set(c.sessions.map((s) => s.id));
+      for (const id of grants.keys()) if (!ids.has(id)) grants.delete(id);
+      for (const s of c.sessions) grant(s);
+      if (c.featureEnabled === false)
+        for (const e of grants.values()) if (e.enabled) disable(e);
+      const next = JSON.stringify([
+        c.tabId,
+        c.runState,
+        c.blocked,
+        c.connected,
+        c.bridge?.isConnected,
+        c.featureEnabled,
+        c.visible,
+        c.sessions.map((s) => [s.id, stamp(s), s.runState]),
+      ]);
+      const changed =
+        !previous || previous.value !== next || previous.bridge !== c.bridge;
+      const sessionStates = new Map(
+        c.sessions.map((s) => [s.id, JSON.stringify([stamp(s), s.runState])]),
+      );
+      const changedIds = [...sessionStates]
+        .filter(([id, value]) => previous?.sessionStates.get(id) !== value)
+        .map(([id]) => id);
+      if (changed) {
+        const old = previous && grants.get(previous.tabId);
+        if (
+          previous?.tabId !== c.tabId &&
+          old?.enabled &&
+          !old.error &&
+          !old.fixing &&
+          old.phase !== "sending"
+        )
+          old.phase = "inactive";
+        generation++;
+        previous = {
+          value: next,
+          bridge: c.bridge,
+          tabId: c.tabId,
+          sessionStates,
+        };
+        const e = currentGrant();
+        if (e?.enabled && e.fixing && c.runState !== "idle") e.seenBusy = true;
+        if (e?.enabled && e.fixing && e.seenBusy && c.runState === "idle") {
+          e.fixing = false;
+          e.seenBusy = false;
+          e.phase = "handled";
+        }
       }
+      monitor.sync();
+      if (changed) {
+        for (const id of new Set([c.tabId, ...changedIds]))
+          if (id) monitor.refresh(id);
+        notify();
+      }
+    }
+
+    function view() {
+      const c = ctx(),
+        e = currentGrant(),
+        statuses = monitor.statuses();
+      const discovery = statuses[c.tabId] || {
+        snapshot: null,
+        loading: false,
+        discoveryError: null,
+      };
+      const snapshot = discovery.snapshot;
+      let status = "Auto-fix is off.";
+      const enabled = available(c) && !!e?.enabled;
+      if (snapshot?.state === "MERGED") status = "PR merged. Auto-fix is off.";
+      else if (snapshot?.state === "CLOSED")
+        status = "PR closed. Auto-fix is off.";
+      else if (enabled) {
+        if (e.error)
+          status = "Paused after an error. Turn off and on to retry.";
+        else if (c.blocked !== false)
+          status = "Paused while another mode or project tab is active.";
+        else if (e.phase === "sending") status = "Sending fix prompt…";
+        else if (c.runState !== "idle")
+          status =
+            e.fixing && c.runState !== "failed"
+              ? "Fix prompt sent; waiting for the agent to be idle."
+              : "Paused while the agent is not idle.";
+        else if (!ready(c)) status = "Paused until the agent is connected.";
+        else if (e.fixing) status = "Fix prompt sent; awaiting the agent.";
+        else if (e.phase === "inactive")
+          status = "Paused while inactive; waiting to check feedback.";
+        else if (discovery.loading) status = "Checking PR feedback…";
+        else if (e.phase === "no-pr")
+          status = "No pull request for the current branch.";
+        else if (e.phase === "clean")
+          status = "No failed checks or unresolved review threads.";
+        else if (e.phase === "handled")
+          status = "Feedback already sent; awaiting new feedback.";
+        else status = "Waiting to check PR feedback.";
+      }
+      return {
+        enabled,
+        status,
+        error: enabled ? e.error : null,
+        number: enabled ? (snapshot?.number ?? null) : null,
+        url: enabled ? (snapshot?.url ?? null) : null,
+        ...discovery,
+        statuses,
+      };
     }
 
     function toggle() {
       if (!active) return;
-      reconcile();
-      const c = ctx();
-      if (!discoverable(c)) return;
-      const e = entryFor(c.tabId);
+      sync();
+      const c = ctx(),
+        s = session(c);
+      if (!available(c)) return;
+      const e = grant(s),
+        snapshot = monitor.statuses()[s.id]?.snapshot;
       if (e.enabled) disable(e);
       else {
-        const key = c.projectKey || null;
-        if (key)
-          for (const other of tabs.values()) {
-            if (other !== e && other.enabled && other.projectKey === key)
-              disable(other);
-          }
+        if (snapshot && snapshot.state !== "OPEN") return;
+        for (const other of c.sessions) {
+          const old = grants.get(other.id);
+          if (old !== e && old?.enabled && other.path === s.path) disable(old);
+        }
         e.token++;
         e.enabled = true;
-        e.projectKey = key;
-        e.phase = "pending";
         e.error = null;
         e.handled.clear();
+        e.phase = "pending";
         e.fixing = false;
         e.seenBusy = false;
       }
       generation++;
-      e.loading = false;
-      cancelTimer();
+      monitor.refresh(c.tabId);
       notify();
-      schedule(0);
     }
-
     function pause() {
-      if (!active) return;
-      const c = ctx();
-      const e = open(c, c.tabId) && tabs.get(c.tabId);
-      if (!e?.enabled) return;
+      const e = currentGrant();
+      if (!active || !e?.enabled) return;
       disable(e);
       generation++;
-      cancelTimer();
-      e.loading = false;
+      monitor.refresh(ctx().tabId);
       notify();
-      schedule(0);
     }
-
     function refresh() {
-      if (!active) return;
-      reconcile();
-      if (!discoverable(ctx())) return;
-      generation++;
-      cancelTimer();
-      if (flight) flight.entry.loading = false;
-      refreshRequested = true;
-      notify();
-      schedule(0);
+      if (active) {
+        sync();
+        generation++;
+        monitor.refresh();
+      }
     }
-
     function start() {
       active = true;
       previous = null;
       sync();
+      monitor.start();
     }
     function stop() {
       active = false;
       generation++;
-      cancelTimer();
-      if (flight) flight.entry.loading = false;
-      refreshRequested = false;
       previous = null;
+      monitor.stop();
     }
     return { start, stop, sync, view, toggle, pause, refresh };
   }
