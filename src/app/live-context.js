@@ -1,7 +1,11 @@
 // Startup context for omp's native live_start.instructions template. Historical
 // text is quoted data, never a new command or an instruction to execute again.
 (function () {
-  const LIMITS = Object.freeze({ chat: 49152, voice: 16384, entry: 8192 });
+  // Use a conservative 12 KiB UTF-8 envelope below AVAS's 16384-token ceiling,
+  // with headroom for native name expansion, not an optimistic chars/4 estimate.
+  const LIMITS = Object.freeze({ instructions: 12288, chat: 8192, voice: 2048, entry: 2048 });
+  const encoder = new TextEncoder();
+  const bytes = text => encoder.encode(text).length;
   // Preserve omp's unified voice/delegation contract when overriding its prompt.
   const PROMPT = `You are omp Live, the realtime voice surface of one unified coding assistant for {{firstName}} (OS account: {{username}}).
 You and the coding agent are one assistant. Speak directly, briefly and naturally; avoid markdown, code blocks and long lists unless requested.
@@ -17,6 +21,27 @@ The chat history is the current coding conversation; voice history is earlier sp
     const last = text.charCodeAt(end - 1);
     if (last >= 0xd800 && last <= 0xdbff) end--;
     return text.slice(0, end);
+  }
+  // Count what is actually sent, including JSON and Handlebars-safe escapes.
+  function serialize(data) {
+    return JSON.stringify(data).replace(/"(?:\\.|[^"\\])*"/g,
+      token => token.replace(/\{/g, "\\u007b").replace(/\}/g, "\\u007d"));
+  }
+  const render = data => `${PROMPT}\nConversation history (JSON data):\n${serialize(data)}`;
+  function fitRow(row, budget) {
+    if (bytes(serialize(row)) <= budget) return row;
+    const shortened = { ...row, text: "", truncated: true };
+    if (bytes(serialize(shortened)) > budget) return null;
+    let low = 0;
+    let high = row.text.length;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      shortened.text = prefix(row.text, mid);
+      if (bytes(serialize(shortened)) <= budget) low = mid;
+      else high = mid - 1;
+    }
+    shortened.text = prefix(row.text, low);
+    return shortened;
   }
   function contentText(content) {
     if (typeof content === "string") return content;
@@ -48,39 +73,46 @@ The chat history is the current coding conversation; voice history is earlier sp
       const text = prefix(row.text, LIMITS.entry);
       return { ...row, text, ...(text.length < row.text.length ? { truncated: true } : {}) };
     });
-    // Keep saved compacted intent, the original user objective and the latest
-    // exchanges. Queued steers follow context order, never timestamp order.
-    const anchors = [entries.findIndex(row => row.role === "compactionSummary" || row.role === "branchSummary"),
-      entries.findIndex(row => row.role === "user")];
-    const keep = new Set();
+    // Reserve room for saved intent, the objective AND the latest turn, even
+    // when an anchor alone would otherwise consume the entire byte budget.
+    const priorities = [...new Set([
+      entries.findIndex(row => row.role === "compactionSummary" || row.role === "branchSummary"),
+      entries.findIndex(row => row.role === "user"), entries.length - 1,
+    ].filter(index => index !== -1))];
+    const keep = new Map();
     let remaining = budget;
-    for (const index of anchors) {
-      if (index !== -1 && !keep.has(index)) { keep.add(index); remaining -= entries[index].text.length; }
+    const share = Math.floor(budget / Math.max(1, priorities.length)) - 1;
+    for (const index of priorities) {
+      const row = fitRow(entries[index], share);
+      if (row) { keep.set(index, row); remaining -= bytes(serialize(row)) + 1; }
     }
     for (let i = entries.length - 1; i >= 0; i--) {
       if (keep.has(i)) continue;
-      if (entries[i].text.length > remaining) break;
-      keep.add(i);
-      remaining -= entries[i].text.length;
+      const cost = bytes(serialize(entries[i])) + 1;
+      if (cost > remaining) break;
+      keep.set(i, entries[i]);
+      remaining -= cost;
     }
-    return { messages: entries.filter((_, i) => keep.has(i)), omitted: entries.length - keep.size };
+    return { messages: entries.flatMap((_, i) => keep.has(i) ? [keep.get(i)] : []), omitted: entries.length - keep.size };
   }
   function instructions({ messages, voice = [], project = "" }) {
     if (!Array.isArray(messages)) throw new Error("Could not read conversation history for live voice");
     const rows = Array.isArray(voice) ? voice.filter(row =>
       (row?.role === "user" || row?.role === "assistant") && typeof row.text === "string" && row.text.trim()
     ).map(({ role, text, final }) => ({ role, text, final: final === true })) : [];
+    const chat = chatRows(messages);
     const data = {
-      project: prefix(typeof project === "string" ? project : "", 4096),
-      chat: bounded(chatRows(messages), LIMITS.chat),
-      voice: bounded(rows, LIMITS.voice),
+      project: fitRow({ text: typeof project === "string" ? project : "" }, 512).text,
+      chat: { messages: [], omitted: chat.length },
+      voice: { messages: [], omitted: rows.length },
     };
-    // omp renders instructions with Handlebars. Escape braces ONLY inside JSON
-    // string tokens so arbitrary {{helpers}} remain literal history, while the
-    // JSON structural braces and the native name placeholders stay intact.
-    const json = JSON.stringify(data).replace(/"(?:\\.|[^"\\])*"/g,
-      token => token.replace(/\{/g, "\\u007b").replace(/\}/g, "\\u007d"));
-    return `${PROMPT}\nConversation history (JSON data):\n${json}`;
+    // The empty envelopes already reserve metadata and the largest omission
+    // counts. Every selected row is charged for its escaped bytes and comma.
+    const available = Math.max(0, LIMITS.instructions - bytes(render(data)));
+    const voiceBudget = rows.length ? Math.min(LIMITS.voice, Math.floor(available / 4)) : 0;
+    data.chat = bounded(chat, Math.min(LIMITS.chat, available - voiceBudget));
+    data.voice = bounded(rows, voiceBudget);
+    return render(data);
   }
   window.OMP_LIVE_CONTEXT = { LIMITS, instructions };
 })();

@@ -5,7 +5,7 @@ import { runInNewContext } from "node:vm";
 import { test } from "node:test";
 
 const window = {};
-runInNewContext(readFileSync(new URL("../src/app/live-context.js", import.meta.url), "utf8"), { window });
+runInNewContext(readFileSync(new URL("../src/app/live-context.js", import.meta.url), "utf8"), { window, TextEncoder });
 const C = window.OMP_LIVE_CONTEXT;
 const history = instructions => JSON.parse(instructions.split("\nConversation history (JSON data):\n")[1]);
 
@@ -58,6 +58,50 @@ test("large histories retain the original goal and latest exchanges with explici
   assert.equal(data.chat.messages.at(-1).text, "Latest change: never discard unsaved drafts");
   assert.ok(data.chat.omitted > 0);
   assert.ok(data.chat.messages.reduce((n, m) => n + m.text.length, 0) <= C.LIMITS.chat);
+});
+
+test("complete voice instructions fit the service envelope after Unicode and JSON escaping", () => {
+  const messages = [{ role: "user", content: "Original objective: preserve drafts." }];
+  for (let i = 0; i < 80; i++) messages.push({ role: "toolResult", toolName: "bash", content: '{{"漢字😀\\\\\\n"}}'.repeat(1000) });
+  messages.push({ role: "user", content: "Latest request: verify resume." });
+  const voice = Array.from({ length: 30 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", text: "Earlier spoken decision: " + "語😀{{}}".repeat(1000), final: true }));
+  const prompt = C.instructions({ messages, voice, project: "{{😀}}".repeat(1000) });
+  assert.ok(Buffer.byteLength(prompt, "utf8") <= 12288, "the complete template must leave room below the 16384-token ceiling");
+  const data = history(prompt);
+  assert.equal(data.chat.messages[0].text, "Original objective: preserve drafts.");
+  assert.equal(data.chat.messages.at(-1).text, "Latest request: verify resume.");
+  assert.ok(data.chat.omitted > 0);
+  assert.ok(data.voice.messages.length > 0);
+});
+
+test("row metadata and numerous short messages are charged to the instruction budget", () => {
+  const messages = [{ role: "user", content: "Keep the original objective." },
+    ...Array.from({ length: 3000 }, () => ({ role: "toolResult", toolName: "bash", content: "x" })),
+    { role: "assistant", content: "Latest result." }];
+  const prompt = C.instructions({ messages });
+  const data = history(prompt);
+  assert.ok(Buffer.byteLength(prompt, "utf8") <= 12288);
+  assert.equal(data.chat.messages[0].text, "Keep the original objective.");
+  assert.equal(data.chat.messages.at(-1).text, "Latest result.");
+  assert.ok(data.chat.omitted > 0);
+});
+
+test("oversized anchors cannot crowd out the latest turn or split Unicode text", () => {
+  const text = "😀{{語}}".repeat(8000);
+  const prompt = C.instructions({ messages: [
+    { role: "compactionSummary", summary: text },
+    { role: "user", content: text },
+    { role: "assistant", content: text },
+  ], voice: [{ role: "user", text, final: true }, { role: "assistant", text: "Latest spoken choice: keep drafts.", final: true }] });
+  assert.ok(Buffer.byteLength(prompt, "utf8") <= 12288);
+  const data = history(prompt);
+  assert.deepEqual(data.chat.messages.map(row => row.role), ["compactionSummary", "user", "assistant"]);
+  for (const row of data.chat.messages) {
+    assert.equal(row.truncated, true);
+    assert.ok(text.startsWith(row.text));
+    assert.equal(row.text.isWellFormed(), true);
+  }
+  assert.equal(data.voice.messages.at(-1).text, "Latest spoken choice: keep drafts.");
 });
 
 test("truncation is reported without splitting a Unicode surrogate pair", () => {
