@@ -23,6 +23,8 @@
   const TURN = window.OMP_TURN_STATUS;
   const GOAL = window.OMP_GOAL;
   const EXT = window.OMP_EXT_WIDGETS;
+  const LIVE = window.OMP_LIVE_VOICE;
+  const DICTATION = LIVE.DICTATION;
   const { tsOf, mergeTranscript } = window.OMP_TRANSCRIPT;
 
   // ── Safe defaults so design components never crash on missing fields ──────
@@ -92,6 +94,8 @@
     // #52). Not reset by `/new`, branch or fork (omp's TUI keeps them too);
     // gone with the process (`_endDeadProcessState`).
     extWidgets:     EXT.EMPTY,
+    liveVoice:      LIVE.EMPTY,
+    dictation:      DICTATION.EMPTY,
   };
 
   let streamingBubble = null;
@@ -157,6 +161,7 @@
   // Session ids with an omp respawn in flight (`_respawnSession`: a profile
   // switch or an approval-mode restart).
   const _respawning = new Set();
+  const _closingVoiceTabs = new Set();
   // Tool approval mode (app/approval-mode.js): the `{ default, projects }`
   // view from Rust (`approval_mode_get`, replaced by every set's response),
   // null until the boot fetch lands. App-wide like `profiles`.
@@ -238,6 +243,16 @@
   // ── ID-keyed response correlation ─────────────────────────────────────────
   // Used by _sendWithResponse to correlate commands that need a typed reply.
   const _pendingResponses = new Map(); // id → { resolve, reject }
+  let _liveGen = 0;
+  let _liveStartPending = null;
+  let _liveStopPending = null;
+  let _liveMutePending = null;
+  let _dictationGen = 0;
+  let _dictationStartPending = null;
+  let _dictationStopPending = null;
+  // Completed captures wait here until the mounted composer consumes them;
+  // React may coalesce snapshots across a tab switch or several captures.
+  let _dictationCompleted = [];
   let _nextCmdId = 1;
   // Timeout for a short interactive command a user is waiting on.
   const QUICK_CMD_TIMEOUT_MS = 15000;
@@ -250,12 +265,13 @@
    */
   function _sendWithResponse(cmd, timeout = 120000) {
     let handedOff = Promise.resolve(false);
+    let commandId = null;
     const response = new Promise((resolve, reject) => {
       if (!window.__TAURI__ || !activeSessionId) {
         reject(new Error("Not connected"));
         return;
       }
-      const id = `d${_nextCmdId++}`;
+      const id = commandId = `d${_nextCmdId++}`;
       let timer;
       if (timeout > 0) {
         timer = setTimeout(() => {
@@ -280,6 +296,14 @@
       });
     });
     response.handedOff = handedOff;
+    // Voice teardown cancels commands that can no longer receive a reply
+    // after a tab switch or process exit; other commands retain their timeout.
+    response.cancel = reason => {
+      const handler = _pendingResponses.get(commandId);
+      if (!handler) return;
+      _pendingResponses.delete(commandId);
+      handler.reject(new Error(reason));
+    };
     return response;
   }
 
@@ -358,6 +382,9 @@
       queueSending:    state.queueSending,
       goal:            state.goal,
       extWidgets:      state.extWidgets,
+      liveVoice:       state.liveVoice,
+      dictation:       state.dictation,
+      dictationCompleted: _dictationCompleted,
       // Tab list — derived from session registry, not per-session state.
       // runState: active tab reads live state; background tabs read their
       // cached snapshot (never activated yet = "idle" defaults).
@@ -736,11 +763,15 @@
     state.asyncPending = false;
     state.messages = TURN.retryCleared(state.messages);
     // Its extensions died with it; the backend's copy ended with the entry.
+    _cancelLiveRequests();
+    state.liveVoice = LIVE.apply(state.liveVoice, { type: "process_exit", error: state.exitReason });
+    if (state.dictation.active) _finishDictation({ type: "process_exit", error: state.exitReason || "The omp process ended during voice to text" });
+    _cancelDictationRequests();
     state.extWidgets = EXT.EMPTY;
   }
 
   // Reset all per-session volatile state (called before loading a new session)
-  function _resetSessionVars() {
+  function _resetSessionVars(keepVoice = false) {
     Object.assign(state, {
       messages:      [],
       isStreaming:   false,
@@ -766,6 +797,8 @@
       queueSending:  [],
       goal:          GOAL.UNKNOWN,
       extWidgets:    EXT.EMPTY,
+      liveVoice:     keepVoice ? state.liveVoice : LIVE.EMPTY,
+      dictation:     keepVoice ? state.dictation : DICTATION.EMPTY,
     });
     streamingBubble = null;
     lastTurnOk  = true;
@@ -815,6 +848,8 @@
       queueSending:  state.queueSending,
       goal:          state.goal,
       extWidgets:    state.extWidgets,
+      liveVoice:     state.liveVoice,
+      dictation:     state.dictation,
       // volatile vars
       streamingBubble,
       activeToolCards: new Map(activeToolCards),
@@ -855,6 +890,8 @@
       queueSending:  snap.queueSending ?? [],
       goal:          snap.goal ?? GOAL.UNKNOWN,
       extWidgets:    snap.extWidgets ?? EXT.EMPTY,
+      liveVoice:     snap.liveVoice ?? LIVE.EMPTY,
+      dictation:     snap.dictation ?? DICTATION.EMPTY,
     });
     streamingBubble = snap.streamingBubble;
     activeToolCards = snap.activeToolCards;
@@ -879,13 +916,32 @@
   // state after a newer switch already took over; guarded stale call detects
   // the generation mismatch and bails without touching shared state).
   let _switchGen = 0;
+  // Keep the old listener alive while stopping its microphone. Separate
+  // intent from activation generation so rapid tab clicks share that stop.
+  let _switchIntent = 0;
+  let _switchAwayFrom = null;
   let _switchPromise = Promise.resolve();
   async function _switchToSession(id) {
     if (!window.__TAURI__) return;
     let done;
     const p = new Promise(resolve => { done = resolve; });
     _switchPromise = p;
+    const intent = ++_switchIntent;
+    const previous = activeSessionId;
+    _switchAwayFrom = previous !== id ? previous : null;
     try {
+    if (previous && previous !== id && state.liveVoice.active) {
+      const stopped = await _liveStop();
+      if (_switchIntent !== intent || activeSessionId !== previous) return;
+      // A failed stop might still be recording. Do not background that tab.
+      if (!stopped.ok && state.liveVoice.active) return;
+    }
+    if (previous && previous !== id && (state.dictation.active || _dictationStopPending)) {
+      const stopped = await _dictationStop();
+      if (_switchIntent !== intent || activeSessionId !== previous) return;
+      if (!stopped.ok && state.dictation.active) return;
+    }
+    if (_switchIntent !== intent || !sessionRegistry.has(id)) return;
     const myGen = ++_switchGen;
 
     // Snapshot current session so we can restore it when switching back
@@ -1058,6 +1114,7 @@
     _initFetch();
     notify();
     } finally {
+      if (_switchIntent === intent) _switchAwayFrom = null;
       done();
     }
   }
@@ -1200,6 +1257,12 @@
    *  `start_session` installed the fresh incarnation under the same id, it
    *  would reap the *new* process instead of the dead one. */
   function _killSessionProcess(id) {
+    if (id === activeSessionId) {
+      _cancelLiveRequests();
+      state.liveVoice = LIVE.EMPTY;
+      _cancelDictationRequests();
+      state.dictation = DICTATION.EMPTY;
+    }
     let stopped = Promise.resolve();
     if (window.__TAURI__) {
       stopped = window.__TAURI__.core.invoke("stop_session", { sessionId: id }).catch(() => {});
@@ -1215,6 +1278,13 @@
    *  Every path that removes a tab from `sessionRegistry` goes through here;
    *  a respawn uses `_killSessionProcess`, which keeps the browser and shell. */
   function _closeTab(id) {
+    if (id === activeSessionId) {
+      _cancelLiveRequests();
+      state.liveVoice = LIVE.EMPTY;
+      _cancelDictationRequests();
+      state.dictation = DICTATION.EMPTY;
+    }
+    _dictationCompleted = _dictationCompleted.filter(item => item.sessionId !== id);
     const closed = _invokeSafe("close_tab", { sessionId: id });
     _dropGitListener(id);
     sessionSnapshots.delete(id);
@@ -1257,6 +1327,9 @@
     // and `lastSeq` under its id - and the interleaved switch's own
     // `activeSessionId`/`activeListeners` writes would be clobbered when this
     // call resumes.
+    ++_switchIntent;
+    _switchAwayFrom = null;
+    _cancelLiveRequests();
     const listeners = activeListeners;
     activeListeners = [];
     activeSessionId = null;
@@ -1299,12 +1372,9 @@
    *  can render a refusal (a respawn already in flight, a failed respawn)
    *  instead of dropping it silently.
    *
-   *  Not unit-tested directly: every step is a Tauri IPC call or an event
-   *  listener mutation and there is no fake `__TAURI__` harness in this
-   *  repo. The pure decisions it leans on are extracted and proven
-   *  separately (`_resolveProfile`, `OMP_APPROVAL_MODE.restartPlan`); what
-   *  remains is ordering, and the comments inside state why each await
-   *  sits where it does. */
+   *  The dictation-before-restart ordering is covered by the fake IPC bridge
+   *  in test-live-voice.mjs; the remaining ordering relies on the comments
+   *  at each await and the pure profile/approval-mode decisions. */
   async function _respawnSession(id, { profile, resume = null, fresh = false }) {
     if (!window.__TAURI__) return { ok: false, error: "not connected" };
     const entry = sessionRegistry.get(id);
@@ -1321,6 +1391,11 @@
     }
     _respawning.add(id);
     try {
+      if (id === activeSessionId && (state.dictation.active || _dictationStopPending)) {
+        const stopped = await _dictationStop();
+        if (!stopped.ok && state.dictation.active) return stopped;
+        if (!sessionRegistry.has(id)) return { ok: false, error: "tab closed" };
+      }
       // Awaited: `stop_session` must have removed the old incarnation from
       // the backend's session map before `_spawnSession` installs the new
       // one under the same id, or the late remove would reap the fresh
@@ -2089,6 +2164,21 @@
     const { type } = ev;
     const now  = Date.now();
     const time = timeNow();
+    if (type === "live_phase" || type === "live_levels" || type === "live_transcript" || type === "live_end") {
+      const before = state.liveVoice;
+      const next = LIVE.apply(before, ev);
+      if (next !== before) {
+        state.liveVoice = next;
+        if (before.active && !next.active) _cancelLiveRequests(next.error || "Live voice ended");
+        notify();
+      }
+      return;
+    }
+    if (type === "dictation_state" || type === "dictation_transcript" || type === "dictation_end") {
+      if (type === "dictation_end") _finishDictation(ev);
+      else _dictationUpdate(ev);
+      return;
+    }
 
     // Subagent frames (only emitted once _initFetch subscribed this process).
     if (type === "subagent_lifecycle" || type === "subagent_progress" || type === "subagent_event") {
@@ -3202,7 +3292,11 @@
     // The process keeps running its extensions, and omp sends no clear on a
     // session change: keep their status lines and widgets, as omp's TUI does.
     const extWidgets = state.extWidgets;
-    _resetSessionVars();
+    // The same process can keep its recorder across a conversation change.
+    // Stop it rather than silently dropping the only state that exposes it.
+    if (state.liveVoice.active) void _liveStop();
+    if (state.dictation.active) void _dictationStop();
+    _resetSessionVars(true);
     state.extWidgets = extWidgets;
     if (keepTurnOutcome) lastTurnOk = turnOk;
     _initFetch();
@@ -3273,11 +3367,235 @@
     }
   }
 
+  // Live voice responses are tied to the process and call that sent them.
+  // Invalidate them on stop, terminal event, close, or process replacement.
+  function _cancelLiveRequests(reason = "Live voice session ended") {
+    ++_liveGen;
+    for (const op of [_liveStartPending, _liveStopPending, _liveMutePending]) {
+      op?.request?.cancel(reason);
+    }
+    _liveStartPending = _liveStopPending = _liveMutePending = null;
+  }
+
+  function _voiceUpdate(event) {
+    const next = LIVE.apply(state.liveVoice, event);
+    if (next !== state.liveVoice) { state.liveVoice = next; notify(); }
+  }
+
+  function _liveStart() {
+    if (!window.__TAURI__ || !activeSessionId || !sessionRegistry.has(activeSessionId)) return Promise.resolve({ ok: false, error: "Not connected" });
+    if (_replayBuffer || _switchAwayFrom === activeSessionId || _respawning.has(activeSessionId) || _closingVoiceTabs.has(activeSessionId)) return Promise.resolve({ ok: false, error: "Tab is not ready" });
+    if (state.dictation.active || _dictationStopPending) return Promise.resolve({ ok: false, error: "Voice to text is active" });
+    if (state.liveVoice.active) {
+      if (state.liveVoice.phase === "connecting" && _liveStartPending) return _liveStartPending.promise;
+      return Promise.resolve({ ok: false, error: state.liveVoice.phase === "stopping" ? "Live voice is stopping" : "Live voice is already active" });
+    }
+    const id = activeSessionId;
+    const gen = ++_liveGen;
+    state.liveVoice = LIVE.apply(state.liveVoice, { type: "start" });
+    // Connecting can take arbitrarily long; a stop or process exit cancels
+    // this waiter and sends live_stop even while the start is in progress.
+    const request = _sendWithResponse({ type: "live_start" }, 0);
+    const op = { request, promise: null };
+    _liveStartPending = op;
+    op.promise = (async () => {
+      try {
+        await request;
+        if (id !== activeSessionId || gen !== _liveGen || !state.liveVoice.active) {
+          return { ok: false, error: id === activeSessionId && state.liveVoice.error || "Live voice session ended" };
+        }
+        return { ok: true };
+      } catch (e) {
+        const error = String(e?.message ?? e);
+        if (id === activeSessionId && gen === _liveGen) _voiceUpdate({ type: "start_failure", error });
+        return { ok: false, error: id === activeSessionId && state.liveVoice.error || error };
+      } finally {
+        if (_liveStartPending === op) _liveStartPending = null;
+      }
+    })();
+    notify();
+    return op.promise;
+  }
+
+  function _liveStop() {
+    if (_liveStopPending) return _liveStopPending.promise;
+    if (!state.liveVoice.active) return Promise.resolve({ ok: true });
+    const id = activeSessionId;
+    const gen = ++_liveGen;
+    // A concurrent IPC handoff could otherwise deliver stop before start,
+    // leaving a recorder running after the tab was backgrounded.
+    const startHandoff = _liveStartPending?.request.handedOff;
+    _liveStartPending?.request.cancel("Live voice was stopped");
+    _liveMutePending?.request.cancel("Live voice was stopped");
+    state.liveVoice = LIVE.apply(state.liveVoice, { type: "stop" });
+    const op = { request: null, promise: null };
+    _liveStopPending = op;
+    op.promise = (async () => {
+      try {
+        const sent = startHandoff ? await startHandoff : true;
+        if (id !== activeSessionId || gen !== _liveGen) return { ok: false, error: "Live voice session ended" };
+        if (sent) {
+          op.request = _sendWithResponse({ type: "live_stop" }, QUICK_CMD_TIMEOUT_MS);
+          await op.request;
+        }
+        if (id !== activeSessionId || gen !== _liveGen) return { ok: false, error: "Live voice session ended" };
+        _voiceUpdate({ type: "stop_success" });
+        return { ok: true };
+      } catch (e) {
+        const error = String(e?.message ?? e);
+        if (id === activeSessionId && gen === _liveGen) _voiceUpdate({ type: "stop_failure", error });
+        return { ok: false, error };
+      } finally {
+        if (_liveStopPending === op) _liveStopPending = null;
+      }
+    })();
+    notify();
+    return op.promise;
+  }
+
+  function _liveMute(muted) {
+    if (typeof muted !== "boolean") return Promise.resolve({ ok: false, error: "Mute requires a boolean" });
+    if (!state.liveVoice.active || state.liveVoice.phase === "stopping") return Promise.resolve({ ok: false, error: "No live voice session is active" });
+    if (_liveMutePending) {
+      return _liveMutePending.muted === muted ? _liveMutePending.promise : Promise.resolve({ ok: false, error: "A mute change is already in progress" });
+    }
+    const id = activeSessionId;
+    const gen = _liveGen;
+    const request = _sendWithResponse({ type: "live_mute", muted }, QUICK_CMD_TIMEOUT_MS);
+    const op = { request, muted, promise: null };
+    _liveMutePending = op;
+    op.promise = (async () => {
+      try {
+        const data = await request;
+        if (id !== activeSessionId || gen !== _liveGen || !state.liveVoice.active) return { ok: false, error: "Live voice session ended" };
+        _voiceUpdate({ type: "mute_success", muted: data?.muted });
+        return { ok: true };
+      } catch (e) {
+        const error = String(e?.message ?? e);
+        if (id === activeSessionId && gen === _liveGen) _voiceUpdate({ type: "mute_failure", error });
+        return { ok: false, error };
+      } finally {
+        if (_liveMutePending === op) _liveMutePending = null;
+      }
+    })();
+    return op.promise;
+  }
+
+  function _cancelDictationRequests(reason = "Voice to text ended") {
+    ++_dictationGen;
+    _dictationStartPending?.request?.cancel(reason);
+    _dictationStopPending?.request?.cancel(reason);
+    _dictationStartPending = _dictationStopPending = null;
+  }
+
+  function _dictationUpdate(event) {
+    const next = DICTATION.apply(state.dictation, event);
+    if (next !== state.dictation) { state.dictation = next; notify(); }
+  }
+
+  // Both the terminal event and the stop response can finish a capture.
+  // Only the first transition queues text; replay and late replies are inert.
+  function _finishDictation(event) {
+    const before = state.dictation;
+    const next = DICTATION.apply(before, event);
+    if (next === before || next.active) return;
+    state.dictation = next;
+    if (next.text && sessionRegistry.has(activeSessionId)) {
+      _dictationCompleted = [..._dictationCompleted, { sessionId: activeSessionId, captureId: before.captureId, text: next.text }];
+    }
+    _dictationStartPending?.request?.cancel(next.error || "Voice to text ended");
+    notify();
+  }
+
+  function _dictationStart() {
+    if (!window.__TAURI__ || !activeSessionId || !sessionRegistry.has(activeSessionId)) return Promise.resolve({ ok: false, error: "Not connected" });
+    if (_replayBuffer || _switchAwayFrom === activeSessionId || _respawning.has(activeSessionId) || _closingVoiceTabs.has(activeSessionId)) return Promise.resolve({ ok: false, error: "Tab is not ready" });
+    if (state.liveVoice.active || _liveStopPending) return Promise.resolve({ ok: false, error: "Live conversation is active" });
+    if (state.dictation.active) {
+      if (state.dictation.phase === "starting" && _dictationStartPending) return _dictationStartPending.promise;
+      return Promise.resolve({ ok: false, error: "Voice to text is already active" });
+    }
+    if (_dictationStopPending) return Promise.resolve({ ok: false, error: "Voice to text is stopping" });
+    const id = activeSessionId, gen = ++_dictationGen, captureId = `capture-${_nextCmdId++}`;
+    state.dictation = DICTATION.apply(state.dictation, { type: "start", captureId });
+    const request = _sendWithResponse({ type: "dictation_start", captureId }, 0);
+    const op = { request, promise: null };
+    _dictationStartPending = op;
+    op.promise = (async () => {
+      try {
+        await request;
+        if (id !== activeSessionId) return { ok: false, error: "Voice to text ended" };
+        if (gen !== _dictationGen) return { ok: true };
+        if (!state.dictation.active) return state.dictation.error ? { ok: false, error: state.dictation.error } : { ok: true };
+        return { ok: true };
+      } catch (e) {
+        const error = String(e?.message ?? e);
+        if (id === activeSessionId && gen !== _dictationGen) return { ok: true };
+        if (id === activeSessionId && !state.dictation.active && !state.dictation.error) return { ok: true };
+        if (id === activeSessionId && gen === _dictationGen && state.dictation.active) _finishDictation({ type: "start_failure", error });
+        return { ok: false, error: id === activeSessionId && state.dictation.error || error };
+      } finally {
+        if (_dictationStartPending === op) _dictationStartPending = null;
+      }
+    })();
+    notify();
+    return op.promise;
+  }
+
+  function _dictationStop() {
+    if (_dictationStopPending) return _dictationStopPending.promise;
+    if (!state.dictation.active) return Promise.resolve({ ok: true });
+    const id = activeSessionId, captureId = state.dictation.captureId, gen = ++_dictationGen;
+    const startHandoff = _dictationStartPending?.request.handedOff;
+    _dictationStartPending?.request.cancel("Voice to text was stopped");
+    state.dictation = DICTATION.apply(state.dictation, { type: "stop" });
+    const op = { request: null, promise: null };
+    _dictationStopPending = op;
+    op.promise = (async () => {
+      try {
+        const sent = startHandoff ? await startHandoff : true;
+        if (id !== activeSessionId || gen !== _dictationGen) return { ok: false, error: "Voice to text ended" };
+        if (!state.dictation.active) return { ok: true };
+        const data = sent ? await (op.request = _sendWithResponse({ type: "dictation_stop" }, 120000)) : { text: state.dictation.text };
+        if (id !== activeSessionId || gen !== _dictationGen) return { ok: false, error: "Voice to text ended" };
+        if (state.dictation.active) {
+          _finishDictation({ type: "dictation_end", captureId, text: typeof data?.text === "string" ? data.text : state.dictation.text,
+            error: typeof data?.text === "string" ? null : "Invalid voice to text response" });
+        }
+        return { ok: true };
+      } catch (e) {
+        const error = String(e?.message ?? e);
+        if (id === activeSessionId && gen === _dictationGen) {
+          if (!state.dictation.active) return { ok: true };
+          _dictationUpdate({ type: "stop_failure", error });
+        }
+        return { ok: false, error };
+      } finally {
+        if (_dictationStopPending === op) _dictationStopPending = null;
+      }
+    })();
+    notify();
+    return op.promise;
+  }
+
   // ── OMP_BRIDGE public API ─────────────────────────────────────────────────
   window.OMP_BRIDGE = {
     get isConnected() { return !!window.__TAURI__ && !!activeSessionId; },
     get activeSessionId() { return activeSessionId; },
     waitForActivation() { return _switchPromise; },
+
+    // Native realtime voice is independent of the persisted chat transcript.
+    liveStart: _liveStart,
+    liveStop: _liveStop,
+    liveMute: _liveMute,
+    dictationStart: _dictationStart,
+    stopActiveVoice() { return state.dictation.active || _dictationStopPending ? _dictationStop() : state.liveVoice.active ? _liveStop() : Promise.resolve({ ok: true }); },
+    dictationStop: _dictationStop,
+    ackDictation(captureIds) {
+      const ids = new Set(captureIds);
+      const remaining = _dictationCompleted.filter(item => !ids.has(item.captureId));
+      if (remaining.length !== _dictationCompleted.length) { _dictationCompleted = remaining; notify(); }
+    },
 
     // ── Messaging ────────────────────────────────────────────────────────────
     // The bubble shows at once; omp's echo (`message_start`) ties it to the
@@ -4370,10 +4688,17 @@
       return _setApprovalModes("approval_mode_set_project", { projectRoot: path, mode: mode ?? null });
     },
 
-    /** Close a tab: Rust ends its omp process, git watcher, widgets and
-     *  shell. Unconditional; the tab bar goes through
-     *  `closeSessionGuarded`. */
+    /** Close a tab after stopping its microphone; a failed stop leaves the
+     *  tab visible so the user can retry. */
     async closeSession(id) {
+      if (!sessionRegistry.has(id) || _closingVoiceTabs.has(id)) return false;
+      _closingVoiceTabs.add(id);
+      try {
+        if (id === activeSessionId && (state.dictation.active || _dictationStopPending || state.liveVoice.active)) {
+          const stopped = await window.OMP_BRIDGE.stopActiveVoice();
+          if (!stopped.ok && id === activeSessionId && (state.dictation.active || state.liveVoice.active)) return false;
+          if (!sessionRegistry.has(id)) return false;
+        }
       _closeTab(id);
       sessionRegistry.delete(id);
       promptHistories.delete(id);
@@ -4392,6 +4717,10 @@
       } else {
         notify(); // tab list changed
       }
+      return true;
+      } finally {
+        _closingVoiceTabs.delete(id);
+      }
     },
 
     /** `closeSession`, after asking when Settings → Session "Ask before
@@ -4401,8 +4730,7 @@
       const confirm = PREFS.tabCloseConfirm(sessionPrefs, _sessionsView(), id);
       if (confirm && !(await _askClose(confirm))) return false;
       if (!sessionRegistry.has(id)) return false; // closed meanwhile
-      await window.OMP_BRIDGE.closeSession(id);
-      return true;
+      return window.OMP_BRIDGE.closeSession(id);
     },
 
     /** Answer the busy-close confirmation on screen (snapshot

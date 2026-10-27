@@ -71,6 +71,13 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     // Retry row's Stop while omp waits between automatic retries: ends the
     // run on the last failure without `abort`'s other effects.
     "abort_retry",
+    // Native realtime voice session controlled by the active desktop tab.
+    "live_start",
+    "live_stop",
+    "live_mute",
+    // Draft-only native microphone capture and transcription.
+    "dictation_start",
+    "dictation_stop",
     "follow_up",
     "steer",
     // Queue strip above the composer: edit omp's pending steer/follow-up
@@ -102,7 +109,7 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "cancel_subagent",
     // Conversation tree (src/app/conversation-tree.js): "Branch here" starts
     // a new file from a user prompt, "Fork after the reply" from a turn's last
-    // assistant entry. `fork` first shipped in omp 18.4.11 (the version floor).
+    // assistant entry. `fork` first shipped in omp 18.4.11.
     "branch",
     "fork",
     // Goal mode: omp's `goal` command (get/create/resume/pause/drop).

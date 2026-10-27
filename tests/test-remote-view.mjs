@@ -316,6 +316,7 @@ function liveBridge() {
     OMP_SESSION_PREFS: { fromTweaks: () => ({}) }, OMP_TWEAKS_STORE: { read: () => ({}) },
     INTENT_FRAMING: () => "", timeNow: () => "00:00",
   };
+  runInNewContext(source("src/app/live-voice.js"), { window });
   const logs = [], calls = [], listeners = new Map();
   runInNewContext(source("src/live.js"), { window, console: { log() {}, error: (...args) => logs.push(args) } });
   let fail = false, stopped = 0;

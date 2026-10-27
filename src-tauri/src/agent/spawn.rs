@@ -82,13 +82,10 @@ pub fn omp_output<S: AsRef<OsStr>>(args: &[S]) -> Result<std::process::Output, S
 
 // ── omp version floor ───────────────────────────────────────────────────────
 
-/// Oldest omp OMP Desktop runs against: the newest release whose RPC
-/// commands, events or state fields the app relies on. Raise it in the change
-/// that starts using a newer omp feature; nothing else has to follow.
-///
-/// 18.4.11: the RPC `fork` command (the conversation tree's "Fork after the
-/// reply").
-const MIN_OMP_VERSION: [u32; 3] = [18, 4, 11];
+/// Development floor for the unreleased dictation RPC. Until upstream ships
+/// it, this requires the locally modified omp 18.13.1-dev build; the numeric
+/// check alone cannot establish that an arbitrary binary contains the RPC.
+const MIN_OMP_VERSION: [u32; 3] = [18, 13, 1];
 
 /// The binary whose `omp --version` check passed. Only a pass is
 /// remembered, and only for that path: after a refusal the next tab start
@@ -131,14 +128,14 @@ fn version_refusal(output: &str) -> Option<String> {
     match output.lines().find_map(parse_version_line) {
         Some(found) if found >= MIN_OMP_VERSION => None,
         Some(found) => Some(format!(
-            "omp {} is older than OMP Desktop supports ({} or newer). Run `omp update`.",
+            "omp {} is older than OMP Desktop supports ({} or newer). Dictation currently requires a locally modified, unreleased omp 18.13.1-dev build.",
             fmt_version(found),
             fmt_version(MIN_OMP_VERSION)
         )),
         None => {
             let printed: String = output.trim().chars().take(200).collect();
             Some(format!(
-                "could not read the omp version (`omp --version` printed {printed:?}). OMP Desktop needs omp {} or newer.",
+                "could not read the omp version (`omp --version` printed {printed:?}). OMP Desktop currently requires the locally modified, unreleased omp 18.13.1-dev build (version {} or newer).",
                 fmt_version(MIN_OMP_VERSION)
             ))
         }

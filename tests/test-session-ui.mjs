@@ -69,6 +69,26 @@ check("a draft written for one tab is not the draft of another", () => {
   assert.equal(S.entryOf(drafts, "B", DRAFT_IDLE).text, "");
 });
 
+check("dictation appends to its origin without changing typed text or other drafts", () => {
+  let drafts = S.updateEntry({}, "A", DRAFT_IDLE, d => ({ ...d, text: "  typed", historyNav: 1 }));
+  drafts = S.updateEntry(drafts, "B", DRAFT_IDLE, d => ({ ...d, text: "other" }));
+  const other = drafts.B;
+  drafts = S.appendDictation(drafts, ["A", "B"], { sessionId: "A", text: "dictated\n" });
+  assert.equal(drafts.A.text, "  typed dictated\n");
+  assert.equal(drafts.A.historyNav, null);
+  assert.equal(drafts.B, other);
+  drafts = S.appendDictation(drafts, ["A", "B"], { sessionId: "A", text: "more" });
+  assert.equal(drafts.A.text, "  typed dictated\nmore");
+});
+
+check("dictation cannot recreate a closed tab and preserves whitespace-only drafts", () => {
+  const drafts = S.updateEntry({}, "B", DRAFT_IDLE, d => ({ ...d, text: " \n" }));
+  assert.equal(S.appendDictation(drafts, ["B"], { sessionId: "A", text: "late" }), drafts);
+  assert.equal(S.appendDictation(drafts, ["B"], { sessionId: "B", text: "" }), drafts);
+  const next = S.appendDictation(drafts, ["B"], { sessionId: "B", text: "spoken" });
+  assert.equal(next.B.text, " \nspoken");
+});
+
 check("an update never touches another tab's entry", () => {
   const before = onPlan({}, "B", S.enterPlan);
   const after  = onPlan(before, "A", S.togglePlan);

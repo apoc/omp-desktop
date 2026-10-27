@@ -116,6 +116,17 @@ function App() {
   // Status lines and text widgets the active tab's omp extensions published
   // (app/extension-widgets.js, #52), drawn as rail cards.
   const [extWidgets,   setExtWidgets]   = React.useState(_EXT_EMPTY);
+  const [liveVoice, setLiveVoice] = React.useState(null);
+  const [dictation, setDictation] = React.useState(null);
+  const [dictationCompleted, setDictationCompleted] = React.useState([]);
+  const [dictationErrors, setDictationErrors] = React.useState({});
+  const dictationActionSeq = React.useRef({});
+  const settingsOpening = React.useRef(false);
+  // Command errors belong to the tab, just like the bridge's voice snapshot.
+  const [liveErrors, setLiveErrors] = React.useState({});
+  const liveActionSeq = React.useRef({});
+  const openVoiceTabs = React.useRef([]);
+  const visibleVoiceTab = React.useRef("");
 
   // ── Tab list — driven by bridge session registry ──────────────────────────
   // Each entry: { id, name, path, color, branch }
@@ -147,7 +158,7 @@ function App() {
     setModelState, setThinkingLevel,
     setSessions, setActiveSessionId, setProfiles, setStartupProfileId, setRecentProjects,
     setNoTabProfileId, setWorkspaceNotes, setApprovalModes, setCloseConfirm,
-    setPromptHistory, setSubagents, setSubagentTranscripts, setQueue, setQueueSending, setGoal, setExtWidgets,
+    setPromptHistory, setSubagents, setSubagentTranscripts, setQueue, setQueueSending, setGoal, setExtWidgets, setLiveVoice, setDictation, setDictationCompleted,
   });
   useRemote({ bridge });
   useThemeEffect(t);
@@ -208,6 +219,7 @@ function App() {
   // for the same reason as `handleSelectProfile` below, and "" with no tab
   // open, which `updateEntry` ignores.
   const planKey = activeProject.id;
+  visibleVoiceTab.current = planKey;
   const plan    = entryOf(plans, planKey, PLAN_IDLE);
   const updatePlan = React.useCallback(
     fn => setPlans(m => updateEntry(m, planKey, PLAN_IDLE, fn)), [planKey]);
@@ -246,7 +258,22 @@ function App() {
   // the tab's earlier ones; later blocks follow the modes again.
   const handleCollapseAll = (collapsed) => setCollapseOverrides(m => updateEntry(m, planKey, NO_COLLAPSE_OVERRIDES,
     () => _collapseOverridesForAll(messages, collapsed, { hidden: window.OMP_TURN_STATUS.isHidden })));
-  const openSettings = section => setStab(s => window.OMP_SETTINGS_TAB.open(s, section));
+  // Settings is a separate app tab, though it does not switch omp sessions.
+  // Do not hide a potentially open microphone if stopping it fails.
+  const openSettings = section => {
+    const id = planKey;
+    if (settingsOpening.current) return;
+    settingsOpening.current = true;
+    const stopped = bridge?.stopActiveVoice() ?? Promise.resolve({ ok: true });
+    Promise.resolve(stopped).then(result => {
+      if (result?.ok && visibleVoiceTab.current === id) {
+        setStab(s => window.OMP_SETTINGS_TAB.open(s, section));
+        if (stab.active) settingsOpening.current = false;
+      }
+      else settingsOpening.current = false;
+    }, () => { settingsOpening.current = false; });
+  };
+  React.useEffect(() => { settingsOpening.current = false; }, [stab.active, activeSessionId]);
   const closeSettings = () => setStab(window.OMP_SETTINGS_TAB.close);
   // Another omp tab shown (opened, picked, restored) leaves the settings tab.
   React.useEffect(() => { setStab(window.OMP_SETTINGS_TAB.selectProject); }, [activeSessionId]);
@@ -256,6 +283,7 @@ function App() {
   // the prune effects run only when a tab opens or closes.
   const sessionIdsKey = sessions.map(s => s.id).join("\0");
   const sessionIds = React.useMemo(() => (sessionIdsKey ? sessionIdsKey.split("\0") : []), [sessionIdsKey]);
+  openVoiceTabs.current = sessionIds;
   // A tab seen for the first time starts with the `defaultSide` setting;
   // tabs already open keep theirs when the setting changes.
   const seenSideIds = React.useRef(new Set());
@@ -266,6 +294,73 @@ function App() {
     setCollapseOverrides(m => pruneEntries(m, sessionIds));
     setSides(m => seedEntries(pruneEntries(m, sessionIds), fresh, "rail", t.defaultSide ?? "rail"));
   }, [sessionIds]);
+  React.useEffect(() => {
+    setLiveErrors(m => pruneEntries(m, sessionIds));
+    liveActionSeq.current = pruneEntries(liveActionSeq.current, sessionIds);
+    setDictationErrors(m => pruneEntries(m, sessionIds));
+    dictationActionSeq.current = pruneEntries(dictationActionSeq.current, sessionIds);
+  }, [sessionIds]);
+
+  const requestLiveAction = (action) => {
+    if (action === "start" && settingsOpening.current) return Promise.resolve(false);
+    const id = planKey;
+    const report = error => setLiveErrors(m => ({ ...m, [id]: error }));
+    const seq = (liveActionSeq.current[id] ?? 0) + 1;
+    liveActionSeq.current[id] = seq;
+    report(null);
+    const fail = error => {
+      if (liveActionSeq.current[id] === seq && openVoiceTabs.current.includes(id)) {
+        report(error || "Live voice failed.");
+      }
+    };
+    try {
+      if (!bridge) { fail("Live voice is unavailable without an agent connection."); return Promise.resolve(false); }
+      const request = action === "start" ? bridge.liveStart()
+        : action === "stop" ? bridge.liveStop()
+        : bridge.liveMute(action === "mute");
+      return Promise.resolve(request).then(result => {
+        if (!result?.ok) fail(result?.error);
+        return !!result?.ok;
+      }, error => { fail(error?.message ?? String(error)); return false; });
+    } catch (error) {
+      fail(error?.message ?? String(error));
+      return Promise.resolve(false);
+    }
+  };
+  const requestDictationAction = action => {
+    const id = planKey;
+    if (action === "start" && settingsOpening.current) return Promise.resolve(false);
+    const seq = (dictationActionSeq.current[id] ?? 0) + 1;
+    dictationActionSeq.current[id] = seq;
+    setDictationErrors(m => ({ ...m, [id]: null }));
+    const fail = error => {
+      if (dictationActionSeq.current[id] === seq && openVoiceTabs.current.includes(id)) {
+        setDictationErrors(m => ({ ...m, [id]: error || "Voice to text failed." }));
+      }
+    };
+    try {
+      if (!bridge) { fail("Voice to text is unavailable without an agent connection."); return Promise.resolve(false); }
+      return Promise.resolve(action === "start" ? bridge.dictationStart() : bridge.dictationStop()).then(result => {
+        if (!result?.ok) fail(result?.error);
+        return !!result?.ok;
+      }, error => { fail(error?.message ?? String(error)); return false; });
+    } catch (error) {
+      fail(error?.message ?? String(error));
+      return Promise.resolve(false);
+    }
+  };
+  const handleLiveAction = (args = "") => {
+    const action = window.OMP_SLASH.liveCommand(args, liveVoice);
+    if (!action) {
+      setLiveErrors(m => ({ ...m, [planKey]: "Use /live, /live start, /live stop, /live mute, or /live unmute." }));
+      return false;
+    }
+    // The command bridge is also reachable over Settings. Show the owning
+    // tab before starting so live capture is never hidden behind that tab.
+    if (action === "start" && stab.active) setStab(window.OMP_SETTINGS_TAB.selectProject);
+    requestLiveAction(action);
+    return true;
+  };
   // Profile chip text for a tab/project: none for the built-in profile (same
   // expression as TabBar's own copy, which labels the tab bar).
   const profileLabel = id =>
@@ -549,6 +644,7 @@ function App() {
     // a goal already open), the text still comes back.
     else if (c.name === "goal")      { goalUi.enter(); if (args) setPromptInsert({ text: args, nonce: Date.now() }); }
     else if (c.name === "todo")      { setPlanOpen(true); }
+    else if (c.name === "live")      { return handleLiveAction(args); }
     else if (c.name === "browser")   { handleBrowserCommand(args); }
     else if (c.name === "compact")   { bridge?.compact(); }
     else if (c.name === "tree" || c.name === "branch") { setSide("tree"); }
@@ -901,6 +997,14 @@ function App() {
                   <Composer
                     sessionId={planKey}
                     sessionIds={sessionIds}
+                    liveVoice={liveVoice}
+                    liveError={liveErrors[planKey]}
+                    onLiveAction={handleLiveAction}
+                    dictation={dictation}
+                    dictationError={dictationErrors[planKey]}
+                    onDictationAction={requestDictationAction}
+                    dictationCompleted={dictationCompleted}
+                    onAckDictation={ids => bridge?.ackDictation(ids)}
                     onSend={handleSend}
                     planMode={plan.mode}
                     onTogglePlan={togglePlanMode}

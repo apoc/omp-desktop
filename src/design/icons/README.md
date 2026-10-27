@@ -1,6 +1,6 @@
 # OMP Icon Pack
 
-**58 icons · 8 categories**
+**59 icons · 8 categories**
 
 Hand-drawn for the OMP Desktop agent canvas. 16×16 grid · 1.5 stroke · round caps/joins. Every icon carries a single filled accent dot — the signature — placing the eye where the action is.
 
@@ -50,6 +50,7 @@ _Signals about the model — thinking, tokens, context, cost_
 | <img src="svg/bolt.svg" width="20" height="20"> | `bolt` | Fast / latency-aware path. Use for low-thinking-effort or cached responses. |
 | <img src="svg/radar.svg" width="20" height="20"> | `radar` | Activity radar widget; ambient telemetry of recent tool calls. |
 | <img src="svg/voice.svg" width="20" height="20"> | `voice` | Voice / dictation mode in the composer. |
+| <img src="svg/conversation.svg" width="20" height="20"> | `conversation` | Live voice conversation with the agent. Speech bubble with an audio waveform; distinct from microphone dictation and recording status. |
 | <img src="svg/context.svg" width="20" height="20"> | `context` | Context window usage gauge. Filled wedge = consumed tokens. |
 | <img src="svg/tokens.svg" width="20" height="20"> | `tokens` | Tokens / cost units. Status bar metrics, budget displays. |
 | <img src="svg/cost.svg" width="20" height="20"> | `cost` | Dollar-cost. Plan budget panel, settings billing. |

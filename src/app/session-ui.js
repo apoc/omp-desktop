@@ -230,10 +230,21 @@
     return { patch: { text, pastes, historyNav: null }, caret };
   }
 
+  // A finished dictation belongs to its original open tab, not whichever
+  // composer is visible when React processes the bridge snapshot.
+  function appendDictation(drafts, liveIds, item) {
+    if (!item || !liveIds.includes(item.sessionId) || typeof item.text !== "string" || !item.text) return drafts;
+    return updateEntry(drafts, item.sessionId, DRAFT_IDLE, draft => {
+      const separator = draft.text && !/\s$/.test(draft.text) && !/^\s/.test(item.text) ? " " : "";
+      return { ...draft, text: draft.text + separator + item.text, historyNav: null };
+    });
+  }
+
   window.OMP_SESSION_UI = {
     entryOf, updateEntry, pruneEntries, seedEntries,
     PLAN_IDLE, togglePlan, enterPlan, approvePlan, annotatePlan, markPlanSent,
     DRAFT_IDLE, recallInDraft,
+    appendDictation,
     PASTE_LINES_MIN, PASTE_LINES_MAX,
     normalizePaste, shouldCollapsePaste, collapsePaste, pastesIn, expandPastes, inlinePaste,
   };
