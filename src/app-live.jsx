@@ -122,6 +122,7 @@ function App() {
   const [dictationErrors, setDictationErrors] = React.useState({});
   const dictationActionSeq = React.useRef({});
   const settingsOpening = React.useRef(false);
+  const pendingLiveFromSettings = React.useRef(null);
   // Command errors belong to the tab, just like the bridge's voice snapshot.
   const [liveErrors, setLiveErrors] = React.useState({});
   const liveActionSeq = React.useRef({});
@@ -262,6 +263,7 @@ function App() {
   // Do not hide a potentially open microphone if stopping it fails.
   const openSettings = section => {
     const id = planKey;
+    pendingLiveFromSettings.current = null;
     if (settingsOpening.current) return;
     settingsOpening.current = true;
     const stopped = bridge?.stopActiveVoice() ?? Promise.resolve({ ok: true });
@@ -302,7 +304,7 @@ function App() {
   }, [sessionIds]);
 
   const requestLiveAction = (action) => {
-    if (action === "start" && settingsOpening.current) return Promise.resolve(false);
+    if ((action === "start" || action === "resume") && settingsOpening.current) return Promise.resolve(false);
     const id = planKey;
     const report = error => setLiveErrors(m => ({ ...m, [id]: error }));
     const seq = (liveActionSeq.current[id] ?? 0) + 1;
@@ -316,6 +318,8 @@ function App() {
     try {
       if (!bridge) { fail("Live voice is unavailable without an agent connection."); return Promise.resolve(false); }
       const request = action === "start" ? bridge.liveStart()
+        : action === "pause" ? bridge.livePause()
+        : action === "resume" ? bridge.liveResume()
         : action === "stop" ? bridge.liveStop()
         : bridge.liveMute(action === "mute");
       return Promise.resolve(request).then(result => {
@@ -327,6 +331,14 @@ function App() {
       return Promise.resolve(false);
     }
   };
+  // Wait for Settings to leave the screen before opening a microphone, and
+  // discard the request if its owning tab has changed in the meantime.
+  React.useEffect(() => {
+    const pending = pendingLiveFromSettings.current;
+    if (!pending || stab.active) return;
+    pendingLiveFromSettings.current = null;
+    if (pending.id === planKey && !settingsOpening.current) requestLiveAction(pending.action);
+  }, [stab.active, planKey]);
   const requestDictationAction = action => {
     const id = planKey;
     if (action === "start" && settingsOpening.current) return Promise.resolve(false);
@@ -352,13 +364,19 @@ function App() {
   const handleLiveAction = (args = "") => {
     const action = window.OMP_SLASH.liveCommand(args, liveVoice);
     if (!action) {
-      setLiveErrors(m => ({ ...m, [planKey]: "Use /live, /live start, /live stop, /live mute, or /live unmute." }));
+      setLiveErrors(m => ({ ...m, [planKey]: "Use /live, /live start, /live pause, /live resume, /live stop, /live mute, or /live unmute." }));
       return false;
     }
     // The command bridge is also reachable over Settings. Show the owning
-    // tab before starting so live capture is never hidden behind that tab.
-    if (action === "start" && stab.active) setStab(window.OMP_SETTINGS_TAB.selectProject);
-    requestLiveAction(action);
+    // tab before starting or resuming so capture is never hidden behind it.
+    if ((action === "start" || action === "resume") && settingsOpening.current) return false;
+    if ((action === "start" || action === "resume") && stab.active) {
+      pendingLiveFromSettings.current = { id: planKey, action };
+      setStab(window.OMP_SETTINGS_TAB.selectProject);
+    } else {
+      pendingLiveFromSettings.current = null;
+      requestLiveAction(action);
+    }
     return true;
   };
   // Profile chip text for a tab/project: none for the built-in profile (same

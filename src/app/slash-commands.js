@@ -31,7 +31,7 @@
   const LOCAL_COMMANDS = Object.freeze([
     { name: "plan",      hint: "draft a plan before writing code",             icon: "◇", group: "Mode"    },
     { name: "goal",      hint: "start a goal the agent works on until done",   icon: "◎", group: "Mode"    },
-    { name: "live",      hint: "live voice: start, stop, mute, unmute",        icon: "◉", group: "Mode"    },
+    { name: "live",      hint: "live voice: start, pause, resume, stop, mute, unmute", icon: "◉", group: "Mode"    },
     { name: "steer",     hint: "interrupt and redirect mid-tool",              icon: "↺", group: "Mode"    },
     { name: "compact",   hint: "compact context window",                       icon: "▤", group: "Session" },
     { name: "new",       hint: "start a fresh session (history kept on disk)", icon: "↺", group: "Session" },
@@ -352,12 +352,11 @@
     return { isCmd, via };
   }
 
-  // The local voice command shares its toggle semantics with the mic button.
   // Connecting is active too: a toggle there cancels the pending start.
   function liveCommand(args, voice) {
     const arg = (args ?? "").trim().toLowerCase();
-    if (!arg) return voice?.active ? "stop" : "start";
-    return ["start", "stop", "mute", "unmute"].includes(arg) ? arg : null;
+    if (!arg) return voice?.paused ? "resume" : voice?.active ? "stop" : "start";
+    return ["start", "pause", "resume", "stop", "mute", "unmute"].includes(arg) ? arg : null;
   }
 
   // The RPC frame of a steer / follow-up (`kind` "steer" | "followUp"). A

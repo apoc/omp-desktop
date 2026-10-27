@@ -216,19 +216,23 @@ check("live is a local command and shadows omp's command", () => {
   assert.equal(rows[0].source, "desktop");
 });
 
-check("live toggle starts when idle and stops even while connecting", () => {
+check("live toggle starts idle, resumes paused, and stops even while connecting", () => {
   assert.equal(S.liveCommand("", null), "start");
   assert.equal(S.liveCommand("", { active: false, phase: "error" }), "start");
+  assert.equal(S.liveCommand("", { active: false, paused: true, phase: "paused" }), "resume");
+  assert.equal(S.liveCommand("   ", { active: false, paused: true }), "resume");
   assert.equal(S.liveCommand("", { active: true, phase: "connecting" }), "stop");
   assert.equal(S.liveCommand("", { active: true, phase: "error" }), "stop");
 });
 
 check("live explicit controls are case-insensitive and reject extra arguments", () => {
-  for (const action of ["start", "stop", "mute", "unmute"]) {
+  for (const action of ["start", "pause", "resume", "stop", "mute", "unmute"]) {
     assert.equal(S.liveCommand(`  ${action.toUpperCase()}  `, { active: true }), action);
+    assert.equal(S.liveCommand(action, { active: false, paused: true }), action);
   }
-  assert.equal(S.liveCommand("pause", null), null);
+  assert.equal(S.liveCommand("pause now", null), null);
   assert.equal(S.liveCommand("start now", null), null);
+  assert.equal(S.liveCommand("unknown", null), null);
 });
 
 check("args typed after a non-desktop (RPC) command closes the menu — omp runs it, not the composer", () => {

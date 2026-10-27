@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- The composer has separate one-click buttons for **Voice to text** and **Live conversation**. Live conversation (#68) connects to the native omp call with state, levels, captions, mute and end controls; `/live` keeps its existing behavior. Voice to text uses the profile's omp speech-to-text engine, previews dictation and appends the final text to the originating draft without sending a prompt or playing a reply. Switching tabs, closing a tab or opening Settings stops capture first; a failed stop keeps the active control visible for retry.
+- The composer has separate one-click buttons for **Voice to text** and **Live conversation**. Live conversation (#68) connects to the native omp call with state, levels, captions, mute, pause, resume and end controls. Voice to text uses the profile's omp speech-to-text engine, previews dictation and appends the final text to the originating draft without sending a prompt or playing a reply. Switching tabs or opening Settings pauses live conversation and stops dictation; closing a tab ends capture. A failed stop keeps the active control visible for retry.
 
 ### Changed
 
@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Live conversation keeps the tab's spoken discussion across pauses, tab switches, reconnects and ended calls. Pause turns off microphone and speaker; Resume explicitly reconnects. Every connection includes the current coding-chat history plus prior voice discussion, so a call started mid-chat knows the existing task, decisions and reported results instead of starting from no context. Voice history is memory-only for the tab's current coding conversation; oversized context is marked as truncated.
 - macOS microphone access (#68): the app now declares its microphone usage description and signs with the hardened-runtime audio-input entitlement, so native omp voice capture can request microphone access on behalf of OMP Desktop.
 
 ## [0.12.1] - 2026-10-21
