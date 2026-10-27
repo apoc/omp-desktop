@@ -54,6 +54,7 @@
   // them and _switchToSession() swaps them when the active tab changes.
   const state = {
     messages:       [],
+    askRecovery:    null,
     isStreaming:    false,
     model:          null,
     thinkingLevel:  null,
@@ -594,8 +595,70 @@
   // replaced, {value}/{confirmed}/{cancelled} payload shapes preserved
   // per caller, and re-answer + unknown-id both send nothing).
   function _resolveAsk(id, patch, payload) {
+    const restored = state.messages.find(m => m.kind === "ask" && m.id === id && m.recovery && !m.answered && !m.cancelled);
+    if (restored) return _resolveRecoveredAsk(restored, patch, payload);
     if (!_settleAsk(id, patch)) return Promise.resolve(false);
     return _send({ type: "extension_ui_response", id, ...payload });
+  }
+
+  // A restart ended the tool invocation: only a new user reply can continue
+  // the conversation. Never send the old request id to the new process.
+  async function _resolveRecoveredAsk(msg, patch, payload) {
+    if (msg.recoverySending || msg.sessionId !== activeSessionId || state.isStreaming) return false;
+    const recovery = window.OMP_ASK_RECOVERY;
+    const origin = activeSessionId;
+    if (payload.cancelled) {
+      try {
+        recovery.dismiss(msg.recovery.file, msg.recovery.callIds);
+        return _settleAsk(msg.id, patch);
+      } catch (error) {
+        state.messages = state.messages.map(m => m === msg ? { ...m, recoveryError: String(error.message ?? error) } : m);
+        notify();
+        return false;
+      }
+    }
+    const text = recovery.reply(msg.questions, payload.answers);
+    if (!text) return false;
+    const token = {};
+    state.messages = state.messages.map(m => m === msg ? { ...m, recoverySending: token, recoveryError: null } : m);
+    notify();
+    const finish = fields => {
+      const current = activeSessionId === origin;
+      const target = current ? state : sessionSnapshots.get(origin);
+      if (!target) return;
+      target.messages = target.messages.map(m => m.id === msg.id && m.recoverySending === token
+        ? { ...m, ...fields, recoverySending: null } : m);
+      if (current) notify();
+    };
+    try {
+      _disarmAutoRename(text);
+      _recordPrompt(text);
+      await _sendWithResponse({ type: "prompt", message: text });
+      finish(patch);
+      return true;
+    } catch (error) {
+      finish({ recoveryError: String(error.message ?? error) });
+      return false;
+    }
+  }
+
+  // State and history RPC replies may arrive in either order. Keep only the
+  // small parsed batch in the per-tab snapshot, not another full transcript.
+  function _syncRecoveredAsks() {
+    if (!state.rpcState) return false;
+    if (state.isStreaming) { state.askRecovery = null; return false; }
+    const restored = state.askRecovery;
+    const messages = state.messages.filter(m => !m.recovery || m.answered || m.recoverySending || m.id === restored?.id);
+    const isLive = m => m.kind === "ask" && !m.recovery && !m.answered && !m.cancelled;
+    const liveAsk = messages.some(isLive) || pendingAskBubbles.some(isLive);
+    if (restored && !liveAsk && !messages.some(m => m.id === restored.id)) {
+      messages.push({
+        ..._askMessage("ask", restored, { questions: restored.questions, answers: null, timeout: null }),
+        recovery: restored.recovery,
+      });
+    } else if (messages.length === state.messages.length) return false;
+    state.messages = messages;
+    return true;
   }
 
   // Append a synthetic assistant note (process exited, startup failed,
@@ -782,6 +845,7 @@
   function _resetSessionVars(keepVoice = false) {
     Object.assign(state, {
       messages:      [],
+      askRecovery:   null,
       isStreaming:   false,
       model:         null,
       thinkingLevel: null,
@@ -832,6 +896,7 @@
     sessionSnapshots.set(activeSessionId, {
       // state fields
       messages:      state.messages,
+      askRecovery:   state.askRecovery,
       isStreaming:   state.isStreaming,
       model:         state.model,
       thinkingLevel: state.thinkingLevel,
@@ -878,6 +943,7 @@
     if (!snap) return false;
     Object.assign(state, {
       messages:      snap.messages,
+      askRecovery:   snap.askRecovery ?? null,
       isStreaming:   snap.isStreaming,
       model:         snap.model,
       thinkingLevel: snap.thinkingLevel,
@@ -2110,6 +2176,7 @@
 
     if (command === "get_state") {
       _applyRpcState(data);
+      if (_syncRecoveredAsks()) notify();
       // The approval-mode idle hook: the active tab's run state is current
       // now, so a mode change it was too busy for applies here. Every
       // get_state counts (a busy one simply defers again), which covers both
@@ -2436,6 +2503,9 @@
       // tool's tool_execution_start (seen live), so it is buffered like a
       // select. A shape the dialog cannot answer is cancelled, as below.
       if (ev.method === "ask") {
+        state.askRecovery = null;
+        sessionContext.askRecoveryRequest = null;
+        state.messages = state.messages.filter(m => !m.recovery || m.answered || m.recoverySending);
         const questions = ASK.parseQuestions(ev.questions);
         if (!questions) {
           _send({ type: "extension_ui_response", id: ev.id, cancelled: true });
@@ -2553,6 +2623,10 @@
       // persisted copy and the merge keeps it as is.
       const skill = role === "custom" && msg.customType === "skill-prompt" && msg.attribution === "user";
       if (role === "user" || skill) {
+        state.askRecovery = null;
+        sessionContext.askRecoveryRequest = null;
+        state.messages = state.messages.map(m => m.recovery && !m.answered && !m.cancelled && !m.recoverySending
+          ? { ...m, cancelled: true, closedByOmp: true } : m);
         const blocks = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: String(msg.content ?? "") }];
         const { text: typed, images } = window.adaptUserContent(blocks);
         const text = skill ? _skillPromptText(msg.details) : typed;
@@ -3033,6 +3107,18 @@
         if (!sessionPrefs.autoRetry) _send({ type: "set_auto_retry", enabled: false });
         _send({ type: "get_state" });
         _send({ type: "get_messages" });
+        // get_messages is provider-filtered and can omit the unfinished ask
+        // itself. Raw entries plus the active leaf retain the real question.
+        const file = sessionRegistry.get(activeSessionId)?.sessionFile;
+        if (file && window.OMP_ASK_RECOVERY) {
+          const request = _sendWithResponse({ type: "get_entries" });
+          conversation.askRecoveryRequest = request;
+          request.then(data => {
+            if (_switchGen !== gen || sessionContext !== conversation || conversation.askRecoveryRequest !== request) return;
+            state.askRecovery = window.OMP_ASK_RECOVERY.fromEntries(data, file);
+            if (_syncRecoveredAsks()) notify();
+          }).catch(error => console.warn("[live] restoring unanswered questions failed:", error));
+        }
         _send({ type: "get_available_models" });
         _send({ type: "get_available_commands" });
         // Subscription level is per process and survives tab switches, but a

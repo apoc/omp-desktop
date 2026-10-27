@@ -62,6 +62,8 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "get_session_stats",
     "get_state",
     "get_messages",
+    // Unfiltered session entries and active leaf for unanswered ask recovery.
+    "get_entries",
     "get_available_models",
     "get_available_commands",
     "negotiate_protocol",

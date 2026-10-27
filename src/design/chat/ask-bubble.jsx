@@ -195,6 +195,7 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
         <div className="ass-meta">
           <span className="mono" style={{ color: "var(--amber)" }}>Ask</span>
           <span className="chip muted">{msg.time}</span>
+          {msg.recovery && <span className="chip muted" title="The original process ended. Answering continues this conversation as a new user reply; no tools are replayed.">restored</span>}
           {dialogOpen && msg.questions.length > 1 && (
             <span className="chip muted">{msg.questions.length} questions</span>
           )}
@@ -210,7 +211,14 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
             </span>
           )}
         </div>
-        {body}
+        {msg.recovery && !done && <div className="ask-confirm-message">Restored after restart. Answering continues this conversation.</div>}
+        {msg.recoveryError && <div className="ask-confirm-message" role="alert">{msg.recoveryError}</div>}
+        {msg.recovery ? (
+          <fieldset disabled={Boolean(msg.recoverySending)} aria-busy={Boolean(msg.recoverySending)} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
+            {body}
+            {msg.recoverySending && <span className="ask-progress" role="status">Sending answer…</span>}
+          </fieldset>
+        ) : body}
       </div>
     </div>
   );
