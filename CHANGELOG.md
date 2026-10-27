@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The ambient rail has a compact **Changes** card for the GitHub PR on the project's checked-out branch, with its title, repository/number, draft state and diff counts. Click the title to open it in your browser; the menu offers GitHub links, copy link, changed files, review comments and opt-in **Auto-fix** for failed CI and unresolved reviews. Discovery works with Auto-fix off and refreshes automatically on tab or branch changes, turn completion and returning focus, without a manual Refresh button. Only enabled Auto-fix tabs keep checking in the background. **Settings → Rail → Changes** uses the same persisted toggle as the other built-in cards; turning it off hides the card, stops monitoring and revokes Auto-fix in every tab. No GitHub App, webhook server or tunnel is required. Auto-fix asks the agent to fix, verify, commit and push changes and resolve only addressed threads. It is off by default, active-tab only, with existing tool approvals unchanged; requires authenticated GitHub CLI and a synchronized upstream branch. Turning it off prevents new fixes, and Stop disables it too.
+
+### Fixed
+
+- Changes discovers the current branch's PR in fresh and reopened conversations, without requiring PR-creation evidence in chat history. Switching branches clears stale results and revokes Auto-fix permission; before sending a fix, the bridge revalidates the PR, branch and HEAD against a fresh native snapshot.
 ## [0.12.1] - 2026-10-21
 
 ### Added
