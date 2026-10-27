@@ -19,8 +19,8 @@ function LiveVoicePanel({ voice, error, onAction, dictationActive }) {
         <span className="live-voice-title">live voice</span>
         <span className="live-voice-phase" role="status">{phase}</span>
         {active && <>
-          <label title="Microphone RMS level; 0 dBFS is full scale. Sample-peak clipping is not reported.">mic <meter min="-60" max="0" high="-6" optimum="-20" value={input.value} aria-label="Microphone level" aria-valuetext={`${input.text} RMS`} /><span className="live-voice-db">{input.text}</span></label>
-          <label title="Speaker RMS level; 0 dBFS is full scale. Sample-peak clipping is not reported.">speaker <meter min="-60" max="0" high="-6" optimum="-20" value={output.value} aria-label="Speaker level" aria-valuetext={`${output.text} RMS`} /><span className="live-voice-db">{output.text}</span></label>
+          <label>mic <meter min="-60" max="0" high="-6" optimum="-20" value={input.value} aria-label="Microphone level" aria-valuetext={`${input.text} RMS`} /></label>
+          <label>speaker <meter min="-60" max="0" high="-6" optimum="-20" value={output.value} aria-label="Speaker level" aria-valuetext={`${output.text} RMS`} /></label>
         </>}
         <span className="live-voice-spacer" />
         {active ? <>
