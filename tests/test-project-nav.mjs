@@ -28,6 +28,10 @@ function check(label, fn) {
 }
 
 const tab = (id, path, extra = {}) => ({ id, name: id, path, profile: "default", runState: "idle", ...extra });
+const isolated = (id, path, source, extra = {}) => tab(id, path, {
+  workspace: { projectPath: source, baseRef: "refs/heads/main", worktree: true },
+  ...extra,
+});
 
 // ── normPath ──────────────────────────────────────────────────────────────
 
@@ -65,6 +69,88 @@ check("parentName is the containing folder, empty without one", () => {
   assert.equal(N.parentName(""), "");
 });
 
+// ── projectPath / normalizeWorkspaces ─────────────────────────────────────
+
+check("projectPath selects the source without changing cwd or pathless tabs", () => {
+  const worktree = isolated("a", "/worktrees/a", "/projects/repo");
+  assert.equal(N.projectPath(worktree), "/projects/repo");
+  assert.equal(worktree.path, "/worktrees/a");
+  assert.equal(N.projectPath(tab("b", "/projects/repo")), "/projects/repo");
+  assert.equal(N.projectPath(isolated("c", "", "/projects/repo")), "");
+});
+
+check("normalization follows legacy chains and clones only changed objects", () => {
+  const tabs = [
+    isolated("leaf", "/worktrees/leaf", "/worktrees/middle", { name: "leaf", sessionFile: "/s/leaf.jsonl" }),
+    isolated("middle", "/worktrees/middle", "/projects/repo", { name: "middle" }),
+    tab("source", "/projects/repo", { name: "repo" }),
+    isolated("manual", "/worktrees/manual", "/worktrees/middle", { name: "Fix login" }),
+  ];
+  const normalized = N.normalizeWorkspaces(tabs);
+  assert.notStrictEqual(normalized, tabs);
+  assert.notStrictEqual(normalized[0], tabs[0]);
+  assert.notStrictEqual(normalized[0].workspace, tabs[0].workspace);
+  assert.equal(normalized[0].workspace.projectPath, "/projects/repo");
+  assert.equal(normalized[0].workspace.baseRef, "refs/heads/main");
+  assert.equal(normalized[0].path, "/worktrees/leaf");
+  assert.equal(normalized[0].sessionFile, "/s/leaf.jsonl");
+  assert.equal(normalized[0].name, "repo");
+  assert.equal(normalized[1].name, "repo");
+  assert.strictEqual(normalized[1].workspace, tabs[1].workspace);
+  assert.strictEqual(normalized[2], tabs[2]);
+  assert.equal(normalized[3].name, "Fix login");
+  assert.equal(normalized[3].workspace.projectPath, "/projects/repo");
+  assert.equal(tabs[0].workspace.projectPath, "/worktrees/middle");
+  assert.strictEqual(N.normalizeWorkspaces(normalized), normalized);
+});
+
+check("legacy origin basenames are normalized but custom titles survive", () => {
+  const middle = isolated("middle", "/wt/middle", "/src/repo", { name: "custom" });
+  const tabs = [
+    middle,
+    isolated("a", "/wt/a", "/wt/middle", { name: "middle" }),
+    isolated("b", "/wt/b", "/wt/middle", { name: "My middle investigation" }),
+  ];
+  const normalized = N.normalizeWorkspaces(tabs);
+  assert.equal(normalized[1].name, "repo");
+  assert.equal(normalized[2].name, "My middle investigation");
+  assert.strictEqual(normalized[0], middle);
+  assert.strictEqual(N.normalizeWorkspaces([middle])[0], middle);
+});
+
+check("cycles and self-bindings are stable without inventing a source", () => {
+  const tabs = [
+    isolated("a", "/wt/a", "/wt/b", { name: "a" }),
+    isolated("b", "/wt/b", "/wt/a", { name: "b" }),
+    isolated("c", "/wt/c", "/wt/a", { name: "c" }),
+    isolated("self", "/src/repo", "/src/repo", { name: "repo" }),
+  ];
+  assert.strictEqual(N.normalizeWorkspaces(tabs), tabs);
+  assert.deepEqual(tabs.map(t => t.workspace.projectPath), ["/wt/b", "/wt/a", "/wt/a", "/src/repo"]);
+});
+
+check("legacy links compare Windows paths and prefer the matching profile", () => {
+  const tabs = [
+    isolated("default-middle", "C:\\WT\\Middle", "C:\\Projects\\Default", { name: "Default" }),
+    isolated("work-middle", "c:/wt/middle/", "C:\\Projects\\Work", { profile: "work", name: "Work" }),
+    isolated("work-leaf", "C:\\WT\\Leaf", "c:/WT/MIDDLE", { profile: "work", name: "Leaf" }),
+  ];
+  const normalized = N.normalizeWorkspaces(tabs);
+  assert.equal(normalized[2].workspace.projectPath, "C:\\Projects\\Work");
+  assert.equal(normalized[2].name, "Work");
+  assert.equal(N.groupKey(normalized[1]), N.groupKey(normalized[2]));
+  assert.notEqual(N.groupKey(normalized[0]), N.groupKey(normalized[2]));
+});
+
+check("already-normalized and pathless workspaces preserve array identity", () => {
+  const tabs = [
+    isolated("a", "/worktrees/a", "/src/repo", { name: "repo" }),
+    isolated("b", "", "/src/repo", { name: "resumed" }),
+    tab("c", "/src/repo", { name: "repo" }),
+  ];
+  assert.strictEqual(N.normalizeWorkspaces(tabs), tabs);
+});
+
 // ── groupTabs ─────────────────────────────────────────────────────────────
 
 check("the same folder under two profiles is two groups", () => {
@@ -91,6 +177,36 @@ check("group order follows each project's first appearance", () => {
   const groups = N.groupTabs([tab("a", "/x"), tab("b", "/y"), tab("c", "/x"), tab("d", "/z")]);
   assert.deepEqual(groups.map(g => g.name), ["x", "y", "z"]);
   assert.deepEqual(groups[0].tabs.map(t => t.id), ["a", "c"]);
+});
+
+check("worktree conversations group by source project and profile", () => {
+  const tabs = [
+    isolated("a", "/worktrees/a", "/projects/repo", { name: "a" }),
+    tab("other", "/other"),
+    isolated("b", "/worktrees/b", "/projects/repo", { name: "Fix login" }),
+    isolated("work", "/worktrees/c", "/projects/repo", { profile: "work" }),
+    tab("source", "/projects/repo"),
+    isolated("pathless", "", "/projects/repo"),
+  ];
+  const groups = N.groupTabs(tabs);
+  assert.deepEqual(groups.map(g => g.path), ["/projects/repo", "/other", "/projects/repo", null]);
+  assert.equal(groups[0].name, "repo");
+  assert.deepEqual(groups[0].tabs.map(t => t.id), ["a", "b", "source"]);
+  assert.equal(N.groupKey(tabs[0]), N.groupKey(tabs[2]));
+  assert.notEqual(N.groupKey(tabs[0]), N.groupKey(tabs[3]));
+  assert.equal(groups[0].tabs[0].path, "/worktrees/a");
+});
+
+check("legacy chains group with their source even if the source tab comes last", () => {
+  const tabs = [
+    isolated("leaf", "/wt/leaf", "/wt/middle"),
+    isolated("middle", "/wt/middle", "/src/repo"),
+    tab("source", "/src/repo"),
+  ];
+  const groups = N.groupTabs(tabs);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].path, "/src/repo");
+  assert.deepEqual(groups[0].tabs.map(t => t.id), ["leaf", "middle", "source"]);
 });
 
 // ── groupRunState / groupTarget ───────────────────────────────────────────
@@ -180,6 +296,21 @@ check("shiftGroup swaps with the neighbouring project and stops at either end", 
   assert.equal(N.shiftGroup(split(), "missing", 1), null);
 });
 
+check("reordering moves source projects and worktree members together", () => {
+  const tabs = [
+    isolated("a", "/wt/a", "/wt/middle"),
+    tab("other", "/other"),
+    isolated("middle", "/wt/middle", "/src/repo"),
+    isolated("work", "/wt/work", "/src/repo", { profile: "work" }),
+  ];
+  const legacyKey = N.groupKey(tabs[0]);
+  const otherKey = N.groupKey(tabs[1]);
+  assert.deepEqual(N.moveGroup(tabs, legacyKey, otherKey, true), ["other", "a", "middle", "work"]);
+  assert.deepEqual(N.shiftGroup(tabs, legacyKey, 1), ["other", "a", "middle", "work"]);
+  assert.deepEqual(N.moveMember(tabs, "a", "middle", true), ["middle", "a", "other", "work"]);
+  assert.equal(N.moveMember(tabs, "a", "work", true), null);
+});
+
 check("isReorderOf accepts only the open tabs, each once", () => {
   const open = ["a", "b", "c"];
   assert.equal(N.isReorderOf(["c", "a", "b"], open), true);
@@ -210,6 +341,19 @@ check("tabLabel has no prefix while the title is the folder name, or without a f
   }
 });
 
+check("source project labels hide generated worktree names, not conversation titles", () => {
+  const fresh = isolated("a", "/worktrees/generated", "/projects/repo", { name: "generated" });
+  const titled = isolated("b", "/worktrees/another", "/projects/repo", { name: "Investigate login" });
+  assert.deepEqual(N.tabLabel(fresh), { prefix: null, title: "repo" });
+  assert.deepEqual(N.tabLabel(titled), { prefix: "repo", title: "Investigate login" });
+  assert.deepEqual(N.tabLabel({ ...fresh, name: null }), { prefix: null, title: "repo" });
+  assert.equal(N.memberLabel(fresh), "New conversation");
+  assert.equal(N.memberLabel({ ...fresh, name: "repo" }), "New conversation");
+  assert.equal(N.memberLabel({ ...fresh, name: "" }), "New conversation");
+  assert.equal(N.memberLabel(titled), "Investigate login");
+  assert.equal(N.memberLabel(tab("pathless", "", { name: "resumed" })), "resumed");
+});
+
 // ── findProjectTab ────────────────────────────────────────────────────────
 
 check("findProjectTab prefers the active tab, else the last match", () => {
@@ -222,6 +366,18 @@ check("findProjectTab ignores tabs of another profile, and an empty path", () =>
   const tabs = [tab("a", "/p", { profile: "work" }), tab("b", null)];
   assert.equal(N.findProjectTab(tabs, "/p", "default", "a"), null);
   assert.equal(N.findProjectTab(tabs, "", "default", "b"), null);
+});
+
+check("project focus resolves legacy worktrees by source and profile", () => {
+  const tabs = [
+    isolated("leaf", "/wt/leaf", "/wt/middle"),
+    isolated("middle", "/wt/middle", "/src/repo"),
+    isolated("work", "/wt/work", "/src/repo", { profile: "work" }),
+  ];
+  assert.equal(N.findProjectTab(tabs, "/src/repo", "default", "leaf"), "leaf");
+  assert.equal(N.findProjectTab(tabs, "/src/repo", "default", "work"), "middle");
+  assert.equal(N.findProjectTab(tabs, "/src/repo", "work", "leaf"), "work");
+  assert.equal(N.findConversationTab([isolated("resume", "/wt/a", "/src/repo", { sessionFile: "/s/a" })], "/s/a", "default"), "resume");
 });
 
 // ── findConversationTab ───────────────────────────────────────────────────
@@ -248,6 +404,17 @@ check("recentRows drops projects open in the same profile only", () => {
   const recents = [{ path: "/open" }, { path: "/closed" }, { path: "/other-profile" }];
   const tabs = [tab("a", "/open/"), tab("b", "/other-profile", { profile: "work" })];
   assert.deepEqual(N.recentRows(recents, tabs, "default").map(r => r.path), ["/closed", "/other-profile"]);
+});
+
+check("recents exclude source projects with worktrees only in the same profile", () => {
+  const tabs = [
+    isolated("leaf", "/wt/leaf", "/wt/middle"),
+    isolated("middle", "/wt/middle", "/src/repo"),
+    isolated("work", "/wt/work", "/src/work", { profile: "work" }),
+  ];
+  const recents = [{ path: "/src/repo" }, { path: "/src/work" }, { path: "/wt/leaf" }];
+  assert.deepEqual(N.recentRows(recents, tabs, "default").map(r => r.path), ["/src/work"]);
+  assert.deepEqual(N.recentRows(recents, tabs, "work").map(r => r.path), ["/src/repo", "/wt/leaf"]);
 });
 
 // ── sessionProjects (history filter, #35) ─────────────────────────────────
@@ -325,6 +492,35 @@ check("restoreSpec leaves an unlabeled conversation's name to the spawn's fallba
 check("restoreSpec opens a fresh, unnamed tab on the folder when there is no conversation", () => {
   const spec = N.restoreSpec({ path: "/a", profile: null, sessionFile: null, name: "Old title" });
   assert.deepEqual(spec, { cwd: "/a", resume: null, name: null, profile: "default" });
+});
+
+check("worktree restore keeps the execution folder and never requests creation again", () => {
+  const workspace = { projectPath: "/source", baseRef: "refs/heads/main", baseCommit: "a".repeat(40), worktree: true };
+  const layout = N.tabLayout([tab("isolated", "/worktrees/feature", { workspace, sessionFile: "/s/feature.jsonl" })], "isolated");
+  const reopened = N.restoreSpec(JSON.parse(JSON.stringify(layout)).tabs[0]);
+  assert.equal(reopened.cwd, "/worktrees/feature");
+  assert.equal(reopened.workspaceBinding.projectPath, "/source");
+  assert.equal(reopened.workspaceBinding.worktree, true);
+  assert.equal(reopened.resume, "/s/feature.jsonl");
+  assert.equal(Object.hasOwn(reopened, "workspace"), false, "restoration must not prepare a second worktree");
+});
+
+check("normalized legacy worktrees restore their own cwd, profile, title and session", () => {
+  const tabs = N.normalizeWorkspaces([
+    isolated("leaf", "/wt/leaf", "/wt/middle", {
+      profile: "work", name: "Saved title", sessionFile: "/s/leaf.jsonl",
+    }),
+    isolated("middle", "/wt/middle", "/src/repo", { profile: "work" }),
+  ]);
+  const layout = JSON.parse(JSON.stringify(N.tabLayout(tabs, "leaf")));
+  const spec = N.restoreSpec(layout.tabs[0]);
+  assert.equal(layout.active, 0);
+  assert.equal(spec.cwd, "/wt/leaf");
+  assert.equal(spec.resume, "/s/leaf.jsonl");
+  assert.equal(spec.profile, "work");
+  assert.equal(spec.name, "Saved title");
+  assert.equal(spec.workspaceBinding.projectPath, "/src/repo");
+  assert.equal(spec.workspaceBinding.worktree, true);
 });
 
 console.log(`project-nav: ${passed} checks passed`);

@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- New conversations now show inline **Start from** branch selection and a **Worktree** option before launching the agent. Worktree creates a new working branch and isolated folder through native omp; the source checkout's uncommitted changes stay untouched. In-place branch changes are refused while the checkout is dirty or used by another conversation. Conversations keep their actual working folder across tab switches, restarts and restores; worktrees are retained when tabs close.
+- Worktree conversations now stay grouped under their source project and profile. Generated working-folder names are hidden behind a small worktree indicator; hover it for the actual folder, branch and base. Each project/profile has separate saved conversation defaults, such as **main + Worktree**, editable from the project's gear button without starting an agent or moving existing conversations.
+
+### Fixed
+
+- Project selection now loads branch metadata separately from checkout safety checks instead of building the Git browser's file tree and upstream history. Branch selection and cancellation remain available while status is checked; selecting a project already open in a worktree focuses that conversation instead of starting another one.
+- Repeated clicks to resume a saved conversation now share one tab and agent instead of starting competing processes for the same session file.
+- Closing a tab cancels its queued agent and terminal starts. Checkout ownership is rechecked against live folders, including repositories initialized around a running conversation.
+
 ## [0.12.1] - 2026-10-21
 
 ### Added

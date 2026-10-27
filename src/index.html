@@ -186,6 +186,10 @@
   <script src="app/conversation-tree-graph.js"></script>
   <script src="app/conversation-tree.js"></script>
 
+  <!-- New-conversation workspace selection and safety rules; consumed by
+       the dialog before app-live.jsx mounts it. -->
+  <script src="app/conversation-workspace.js"></script>
+
   <!-- omp's goal mode: pure state/row/strip helpers. Dependency-free IIFE;
        design/chat/goal-row.jsx, design/goal-strip.jsx and
        app/use-goal-mode.jsx destructure window.OMP_GOAL at top level and
@@ -403,6 +407,8 @@
        window.Icon at top level. app-live.jsx renders it from live.js's
        closeConfirm snapshot field. -->
   <script type="text/babel" src="design/confirm-close.jsx"></script>
+  <!-- Workspace setup dialog; reads OMP_CONVERSATION_WORKSPACE at load. -->
+  <script type="text/babel" src="design/new-conversation.jsx"></script>
   <!-- Conversation tree pane: rows (formatters, graph, meter) → detail
        footer → pane; the detail and the pane destructure the earlier
        files' window exports at top level, so keep this order. -->

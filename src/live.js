@@ -138,6 +138,10 @@
   // respawns only that tab (see switchSessionProfile).
   const sessionRegistry = new Map();
   const sessionSnapshots = new Map(); // id -> saved state + volatile vars
+  // Fresh launches wait here until their project/branch setup is confirmed.
+  // Queue rather than replace: OS opens and widget insertions await their own tab.
+  const conversationSetups = [];
+  let _lastSetupId = 0;
   const gitListeners = new Map();  // session_id → Tauri unlisten fn for git://branch/{id}
   // Prompt history — one list per tab, newest-first, in memory only. Never
   // persisted to disk/localStorage: filled as the user sends (_recordPrompt)
@@ -372,6 +376,7 @@
       recentProjects,
       workspaceNotes,
       closeConfirm,
+      conversationSetup: conversationSetups[0]?.view ?? null,
     };
   }
 
@@ -693,7 +698,7 @@
   }
 
   function _layoutNow() {
-    return window.OMP_PROJECT_NAV.tabLayout([...sessionRegistry.values()], activeSessionId);
+    return window.OMP_PROJECT_NAV.tabLayout([...sessionRegistry.values()].filter(s => !s.preparing), activeSessionId);
   }
 
   /** Write the open-tab layout if it changed since the last one (see
@@ -1132,12 +1137,14 @@
    *  tab, its name and its project path all survive; only the child process
    *  (and therefore its auth/history tree) is replaced.
    *
-   *  Side-effectful (Tauri IPC invoke, event listeners), so not unit-tested
-   *  directly. */
-  async function _spawnSession(id, cwd, { resume = null, profile }) {
-    const approvalMode = await window.__TAURI__.core.invoke("start_session", {
-      args: { sessionId: id, cwd: cwd ?? "", resume, profile },
+   *  The launch boundary and actual-folder adoption are covered by
+   *  tests/test-conversation-workspace-bridge.mjs. */
+  async function _spawnSession(id, cwd, { resume = null, profile, workspace = null }) {
+    const started = await window.__TAURI__.core.invoke("start_session", {
+      args: { sessionId: id, cwd: cwd ?? "", resume, profile, ...(workspace ? { workspace } : {}) },
     });
+    const actualCwd = started.path;
+    if (typeof actualCwd !== "string") throw new Error("Agent startup did not return its working folder");
     // A fresh incarnation owns this id now, and `start_session` cleared the
     // backend's cached error for it — so a *new* startup failure must be
     // reportable again. Cleared after the spawn resolved, so a spawn that
@@ -1149,19 +1156,24 @@
     // Every spawn funnels through here (new tab, resume, launch restore,
     // profile respawn); branch/fork/`new_session` keep the process and so
     // leave it alone. Read the entry afresh: it may have changed during the await.
-    // `approvalMode` is the mode Rust resolved and spawned this incarnation
-    // with (`approval_mode.rs`); the frontend never sends one.
+    // Rust returns the actual prepared folder and the mode resolved for it.
+    // All folder consumers, including the watcher below, use that binding.
     const spawned = sessionRegistry.get(id);
     if (spawned) {
+      const binding = started.workspace ?? spawned.workspace ?? null;
+      const sourceName = _tabNameFor(binding?.projectPath || actualCwd, "new session");
+      const defaultName = _tabNameFor(cwd, "new session");
       sessionRegistry.set(id, {
-        ...spawned, processStartedAt: Date.now(),
-        approvalMode: AMODE.isMode(approvalMode) ? approvalMode : null,
+        ...spawned, path: actualCwd, preparing: false, processStartedAt: Date.now(),
+        workspace: binding,
+        name: spawned.preparing && spawned.name === defaultName ? sourceName : spawned.name,
+        approvalMode: AMODE.isMode(started.approvalMode) ? started.approvalMode : null,
       });
     }
     // Git: read initial branch and arm the HEAD watcher (fire-and-forget errors)
-    if (cwd) {
+    if (actualCwd) {
       const branch = await window.__TAURI__.core
-        .invoke("start_git_watch", { sessionId: id, path: cwd })
+        .invoke("start_git_watch", { sessionId: id, path: actualCwd })
         .catch(() => null);
       const entry = sessionRegistry.get(id);
       if (entry) sessionRegistry.set(id, { ...entry, branch: branch ?? null });
@@ -1179,6 +1191,7 @@
       _dropGitListener(id);
       gitListeners.set(id, unlisten);
     }
+    return actualCwd;
   }
 
   /** Drop a session's git-branch listener, if it has one. Every teardown
@@ -1280,7 +1293,7 @@
    *  Shared by in-process `new_session` and a profile switch's respawn. */
   function _freshConversationFields(entry) {
     return {
-      name: _tabNameFor(entry.path, "new session"),
+      name: _tabNameFor(window.OMP_PROJECT_NAV.projectPath(entry), "new session"),
       sessionFile: null,
       autoRenameArmed: true,
       autoRenameInFlight: false,
@@ -1419,7 +1432,7 @@
       }
       // The folder is now open under `profile`, so it belongs in that
       // profile's recents (a mode restart keeps the profile: nothing new).
-      if (fresh && !spawnError && entry.path) void _touchRecent(entry.path, profile);
+      if (fresh && !spawnError && entry.path) void _touchRecent(entry.workspace?.projectPath || entry.path, profile);
 
       if (wasActive && activeSessionId === null) {
         // Reclaim focus only if nothing else took the active slot while the
@@ -1475,7 +1488,7 @@
     // No view yet: the frontend cannot know what Rust resolves, and a
     // guess would restart a tab Rust spawned with a project override.
     if (!approvalModes) return { restarted: [], deferred: [] };
-    const sessions = _sessionsView();
+    const sessions = _sessionsView().filter(s => !s.preparing);
     const { now, later } = AMODE.restartPlan(approvalModes, sessions);
     const byId = new Map(sessions.map(s => [s.id, s]));
     const todo = now.filter(id => {
@@ -1568,7 +1581,7 @@
     if (!activeSessionId || !sessionRegistry.has(activeSessionId)) return;
     const entry = sessionRegistry.get(activeSessionId);
     if (!entry.autoRenameInFlight) return;
-    const untitledLabel = _tabNameFor(entry.path, "new session");
+    const untitledLabel = _tabNameFor(window.OMP_PROJECT_NAV.projectPath(entry), "new session");
     const rearm = STITLE.shouldRearmAfterAbort(state.rpcState, entry.name, untitledLabel);
     sessionRegistry.set(activeSessionId, {
       ...entry,
@@ -1595,15 +1608,17 @@
    *  derivation) now lives in, and is proven by, `_tabNameFor`. */
   async function _startProjectSession(cwd, {
     resume = null, name = null, profile, activate = true, remember = true,
+    workspace = null, workspaceBinding = null,
   }) {
     _lastSessionMs = Math.max(Date.now(), _lastSessionMs + 1);
     const id = `session-${_lastSessionMs}`;
-    const tabName = name || _tabNameFor(cwd, resume ? "resumed" : "new session");
+    const tabName = name || _tabNameFor(workspaceBinding?.projectPath || cwd, resume ? "resumed" : "new session");
     const color = resume ? "var(--cyan)" : "var(--lilac)";
     // Register in tab list before starting omp so the tab shows immediately.
     // Register with null branch — chip hidden until git resolves.
     sessionRegistry.set(id, {
       id, name: tabName, path: cwd ?? "", color, branch: null, profile,
+      preparing: true, workspace: workspaceBinding,
       // The approval mode `start_session` spawned this tab's current omp
       // with (set by `_spawnSession`); null while no process runs it.
       approvalMode: null,
@@ -1633,7 +1648,7 @@
       autoRenameSessionId: null,
     });
     try {
-      await _spawnSession(id, cwd, { resume, profile });
+      await _spawnSession(id, cwd, { resume, profile, workspace });
     } catch (e) {
       // A dangling/unlisted profile (inherited from another tab, deleted by
       // a second window, or a hand-edited profiles.json) makes the
@@ -1657,7 +1672,9 @@
       throw e;
     }
     // Only a folder that actually spawned is remembered.
-    if (cwd && remember) void _touchRecent(cwd, profile);
+    const opened = sessionRegistry.get(id);
+    const recentPath = opened?.workspace?.projectPath || opened?.path;
+    if (recentPath && remember) void _touchRecent(recentPath, profile);
     if (activate) await _switchToSession(id);
     else notify(); // tab list changed
     return id;
@@ -1687,6 +1704,32 @@
     }
   }
 
+  /** Recover display-only worktree metadata without preparing a new checkout.
+   *  Missing original folders keep their persisted identity; cwd never changes. */
+  async function _recoverWorkspaceBinding(path, profile, known = null) {
+    if (!path) return known;
+    const preview = await _invokeResult("conversation_workspace_inspect", { path, profile });
+    const info = preview.ok && preview.value;
+    if (!info?.projectPath || !info.path ||
+        window.OMP_PROJECT_NAV.normPath(info.projectPath) === window.OMP_PROJECT_NAV.normPath(info.path)) return known;
+    return {
+      projectPath: info.projectPath, baseRef: known?.baseRef ?? null,
+      baseCommit: known?.baseCommit ?? null, worktree: true,
+    };
+  }
+
+  /** Queue a fresh launch without starting an agent. The requesting UI/OS/widget
+   *  waits for its own successful tab id, or null when the user cancels. */
+  function _requestConversationSetup(path, profile, configure = false) {
+    if (!window.__TAURI__) return Promise.reject(new Error("not connected"));
+    return new Promise(resolve => {
+      conversationSetups.push({
+        view: { id: `setup-${++_lastSetupId}`, path, profile, ...(configure ? { configure: true } : {}) }, resolve, busy: false,
+      });
+      notify();
+    });
+  }
+
   // ── OS folder-open requests ───────────────────────────────────────────────
   // "Open with OMP Desktop" on a folder in Finder, Explorer or a Linux file
   // manager. Each platform hands the request to the Rust side through its
@@ -1703,7 +1746,7 @@
    *  switches the active tab). */
   async function _openExternalProject(path) {
     try {
-      await _startProjectSession(path, { profile: _activeProfileId() });
+      await _requestConversationSetup(path, _activeProfileId());
     } catch (e) {
       // `_startProjectSession` already rolled the tab back, so the only
       // thing left is telling the user: the OS has no UI to report into and
@@ -1807,7 +1850,18 @@
           saved.skipped.map(p => `- \`${p}\``).join("\n"),
         );
       }
-      for (const [i, tab] of saved.tabs.entries()) {
+      const tabs = window.OMP_PROJECT_NAV.normalizeWorkspaces(saved.tabs);
+      for (const [i, stored] of tabs.entries()) {
+        let tab = stored;
+        if (stored.workspace?.worktree) {
+          const binding = await _recoverWorkspaceBinding(stored.path, stored.profile, stored.workspace);
+          if (binding !== stored.workspace) {
+            const generated = stored.name === _tabNameFor(stored.path, "") ||
+              stored.name === _tabNameFor(stored.workspace.projectPath, "");
+            tab = { ...stored, workspace: binding,
+              ...(generated ? { name: _tabNameFor(binding.projectPath, "new session") } : {}) };
+          }
+        }
         const { cwd, ...opts } = window.OMP_PROJECT_NAV.restoreSpec(tab);
         let id;
         try {
@@ -4136,8 +4190,51 @@
      *  `profile` overrides the inherited one — "new conversation in this
      *  project" passes the project's own profile, which need not be the
      *  active tab's. Always spawns: `+`/`Ctrl+T` mean a *new* tab. */
-    async openSession(cwd, profile = _activeProfileId()) {
-      return _openReported(cwd, { profile });
+    openSession(cwd, profile = _activeProfileId()) {
+      return _requestConversationSetup(cwd, profile);
+    },
+
+    configureProjectWorkspace(path, profile = _activeProfileId()) {
+      return _requestConversationSetup(path, profile, true);
+    },
+
+    inspectConversationWorkspace(path, profile = _activeProfileId()) {
+      return _invokeResult("conversation_workspace_inspect", { path, profile });
+    },
+
+    conversationWorkspaceStatus(path) {
+      return _invokeResult("conversation_workspace_status", { path });
+    },
+
+    setProjectWorkspaceDefaults(path, profile, { baseRef, worktree }) {
+      return _invokeResult("conversation_workspace_defaults_set", { path, profile, baseRef, worktree });
+    },
+
+    async startConversationSetup(requestId, workspace) {
+      const request = conversationSetups[0];
+      if (!request || request.view.id !== requestId) return { ok: false, error: "Conversation setup is no longer open" };
+      if (request.view.configure) return { ok: false, error: "Save project defaults without starting a conversation" };
+      if (request.busy) return { ok: false, error: "Conversation is already starting" };
+      request.busy = true;
+      try {
+        const id = await _startProjectSession(request.view.path, { profile: request.view.profile, workspace });
+        conversationSetups.shift();
+        request.resolve(id);
+        notify();
+        return { ok: true };
+      } catch (error) {
+        request.busy = false;
+        return { ok: false, error: String(error?.message ?? error) };
+      }
+    },
+
+    cancelConversationSetup(requestId) {
+      const request = conversationSetups[0];
+      if (!request || request.view.id !== requestId || request.busy) return false;
+      conversationSetups.shift();
+      request.resolve(null);
+      notify();
+      return true;
     },
 
     /** Open project folder `path` (a recent-projects row) under the active
@@ -4154,7 +4251,7 @@
         await window.OMP_BRIDGE.activateSession(id);
         return id;
       }
-      return _openReported(path, { profile });
+      return _requestConversationSetup(path, profile);
     },
 
     /** Drop `path` from the active profile's recent projects. */
@@ -4233,8 +4330,18 @@
         await window.OMP_BRIDGE.activateSession(open);
         return open;
       }
+      const workspaceBinding = await _recoverWorkspaceBinding(session.cwd || "", profile);
+      // Metadata recovery yields, so another resume may have registered this file.
+      const resumed = window.OMP_PROJECT_NAV.findConversationTab(
+        [...sessionRegistry.values()], session.path, profile,
+      );
+      if (resumed) {
+        await window.OMP_BRIDGE.activateSession(resumed);
+        return resumed;
+      }
+      const generated = workspaceBinding?.worktree && session.title === _tabNameFor(session.cwd, "");
       return _openReported(session.cwd || "", {
-        resume: session.path, name: session.title, profile,
+        resume: session.path, name: generated ? null : session.title, profile, workspaceBinding,
       });
     },
 

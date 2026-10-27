@@ -20,7 +20,7 @@
 const {
   Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar, SubagentPane, ProjectSidebar, EmptyWorkspace,
   StatusBar, AmbientRail, ConversationTree, PlanKanban, HistoryModal, GitBrowser, FilePreview, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, UpdateModal, useTweaks,
-  SettingsPage, ConfirmCloseDialog,
+  SettingsPage, ConfirmCloseDialog, NewConversationDialog,
   useWidgets, WidgetCard, WidgetErrorCard, WidgetApprovalCard, WidgetBoundary,
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, DEFAULT_PROFILE_ID,
   INTENT_FRAMING, APPROVAL_PROMPT,
@@ -66,6 +66,8 @@ function App() {
   const [stab, setStab] = React.useState(window.OMP_SETTINGS_TAB.initial);
   // live.js's pending "close a working tab / quit?" question, or null.
   const [closeConfirm, setCloseConfirm] = React.useState(null);
+  const [conversationSetup, setConversationSetup] = React.useState(null);
+  const setupAvailable = window.useModalAvailable();
   const [planOpen,    setPlanOpen]    = React.useState(false);
   // The column beside the chat, per tab (`side` below): the ambient rail,
   // the conversation tree (prompt-cache navigator; design/conversation-tree.jsx,
@@ -146,7 +148,7 @@ function App() {
     setModels, setActivity, setSparkline,
     setModelState, setThinkingLevel,
     setSessions, setActiveSessionId, setProfiles, setStartupProfileId, setRecentProjects,
-    setNoTabProfileId, setWorkspaceNotes, setApprovalModes, setCloseConfirm,
+    setNoTabProfileId, setWorkspaceNotes, setApprovalModes, setCloseConfirm, setConversationSetup,
     setPromptHistory, setSubagents, setSubagentTranscripts, setQueue, setQueueSending, setGoal, setExtWidgets,
   });
   useRemote({ bridge });
@@ -507,6 +509,7 @@ function App() {
       insertOpeningRef.current = true;
       try {
         const id = await bridge.openSession(action.project);
+        if (!id) return; // Setup was cancelled; never insert into another tab's draft.
         setPromptInsert({ text, append: true, sessionId: id, nonce: Date.now() });
       } catch (err) {
         console.error("[widgets] failed to open insert target tab:", err);
@@ -643,6 +646,12 @@ function App() {
     }
   };
 
+  const handleConfigureProject = (path, profile) => {
+    bridge?.configureProjectWorkspace(path, profile).catch(err => {
+      console.error("[app] failed to open project defaults:", err);
+    });
+  };
+
   const handleForgetRecent = path => { bridge?.forgetRecentProject(path); };
 
   // Drag to reorder (#40), from the tab bar or the sidebar: `onDrop` of
@@ -682,7 +691,7 @@ function App() {
     "app.interrupt":           () => {
       // Only abort when no overlay is open (overlays handle Escape themselves),
       // and never from the Settings page, which covers the chat.
-      if (stab.active || bridgeOpen || historyOpen || gitOpen || rulesOpen || statsOpen || promptHistoryOpen || planOpen || updater.open) return;
+      if (conversationSetup || stab.active || bridgeOpen || historyOpen || gitOpen || rulesOpen || statsOpen || promptHistoryOpen || planOpen || updater.open) return;
       if (streaming) handleAbort();
     },
     "app.thinking.cycle":      cycleThinking,
@@ -818,6 +827,7 @@ function App() {
         <div className={`window scanlines ${showSplit ? "is-split" : ""}`}>
           <WindowChrome
             project={activeProject}
+            onConfigureProject={handleConfigureProject}
             onCmd={() => setBridgeOpen(true)}
             profiles={profiles}
             activeProfileId={activeProfileId}
@@ -837,6 +847,7 @@ function App() {
             onClose={handleCloseTab}
             onRename={handleRenameTab}
             onNewInProject={handleNewInProject}
+            onConfigureProject={handleConfigureProject}
             onReorder={handleReorder}
             sidebarOpen={showSidebar}
             onToggleSidebar={toggleSidebar}
@@ -861,6 +872,7 @@ function App() {
                 onCloseTab={handleCloseTab}
                 onRenameTab={handleRenameTab}
                 onNewInProject={handleNewInProject}
+                onConfigureProject={handleConfigureProject}
                 onOpenRecent={handleOpenRecent}
                 onForgetRecent={handleForgetRecent}
                 onOpenFolder={handleNewProject}
@@ -1115,6 +1127,10 @@ function App() {
 
       {closeConfirm && (
         <ConfirmCloseDialog confirm={closeConfirm} onAnswer={handleCloseAnswer} />
+      )}
+
+      {conversationSetup && setupAvailable && (
+        <NewConversationDialog key={conversationSetup.id} request={conversationSetup} bridge={bridge} suspended={!!closeConfirm} />
       )}
     </_AL_MdLinkCtx.Provider>
   );

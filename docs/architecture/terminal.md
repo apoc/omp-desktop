@@ -23,10 +23,10 @@ struct Tab { folder: Option<PathBuf>, slot: Slot }
 enum Slot { Idle, Spawning { instance: u64, shell: PathBuf }, Live(Arc<Pty>) }
 ```
 
-- **Registration.** `start_session` calls `register_tab(id, folder)` **before** it spawns omp, so a tab whose omp failed to start still has a usable terminal. Re-registering an existing id (a profile switch re-runs `start_session` under the same id) updates the folder and keeps the slot, so the tab keeps its shell.
+- **Registration.** `start_session` prepares the conversation workspace, then calls `register_tab(id, actual_folder)` **before** it spawns omp, so a tab whose omp failed to start still has a usable terminal. The workspace manager refuses to change an existing tab's folder: a profile/approval respawn re-registers the same actual folder and keeps the slot and shell. Source-project metadata never chooses the terminal cwd.
 - **Unknown ids are refused.** Every `terminal_*` command for an id that is not a registered tab fails (`no tab {id}`) or, for `terminal_status`/`terminal_replay`, returns `null`. Only `start_session` creates a tab and only `close_tab`/`close_all_tabs` (`close_tabs`)/`shutdown_all` remove one.
 - **Instances.** Every spawn gets an `instance` number from one manager-wide counter starting at 1, so a respawn in the same tab always has a higher instance than any shell before it. Events and replies carry it; the webview drops anything from an older instance.
-- **No lifecycle lock.** The map lock is held only to look up, insert, replace or remove an entry, never across a spawn or a kill. `open`:
+- **No internal lifecycle lock.** The terminal map lock is held only to look up, insert, replace or remove an entry, never across a spawn or a kill. The app-level workspace manager separately serializes agent startup and final tab teardown so another conversation cannot switch the checkout while this tab owns it. Terminal `open`:
   1. validate the size, look the tab up (unknown ⇒ error);
   2. a `Spawning` slot or a running `Live` shell ⇒ return its status, no second spawn (overlapping opens get the same instance);
   3. resolve the shell from the cached setting (`shell::resolve_shell`) with no lock held;
@@ -65,7 +65,7 @@ All args are camelCase.
 
 |Command|Args|Returns|Notes|
 |---|---|---|---|
-|`terminal_open`|`sessionId, cols, rows`|`TerminalStatus`|`async` + `spawn_blocking`. Spawns unless a shell is starting or running (then returns its status). Errors: `invalid terminal size CxR`, a Windows without ConPTY (build < 17763, Windows 10 1809: `portable-pty` would panic and abort the app there; an unreadable build number is let through), `no tab {id}`, no usable folder, unusable shell, spawn failure, `tab closed`.|
+|`terminal_open`|`sessionId, cols, rows`|`TerminalStatus`|`async` + `spawn_blocking`. The workspace lifecycle guard covers admission and the complete spawn, so tab close cannot release the checkout while a shell is still starting. Spawns unless a shell is already running. Errors include invalid sizes, unsupported ConPTY, unknown tabs, unavailable folders/shells, cancelled admission and spawn failure.|
 |`terminal_status`|`sessionId`|`TerminalStatus \| null`|Sync. `null`: unknown tab or never spawned.|
 |`terminal_replay`|`sessionId, instance, afterSeq`|`ReplayWire \| null`|Sync. The current shell's held output with `seq > afterSeq`; resets the flow-control debt. A stale `instance` is answered for the current instance with `afterSeq` taken as 0. `null`: no shell.|
 |`terminal_ack`|`sessionId, instance, bytes`|—|Sync. Pays off flow-control debt; ignored for another instance.|
@@ -75,7 +75,7 @@ All args are camelCase.
 |`terminal_set_shell`|`shell`|`TerminalSettings`|`async` + blocking store write. Validates and persists. The menu sends `""`, a path from `shells`, or the stored setting back (its own row).|
 |`terminal_pick_shell`|—|`TerminalSettings \| null`|`async` + blocking: waits for the native file dialog (callback-based `pick_file`, as `open_project`; `.exe` filter on Windows), then stores the picked path as `terminal_set_shell` does, through `with_blocking`. `null` = cancelled. The path comes from the OS dialog, not the webview. Parented to the calling window (`set_parent`): modal on Windows and macOS. rfd's GTK3 backend ignores the parent, so on Linux the window stays usable while it is up; the webview guards that case itself (see Per-tab xterm instances, Settings).|
 |`close_tab`|`sessionId`|—|`async` + `spawn_blocking`. Ends a tab: stops its omp and session grants (`AgentBridge::stop_session`), releases its browser, tells the widget host (`session_closed`), stops its git watcher, removes its terminal tab and closes the shell (`TerminalManager::close_tabs`: hang-up, up to 200 ms grace, tree kill; see Kill model). Unknown ids are fine.|
-|`close_all_tabs`|—|—|`async` + `spawn_blocking`. Ends every tab in `TerminalManager::tab_ids()` at its start — the tab set, since `start_session` registers the tab before it spawns omp — so it ends omp processes as well as shells; the shells go through `TerminalManager::close_tabs`, sharing one hang-up grace. A tab registered meanwhile is left alone. Called once at webview boot.|
+|`close_all_tabs`|—|—|`async` + `spawn_blocking`. Invalidates queued starts, then acquires the workspace lifecycle guard before snapshotting `TerminalManager::tab_ids()`. A native workspace preparation already in flight settles first and its registered tab is included; later starts cannot finish behind cleanup. Ends that snapshot's omp processes, browsers, widgets, Git watchers and shells, with the shells sharing one hang-up grace. Ownership is released only after teardown. Called once at webview boot.|
 
 ```text
 TerminalStatus   { instance, shell, state: "starting" | "running" | "exited", exitCode: number | null,

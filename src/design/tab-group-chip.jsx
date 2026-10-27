@@ -22,14 +22,30 @@ function TabRunDot({ state }) {
   return <span className={`tab-run-dot ${state}`} title={title} />;
 }
 
+/** Details belong to the running conversation, not its project's defaults. */
+function WorktreeIndicator({ tab }) {
+  if (!tab.workspace?.worktree) return null;
+  const detail = [
+    `Source project: ${window.OMP_PROJECT_NAV.projectPath(tab) || "unknown"}`,
+    `Working folder: ${tab.path || "unknown"}`,
+    `Branch: ${tab.branch || "unknown"}`,
+    `Selected base: ${tab.workspace.baseRef || "not recorded"}`,
+  ].join("\n");
+  return <span className="worktree-indicator" role="img" aria-label="Isolated worktree" aria-description={detail} title={detail}>
+    <Icon name="branch" size={11} dotColor="currentColor" aria-hidden="true" />
+  </span>;
+}
+
 /** Name of a tab shown on its own (#46): `folder · title` once the title
  *  is no longer the folder name, the folder truncating first. Shared by the
  *  tab bar and the project sidebar; `className` is the caller's name class. */
 function TabLabel({ tab, className, title }) {
   const { prefix, title: name } = tabLabel(tab);
-  if (!prefix) return <span className={className} title={title}>{name}</span>;
+  const detail = [title, tab.path, tab.branch && `branch: ${tab.branch}`,
+    tab.workspace?.worktree && `worktree from ${tab.workspace.baseRef || "an unrecorded base"}`].filter(Boolean).join("\n");
+  if (!prefix) return <span className={className} title={detail}>{name}</span>;
   return (
-    <span className={`${className} tab-label`} title={title}>
+    <span className={`${className} tab-label`} title={detail}>
       {/* A few letters of the folder stay visible however long the title;
           a shorter folder keeps its own width, not a padded 4ch box. */}
       <span className="tab-prefix" style={{ minWidth: `${Math.min(4, prefix.length)}ch` }}>{prefix}</span>
@@ -39,7 +55,7 @@ function TabLabel({ tab, className, title }) {
   );
 }
 
-function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewInProject, onRename, reorder }) {
+function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewInProject, onConfigureProject, onRename, reorder }) {
   const [open, setOpen] = React.useState(false);
   // Member tab whose name is being edited inline (#32).
   const [renaming, setRenaming] = React.useState(null);
@@ -112,7 +128,8 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
                 <button className="tab-group-item" role="menuitem"
                   onClick={() => { onSelect(t.id); close(); }}>
                   <span className="tab-group-dot"><TabRunDot state={t.runState} /></span>
-                  <span className="tab-name" title={t.name}>{t.name}</span>
+                  <span className="tab-name" title={window.OMP_PROJECT_NAV.memberLabel(t)}>{window.OMP_PROJECT_NAV.memberLabel(t)}</span>
+                  <WorktreeIndicator tab={t} />
                 </button>
               )}
               {onRename && renaming !== t.id && (
@@ -134,10 +151,17 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
             <span className="tab-group-dot"><Icon name="plus" size={10} /></span>
             <span className="tab-name">new conversation</span>
           </button>
+          {group.path && onConfigureProject && (
+            <button className="tab-group-item" role="menuitem"
+              onClick={() => { onConfigureProject(group.path, group.profile); close(); }}>
+              <span className="tab-group-dot"><Icon name="cog" size={10} /></span>
+              <span className="tab-name">project defaults</span>
+            </button>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-Object.assign(window, { TabGroupChip, TabRunDot, TabLabel });
+Object.assign(window, { TabGroupChip, TabRunDot, TabLabel, WorktreeIndicator });

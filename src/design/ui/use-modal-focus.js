@@ -16,5 +16,24 @@
     }, [open, targetRef]);
   }
 
+  // Portal previews/lightboxes own focus while #root is inert. Async setup
+  // requests stay queued until that owner closes, without intercepting its keys.
+  function modalAvailable() {
+    return !document.getElementById("root")?.inert;
+  }
+
+  function observeModalAvailability(changed) {
+    const root = document.getElementById("root");
+    if (!root) return () => {};
+    const observer = new MutationObserver(changed);
+    observer.observe(root, { attributes: true, attributeFilter: ["inert"] });
+    return () => observer.disconnect();
+  }
+
+  function useModalAvailable() {
+    return React.useSyncExternalStore(observeModalAvailability, modalAvailable);
+  }
+
   window.useModalFocus = useModalFocus;
+  window.useModalAvailable = useModalAvailable;
 })();

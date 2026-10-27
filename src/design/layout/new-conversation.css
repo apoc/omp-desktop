@@ -1,0 +1,143 @@
+/* New-conversation workspace setup. */
+.nc-scrim {
+  padding: 8vh 16px 16px;
+}
+.nc-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(480px, 100%);
+  max-height: calc(92vh - 16px);
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-bright);
+  border-radius: 14px;
+  box-shadow: var(--shadow-window);
+  overflow: hidden;
+}
+.nc-panel:focus {
+  outline: none;
+}
+.nc-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  color: var(--fg);
+  font-size: var(--d-text-sm);
+}
+.nc-profile {
+  margin-left: auto;
+  color: var(--fg-3);
+  font-size: var(--d-text-xs);
+}
+.nc-body {
+  padding: 14px;
+  overflow-y: auto;
+  font-size: var(--d-text-sm);
+  color: var(--fg-2);
+}
+.nc-caption {
+  color: var(--fg-3);
+  font-size: var(--d-text-xs);
+  margin-bottom: 4px;
+}
+.nc-path {
+  color: var(--fg);
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+.nc-explainer {
+  margin-top: 10px;
+  color: var(--fg-2);
+  font-size: var(--d-text-xs);
+  line-height: 1.5;
+}
+.nc-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+}
+.nc-branch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.nc-branch select {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 2px 6px;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--r-1);
+  background: var(--bg-surface);
+  color: var(--fg);
+  font: inherit;
+}
+.nc-branch select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.nc-worktree,
+.nc-ack {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.nc-worktree {
+  white-space: nowrap;
+}
+.nc-worktree input,
+.nc-ack input {
+  flex: none;
+  accent-color: var(--accent);
+}
+.nc-detail,
+.nc-note,
+.nc-warning,
+.nc-error,
+.nc-ack {
+  margin-top: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.nc-detail {
+  color: var(--fg-3);
+  font-size: var(--d-text-xs);
+}
+.nc-note {
+  color: var(--fg-2);
+}
+.nc-ack {
+  align-items: flex-start;
+  color: var(--fg);
+}
+.nc-warning {
+  color: var(--amber);
+}
+.nc-error {
+  color: var(--rose);
+}
+.nc-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+}
+.nc-spacer {
+  flex: 1 1 0;
+}
+.nc-panel :disabled {
+  opacity: 0.5;
+  cursor: default;
+}

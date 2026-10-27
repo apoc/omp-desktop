@@ -48,7 +48,7 @@ use std::path::{Path, PathBuf};
 /// The drivers that stay are commands gix runs: the returned guard holds
 /// the spawn gate ([`crate::spawn_gate`]) and must live as long as the
 /// reads on the repository.
-fn open(path: &Path) -> Result<(crate::spawn_gate::Shared, gix::Repository, PathBuf), String> {
+pub fn open(path: &Path) -> Result<(crate::spawn_gate::Shared, gix::Repository, PathBuf), String> {
     let (gate, mut repo, work_dir) = crate::workspace::discover(path)?;
     // Collected first: the read borrows the config the removal replaces.
     let local: Vec<_> = repo

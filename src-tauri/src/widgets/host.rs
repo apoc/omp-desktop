@@ -236,6 +236,13 @@ fn sanitize_view(args: ViewArgs) -> View {
 struct Slot {
     seq: u64,
     supervisor: Option<Arc<ProcessSupervisor>>,
+    /// Actual conversation context, including a globally scoped plugin run.
+    session: String,
+}
+
+struct Worker {
+    session: String,
+    handle: JoinHandle<()>,
 }
 
 #[derive(Default)]
@@ -292,6 +299,18 @@ impl<E, R> Shared<E, R> {
         }
     }
 
+    fn kill_session(&self, session: &str) {
+        lock(&self.registry).retain(|_, slot| {
+            if slot.session != session {
+                return true;
+            }
+            if let Some(supervisor) = &slot.supervisor {
+                supervisor.kill_tree();
+            }
+            false
+        });
+    }
+
     fn kill_all(&self) {
         // Before draining, so a worker registering after the drain sees it.
         self.stopped.store(true, Ordering::Release);
@@ -321,7 +340,10 @@ enum Msg {
         session: String,
         project: Option<PathBuf>,
     },
-    SessionClosed(String),
+    SessionClosed {
+        session: String,
+        reply: SyncSender<()>,
+    },
     BranchChanged(String),
     View(ViewArgs),
     Reload(SyncSender<WidgetsSnapshot>),
@@ -392,6 +414,7 @@ impl<E: HostEmitter, R: PluginRunner> WidgetHost<E, R> {
             projects: HashMap::new(),
             config: ConfigView::default(),
             active: ActiveView::default(),
+            workers: Vec::new(),
         };
         let spawned = thread::Builder::new()
             .name("widgets-scheduler".to_owned())
@@ -478,8 +501,15 @@ impl<E: HostEmitter, R: PluginRunner> WidgetHost<E, R> {
         });
     }
 
+    /// Stop scheduling for the tab, kill every run using its folder (including
+    /// global plugins), and wait for its workers to finish before returning.
     pub fn session_closed(&self, session: &str) {
-        self.send(Msg::SessionClosed(session.to_owned()));
+        let (reply, completed) = mpsc::sync_channel(1);
+        self.send(Msg::SessionClosed {
+            session: session.to_owned(),
+            reply,
+        });
+        let _ = completed.recv();
     }
 
     /// An `agent_end` frame arrived for `session`.
@@ -528,6 +558,8 @@ struct Core<E: HostEmitter, R: PluginRunner> {
     config: ConfigView,
     /// Last emitted `widgets://active`.
     active: ActiveView,
+    /// Retained even after a run is cancelled, until its worker has stopped.
+    workers: Vec<Worker>,
 }
 
 /// A run handed to a worker thread.
@@ -602,9 +634,20 @@ impl<E: HostEmitter, R: PluginRunner> Core<E, R> {
                 self.projects.insert(session.clone(), project);
                 self.feed(Event::SessionOpened { session, ctx });
             }
-            Msg::SessionClosed(session) => {
+            Msg::SessionClosed { session, reply } => {
                 self.projects.remove(&session);
+                self.shared.kill_session(&session);
+                let mut index = 0;
+                while index < self.workers.len() {
+                    if self.workers[index].session == session {
+                        let worker = self.workers.swap_remove(index);
+                        let _ = worker.handle.join();
+                    } else {
+                        index += 1;
+                    }
+                }
                 self.feed(Event::SessionClosed { session });
+                let _ = reply.send(());
             }
             Msg::BranchChanged(session) => {
                 let Some(project) = self.projects.get(&session) else {
@@ -694,7 +737,8 @@ impl<E: HostEmitter, R: PluginRunner> Core<E, R> {
         }));
     }
 
-    fn start(&self, key: RunKey, seq: u64, session: &str, trigger: Trigger) {
+    fn start(&mut self, key: RunKey, seq: u64, session: &str, trigger: Trigger) {
+        self.workers.retain(|worker| !worker.handle.is_finished());
         if self.shared.stopped.load(Ordering::Acquire) {
             return self.finish_now(key, seq, STOPPED_ERROR);
         }
@@ -723,6 +767,7 @@ impl<E: HostEmitter, R: PluginRunner> Core<E, R> {
             Slot {
                 seq,
                 supervisor: None,
+                session: session.to_owned(),
             },
         );
 
@@ -740,7 +785,11 @@ impl<E: HostEmitter, R: PluginRunner> Core<E, R> {
                 }
             });
         match spawned {
-            Ok(_) => {
+            Ok(handle) => {
+                self.workers.push(Worker {
+                    session: session.to_owned(),
+                    handle,
+                });
                 if let Err(mpsc::SendError(job)) = job_tx.send(job) {
                     self.shared.release(&job.key, seq);
                     self.finish_now(job.key, seq, CANCELLED_ERROR);
@@ -1273,6 +1322,27 @@ mod tests {
             v["key"] == "s1" && v["pluginId"] == "probe"
         });
         assert!(host.state().runs.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn closing_a_session_waits_for_global_widgets_using_its_checkout() {
+        let fx = Fixture::new("close-global-workspace");
+        fx.config(vec![(
+            "probe",
+            sleeper(&fx, "probe").as_str(),
+            json!({ "scope": "global", "timeoutMs": 60_000 }),
+        )]);
+        let (host, _) = fx.host();
+        fx.open(&host);
+        approve_all(&host);
+        let pid = read_pid(&fx.path("probe.pid"));
+        assert!(alive(pid));
+        host.session_closed("s1");
+        assert!(
+            !alive(pid),
+            "workspace ownership cannot be released while its global widget is still writing"
+        );
     }
 
     #[cfg(unix)]
