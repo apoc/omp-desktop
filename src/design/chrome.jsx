@@ -359,6 +359,7 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
           else if (m.kind === "job")       hue = TOOL_META.job.color;
           else if (m.kind === "goal")      hue = TOOL_META.goal.color;
           else if (m.kind === "approval")  hue = TOOL_META.approval.color;
+          else if (m.kind === "context")   hue = m.contextKind === "skill" ? "var(--lilac)" : m.contextKind === "instruction" ? "var(--cyan)" : m.contextKind === "harness" ? "var(--amber)" : "var(--fg-4)";
 
           // Brightness: assistant cells modulate by log(tokens), others flat.
           let opacity = 0.7;
@@ -394,18 +395,22 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
             title = window.OMP_GOAL.rowView(m).title;
           } else if (m.kind === "approval") {
             title = `auto-approved · ${m.tool || "tool"}`;
+          } else if (m.kind === "context") {
+            title = `${m.contextKind || "context"} · ${m.agentLabel || m.agentId || "agent"}${m.title ? " · " + m.title : ""}`;
           } else {
             title = m.kind;
           }
           const cls = `minimap-cell ${m.kind} ${m.streaming ? "live" : ""} ${hoveredIdx === i ? "hot" : ""}`.trim();
 
           return (
-            <div key={m._id ?? i}
+            <button type="button" key={m._id ?? i}
               className={cls}
               style={{ background: hue, opacity }}
-              title={title}
+              title={title} aria-label={title}
               onMouseEnter={() => onHover?.(i)}
               onMouseLeave={() => onHover?.(null)}
+              onFocus={() => onHover?.(i)}
+              onBlur={() => onHover?.(null)}
               onClick={() => onClick?.(i)} />
           );
         })}
@@ -415,6 +420,9 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
         <span className="minimap-legend-item"><i style={{ background: "var(--accent)" }} />assistant</span>
         <span className="minimap-legend-item"><i style={{ background: "var(--amber)" }} />ask</span>
         <span className="minimap-legend-item"><i style={{ background: "var(--fg-4)" }} />tool</span>
+        <span className="minimap-legend-item"><i style={{ background: "var(--lilac)" }} />skill</span>
+        <span className="minimap-legend-item"><i style={{ background: "var(--cyan)" }} />instruction</span>
+        <span className="minimap-legend-item"><i style={{ background: "var(--amber)" }} />harness</span>
       </div>
     </div>
   );

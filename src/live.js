@@ -14,6 +14,7 @@
   const { timeNow } = window;
   const { LOCAL_COMMANDS, adaptAvailableCommands, mergeSlashCommands, isCommandInvocation, queuedFrame } = window.OMP_SLASH;
   const SUB = window.OMP_SUBAGENTS;
+  const CONTEXT = window.OMP_AGENT_CONTEXT;
   const STITLE = window.OMP_SESSION_TITLE;
   const PREFS = window.OMP_SESSION_PREFS;
   const QUEUE = window.OMP_QUEUE;
@@ -80,6 +81,7 @@
     // Subagent manager (src/app/subagents.js). Terminal agents are kept here
     // for the life of the session — omp's own registry forgets them.
     subagents:           SUB.emptySubagents(),
+    agentContext:        CONTEXT.empty(),
     // agentId → { status, messages, nextByte, error } from get_subagent_messages.
     // Ephemeral: dropped on tab switch (not snapshotted) and refetched on demand.
     subagentTranscripts: {},
@@ -129,6 +131,20 @@
   // left but leaves the flag alone, so _initFetch applies it to the next one.
   let subagentInspecting = false;
   let _transcriptReq = 0; // monotonic token: only the latest load per agent may write
+
+  function _agentContextSync() {
+    if (!sessionContext.contextSync?.current()) {
+      sessionContext.contextSync?.dispose();
+      const owner = sessionContext, gen = _switchGen, id = activeSessionId;
+      owner.contextSync = window.OMP_AGENT_CONTEXT_SYNC.create({
+        request: _sendWithResponse, get: () => state.agentContext,
+        set: next => { state.agentContext = next; }, changed: notify,
+        subagents: () => state.subagents,
+        current: () => sessionContext === owner && _switchGen === gen && activeSessionId === id && _switchAwayFrom == null,
+      });
+    }
+    return sessionContext.contextSync;
+  }
 
   // ── Minimap / message-history trim ───────────────────────────────────────
   const MINIMAP_COLS = 13;
@@ -329,6 +345,7 @@
     if (state.isStreaming) return;                  // wait for clean turn boundary
     if (state.messages.length <= MINIMAP_MAX) return;
     const drop = MINIMAP_COLS;                      // evict one full row (13)
+    state.agentContext = CONTEXT.forget(state.agentContext, state.messages.slice(0, drop));
     state.messages = state.messages.slice(drop);
     state.trimmed = true;
     for (const [id, idx] of activeToolCards) {
@@ -385,6 +402,7 @@
       activity:        state.activity,
       sparkline:       state.sparkline,
       subagents:           state.subagents,
+      agentContext:        state.agentContext,
       subagentTranscripts: state.subagentTranscripts,
       queue:           state.queue,
       queueSending:    state.queueSending,
@@ -768,6 +786,11 @@
   }
 
   function notify() {
+    const withContext = CONTEXT.markers(state.agentContext, state.messages, state.trimmed);
+    if (withContext !== state.messages) {
+      state.messages = withContext;
+      activeToolCards = new Map(state.messages.flatMap((m, i) => m.kind === "tool" && m.status === "running" && m._toolCallId ? [[m._toolCallId, i]] : []));
+    }
     _trimMessages();
     // Stamp stable IDs on any message that doesn't have one yet (new pushes,
     // restored sessions, or messages from get_messages). O(N) but N ≤ 169 and
@@ -843,6 +866,7 @@
 
   // Reset all per-session volatile state (called before loading a new session)
   function _resetSessionVars(keepVoice = false) {
+    sessionContext.contextSync?.dispose();
     Object.assign(state, {
       messages:      [],
       askRecovery:   null,
@@ -864,6 +888,7 @@
       asyncPending:  false,
       trimmed:       false,
       subagents:           SUB.emptySubagents(),
+      agentContext:        CONTEXT.empty(),
       subagentTranscripts: {},
       queue:         QUEUE.EMPTY_QUEUE,
       queueSending:  [],
@@ -918,6 +943,7 @@
       // forget a failed first exchange and re-arm the one-shot.
       lastTurnOk,
       subagents:     state.subagents,
+      agentContext:  state.agentContext,
       queue:         state.queue,
       queueSending:  state.queueSending,
       goal:          state.goal,
@@ -961,6 +987,7 @@
       asyncPending:  snap.asyncPending ?? false,
       trimmed:       snap.trimmed ?? false,
       subagents:     snap.subagents ?? SUB.emptySubagents(),
+      agentContext:  snap.agentContext ?? CONTEXT.empty(),
       subagentTranscripts: {},
       queue:         snap.queue ?? QUEUE.EMPTY_QUEUE,
       queueSending:  snap.queueSending ?? [],
@@ -2279,6 +2306,7 @@
       // Authoritative list of agents still running; reconciles anything
       // the journal replay could not recover (see mergeSnapshots).
       state.subagents = SUB.mergeSnapshots(state.subagents, data.subagents);
+      _agentContextSync().refreshAgents();
       notify();
 
     } else if (command === "get_session_stats") {
@@ -2303,6 +2331,7 @@
   // push — same shape, same merge.
   function _applyCommands(raw) {
     state.commands = mergeSlashCommands(LOCAL_COMMANDS, adaptAvailableCommands(raw));
+    state.agentContext = CONTEXT.catalog(state.agentContext, raw);
     notify();
   }
 
@@ -2339,9 +2368,14 @@
       // At "events" most frames are token deltas the manager ignores — only
       // re-render when the reducer actually produced new state.
       const next = SUB.applySubagentFrame(state.subagents, ev, now);
-      if (next !== state.subagents) { state.subagents = next; notify(); }
+      if (next !== state.subagents) {
+        state.subagents = next;
+        _agentContextSync().observe(ev);
+        notify();
+      }
       return;
     }
+    _agentContextSync().observe(ev);
 
     if (type === "available_commands_update") {
       _applyCommands(ev.commands);
@@ -3110,15 +3144,15 @@
         // get_messages is provider-filtered and can omit the unfinished ask
         // itself. Raw entries plus the active leaf retain the real question.
         const file = sessionRegistry.get(activeSessionId)?.sessionFile;
-        if (file && window.OMP_ASK_RECOVERY) {
-          const request = _sendWithResponse({ type: "get_entries" });
-          conversation.askRecoveryRequest = request;
-          request.then(data => {
-            if (_switchGen !== gen || sessionContext !== conversation || conversation.askRecoveryRequest !== request) return;
+        const request = _agentContextSync().loadMain();
+        conversation.askRecoveryRequest = request;
+        request.then(data => {
+          if (!data || _switchGen !== gen || sessionContext !== conversation || conversation.askRecoveryRequest !== request) return;
+          if (file && window.OMP_ASK_RECOVERY) {
             state.askRecovery = window.OMP_ASK_RECOVERY.fromEntries(data, file);
             if (_syncRecoveredAsks()) notify();
-          }).catch(error => console.warn("[live] restoring unanswered questions failed:", error));
-        }
+          }
+        }).catch(error => console.warn("[live] native context refresh failed:", error));
         _send({ type: "get_available_models" });
         _send({ type: "get_available_commands" });
         // Subscription level is per process and survives tab switches, but a

@@ -44,6 +44,8 @@ function harness() {
     "app/constants.js",
     "app/slash-commands.js",
     "app/subagents.js",
+    "app/agent-context.js",
+    "app/agent-context-sync.js",
     "app/session-title.js",
     "app/session-prefs.js",
     "app/message-queue.js",

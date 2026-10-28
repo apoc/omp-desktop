@@ -216,6 +216,8 @@ function bridgeHarness() {
   new Function("window", readFileSync(join(root, "src/app/live-context.js"), "utf8"))(w);
   new Function("window", readFileSync(join(root, "src/app/approval-mode.js"), "utf8"))(w);
   new Function("window", readFileSync(join(root, "src/app/project-nav.js"), "utf8"))(w);
+  for (const file of ["agent-context.js", "agent-context-sync.js"])
+    new Function("window", readFileSync(join(root, "src/app", file), "utf8"))(w);
   // The fake is attached after bridge initialization, so no boot restore or
   // real process is started. Only timers for other bridge commands are unref'd.
   const timeout = (fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; };

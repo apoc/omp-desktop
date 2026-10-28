@@ -19,6 +19,7 @@
 //! through `crate::supervisor` (Job Object / process group).
 
 mod approvals;
+mod context_extension;
 pub mod ext_ui;
 mod inner;
 pub mod journal;
@@ -485,6 +486,7 @@ impl AgentBridge {
         for mut child in children {
             let _ = child.wait();
         }
+        context_extension::cleanup();
     }
 }
 

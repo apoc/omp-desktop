@@ -55,6 +55,15 @@ test("buildView keeps the echo flag of a user message omp handed to the model la
   assert.deepEqual(Array.from(view.messages, m => m.echo), [undefined, true]);
 });
 
+test("desktop context inspection never publishes native instructions to the phone", () => {
+  const { api } = load();
+  const view = api.buildView(snapshot({ messages: [
+    { kind: "context", contextKind: "instruction", text: "Private native system prompt" },
+    { kind: "user", id: "u", text: "Public conversation" },
+  ] }));
+  assert.deepEqual(own(view.messages), [{ id: "u", role: "user", text: "Public conversation" }]);
+});
+
 test("buildView marks an index-derived id as synthetic and leaves real ids unmarked", () => {
   const { api } = load();
   const view = api.buildView(snapshot({ messages: [
@@ -317,6 +326,8 @@ function liveBridge() {
     INTENT_FRAMING: () => "", timeNow: () => "00:00",
   };
   runInNewContext(source("src/app/live-voice.js"), { window });
+  runInNewContext(source("src/app/agent-context.js"), { window });
+  runInNewContext(source("src/app/agent-context-sync.js"), { window });
   const logs = [], calls = [], listeners = new Map();
   runInNewContext(source("src/live.js"), { window, console: { log() {}, error: (...args) => logs.push(args) } });
   let fail = false, stopped = 0;

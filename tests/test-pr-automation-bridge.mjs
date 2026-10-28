@@ -65,6 +65,8 @@ function harness() {
     "app/project-nav.js",
     "app/live-voice.js",
     "app/live-context.js",
+    "app/agent-context.js",
+    "app/agent-context-sync.js",
     "adapter.js",
   ]) {
     new Function("window", source(path))(w);

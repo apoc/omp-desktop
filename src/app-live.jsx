@@ -26,7 +26,7 @@ const {
   INTENT_FRAMING, APPROVAL_PROMPT,
   useBridgeSnapshot, useThemeEffect, useSubagentManager, useUpdater, useConversationTree, useGoalMode, useTerminal, TerminalPanels, timeNow,
   useKeymap, useKeymapDispatch, useBrowser, BrowserDock, MarkdownLinkContext: _AL_MdLinkCtx,
-  usePaneWidths, ResizeHandle, useRemote, useNotifications, usePrAutomation, PrAutomationCard,
+  usePaneWidths, ResizeHandle, useRemote, useNotifications, usePrAutomation, PrAutomationCard, AgentContextCard,
 } = window;
 const { routeSubmit: _routeSubmit } = window.OMP_SLASH;
 const { mergeIntoMessage: _mergeBrowserChips, browserCommand: _browserCommand, MIN_WIDTH: _AL_BROWSER_MIN } = window.OMP_BROWSER;
@@ -109,6 +109,8 @@ function App() {
   // on-demand agent transcripts.
   const [subagents,           setSubagents]           = React.useState(() => window.OMP_SUBAGENTS.emptySubagents());
   const [subagentTranscripts, setSubagentTranscripts] = React.useState({});
+  const [agentContext, setAgentContext] = React.useState(() => window.OMP_AGENT_CONTEXT.empty());
+  const agentContextView = React.useMemo(() => window.OMP_AGENT_CONTEXT.view(agentContext, messages), [agentContext, messages]);
   // omp's steer / follow-up queue + this tab's unacknowledged sends
   // (app/message-queue.js), rendered by the composer's queue strip.
   const [queue,        setQueue]        = React.useState(() => window.OMP_QUEUE.EMPTY_QUEUE);
@@ -161,7 +163,7 @@ function App() {
     setModelState, setThinkingLevel,
     setSessions, setActiveSessionId, setProfiles, setStartupProfileId, setRecentProjects,
     setNoTabProfileId, setWorkspaceNotes, setApprovalModes, setCloseConfirm, setConversationSetup,
-    setPromptHistory, setSubagents, setSubagentTranscripts, setQueue, setQueueSending, setGoal, setExtWidgets, setLiveVoice, setDictation, setDictationCompleted,
+    setPromptHistory, setSubagents, setSubagentTranscripts, setAgentContext, setQueue, setQueueSending, setGoal, setExtWidgets, setLiveVoice, setDictation, setDictationCompleted,
   });
   useRemote({ bridge });
   useNotifications({ sessions, viewedSession: stab.active ? null : activeSessionId, tweaks: t });
@@ -1135,6 +1137,11 @@ function App() {
                   onMinimapClick={handleMinimapClick}
                   show={{ context: t.showContext ?? true, radar: t.showRadar ?? true, subagents: t.showSubagents ?? true, minimap: t.showMinimap ?? true }}
                 >
+                  {(t.showAgentContext ?? true) && <AgentContextCard key={`context:${activeSessionId}`} context={agentContextView}
+                    onSelectAgent={subagentUi.open} onJump={id => {
+                      const index = messages.findIndex(m => m._id === id);
+                      if (index >= 0) handleMinimapClick(index);
+                    }} />}
                   {(t.showChanges ?? true) && <PrAutomationCard key={planKey} automation={prAutomation} bridge={bridge}
                     available={!!activeProject.path && !!bridge?.isConnected}
                     onOpenChanges={() => setGitOpen({ path: null, project: gitProject })} />}

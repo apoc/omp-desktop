@@ -72,6 +72,8 @@ function harness(storage = new Map()) {
     "app/live-voice.js",
     "app/live-context.js",
     "app/ask-dialog.js",
+    "app/agent-context.js",
+    "app/agent-context-sync.js",
     "adapter.js",
   ])
     new Function("window", source(path))(w);

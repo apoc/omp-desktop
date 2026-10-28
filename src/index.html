@@ -103,6 +103,9 @@
        destructure window.OMP_SUBAGENTS at top level and live.js reads it at
        its own top-level init, so this must load before both. -->
   <script src="app/subagents.js"></script>
+  <!-- Native context observations and activation-scoped byte-tail reads. -->
+  <script src="app/agent-context.js"></script>
+  <script src="app/agent-context-sync.js"></script>
 
   <!-- In-app updater state (issue #19): pure reducer + selectors. IIFE;
        busyTabCount looks up window.OMP_TURN_STATUS (app/turn-status.js,
@@ -345,6 +348,7 @@
   <script type="text/babel" src="design/chat/retry-row.jsx"></script>
   <script type="text/babel" src="design/chat/goal-row.jsx"></script>
   <script type="text/babel" src="design/chat/approval-row.jsx"></script>
+  <script type="text/babel" src="design/chat/context-row.jsx"></script>
   <script type="text/babel" src="design/chat/chat-view.jsx"></script>
   <!-- Subagent manager UI. bits → controls → inspector (destructures the
        controls) → pane (destructures the inspector) → rail card; all before
@@ -362,6 +366,7 @@
   <script type="text/babel" src="design/widgets/widget-card.jsx"></script>
   <script type="text/babel" src="design/pr-status.jsx"></script>
   <script type="text/babel" src="design/pr-automation-card.jsx"></script>
+  <script type="text/babel" src="design/agent-context-card.jsx"></script>
   <!-- Browser panel: browser-panel.jsx destructures window.BrowserToolbar
        (browser-toolbar.jsx) at top level; the toolbar destructures
        window.Icon and window.OMP_BROWSER. browser-dock.jsx (the panel's stage
