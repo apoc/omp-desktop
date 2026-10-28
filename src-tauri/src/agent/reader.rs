@@ -11,6 +11,7 @@ use crate::approval::{self, RuleBook};
 use crate::redaction::{is_credential_key, REDACTED_PLACEHOLDER};
 
 use super::approvals::{self, PendingApprovals};
+use super::context_catalog::{self, Catalog, ChunkDecoder};
 use super::ext_ui::{self, ExtUiState};
 use super::inner::BridgeInner;
 use super::journal::EventJournal;
@@ -180,6 +181,7 @@ pub(super) struct StdoutReaderConfig {
     pub(super) ext_ui: Arc<Mutex<ExtUiState>>,
     /// This process's open approval prompts, for a grant to bind to.
     pub(super) approvals: Arc<Mutex<PendingApprovals>>,
+    pub(super) context_catalog: Arc<Mutex<Catalog>>,
     pub(super) stdin: Arc<Mutex<ChildStdin>>,
     pub(super) rule_book: Arc<RuleBook>,
     pub(super) project_root: Option<PathBuf>,
@@ -275,6 +277,7 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
         journal,
         ext_ui,
         approvals,
+        context_catalog,
         stdin,
         rule_book,
         project_root,
@@ -289,6 +292,7 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
         let line_event = format!("agent://line/{sid}");
         let exit_event = format!("agent://exit/{sid}");
         let mut buf: Vec<u8> = Vec::with_capacity(8192);
+        let mut context_chunks = ChunkDecoder::default();
         let mut exit_reason = String::new();
         // omp announces itself with a `ready` frame, so "not one frame all
         // run" means it died during startup. That is the only case where
@@ -329,6 +333,7 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
                         .as_ref()
                         .and_then(|frame| frame.get("type"))
                         .and_then(serde_json::Value::as_str);
+                    context_catalog::record(&context_catalog, &mut context_chunks, parsed.as_ref());
                     // A rule-covered approval prompt is answered directly on
                     // stdin and replaced with a synthetic notice — the human
                     // never sees the original ask, but does see that it was

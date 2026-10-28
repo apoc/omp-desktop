@@ -19,6 +19,7 @@
 //! through `crate::supervisor` (Job Object / process group).
 
 mod approvals;
+mod context_catalog;
 mod context_extension;
 pub mod ext_ui;
 mod inner;
@@ -33,6 +34,8 @@ use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
 
 use approvals::PendingApprovals;
+use context_catalog::Catalog;
+pub use context_catalog::SkillPreview;
 use ext_ui::ExtUiState;
 use inner::BridgeInner;
 use journal::{EventJournal, Replay};
@@ -204,7 +207,13 @@ impl AgentBridge {
             mode,
             config,
         } = launch;
-        let (mut child, supervisor) = match spawn_omp(cwd, resume, profile, mode, config) {
+        let gen = self.next_gen.fetch_add(1, Ordering::SeqCst);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| format!("could not create context epoch: {e}"))?
+            .as_nanos();
+        let epoch = format!("{}-{gen}-{timestamp}", std::process::id());
+        let (mut child, supervisor) = match spawn_omp(cwd, resume, profile, mode, config, &epoch) {
             Ok(c) => c,
             Err(e) => {
                 // Cached *and* returned: the caller gets the reason now, the
@@ -223,11 +232,11 @@ impl AgentBridge {
             EVENT_JOURNAL_MAX_BYTES,
         )));
         let ext_ui = Arc::new(Mutex::new(ExtUiState::default()));
+        let context_catalog = Arc::new(Mutex::new(Catalog::new(epoch)));
         let project_root = cwd.filter(|c| !c.is_empty()).map(std::path::PathBuf::from);
         // A second copy of the folder: the reader checks rules against its
         // own on every prompt, this one travels with a grant.
         let approvals = Arc::new(Mutex::new(PendingApprovals::new(project_root.clone())));
-        let gen = self.next_gen.fetch_add(1, Ordering::SeqCst);
         // Liveness flag for this incarnation. Cloned into the map entry
         // (so `reap_and_clear_grants`/supersession can clear it) and into
         // the reader config (so the reader's per-line hot path can check
@@ -257,6 +266,7 @@ impl AgentBridge {
                     journal: Arc::clone(&journal),
                     ext_ui: Arc::clone(&ext_ui),
                     approvals: Arc::clone(&approvals),
+                    context_catalog: Arc::clone(&context_catalog),
                     // Kept alive (pun intended) on the map entry; the reader
                     // thread below gets its own clone via `alive` moved into
                     // `StdoutReaderConfig`.
@@ -295,6 +305,7 @@ impl AgentBridge {
             journal,
             ext_ui,
             approvals,
+            context_catalog,
             stdin: stdin_for_reader,
             rule_book,
             project_root,
@@ -362,24 +373,58 @@ impl AgentBridge {
         let command = validate_command_type(trimmed)?;
         let answered = approvals::answered_id(&command);
 
-        let Some((stdin_arc, open, alive)) = self.with_entry(session_id, |inner| {
-            (
-                inner.stdin.as_ref().map(Arc::clone),
-                answered.map(|_| Arc::clone(&inner.approvals)),
-                answered.map(|_| Arc::clone(&inner.alive)),
-            )
-        })?
+        let context_request = matches!(
+            command.get("type").and_then(serde_json::Value::as_str),
+            Some("get_entries" | "get_subagent_messages")
+        );
+        let Some((stdin_arc, open, alive, context_catalog)) =
+            self.with_entry(session_id, |inner| {
+                (
+                    inner.stdin.as_ref().map(Arc::clone),
+                    answered.map(|_| Arc::clone(&inner.approvals)),
+                    answered.map(|_| Arc::clone(&inner.alive)),
+                    context_request.then(|| Arc::clone(&inner.context_catalog)),
+                )
+            })?
         else {
             return Err(self
                 .last_error(session_id)
                 .unwrap_or_else(|| format!("session '{session_id}' not found")));
         };
         let stdin_arc = stdin_arc.ok_or_else(|| "agent not running".to_string())?;
-        write_command(&stdin_arc, trimmed, answered.zip(open.as_deref()))?;
+        if let Some(catalog) = &context_catalog {
+            catalog
+                .lock()
+                .map_err(|_| "catalog lock poisoned".to_owned())?
+                .request(&command);
+        }
+        if let Err(error) = write_command(&stdin_arc, trimmed, answered.zip(open.as_deref())) {
+            if let Some(catalog) = &context_catalog {
+                if let Ok(mut catalog) = catalog.lock() {
+                    catalog.cancel(&command);
+                }
+            }
+            return Err(error);
+        }
         if let (Some(id), Some(alive)) = (answered, alive) {
             crate::remote::tracker::tracker().on_answered(session_id, id, &alive);
         }
         Ok(())
+    }
+
+    /// Read only a skill in this live process's observed catalog.
+    pub fn context_read_skill(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        name: &str,
+    ) -> Result<SkillPreview, String> {
+        let (catalog, alive) = self
+            .with_entry(session_id, |inner| {
+                (Arc::clone(&inner.context_catalog), Arc::clone(&inner.alive))
+            })?
+            .ok_or_else(|| format!("session '{session_id}' not found"))?;
+        context_catalog::read_skill(&catalog, &alive, agent_id, name)
     }
 
     /// Look up the last cached spawn / startup error for a `session_id`.
@@ -765,6 +810,7 @@ mod tests {
             ))),
             ext_ui: Arc::default(),
             approvals: Arc::new(Mutex::new(PendingApprovals::new(None))),
+            context_catalog: Arc::default(),
             alive,
         }
     }

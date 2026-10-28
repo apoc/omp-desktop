@@ -57,11 +57,12 @@ test("buildView keeps the echo flag of a user message omp handed to the model la
 
 test("desktop context inspection never publishes native instructions to the phone", () => {
   const { api } = load();
-  const view = api.buildView(snapshot({ messages: [
-    { kind: "context", contextKind: "instruction", text: "Private native system prompt" },
-    { kind: "user", id: "u", text: "Public conversation" },
-  ] }));
+  const view = api.buildView(snapshot({
+    agentContext: { byId: { main: { instructions: [{ text: "Private native system prompt" }] } } },
+    messages: [{ kind: "user", id: "u", text: "Public conversation" }],
+  }));
   assert.deepEqual(own(view.messages), [{ id: "u", role: "user", text: "Public conversation" }]);
+  assert.equal(JSON.stringify(view).includes("Private native system prompt"), false);
 });
 
 test("buildView marks an index-derived id as synthetic and leaves real ids unmarked", () => {

@@ -345,7 +345,6 @@
     if (state.isStreaming) return;                  // wait for clean turn boundary
     if (state.messages.length <= MINIMAP_MAX) return;
     const drop = MINIMAP_COLS;                      // evict one full row (13)
-    state.agentContext = CONTEXT.forget(state.agentContext, state.messages.slice(0, drop));
     state.messages = state.messages.slice(drop);
     state.trimmed = true;
     for (const [id, idx] of activeToolCards) {
@@ -786,11 +785,6 @@
   }
 
   function notify() {
-    const withContext = CONTEXT.markers(state.agentContext, state.messages, state.trimmed);
-    if (withContext !== state.messages) {
-      state.messages = withContext;
-      activeToolCards = new Map(state.messages.flatMap((m, i) => m.kind === "tool" && m.status === "running" && m._toolCallId ? [[m._toolCallId, i]] : []));
-    }
     _trimMessages();
     // Stamp stable IDs on any message that doesn't have one yet (new pushes,
     // restored sessions, or messages from get_messages). O(N) but N ≤ 169 and
@@ -4608,6 +4602,12 @@
         sessionId: activeSessionId,
         path,
       });
+    },
+
+    /** Read only a skill in this process's native catalog; never an agent prompt. */
+    readContextSkill(agentId, name) {
+      if (!activeSessionId) return Promise.resolve({ ok: false, error: "No tab is open." });
+      return _invokeResult("agent_context_read_skill", { sessionId: activeSessionId, agentId, name });
     },
 
     /** Stage a file's changes (`git add`). */

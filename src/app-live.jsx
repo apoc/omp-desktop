@@ -110,7 +110,7 @@ function App() {
   const [subagents,           setSubagents]           = React.useState(() => window.OMP_SUBAGENTS.emptySubagents());
   const [subagentTranscripts, setSubagentTranscripts] = React.useState({});
   const [agentContext, setAgentContext] = React.useState(() => window.OMP_AGENT_CONTEXT.empty());
-  const agentContextView = React.useMemo(() => window.OMP_AGENT_CONTEXT.view(agentContext, messages), [agentContext, messages]);
+  const agentContextView = React.useMemo(() => window.OMP_AGENT_CONTEXT.view(agentContext), [agentContext]);
   // omp's steer / follow-up queue + this tab's unacknowledged sends
   // (app/message-queue.js), rendered by the composer's queue strip.
   const [queue,        setQueue]        = React.useState(() => window.OMP_QUEUE.EMPTY_QUEUE);
@@ -1138,10 +1138,7 @@ function App() {
                   show={{ context: t.showContext ?? true, radar: t.showRadar ?? true, subagents: t.showSubagents ?? true, minimap: t.showMinimap ?? true }}
                 >
                   {(t.showAgentContext ?? true) && <AgentContextCard key={`context:${activeSessionId}`} context={agentContextView}
-                    onSelectAgent={subagentUi.open} onJump={id => {
-                      const index = messages.findIndex(m => m._id === id);
-                      if (index >= 0) handleMinimapClick(index);
-                    }} />}
+                    onSelectAgent={subagentUi.open} readSkill={bridge.readContextSkill} />}
                   {(t.showChanges ?? true) && <PrAutomationCard key={planKey} automation={prAutomation} bridge={bridge}
                     available={!!activeProject.path && !!bridge?.isConnected}
                     onOpenChanges={() => setGitOpen({ path: null, project: gitProject })} />}

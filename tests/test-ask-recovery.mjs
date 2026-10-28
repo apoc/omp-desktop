@@ -89,6 +89,7 @@ function harness(storage = new Map()) {
   );
   let seq = 0,
     history = pending,
+    rawEntries = null,
     streaming = false,
     rejectPrompt = false,
     holdState = false;
@@ -137,12 +138,14 @@ function harness(storage = new Map()) {
                 ),
               });
             else if (cmd.type === "get_entries") {
-              const entries = history.map((message, i) => ({
-                type: "message",
-                id: `e${i}`,
-                parentId: i ? `e${i - 1}` : null,
-                message,
-              }));
+              const entries =
+                rawEntries ??
+                history.map((message, i) => ({
+                  type: "message",
+                  id: `e${i}`,
+                  parentId: i ? `e${i - 1}` : null,
+                  message,
+                }));
               reply(cmd, { entries, leafId: entries.at(-1)?.id ?? null });
             } else if (
               cmd.type === "negotiate_protocol" ||
@@ -187,6 +190,9 @@ function harness(storage = new Map()) {
     },
     setHistory(value) {
       history = value;
+    },
+    setEntries(value) {
+      rawEntries = value;
     },
     setStreaming(value) {
       streaming = value;
@@ -593,5 +599,83 @@ test("a later user-authored native custom message supersedes the old question", 
       "/saved/session",
     ),
     null,
+  );
+});
+
+test("repeated skill observations cannot evict reasoning or an unanswered question from scrollback", async () => {
+  const h = harness();
+  const reasoning = {
+    role: "assistant",
+    timestamp: 2,
+    content: [
+      { type: "thinking", thinking: "Check the constraints before choosing." },
+      { type: "text", text: "Here is the decision." },
+    ],
+  };
+  h.setHistory([pending[0], reasoning, { ...pending[1], timestamp: 3 }]);
+  const entries = [
+    { type: "message", id: "user", parentId: null, message: pending[0] },
+    { type: "message", id: "reasoning", parentId: "user", message: reasoning },
+    {
+      type: "custom",
+      customType: "omp-desktop:agent-context",
+      id: "context",
+      parentId: "reasoning",
+      data: { version: 1, blocks: ["OMP system prompt"] },
+    },
+  ];
+  let parentId = "context";
+  for (let i = 0; i < 200; i++) {
+    entries.push(
+      {
+        type: "message",
+        id: `read-${i}`,
+        parentId,
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: `tool-${i}`,
+              name: "read",
+              arguments: { path: "skill://review" },
+            },
+          ],
+        },
+      },
+      {
+        type: "message",
+        id: `result-${i}`,
+        parentId: `read-${i}`,
+        message: {
+          role: "toolResult",
+          toolCallId: `tool-${i}`,
+          toolName: "read",
+          isError: false,
+        },
+      },
+    );
+    parentId = `result-${i}`;
+  }
+  entries.push({ type: "message", id: "ask", parentId, message: pending[1] });
+  h.setEntries(entries);
+  await h.reopen();
+  const state = h.w.OMP_BRIDGE.getState();
+  assert.deepEqual(
+    state.messages.map((m) => m.kind),
+    ["user", "assistant", "ask"],
+  );
+  assert.equal(state.messages[0].text, "Plan the change.");
+  assert.equal(
+    state.messages[1].thought,
+    "Check the constraints before choosing.",
+  );
+  assert.deepEqual(state.messages[1].blocks, [
+    { type: "text", text: "Here is the decision." },
+  ]);
+  assert.equal(state.messages[2].questions[0].question, "Which approach?");
+  assert.deepEqual(
+    state.agentContext.byId.main.skills.map((s) => s.name),
+    ["review"],
   );
 });

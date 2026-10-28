@@ -344,6 +344,7 @@ pub(super) fn spawn_omp(
     profile: Option<&str>,
     mode: ApprovalMode,
     config: Option<&Path>,
+    context_epoch: &str,
 ) -> Result<(Child, crate::supervisor::ProcessSupervisor), String> {
     let omp = Omp::locate()?;
     // Refused here rather than left to fail later: an omp too old for the
@@ -361,6 +362,7 @@ pub(super) fn spawn_omp(
     let mut cmd = omp.command();
     // Load only the embedded observer. Keep the browser-only config last.
     super::context_extension::apply(&mut cmd)?;
+    cmd.env("OMP_DESKTOP_CONTEXT_EPOCH", context_epoch);
     cmd.args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

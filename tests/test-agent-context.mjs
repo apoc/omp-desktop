@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import observer from "../src-tauri/src/agent/context-extension.mjs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const source = (name) =>
   readFileSync(new URL(`../src/app/${name}`, import.meta.url), "utf8");
@@ -70,25 +72,24 @@ test("only completed successful skill loads count, never listings, attempts or f
   assert.deepEqual(skills(scan(readBranch())), ["review"]);
 });
 
-test("explicit and auto-loaded native skill prompts share one used-skill identity", () => {
+test("explicit invocation and repeated reads keep one used-skill identity", () => {
   let state = scan([
     ...readBranch(),
     entry("invoke", "result", {
       type: "custom_message",
       customType: "skill-prompt",
-      attribution: "agent",
+      attribution: "user",
       details: { name: "review", path: "/skills/review/SKILL.md" },
     }),
   ]);
   const used = C.get(state, "main").skills;
   assert.equal(used.length, 1);
-  assert.equal(used[0].loads, 2);
   assert.equal(used[0].path, "/skills/review/SKILL.md");
   state = C.entries(state, "main", { entries: [], leafId: "invoke" });
-  assert.equal(
-    C.get(state, "main").skills[0].loads,
-    2,
-    "replayed reads are not extra usage",
+  assert.deepEqual(
+    C.get(state, "main").skills,
+    used,
+    "replayed observations never duplicate usage",
   );
 });
 
@@ -161,9 +162,6 @@ test("each subagent keeps its own native prompt, used skills and owner", () => {
     ["security"],
   );
   assert.equal(C.get(state, "Worker").instructions[0].text, "Read only");
-  assert.ok(
-    C.get(state, "Worker").events.every((e) => e.anchorToolId === "task-call"),
-  );
   state = C.register(state, { id: "Worker", sessionFile: "/sessions/two" });
   assert.deepEqual(C.get(state, "Worker").skills, []);
   assert.equal(C.get(state, "Worker").nextByte, 0);
@@ -191,35 +189,131 @@ test("latest native prompt replaces instructions while preserving prior skill us
   ]);
   const agent = C.get(state, "main");
   assert.deepEqual(skills(state), ["review"]);
-  assert.equal(agent.instructions[0].text, "Changed system");
-  assert.ok(agent.instructions.some((i) => i.path === "/project/AGENTS.md"));
-  assert.ok(
-    !agent.instructions.some((i) => i.text === "Native system instructions"),
+  assert.deepEqual(agent.instructions, [
+    {
+      id: "file:/project/AGENTS.md",
+      name: "AGENTS.md",
+      path: "/project/AGENTS.md",
+      text: "Project rules",
+    },
+  ]);
+});
+
+test("available repo/global skills and automatic injections never become session usage", () => {
+  const prompt = snapshot();
+  prompt.data.skills = [
+    {
+      name: "repo-check",
+      path: "/project/.agents/skills/check/SKILL.md",
+      scope: "repo",
+    },
+    {
+      name: "review",
+      path: "/home/me/.agents/skills/review/SKILL.md",
+      scope: "global",
+    },
+  ];
+  const state = scan([
+    prompt,
+    entry("auto", "prompt", {
+      type: "custom_message",
+      customType: "skill-prompt",
+      attribution: "agent",
+      details: {
+        name: "review",
+        path: "/home/me/.agents/skills/review/SKILL.md",
+      },
+    }),
+    entry("nested-auto", "auto", {
+      type: "message",
+      message: {
+        role: "custom",
+        customType: "skill-prompt",
+        attribution: "agent",
+        details: {
+          name: "repo-check",
+          path: "/project/.agents/skills/check/SKILL.md",
+        },
+      },
+    }),
+  ]);
+  const main = C.view(state).agents[0];
+  assert.deepEqual(
+    main.repoSkills.map((s) => s.name),
+    ["repo-check"],
+  );
+  assert.deepEqual(
+    main.globalSkills.map((s) => s.name),
+    ["review"],
+  );
+  assert.deepEqual(main.skills, []);
+  assert.deepEqual(
+    main.instructions,
+    [],
+    "boilerplate system prompt is not a loaded instruction file",
   );
 });
 
-test("context markers have stable ids, follow their tool, and never carry omp message timestamps", () => {
-  const state = scan(readBranch());
-  const user = { kind: "user", ts: 1, text: "Review" };
-  const tool = { kind: "tool", _toolCallId: "read-one", status: "ok" };
-  const reply = {
-    kind: "assistant",
-    ts: 3,
-    blocks: [{ type: "text", text: "Done" }],
-  };
-  const rows = C.markers(state, [user, tool, reply]);
-  const skill = rows.find((m) => m.contextKind === "skill");
-  assert.equal(rows.indexOf(skill), rows.indexOf(tool) + 1);
-  assert.ok(
-    rows.filter((m) => m.kind === "context").every((m) => !("ts" in m)),
+test("a successful read credits an automatically injected skill exactly once", () => {
+  const prompt = snapshot();
+  prompt.data.skills = [
+    { name: "review", path: "/global/review/SKILL.md", scope: "global" },
+  ];
+  const history = [
+    prompt,
+    entry("auto", "prompt", {
+      type: "message",
+      message: {
+        role: "custom",
+        customType: "skill-prompt",
+        attribution: "agent",
+        details: { name: "review", path: "/global/review/SKILL.md" },
+      },
+    }),
+  ];
+  let parent = "auto";
+  for (let i = 0; i < 200; i++) {
+    history.push(
+      call(
+        `read-${i}`,
+        parent,
+        `tool-${i}`,
+        i % 2 ? "skill://review" : "/global/review/SKILL.md",
+      ),
+      result(`done-${i}`, `read-${i}`, `tool-${i}`),
+    );
+    parent = `done-${i}`;
+  }
+  const state = scan(history);
+  const main = C.view(state).agents[0];
+  assert.deepEqual(
+    main.skills.map((s) => [s.name, s.path]),
+    [["review", "/global/review/SKILL.md"]],
   );
-  assert.equal(C.markers(state, rows), rows);
-  const forgotten = C.forget(state, [skill]);
-  assert.ok(
-    !C.markers(
-      forgotten,
-      rows.filter((m) => m !== skill),
-    ).some((m) => m._id === skill._id),
+  assert.deepEqual(
+    main.globalSkills.map((s) => s.name),
+    ["review"],
+  );
+});
+
+test("catalog updates and identical instruction files stay unique on the active branch", () => {
+  const project =
+    '<project-context>\n<repo-rules>\n<file path="/project/AGENTS.md">\nLoaded rules\n</file>\n</repo-rules>\n</project-context>';
+  const first = snapshot("first", null, ["OMP system", project, project]);
+  first.data.skills = [{ name: "old", path: "/old/SKILL.md", scope: "global" }];
+  const latest = snapshot("latest", "first", ["Changed system", project]);
+  latest.data.skills = [
+    { name: "new", path: "/project/new/SKILL.md", scope: "repo" },
+  ];
+  const main = C.view(scan([first, latest])).agents[0];
+  assert.deepEqual(main.globalSkills, []);
+  assert.deepEqual(
+    main.repoSkills.map((s) => s.name),
+    ["new"],
+  );
+  assert.deepEqual(
+    main.instructions.map((s) => [s.path, s.text]),
+    [["/project/AGENTS.md", "Loaded rules"]],
   );
 });
 
@@ -427,4 +521,63 @@ test("switching native branches records the effective prompt even when its text 
   handlers.get("session_tree")({}, ctx);
   assert.equal(written.length, 2);
   assert.deepEqual(written[1].blocks, ["Effective prompt"]);
+});
+
+test("native catalog retains scoped skill paths and refreshes independently of prompt text", () => {
+  const project = join(homedir(), "projects", "context-fixture");
+  const repoPath = join(project, ".agents", "skills", "review", "SKILL.md");
+  const globalPath = join(homedir(), ".agents", "skills", "check", "SKILL.md");
+  const handlers = new Map(),
+    written = [];
+  let commands = [
+    {
+      source: "skill",
+      name: "skill:team/review",
+      path: repoPath,
+      description: "Project review",
+    },
+    {
+      source: "skill",
+      name: "skill:global-check",
+      path: globalPath,
+      description: "Global checks",
+    },
+    { source: "extension", name: "not-a-skill", path: repoPath },
+    { source: "skill", name: "skill:missing-path" },
+  ];
+  observer({
+    on: (name, fn) => handlers.set(name, fn),
+    appendEntry: (_type, data) => written.push(data),
+    getCommands: () => commands,
+  });
+  const ctx = {
+    cwd: join(project, "src"),
+    sessionManager: { getSessionFile: () => "catalog-fixture" },
+    getSystemPrompt: () => ["Unchanged prompt"],
+    agent: { kind: "main" },
+  };
+  handlers.get("session_start")({}, ctx);
+  handlers.get("before_provider_request")({}, ctx);
+  assert.equal(written.length, 1);
+  const byName = new Map(written[0].skills.map((s) => [s.name, s]));
+  assert.deepEqual([...byName.keys()].sort(), ["global-check", "team/review"]);
+  assert.equal(byName.get("team/review").path, repoPath);
+  assert.equal(byName.get("team/review").scope, "repo");
+  assert.equal(byName.get("team/review").description, "Project review");
+  assert.equal(byName.get("global-check").scope, "global");
+  commands = [
+    {
+      source: "skill",
+      name: "skill:new",
+      path: repoPath,
+      description: "Replacement catalog",
+    },
+  ];
+  handlers.get("before_provider_request")({}, ctx);
+  assert.equal(written.length, 2);
+  assert.deepEqual(written[1].blocks, ["Unchanged prompt"]);
+  assert.deepEqual(
+    written[1].skills.map((s) => s.name),
+    ["new"],
+  );
 });

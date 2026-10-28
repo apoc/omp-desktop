@@ -72,7 +72,7 @@ Verification on macOS: an isolated ad-hoc-signed release app rendered the real S
 
 ## Ambient rail: Agent context
 
-**Settings → Rail → Agent context** (`showAgentContext`, on by default) shows or hides the native context card. It separates the main agent and known subagents, with harness/definition identity, loaded instruction blocks and skills actually read or invoked. Hiding this card does not disable native observation or remove context markers from the independently controlled minimap. Instruction details are inspectable from their transcript event; trimmed events have no jump button. The native source, lifecycle, local snapshot privacy and existing subagent-history boundary are documented under **Native agent context** in [Subagent manager](subagents.md#native-agent-context).
+**Settings → Rail → Agent context** (`showAgentContext`, on by default) shows or hides the compact native context inventory. The main agent and known subagents have collapsed **Repo skills**, **Global skills**, **Loaded instructions**, and **Used this session** groups. Entries are one line; selecting one opens a read-only viewer without adding chat events or marking a human-previewed skill as used. Automatic skill injections do not populate session use. Hiding the card does not disable native observation. Context never adds transcript or minimap entries. Native sources, lifecycle, local snapshot privacy and subagent-history limits are documented under **Native agent context** in [Subagent manager](subagents.md#native-agent-context).
 
 ## Ambient rail: Changes and Auto-fix
 

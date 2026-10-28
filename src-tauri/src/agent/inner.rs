@@ -3,6 +3,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use super::approvals::PendingApprovals;
+use super::context_catalog::Catalog;
 use super::ext_ui::ExtUiState;
 use super::journal::EventJournal;
 use crate::supervisor::ProcessSupervisor;
@@ -39,6 +40,8 @@ pub(super) struct BridgeInner {
     /// and consumed by a grant — see [`crate::agent::approvals`]. Dropped
     /// with the entry, like `ext_ui`.
     pub(super) approvals: Arc<Mutex<PendingApprovals>>,
+    /// Catalogs observed from this process, discarded on replacement or exit.
+    pub(super) context_catalog: Arc<Mutex<Catalog>>,
     /// Cleared (`store(false, ...)`) the instant this incarnation is
     /// superseded (a fresher `start_session` displaced it in the map) or
     /// reaped (`stop_session` removed it) — both callers clear it

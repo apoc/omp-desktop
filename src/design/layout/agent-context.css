@@ -1,4 +1,4 @@
-/* Observed agent context in the rail and transcript. */
+/* Compact agent context rail and content preview. */
 .agent-context {
   display: block;
   min-width: 0;
@@ -31,32 +31,40 @@
   gap: 7px;
   padding-top: 9px;
 }
+.agent-context-main,
 .agent-context-agent {
   min-width: 0;
+}
+.agent-context-agent {
   border-top: 1px solid var(--line);
   padding-top: 7px;
 }
-.agent-context-agent-head {
+.agent-context-agent-head,
+.agent-context-main-label {
   color: var(--fg-2);
   font-size: var(--d-text-sm);
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.agent-context-agent-label {
+.agent-context-agent-label,
+.agent-context-main-label {
   font-weight: 600;
 }
 .agent-context-status {
-  margin-left: 6px;
   color: var(--fg-3);
   font-size: var(--d-text-xs);
 }
 .agent-context-agent-body {
   display: grid;
-  gap: 8px;
-  padding: 8px 0 2px 9px;
+  gap: 3px;
   min-width: 0;
 }
-.agent-context-inspect,
-.agent-context-jump {
+.agent-context-agent > .agent-context-agent-body,
+.agent-context-main-label + .agent-context-agent-body {
+  padding-top: 6px;
+}
+.agent-context-inspect {
   width: fit-content;
   padding: 2px 4px;
   border: 1px solid var(--line-bright);
@@ -68,7 +76,7 @@
   cursor: pointer;
 }
 .agent-context-inspect:hover,
-.agent-context-jump:hover {
+.agent-context-entry:hover {
   background: var(--bg-hover);
 }
 .agent-context :focus-visible,
@@ -81,123 +89,92 @@
   margin: 0;
   color: var(--fg-3);
   font-size: var(--d-text-xs);
-  overflow-wrap: anywhere;
+}
+.agent-context-note {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-context-empty {
+  padding: 4px 0 4px 15px;
 }
 .agent-context-group {
   min-width: 0;
-  border-left: 2px solid var(--fg-4);
-  padding-left: 7px;
-}
-.agent-context-group.skill {
-  border-color: var(--lilac);
-}
-.agent-context-group.instruction {
-  border-color: var(--cyan);
-}
-.agent-context-group.harness {
-  border-color: var(--amber);
 }
 .agent-context-group-head {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   gap: 6px;
+  padding: 3px 2px;
   color: var(--fg-2);
   font-size: var(--d-text-xs);
+  list-style: none;
+}
+.agent-context-group-head::-webkit-details-marker {
+  display: none;
+}
+.agent-context-group-head::before {
+  content: "▸";
+  color: var(--fg-3);
+}
+.agent-context-group[open] > .agent-context-group-head::before {
+  content: "▾";
+}
+.agent-context-group-count {
+  margin-left: auto;
+  color: var(--fg-3);
 }
 .agent-context-list {
-  display: grid;
-  gap: 5px;
+  max-height: 150px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   list-style: none;
-  margin: 4px 0 0;
-  padding: 0;
+  margin: 0 0 2px;
+  padding: 0 0 0 14px;
 }
-.agent-context-entry,
-.agent-context-entry-main {
-  min-width: 0;
-}
-.agent-context-entry-main {
-  display: flex;
-  align-items: start;
-  justify-content: space-between;
-  gap: 4px;
-}
-.agent-context-entry-name {
+.agent-context-entry {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  padding: 3px 5px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
   color: var(--fg);
+  font: inherit;
   font-size: var(--d-text-xs);
-  overflow-wrap: anywhere;
-}
-.agent-context-jump {
-  flex: none;
-}
-.agent-context-source,
-.agent-context-detail {
-  color: var(--fg-3);
-  font-size: var(--d-text-xs);
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-.agent-context-source {
-  margin-top: 2px;
-}
-.context-row {
-  min-width: 0;
-  padding: 8px 10px;
-}
-.context-row-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px;
-  font-size: var(--d-text-xs);
-}
-.context-row-kind {
-  font-family: var(--font-mono);
-  font-weight: 600;
-  text-transform: uppercase;
-}
-.context-row-agent {
-  color: var(--fg-3);
-  overflow-wrap: anywhere;
-}
-.context-row-title {
-  margin-top: 3px;
-  color: var(--fg);
-  overflow-wrap: anywhere;
-}
-.context-row-source,
-.context-row-detail {
-  margin-top: 3px;
-  color: var(--fg-3);
-  font-size: var(--d-text-xs);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.context-row-inspection {
-  margin-top: 6px;
-  color: var(--fg-2);
-  font-size: var(--d-text-xs);
-}
-.context-row-inspection summary {
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: pointer;
 }
-.context-row-inspection pre {
-  max-height: 240px;
-  overflow: auto;
-  margin: 6px 0 0;
-  padding: 8px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--bg-input);
-  color: var(--fg-2);
-  font: inherit;
-  font-family: var(--font-mono);
+.agent-context-preview {
+  width: min(900px, 88vw);
+}
+.agent-context-preview-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-context-preview-path {
+  padding: 7px 16px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+  color: var(--fg-3);
+  font-size: var(--d-text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-context-preview-text {
+  margin: 0;
+  padding: 16px;
+  color: var(--fg);
+  font-size: var(--d-text-sm);
+  line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-.context-row-inspection summary:focus-visible,
-.context-row-inspection pre:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 .minimap-cell {
   width: 100%;

@@ -1,4 +1,5 @@
-// Observed native context, scoped to a conversation and each agent's branch.
+// Native context inventory, scoped to each agent's active conversation branch.
+// This state never creates transcript entries or consumes chat scrollback.
 (function () {
   const TYPE = "omp-desktop:agent-context";
   const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -12,16 +13,14 @@
     leafId: null,
     cursor: null,
     nextByte: 0,
-    harness: [],
     instructions: [],
     skills: [],
-    events: [],
+    availableSkills: [],
     ...fields,
   });
   const empty = () => ({
     byId: { main: emptyAgent("main") },
     order: ["main"],
-    forgotten: new Set(),
     skillNames: [],
   });
 
@@ -40,32 +39,26 @@
 
   // Keep ancestry, but never retain ordinary messages or tool output bodies.
   function compact(entry) {
-    const base = {
-      id: entry.id,
-      parentId: entry.parentId,
-      runtime: entry.runtime,
-      timestamp: entry.timestamp,
-      activeLeafId: entry.activeLeafId,
-    };
+    const base = { id: entry.id, parentId: entry.parentId };
     if (entry.type === "custom" && entry.customType === TYPE)
       return { ...base, data: entry.data };
     if (entry.type === "session_init")
-      return {
-        ...base,
-        init: { agent: entry.agent, systemPrompt: entry.systemPrompt },
-      };
+      return { ...base, init: { systemPrompt: entry.systemPrompt } };
     if (entry.type === "custom_message" && entry.customType === "skill-prompt")
-      return {
-        ...base,
-        skill: { name: entry.details?.name, path: entry.details?.path },
-      };
+      return entry.attribution === "user"
+        ? {
+            ...base,
+            skill: { name: entry.details?.name, path: entry.details?.path },
+          }
+        : base;
     const m = entry.type === "message" ? entry.message : null;
     if (!m) return base;
+    // Native autoloads have agent attribution; only an explicit invocation or
+    // a completed read is evidence of session use, not automatic injection.
     if (m.role === "custom" && m.customType === "skill-prompt")
-      return {
-        ...base,
-        skill: { name: m.details?.name, path: m.details?.path },
-      };
+      return m.attribution === "user"
+        ? { ...base, skill: { name: m.details?.name, path: m.details?.path } }
+        : base;
     if (m.role === "assistant")
       return {
         ...base,
@@ -76,31 +69,16 @@
                   b.type === "toolCall" &&
                   ["read", "functions.read"].includes(b.name),
               )
-              .map((b) => ({
-                id: b.id,
-                name: b.name,
-                args: { path: b.arguments?.path },
-              }))
+              .map((b) => ({ id: b.id, path: b.arguments?.path }))
           : [],
-        visibleTs:
-          Array.isArray(m.content) &&
-          m.content.some(
-            (b) =>
-              (b.type === "text" && b.text) ||
-              (b.type === "thinking" && b.thinking),
-          )
-            ? m.timestamp
-            : null,
       };
-    if (m.role === "user") return { ...base, visibleTs: m.timestamp };
     if (m.role === "toolResult")
       return {
         ...base,
         result: {
           id: m.toolCallId,
-          tool: m.toolName,
           isError: m.isError,
-          details: { meta: { source: m.details?.meta?.source } },
+          source: m.details?.meta?.source,
         },
       };
     return base;
@@ -132,84 +110,93 @@
     return { name, path: `skill://${name}` };
   }
 
-  function instructions(blocks) {
-    const rows = [];
-    for (const [i, block] of blocks.entries()) {
-      if (typeof block !== "string" || !block.trim()) continue;
-      const project = block.trimStart().startsWith("<project-context>");
-      rows.push({
-        id: `block:${i}`,
-        name: project ? "Project instructions" : `System instructions ${i + 1}`,
-        detail: `Native effective prompt · ${block.length.toLocaleString()} characters`,
-        text: block,
-      });
-      // These labels come only from the native prompt's file sections, never
-      // filesystem rediscovery or assistant prose. The full block remains inspectable.
-      if (project) {
-        const rules = block.match(
-          /<repo-rules>\n([\s\S]*?)\n<\/repo-rules>/,
-        )?.[1];
-        for (const match of (rules || "").matchAll(
-          /^<file path="([^"\n]+)">\n/gm,
-        )) {
-          rows.push({
-            id: `file:${match[1]}`,
-            name: leafName(match[1]),
-            path: match[1],
-            detail: "Included in the native project-prompt file sections",
-            blockId: `block:${i}`,
-          });
-        }
+  function instructions(blocks, child) {
+    const files = new Map();
+    for (const block of blocks) {
+      if (typeof block !== "string") continue;
+      const rules = block.match(
+        /<repo-rules>\r?\n([\s\S]*?)\r?\n<\/repo-rules>/,
+      )?.[1];
+      for (const match of (rules || "").matchAll(
+        /^<file path="([^"\n]+)">\r?\n([\s\S]*?)^<\/file>/gm,
+      )) {
+        files.set(match[1], {
+          id: `file:${match[1]}`,
+          name: leafName(match[1]),
+          path: match[1],
+          text: match[2].replace(/\r?\n$/, ""),
+        });
       }
     }
-    return rows;
+    // A child's session_init can carry its agent instructions without file
+    // sections. Do not list the main agent's boilerplate system prompt.
+    if (!files.size && child) {
+      const body = blocks.filter(
+        (b) =>
+          typeof b === "string" &&
+          b.trim() &&
+          !b.trimStart().startsWith("<project-context>"),
+      );
+      if (body.length)
+        return [
+          { id: "agent", name: "Agent instructions", text: body.join("\n\n") },
+        ];
+    }
+    return [...files.values()];
+  }
+
+  function nativeSkills(value) {
+    const skills = new Map();
+    for (const item of Array.isArray(value) ? value : []) {
+      if (
+        !item ||
+        typeof item.name !== "string" ||
+        typeof item.path !== "string" ||
+        !["repo", "global"].includes(item.scope)
+      )
+        continue;
+      skills.set(item.name, {
+        id: item.name,
+        name: item.name,
+        path: item.path,
+        scope: item.scope,
+        description: text(item.description),
+      });
+    }
+    return [...skills.values()];
   }
 
   function derive(agent, branch) {
     const calls = new Map(),
-      skills = new Map(),
-      events = [];
-    let harness = [],
-      currentInstructions = [],
-      promptKey = null,
-      runtimeKey = null,
-      afterTs = null,
+      skills = new Map();
+    let currentInstructions = [],
+      availableSkills = [],
       truncated = false;
-    const marker = (e, kind, key, title, body, path, toolCallId) => {
-      const row = {
-        kind: "context",
-        contextKind: kind,
-        agentId: agent.id,
-        agentLabel: agent.label,
-        title,
-        text: body,
-        sourcePath: path,
-        _id: `context:${agent.id}:${e.id}:${kind}:${key}`,
-        anchorTs: afterTs,
-        anchorToolId: agent.parentToolCallId || toolCallId || null,
-      };
-      events.push(row);
-      return row._id;
+    // Use the latest authoritative catalog even for earlier filesystem reads.
+    for (const e of branch) {
+      if (e.data?.version !== 1) continue;
+      if (Array.isArray(e.data.skills))
+        availableSkills = nativeSkills(e.data.skills);
+    }
+    const names = [
+      ...new Set([...agent.skillNames, ...availableSkills.map((s) => s.name)]),
+    ].sort((a, b) => b.length - a.length);
+    const byName = new Map(availableSkills.map((s) => [s.name, s]));
+    const byPath = new Map(
+      availableSkills.map((s) => [s.path.replace(/\\/g, "/"), s]),
+    );
+    const resolveSkill = (path) => {
+      const skill = skillUri(path, names);
+      if (skill) return byName.get(skill.name) || skill;
+      const file = text(path)
+        .replace(/:(?:\d|raw\b).*$/, "")
+        .replace(/\\/g, "/");
+      return byPath.get(file);
+    };
+    const addSkill = (skill) => {
+      if (skill?.name) skills.set(skill.name, { id: skill.name, ...skill });
     };
     for (const e of branch) {
-      if (typeof e.runtime?.version === "string") {
-        const key = JSON.stringify(e.runtime);
-        if (key !== runtimeKey) {
-          runtimeKey = key;
-          const detail = [e.runtime.label, e.runtime.branch, e.runtime.commit]
-            .filter((v) => typeof v === "string")
-            .join(" · ");
-          const name = `omp ${e.runtime.version}`;
-          harness = [
-            {
-              id: "runtime",
-              name,
-              detail,
-              messageId: marker(e, "harness", "runtime", name, detail),
-            },
-          ];
-        }
-      }
       const data =
         e.data?.version === 1 && Array.isArray(e.data.blocks) ? e.data : null;
       const blocks =
@@ -221,107 +208,33 @@
           : null);
       if (blocks) {
         truncated = Boolean(data?.truncated);
-        const key = JSON.stringify(blocks);
-        if (key !== promptKey) {
-          promptKey = key;
-          currentInstructions = instructions(blocks);
-          const ids = new Map();
-          for (const item of currentInstructions)
-            if (item.text != null)
-              ids.set(
-                item.id,
-                marker(e, "instruction", item.id, item.name, item.text),
-              );
-          currentInstructions = currentInstructions.map((item) => ({
-            ...item,
-            messageId: ids.get(item.blockId || item.id),
-            source: data ? "native context observer" : "native session_init",
-          }));
-        }
-        if (data)
-          currentInstructions = currentInstructions.map((item) => ({
-            ...item,
-            source: "native context observer",
-          }));
-        const definition = text(data?.agent?.name) || text(e.init?.agent);
-        if (definition && !harness.some((h) => h.id === "definition")) {
-          harness = [
-            ...harness,
-            {
-              id: "definition",
-              name: definition,
-              source: agent.agentSource || "native agent definition",
-            },
-          ];
-        }
+        currentInstructions = instructions(blocks, agent.id !== "main");
       }
       for (const call of e.calls || []) calls.set(call.id, call);
-      const addSkill = (skill, source, toolId) => {
-        if (!skill?.name) return;
-        const id = skill.name;
-        const messageId = marker(
-          e,
-          "skill",
-          id,
-          skill.name,
-          source,
-          skill.path,
-          toolId,
-        );
-        const prior = skills.get(id);
-        skills.set(id, {
-          id,
-          ...skill,
-          source,
-          messageId,
-          loads: (prior?.loads || 0) + 1,
-        });
-      };
-      if (
-        e.skill &&
-        typeof e.skill.name === "string" &&
-        typeof e.skill.path === "string"
-      )
-        addSkill(
-          { name: e.skill.name, path: e.skill.path },
-          "native skill invocation",
-        );
-      if (e.result) {
-        const result = e.result,
-          call = calls.get(result.id);
-        if (!result.isError) {
-          const source = result.details?.meta?.source;
-          const resolved =
-            source?.type === "internal"
-              ? skillUri(source.value, agent.skillNames)
-              : null;
-          if (resolved)
-            addSkill(resolved, "successful native skill read", result.id);
-          else if (["read", "functions.read"].includes(call?.name)) {
-            const path = text(call.args?.path);
-            // A mixed batch may partly fail; only native per-result metadata
-            // can prove which members succeeded. Never credit the whole batch.
-            const skill = path.includes(";")
-              ? null
-              : skillUri(path, agent.skillNames);
-            if (skill) addSkill(skill, "successful skill read", result.id);
-          }
+      if (typeof e.skill?.name === "string" && typeof e.skill.path === "string")
+        addSkill(byName.get(e.skill.name) || e.skill);
+      if (e.result && !e.result.isError) {
+        const source = e.result.source;
+        const resolved =
+          source?.type === "internal" ? resolveSkill(source.value) : null;
+        if (resolved) addSkill(resolved);
+        else {
+          const path = text(calls.get(e.result.id)?.path);
+          // A mixed batch may partly fail. Never credit it wholesale without
+          // native per-result provenance proving which resource succeeded.
+          if (!path.includes(";")) addSkill(resolveSkill(path));
         }
       }
-      if (e.visibleTs != null) afterTs = e.visibleTs;
     }
     return {
       ...agent,
       status: "ready",
       note: truncated
-        ? "Native prompt snapshot truncated at 512 Ki characters."
-        : currentInstructions.length
-          ? undefined
-          : "Native prompt snapshot not recorded for this agent yet.",
-      harness,
+        ? "Instruction snapshot truncated at 512 Ki characters."
+        : undefined,
       instructions: currentInstructions,
+      availableSkills,
       skills: [...skills.values()],
-      events: events.slice(-169),
     };
   }
 
@@ -343,17 +256,14 @@
         status: "error",
         note: "Native context ancestry is incomplete; context was not guessed.",
       });
-    // Retain only ancestry metadata and context observations on this branch.
-    const kept = new Map(branch.map((e) => [e.id, e]));
-    const cursor = data.entries?.at(-1)?.id || agent.cursor;
     return put(
       state,
       derive(
         {
           ...agent,
-          records: kept,
+          records: new Map(branch.map((e) => [e.id, e])),
           leafId,
-          cursor,
+          cursor: data.entries?.at(-1)?.id || agent.cursor,
           nextByte: data.nextByte ?? agent.nextByte,
         },
         branch,
@@ -374,8 +284,6 @@
       ...base,
       label: item.label || item.id,
       sessionFile: item.sessionFile || base.sessionFile,
-      parentToolCallId: item.parentToolCallId || base.parentToolCallId,
-      agentSource: item.agentSource || base.agentSource,
       runStatus: item.status || base.runStatus,
     });
   }
@@ -411,66 +319,7 @@
       : state;
   }
 
-  function forget(state, removed) {
-    const ids = removed.filter((m) => m.kind === "context").map((m) => m._id);
-    if (!ids.length) return state;
-    const recent = new Set(
-      state.order
-        .flatMap((id) => get(state, id)?.events || [])
-        .map((e) => e._id),
-    );
-    return {
-      ...state,
-      forgotten: new Set(
-        [...state.forgotten, ...ids].filter((id) => recent.has(id)),
-      ),
-    };
-  }
-
-  function markers(state, messages, trimmed = false) {
-    const base = messages.filter((m) => m.kind !== "context"),
-      slots = new Map();
-    const all = state.order
-      .flatMap((id) => get(state, id)?.events || [])
-      .slice(-169);
-    for (const row of all) {
-      if (state.forgotten.has(row._id)) continue;
-      let at = row.anchorToolId
-        ? base.findIndex(
-            (m) => m.kind === "tool" && m._toolCallId === row.anchorToolId,
-          )
-        : -1;
-      if (at < 0 && row.anchorTs != null)
-        at = base.findIndex((m) => m.ts === row.anchorTs);
-      if (at < 0 && trimmed) continue;
-      const position = at < 0 && row.anchorTs != null ? base.length : at + 1;
-      const group = slots.get(position) || [];
-      group.push(row);
-      slots.set(position, group);
-    }
-    const next = [];
-    for (let i = 0; i <= base.length; i++) {
-      if (slots.has(i)) next.push(...slots.get(i));
-      if (i < base.length) next.push(base[i]);
-    }
-    return next.length === messages.length &&
-      next.every((m, i) => m === messages[i])
-      ? messages
-      : next;
-  }
-
-  function view(state, messages) {
-    const visible = messages
-      ? new Set(messages.filter((m) => m.kind === "context").map((m) => m._id))
-      : null;
-    const rows = (items) =>
-      visible
-        ? items.map((item) =>
-            item.messageId && !visible.has(item.messageId)
-              ? { ...item, messageId: undefined }
-              : item,
-          )
-        : items;
+  function view(state) {
     return {
       agents: state.order.map((id) => {
         const agent = get(state, id);
@@ -479,9 +328,12 @@
           label: agent.label,
           status: agent.runStatus || agent.status,
           note: agent.note,
-          harness: rows(agent.harness),
-          instructions: rows(agent.instructions),
-          skills: rows(agent.skills),
+          instructions: agent.instructions,
+          skills: agent.skills,
+          repoSkills: agent.availableSkills.filter((s) => s.scope === "repo"),
+          globalSkills: agent.availableSkills.filter(
+            (s) => s.scope === "global",
+          ),
         };
       }),
     };
@@ -495,8 +347,6 @@
     register,
     catalog,
     failed,
-    forget,
-    markers,
     view,
     skillUri,
   };

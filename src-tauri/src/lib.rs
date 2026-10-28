@@ -766,6 +766,21 @@ fn extension_ui_state(
     bridge.extension_ui_state(&session_id)
 }
 
+/// Preview an observed native skill without executing a tool or sending a prompt.
+#[tauri::command]
+async fn agent_context_read_skill(
+    app: AppHandle,
+    session_id: String,
+    agent_id: String,
+    name: String,
+) -> Result<agent::SkillPreview, String> {
+    off_ipc(move || {
+        app.state::<AgentBridge>()
+            .context_read_skill(&session_id, &agent_id, &name)
+    })
+    .await?
+}
+
 /// List tool-approval rules currently in effect for a session/project pair.
 ///
 /// Runs `async` + `spawn_blocking` for the same reason as
@@ -1686,6 +1701,7 @@ pub fn run() {
             session_status,
             replay_events,
             extension_ui_state,
+            agent_context_read_skill,
             open_project,
             take_pending_open_projects,
             start_git_watch,

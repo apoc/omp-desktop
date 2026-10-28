@@ -58,8 +58,6 @@
       const ask = askCard(message);
       if (ask) asks.push(ask);
       if (window.OMP_TURN_STATUS?.isHidden(message)) continue;
-      // Native prompt snapshots belong to desktop context inspection, not the phone transcript.
-      if (message.kind === "context") continue;
       if (message.kind === "ask" || message.ask || message.kind === "thinking" || message.role === "thinking") continue;
       const kind = message.kind ?? message.role;
       let role = ["user", "assistant", "tool"].includes(kind) ? kind : "notice";
