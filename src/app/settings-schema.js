@@ -106,6 +106,9 @@
       ] },
     ] },
     { id: "rail", icon: "radar", title: "Rail", blurb: "The cards in the rail beside the chat, including widget plugins and extension widgets.", groups: [
+      { name: "Layout", rows: [
+        custom("railOrder", "Card order", "Drag cards or use the move buttons. Hidden cards keep their place. Also available in Ambient controls at the top of the rail.", "ambient arrange reorder position top bottom", { keys: ["railOrder"] }),
+      ] },
       { name: "Built-in cards", rows: [
         tweak("showContext", "toggle", "Context gauge", "How full the model's context window is.", "tokens"),
         tweak("showRadar", "toggle", "Agent radar", "What the agent is doing right now.", "activity"),

@@ -152,6 +152,13 @@ check("Changes participates in Rail search, modified counts and reset", () => {
   assert.ok(S.search("pull request", v).groups.some(g => g.sectionId === "rail" && g.rows.some(r => r.id === "showChanges")));
 });
 
+check("resetting card order keeps visibility choices; resetting Rail restores both", () => {
+  const v = vals({ railOrder: ["showMinimap", "showContext"], showContext: false, "widget:ext-status": false });
+  assert.equal(S.modifiedCount("rail", v), 3);
+  assert.deepEqual(S.resetRow(row("custom:railOrder"), v), { railOrder: null });
+  assert.deepEqual(S.resetEdits("rail", v), { railOrder: null, showContext: true, "widget:ext-status": true });
+});
+
 check("resetRows resets only the given rows (the search matches)", () => {
   const v = vals({ fontSize: 120, monoChat: !D.monoChat, showRadar: false });
   const matched = S.search("font", v).groups.flatMap(g => g.rows);

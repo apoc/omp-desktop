@@ -37,6 +37,7 @@
     "showAgentContext": true,
     "showChanges": true,
     "showMinimap": true,
+    "railOrder": null,
     "fontSize":  100,
     "promptHistoryLimit": 100,
     "foldThinking": null,

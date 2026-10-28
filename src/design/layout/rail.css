@@ -47,16 +47,49 @@
   display: flex; flex-direction: column;
   gap: 10px;
   padding: 10px 10px 12px;
-  min-width: 0;
+  min-width: 0; min-height: 0;
   background: linear-gradient(180deg, var(--bg-window), color-mix(in oklab, var(--bg-app) 50%, var(--bg-window)));
   border-left: 1px solid var(--line);
-  overflow-y: auto;
+  overflow: hidden;
 }
 .rail-head {
   display: flex; align-items: center; justify-content: space-between;
   font-size: var(--d-text-xs);
   padding: 2px 4px;
 }
+.rail-head { flex: none; }
+.rail-body { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; overflow-y: auto; }
+.rail-body > * { flex: none; }
+
+/* Inline controls stay reachable even when every card is hidden. */
+.ambient-controls { flex: none; min-height: 0; max-height: min(60vh, 420px); padding: 8px; overflow-y: auto; }
+.ambient-controls-head { display: flex; justify-content: space-between; gap: 8px; padding: 3px 4px 7px; color: var(--fg-2); font-size: var(--d-text-xs); }
+.ambient-controls-head span { color: var(--fg-3); }
+.ambient-card-list { width: 100%; margin: 0; padding: 0; list-style: none; }
+.ambient-control-row { position: relative; display: flex; align-items: center; min-height: 40px; gap: 4px; border-radius: 5px; }
+.ambient-control-row:hover { background: var(--bg-hover); }
+.ambient-control-row.reorder-src { opacity: .4; }
+.ambient-control-row.drop-before::before, .ambient-control-row.drop-after::after { content: ""; position: absolute; left: 0; right: 0; height: 2px; background: var(--accent); pointer-events: none; }
+.ambient-control-row.drop-before::before { top: 0; }
+.ambient-control-row.drop-after::after { bottom: 0; }
+.ambient-grip { display: grid; place-items: center; align-self: stretch; width: 16px; flex: none; color: var(--fg-4); cursor: grab; touch-action: none; }
+.ambient-control-label { display: flex; flex: 1; min-width: 0; align-items: center; gap: 7px; min-height: 40px; color: var(--fg-2); font-size: var(--d-text-xs); cursor: pointer; }
+.ambient-control-label input { flex: none; margin: 0; accent-color: var(--accent); }
+.ambient-control-label > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ambient-control-label small { display: block; color: var(--fg-3); font-size: var(--d-text-xs); }
+.ambient-move-buttons { display: flex; flex: none; }
+.ambient-move-buttons > button { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--fg-3); cursor: pointer; }
+.ambient-move-buttons > button:hover { color: var(--fg); background: var(--bg-hover); }
+.ambient-move-buttons > button[aria-disabled="true"] { opacity: .3; cursor: default; }
+.ambient-down { display: flex; transform: rotate(180deg); }
+.ambient-controls-foot { display: flex; justify-content: space-between; gap: 4px; border-top: 1px solid var(--line); margin-top: 5px; }
+.ambient-controls-foot button { display: inline-flex; align-items: center; gap: 5px; min-height: 40px; padding: 4px; border: 0; background: none; color: var(--fg-2); font: inherit; font-size: var(--d-text-xs); cursor: pointer; }
+.ambient-controls-foot button:disabled { opacity: .4; cursor: default; }
+.ambient-controls p { margin: 0 4px 4px; color: var(--fg-3); font-size: var(--d-text-xs); line-height: 1.5; }
+.ambient-announcement { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.ambient-controls :focus-visible, .ambient-card-list :focus-visible, .rail-head button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.rail-head button[aria-expanded="true"] { color: var(--accent); background: var(--accent-soft); }
+
 .rail-card {
   padding: 10px 12px;
   display: flex; flex-direction: column; gap: 8px;
@@ -142,20 +175,23 @@
 .legend-item span:first-child { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 
 /* ── Minimap (dense token-heatmap grid) ───────────────────────────── */
-.minimap { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.minimap { display: flex; flex-direction: column; gap: 6px; container-type: inline-size; }
 .minimap-head { display: flex; align-items: center; gap: 6px; font-size: var(--d-text-xs); }
 
 .minimap-grid {
   display: grid;
-  grid-template-columns: repeat(13, 1fr);
+  --minimap-cell: calc((100cqw - 38px) / 13);
+  grid-template-columns: repeat(13, minmax(0, 1fr));
+  grid-auto-rows: var(--minimap-cell);
   gap: 2px;
-  flex: 1; min-height: 0; overflow-y: auto;
+  max-height: calc(3 * var(--minimap-cell) + 18px);
+  overflow-y: auto; flex: none;
   padding: 6px; border-radius: 6px;
   background: var(--bg-input);
   border: 1px solid var(--line);
 }
 .minimap-cell {
-  aspect-ratio: 1 / 1;
+  height: 100%; min-width: 0;
   border-radius: 2px;
   cursor: pointer;
   transition: transform 80ms ease, outline-color 80ms ease;

@@ -12,7 +12,7 @@ User-facing behaviour: [`docs/widgets.md` § omp extension widgets](../widgets.m
 | `src-tauri/src/lib.rs` | `extension_ui_state` command |
 | `src/app/extension-widgets.js` | pure: `apply`, `fromSnapshot`, `isFireAndForget`, `cards`, `toggles` (`window.OMP_EXT_WIDGETS`); test `tests/test-extension-widgets.mjs` |
 | `src/live.js` | per-tab `state.extWidgets`: live frames, snapshot/restore, the dropped-replay load, lifecycle |
-| `src/app-live.jsx` | the cards (after the plugin cards) and `extToggles`, the Settings → Rail toggles (rendered by `design/settings/rows-layout.jsx`) |
+| `src/app-live.jsx` | the card slots and `extToggles`, shared by Ambient controls and Settings → Rail; the saved ambient layout determines their positions |
 | `src/design/widgets/widget-card.jsx` | `WidgetCard`'s `source` prop: chip + `wdg-pushed` accent border instead of run timing |
 
 ## Wire frames
@@ -67,4 +67,4 @@ omp never sends a clear or re-send on a session change, and its TUI keeps extens
 
 `cards(ext)` returns `WidgetCard` models: a `status` card (id `ext-status:`, tweak `widget:ext-status`) whose block is `kv` with a row per status, then one card per widget with lines (id `ext:<key>`, tweak `widget:ext:<key>`) whose block is `text` with `mono: true`, plus a `… N more lines` line. The ids contain a colon, which plugin ids (`[a-z0-9-]`) cannot, so React keys never collide with plugin cards. `mono` is an internal block field: `parseOutput` never produces it from plugin output.
 
-The run is always `{state: "ok", widget: {status: "neutral"}}` with no timing; `WidgetCard`'s `source="extension"` replaces the timing chip and adds the `wdg-pushed` accent border. No refresh button: nothing runs. A hidden card (`t[tweak] === false`) is only not rendered; its state keeps updating, and `widgets_set_view` never sees these keys (`hiddenPluginIds` reads `widget:plugin:` keys only).
+The run is always `{state: "ok", widget: {status: "neutral"}}` with no timing; `WidgetCard`'s `source="extension"` replaces the timing chip and adds the `wdg-pushed` accent border. No refresh button: nothing runs. Ambient controls and Settings → Rail use the same tweak keys for visibility and saved ordering. A hidden card (`t[tweak] === false`) is only not rendered; its state keeps updating, and `widgets_set_view` never sees these keys (`hiddenPluginIds` reads `widget:plugin:` keys only).

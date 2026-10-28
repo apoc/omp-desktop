@@ -79,7 +79,17 @@ function _SRL_Widgets({ row, ctx, query }) {
   );
 }
 
+function _SRL_RailOrder({ row, ctx, query, modified, onReset }) {
+  const { SettingsRow: Row, AmbientCardList } = window;
+  return (
+    <Row stack label={row.label} desc={row.desc} query={query} modified={modified} onReset={onReset}>
+      <AmbientCardList items={ctx.ambientItems} tweaks={ctx.t} onChange={ctx.setTweak} visibility={false} />
+    </Row>
+  );
+}
+
 Object.assign(window.OMP_SETTINGS_ROWS = window.OMP_SETTINGS_ROWS || {}, {
   widths: _SRL_Widths,
   widgets: _SRL_Widgets,
+  railOrder: _SRL_RailOrder,
 });

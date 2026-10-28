@@ -47,16 +47,15 @@ PY
 
 ## Where cards appear
 
-Widget cards sit in the ambient rail **between the Subagents card and the Minimap**, in this order:
+Widget cards sit in the ambient rail. By default, plugin cards follow the built-in context, radar, subagents, Agent context and Changes cards, followed by the active tab's omp extension cards and the minimap. Plugin cards follow `widgets.json` order; an approval and its eventual result share one position. Error cards about `widgets.json` stay at the top.
 
-1. Error cards about `widgets.json` itself.
-2. **Approval cards**, in `widgets.json` order: one for every enabled plugin that is not approved yet, or that changed since you approved it. They show in every tab, whatever the plugin's `match` says, so you can approve a plugin before you open a project it applies to. An approval card whose Settings toggle is off is hidden too.
-3. **Result cards**, in `widgets.json` order, for the approved plugins that apply to the active tab (their `match` fits its project and remote). A card shows as idle until its first run.
-4. **omp extension cards** of the active tab (see [omp extension widgets](#omp-extension-widgets)): one card for the extensions' status lines, then one per widget, marked `extension`.
+Use the header's **Ambient controls** gear to hide/show individual cards and drag them into your preferred order, or use the move-up/down buttons. **Settings → Rail → Card order** offers the same ordering controls. Order is saved across tabs and restarts; hidden cards keep their place, and cards absent from one project regain their saved position when they return.
+
+**Approval cards** appear for every enabled plugin not yet approved, or changed since approval, regardless of `match`, so you can approve a plugin before opening a matching project. Hidden approval cards stay hidden. **Result cards** appear for approved plugins whose `match` fits the active project and remote, initially idle until their first run. **omp extension cards** show the active tab's status lines and widgets, marked `extension`.
 
 A disabled plugin (`"enabled": false`) gets no card.
 
-Settings → Rail has one toggle per enabled plugin, under the toggles for the built-in cards (`showContext`, `showRadar`, `showSubagents`, `showMinimap`). A plugin's toggle is stored as the tweak `widget:plugin:<id>`, so the choice survives restarts (toggles saved by earlier builds under `widget:<id>` are not carried over). **A hidden card never runs.** The same goes for the whole rail: while the rail is hidden (focus layout, or the conversation tree is open), no plugin starts. Closing the rail with its × button stays available even when every card is hidden.
+Ambient controls and **Settings → Rail** share one toggle per enabled plugin, stored as `widget:plugin:<id>` so it survives restarts (older `widget:<id>` toggles are not carried over). **A hidden plugin starts no new runs**; an already-running invocation finishes normally. The same applies while the whole rail is hidden (focus layout, conversation tree or browser open). Showing a plugin never grants approval. The rail header and its controls stay reachable even when every card is hidden.
 
 ## Config reference
 
@@ -397,7 +396,7 @@ Both cards carry an `extension` chip and the accent border. They have no refresh
 
 **Per tab.** Each tab shows what its own omp process published, including what a background tab published while you were elsewhere. A tab's statuses and widgets stay through `/new`, branch and fork, as in omp's terminal UI (extensions that care refresh them on `session_switch`, and on `session_branch` for a branch), and go away when its omp process ends or is restarted (profile switch).
 
-**Hiding.** Settings → Rail lists `extension: status lines` and `extension: <key>` for what the active tab has published, stored as `widget:ext-status` and `widget:ext:<key>` next to the plugins' `widget:plugin:<id>`. A hidden card's updates are still kept, so it comes back current.
+**Hiding.** Ambient controls and Settings → Rail list `extension: status lines` and `extension: <key>` for what the active tab has published, stored as `widget:ext-status` and `widget:ext:<key>` next to the plugins' `widget:plugin:<id>`. A hidden card's updates are still kept, so it comes back current. These cards can be reordered like built-in and plugin cards.
 
 **Trust.** The code runs inside omp, with the trust you already give an installed omp extension; the desktop runs none of it and needs no approval. It only displays the text.
 

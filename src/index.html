@@ -224,6 +224,8 @@
        level, so it must load before both. Calls window.truncateText
        (app/constants.js) at call time. -->
   <script src="app/extension-widgets.js"></script>
+  <!-- Ambient inventory/order model shares the widget toggle identities. -->
+  <script src="app/ambient-rail.js"></script>
   <!-- Program path setting menu (Settings: terminal shell, browser
        Chromium): programName and the menu rows. Dependency-free IIFE
        (OMP_PROJECT_NAV at call time); app/terminal.js and app/browser.js
@@ -351,7 +353,7 @@
   <script type="text/babel" src="design/chat/chat-view.jsx"></script>
   <!-- Subagent manager UI. bits → controls → inspector (destructures the
        controls) → pane (destructures the inspector) → rail card; all before
-       chrome.jsx, whose AmbientRail destructures SubagentRailCard at top level. -->
+       ambient-rail.jsx, which renders the subagent card. -->
   <script type="text/babel" src="design/subagents/subagent-bits.jsx"></script>
   <script type="text/babel" src="design/subagents/subagent-controls.jsx"></script>
   <script type="text/babel" src="design/subagents/subagent-inspector.jsx"></script>
@@ -366,6 +368,11 @@
   <script type="text/babel" src="design/pr-status.jsx"></script>
   <script type="text/babel" src="design/pr-automation-card.jsx"></script>
   <script type="text/babel" src="design/agent-context-card.jsx"></script>
+  <!-- Inline visibility/order controls reuse the pointer reorder hook;
+       the rail and Settings row share the same control list. -->
+  <script type="text/babel" src="design/ambient-controls.jsx"></script>
+  <script type="text/babel" src="design/session-minimap.jsx"></script>
+  <script type="text/babel" src="design/ambient-rail.jsx"></script>
   <!-- Browser panel: browser-panel.jsx destructures window.BrowserToolbar
        (browser-toolbar.jsx) at top level; the toolbar destructures
        window.Icon and window.OMP_BROWSER. browser-dock.jsx (the panel's stage

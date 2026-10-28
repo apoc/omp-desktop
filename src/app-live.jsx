@@ -460,6 +460,7 @@ function App() {
   // Settings → Rail toggle per card (`widget:ext-status`, `widget:ext:<key>`).
   const extCards = React.useMemo(() => _extCards(extWidgets), [extWidgets]);
   const extToggles = React.useMemo(() => _extToggles(extWidgets), [extWidgets]);
+  const ambientItems = React.useMemo(() => window.OMP_AMBIENT_RAIL.items(widgets.togglePlugins, extToggles), [widgets.togglePlugins, extToggles]);
 
   // Handler map read through a ref so the dispatch effect never re-subscribes.
   const handlersRef = React.useRef({});
@@ -928,7 +929,7 @@ function App() {
     active: true, t, setTweak, bridge, keymap,
     profiles, startupProfileId, onSetStartupProfile: handleSetStartupProfile,
     approvalModes, sessions, activeProject,
-    widgets, widgetTweakKey: _widgetTweakKey, extToggles, keyOpts: settingsKeyOpts,
+    widgets, widgetTweakKey: _widgetTweakKey, extToggles, ambientItems, keyOpts: settingsKeyOpts,
     panes, terminalHeight: terminal.height, updater,
     goal: { profileId: activeProfileId },
     openApprovals: () => setRulesOpen(true),
@@ -1129,39 +1130,41 @@ function App() {
                   onToggleSubagentPane={subagentUi.togglePane}
                   onOpenTree={() => setSide("tree")}
                   messages={messages}
-                  microcopy={data.microcopy}
+                  items={ambientItems} tweaks={t} onChange={setTweak} onSettings={() => openSettings("rail")}
                   sparklineValues={sparkline}
                   onClose={() => setTweak("layout", "focus")}
                   hoveredMsgIdx={hoveredMsgIdx}
                   onMinimapHover={setHoveredMsgIdx}
                   onMinimapClick={handleMinimapClick}
-                  show={{ context: t.showContext ?? true, radar: t.showRadar ?? true, subagents: t.showSubagents ?? true, minimap: t.showMinimap ?? true }}
-                >
-                  {(t.showAgentContext ?? true) && <AgentContextCard key={`context:${activeSessionId}`} context={agentContextView}
-                    onSelectAgent={subagentUi.open} readSkill={bridge.readContextSkill} />}
-                  {(t.showChanges ?? true) && <PrAutomationCard key={planKey} automation={prAutomation} bridge={bridge}
-                    available={!!activeProject.path && !!bridge?.isConnected}
-                    onOpenChanges={() => setGitOpen({ path: null, project: gitProject })} />}
-                  {widgets.fatal && <WidgetErrorCard title="widgets.json" error={widgets.fatal} />}
-                  {widgets.configErrors.map((e, i) => <WidgetErrorCard key={i} title="widgets.json" error={e} />)}
-                  {widgets.approvals.map(a => (
-                    <WidgetBoundary key={`approve:${a.id}`} title={a.title}>
-                      <WidgetApprovalCard title={a.title} command={a.command} changed={a.changed}
-                        onApprove={() => widgets.approve(a.id)} />
-                    </WidgetBoundary>
-                  ))}
-                  {widgets.cards.map(c => (
-                    <WidgetBoundary key={c.id} title={c.title} resetKey={c.resetKey}>
-                      <WidgetCard title={c.title} run={c.run} attention={c.attention} onAck={() => widgets.acknowledge(c.id)}
-                        onRefresh={() => widgets.refresh(c.id)} onInsert={handleWidgetInsert} insertCfg={c.insert} />
-                    </WidgetBoundary>
-                  ))}
-                  {extCards.filter(c => t[c.tweak] !== false).map(c => (
-                    <WidgetBoundary key={c.id} title={c.title} resetKey={c.run}>
-                      <WidgetCard title={c.title} run={c.run} source="extension" onInsert={handleWidgetInsert} />
-                    </WidgetBoundary>
-                  ))}
-                </AmbientRail>
+                  cards={{
+                    showAgentContext: <AgentContextCard key={`context:${activeSessionId}`} context={agentContextView}
+                      onSelectAgent={subagentUi.open} readSkill={bridge.readContextSkill} />,
+                    showChanges: <PrAutomationCard key={planKey} automation={prAutomation} bridge={bridge}
+                      available={!!activeProject.path && !!bridge?.isConnected}
+                      onOpenChanges={() => setGitOpen({ path: null, project: gitProject })} />,
+                    ...Object.fromEntries(widgets.approvals.map(a => [_widgetTweakKey(a.id),
+                      <WidgetBoundary key={`approve:${a.id}`} title={a.title}>
+                        <WidgetApprovalCard title={a.title} command={a.command} changed={a.changed}
+                          onApprove={() => widgets.approve(a.id)} />
+                      </WidgetBoundary>,
+                    ])),
+                    ...Object.fromEntries(widgets.cards.map(c => [_widgetTweakKey(c.id),
+                      <WidgetBoundary key={c.id} title={c.title} resetKey={c.resetKey}>
+                        <WidgetCard title={c.title} run={c.run} attention={c.attention} onAck={() => widgets.acknowledge(c.id)}
+                          onRefresh={() => widgets.refresh(c.id)} onInsert={handleWidgetInsert} insertCfg={c.insert} />
+                      </WidgetBoundary>,
+                    ])),
+                    ...Object.fromEntries(extCards.map(c => [c.tweak,
+                      <WidgetBoundary key={c.id} title={c.title} resetKey={c.run}>
+                        <WidgetCard title={c.title} run={c.run} source="extension" onInsert={handleWidgetInsert} />
+                      </WidgetBoundary>,
+                    ])),
+                  }}
+                  notices={<>
+                    {widgets.fatal && <WidgetErrorCard title="widgets.json" error={widgets.fatal} />}
+                    {widgets.configErrors.map((e, i) => <WidgetErrorCard key={i} title="widgets.json" error={e} />)}
+                  </>}
+                />
               )}
               {settingsCtx && (
                 <div className="st-host" hidden={!stab.active}>
