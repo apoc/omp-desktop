@@ -198,6 +198,8 @@
   outline: 1px solid transparent;
   position: relative;
 }
+.minimap-cell.assistant,
+.minimap-legend-item .minimap-assistant-swatch { border-radius: 50%; }
 .minimap-cell:hover,
 .minimap-cell.hot {
   transform: scale(1.6);
@@ -211,12 +213,13 @@
 
 .minimap-legend {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px 10px;
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  gap: 6px;
   font-size: 10px;
-  color: var(--fg-4);
+  color: var(--fg-3);
 }
-.minimap-legend-item { display: inline-flex; align-items: center; gap: 4px; }
+.minimap-legend-item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .minimap-legend-item i {
   display: inline-block;
   width: 6px;
@@ -224,6 +227,11 @@
   border-radius: 2px;
   flex: none;
 }
+.minimap-legend-item .minimap-tool-swatch { width: 8px; height: 8px; }
+.minimap-color-key-title { display: block; margin-bottom: 6px; }
+.minimap-color-key { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 14px; }
+.minimap-color-key-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.minimap-color-key-item i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
 
 /* Reverse highlight: hovering a minimap cell lights up the chat bubble. */
 .row.mm-hot .user-bubble,

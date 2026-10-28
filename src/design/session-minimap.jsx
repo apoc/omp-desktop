@@ -4,6 +4,57 @@
 // messages, opacity is log-scaled by tokens used so expensive turns pop
 // against cheap ones. Click scrolls the chat to that message; hover
 // highlights it via shared hoveredIdx state.
+function _MM_ToolLegend() {
+  const { StatusDetail, TOOL_META } = window;
+  const { tools, swatch } = React.useMemo(() => {
+    const tools = Object.entries(TOOL_META).map(([name, meta]) => ({
+      name:
+        name === "ask"
+          ? "ask tool"
+          : name === "approval"
+            ? "auto-approved"
+            : name,
+      color: meta.color,
+    }));
+    tools.push({ name: "other tools", color: "var(--fg-4)" });
+    const colors = [...new Set(tools.map((tool) => tool.color))];
+    const stops = colors.map(
+      (color, i) =>
+        `${color} ${(i * 100) / colors.length}% ${((i + 1) * 100) / colors.length}%`,
+    );
+    return { tools, swatch: `conic-gradient(${stops.join(", ")})` };
+  }, [TOOL_META]);
+
+  return (
+    <StatusDetail
+      className="minimap-legend-item"
+      text={`Tool and event colors: ${tools.map((tool) => tool.name).join(", ")}.`}
+      detail={
+        <>
+          <strong className="minimap-color-key-title">
+            Tool &amp; event colors
+          </strong>
+          <span className="minimap-color-key">
+            {tools.map((tool) => (
+              <span className="minimap-color-key-item" key={tool.name}>
+                <i aria-hidden="true" style={{ background: tool.color }} />
+                {tool.name}
+              </span>
+            ))}
+          </span>
+        </>
+      }
+    >
+      <i
+        aria-hidden="true"
+        className="minimap-tool-swatch"
+        style={{ background: swatch }}
+      />
+      tool
+    </StatusDetail>
+  );
+}
+
 function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
   const { Icon, TOOL_META } = window;
   // Log-scaled max across assistant messages so heatmap variance is
@@ -38,7 +89,7 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
         {messages.map((m, i) => {
           if (window.OMP_TURN_STATUS.isHidden(m)) return null;
           let hue = "var(--fg-5)";
-          if (m.kind === "user") hue = "var(--fg-3)";
+          if (m.kind === "user") hue = "var(--fg-2)";
           else if (m.kind === "assistant")
             hue = m.failure ? "var(--rose)" : "var(--accent)";
           else if (m.kind === "ask") hue = "var(--amber)";
@@ -118,21 +169,22 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
       </div>
       <div className="minimap-legend">
         <span className="minimap-legend-item">
-          <i style={{ background: "var(--fg-3)" }} />
+          <i aria-hidden="true" style={{ background: "var(--fg-2)" }} />
           you
         </span>
         <span className="minimap-legend-item">
-          <i style={{ background: "var(--accent)" }} />
+          <i
+            aria-hidden="true"
+            className="minimap-assistant-swatch"
+            style={{ background: "var(--accent)" }}
+          />
           assistant
         </span>
         <span className="minimap-legend-item">
-          <i style={{ background: "var(--amber)" }} />
+          <i aria-hidden="true" style={{ background: "var(--amber)" }} />
           ask
         </span>
-        <span className="minimap-legend-item">
-          <i style={{ background: "var(--fg-4)" }} />
-          tool
-        </span>
+        <_MM_ToolLegend />
       </div>
     </div>
   );

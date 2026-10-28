@@ -52,7 +52,8 @@ function PrStatusGlyph({ glyph }) {
 
 // Details live outside clipped navigation and rail containers. Static details
 // receive their own tab stop; an action child keeps its native button focus.
-function StatusDetail({ text, className = "", children }) {
+// Rich detail may differ visually; text remains the accessible name.
+function StatusDetail({ text, detail = text, className = "", children }) {
   const ref = React.useRef(null);
   const timer = React.useRef(null);
   const hovering = React.useRef(false);
@@ -133,7 +134,7 @@ function StatusDetail({ text, className = "", children }) {
       {position && ReactDOM.createPortal(
         <span id={id} role="tooltip" className="status-detail-tooltip" style={position}
           onMouseEnter={enter} onMouseLeave={leave}>
-          {text}
+          {detail}
         </span>,
         document.body,
       )}

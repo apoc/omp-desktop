@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The minimap uses brighter user markers and circular assistant cells to distinguish them from square tool cells, even when their colors match. The single-row legend has a multicolor tool swatch; hover or focus it for every tool/event color, including eval, without adding permanent labels.
 - Live conversation uses a speech-bubble-and-waveform icon rather than a recording symbol, distinct from the dictation microphone.
 - Live conversation microphone and speaker meters now use a logarithmic −60 to 0 dBFS scale, displayed as bars without numeric clutter. Normal speech is readable instead of barely filling a linear bar; 0 dBFS is full scale. Audio gain is unchanged, and the RMS readings do not claim to detect sample-peak clipping.
 
