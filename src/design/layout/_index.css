@@ -10,6 +10,7 @@
 @import "./goal.css";
 @import "./rail.css";
 @import "./agent-context.css";
+@import "./context-inspector.css";
 @import "./pr-status.css";
 @import "./browser.css";
 @import "./widgets.css";

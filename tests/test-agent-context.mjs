@@ -838,3 +838,595 @@ test("a recorded invocation is not relabeled as a different current skill with t
   assert.equal(used.path, "/prior/profile/review/SKILL.md");
   assert.equal(used.origin.kind, "other");
 });
+
+const observedDetails = (overrides = {}) => ({
+  model: { provider: "example", id: "model-a", contextWindow: 1000 },
+  usage: { tokens: 200, contextWindow: 1000, percent: 20 },
+  tools: [],
+  memory: { status: "ready", backend: "local", blocks: [], note: null },
+  retainedSkills: null,
+  retainedCallIds: null,
+  ...overrides,
+});
+const toolCall = (id, parentId, callId, name, args = {}) =>
+  entry(id, parentId, {
+    type: "message",
+    message: {
+      role: "assistant",
+      content: [{ type: "toolCall", id: callId, name, arguments: args }],
+    },
+  });
+const toolResult = (id, parentId, callId, fields = {}) =>
+  entry(id, parentId, {
+    type: "message",
+    message: { role: "toolResult", toolCallId: callId, ...fields },
+  });
+
+test("compaction invalidates retention, not used skills or historical MCP calls", () => {
+  const prompt = snapshot("p");
+  prompt.data.details = observedDetails({
+    retainedSkills: ["review"],
+    retainedCallIds: ["remote-1"],
+    tools: [
+      {
+        name: "remote",
+        source: "mcp",
+        server: "docs",
+        tool: "lookup",
+        active: true,
+        description: "Search",
+        parameters: {},
+      },
+    ],
+  });
+  const history = [
+    prompt,
+    call("read", "p", "read-1", "skill://review"),
+    result("read-result", "read", "read-1"),
+    toolCall("remote", "read-result", "remote-1", "remote"),
+    toolResult("remote-result", "remote", "remote-1"),
+  ];
+  const before = C.view(scan(history)).agents[0];
+  assert.deepEqual(
+    before.skills.map((skill) => skill.name),
+    ["review"],
+  );
+  assert.deepEqual(before.details.retainedSkills, ["review"]);
+  assert.equal(before.details.calls[0].retained, true);
+
+  const compacted = [
+    ...history,
+    entry("compact", "remote-result", { type: "compaction" }),
+  ];
+  const after = C.view(scan(compacted)).agents[0];
+  assert.deepEqual(
+    after.skills.map((skill) => skill.name),
+    ["review"],
+  );
+  assert.equal(after.details.retainedSkills, null);
+  assert.equal(after.details.calls[0].retained, null);
+  assert.equal(after.details.calls[0].status, "completed");
+  assert.equal(after.details.usage, null);
+
+  const fresh = snapshot("new", "compact", ["New native prompt"]);
+  fresh.data.details = observedDetails({
+    usage: { tokens: 50, contextWindow: 1000, percent: 5 },
+  });
+  const refreshed = C.view(scan([...compacted, fresh])).agents[0];
+  assert.equal(refreshed.details.usage.tokens, 50);
+  assert.equal(refreshed.details.retainedSkills, null);
+  assert.equal(refreshed.details.calls[0].retained, null);
+  assert.deepEqual(
+    refreshed.skills.map((skill) => skill.name),
+    ["review"],
+  );
+});
+
+test("MCP history uses explicit provenance, deduplicates IDs and drops bodies", () => {
+  const prompt = snapshot("p");
+  prompt.data.details = observedDetails({
+    tools: [
+      {
+        name: "remote",
+        source: "mcp",
+        server: null,
+        tool: null,
+        active: true,
+        parameters: {},
+      },
+      {
+        name: "mcp__looks_remote",
+        source: "builtin",
+        active: true,
+        parameters: {},
+      },
+    ],
+  });
+  const history = [
+    prompt,
+    toolCall("a", "p", "id-a", "remote", { secret: "private-arguments" }),
+    toolCall("duplicate", "a", "id-a", "remote", {
+      secret: "private-arguments",
+    }),
+    toolResult("ar", "duplicate", "id-a", {
+      content: [{ type: "text", text: "private-output" }],
+      details: {
+        serverName: "server:one",
+        mcpToolName: "query",
+        rawContent: "private-output",
+      },
+    }),
+    toolCall("b", "ar", "id-b", "remote"),
+    toolResult("br", "b", "id-b", { details: { isError: true } }),
+    toolCall("c", "br", "id-c", "remote"),
+    toolCall("fake", "c", "id-fake", "mcp__looks_remote"),
+  ];
+  const state = scan(history);
+  const calls = C.view(state).agents[0].details.calls;
+  assert.deepEqual(
+    calls.map((item) => item.id),
+    ["id-a", "id-b", "id-c"],
+  );
+  assert.deepEqual(
+    calls.map((item) => item.status),
+    ["completed", "error", "unreturned"],
+  );
+  assert.equal(calls[0].server, "server:one");
+  assert.equal(calls[0].tool, "query");
+  assert.equal(calls[1].server, null);
+  assert.equal(calls[1].retained, null);
+  const serialized = JSON.stringify([...C.get(state, "main").records.values()]);
+  assert.doesNotMatch(serialized, /private-arguments|private-output/);
+
+  const rewound = C.entries(state, "main", { entries: [], leafId: "ar" });
+  assert.deepEqual(
+    C.view(rewound).agents[0].details.calls.map((item) => item.id),
+    ["id-a"],
+  );
+});
+
+test("ordinary read paths are discarded while catalogued skill reads remain attributable", () => {
+  const prompt = snapshot("p");
+  prompt.data.skills = [
+    { name: "review", path: "/catalog/review/SKILL.md", scope: "global" },
+  ];
+  const state = scan([
+    prompt,
+    call("skill-read", "p", "skill-id", "/catalog/review/SKILL.md"),
+    result("skill-result", "skill-read", "skill-id"),
+    call("plain-read", "skill-result", "plain-id", "/private/unrelated.txt"),
+    result("plain-result", "plain-read", "plain-id", false, {
+      meta: {
+        source: {
+          type: "internal",
+          value: "xd://private-read-location",
+          extra: "private-body",
+        },
+      },
+    }),
+  ]);
+  assert.deepEqual(skills(state), ["review"]);
+  const serialized = JSON.stringify([...C.get(state, "main").records.values()]);
+  assert.doesNotMatch(
+    serialized,
+    /private\/unrelated|private-read-location|private-body/,
+  );
+});
+
+test("get_state updates an idle model without attributing old model context to it", () => {
+  const prompt = snapshot("p", null, ["Old prompt"]);
+  prompt.data.details = observedDetails({
+    retainedSkills: ["review"],
+    tools: [
+      {
+        name: "remote",
+        source: "mcp",
+        server: "known",
+        tool: "query",
+        active: true,
+        parameters: {},
+      },
+      { name: "old-only", source: "builtin", active: true, parameters: {} },
+    ],
+  });
+  let state = scan([
+    prompt,
+    call("read", "p", "read", "skill://review"),
+    result("done", "read", "read"),
+  ]);
+  state = C.rpc(state, {
+    model: { provider: "other", id: "model-b", contextWindow: 2000 },
+    contextUsage: { tokens: 90, contextWindow: 2000, percent: 4.5 },
+    systemPrompt: [
+      "Fresh prompt\n<memory-context>Current memory</memory-context>",
+    ],
+    dumpTools: [
+      {
+        name: "remote",
+        description: "Fresh description",
+        parameters: { type: "object" },
+      },
+      { name: "mcp__not_evidence", description: "", parameters: {} },
+    ],
+  });
+  let agent = C.view(state).agents[0];
+  assert.equal(agent.details.model.id, "model-b");
+  assert.equal(agent.details.model.contextWindow, 2000);
+  assert.equal(agent.details.usage.tokens, 90);
+  assert.equal(agent.details.systemPrompt[0].text.startsWith("Fresh"), true);
+  assert.equal(agent.details.memory.status, "unavailable");
+  assert.equal(agent.details.memory.blocks[0].text, "Current memory");
+  assert.equal(agent.details.retainedSkills, null);
+  assert.deepEqual(
+    agent.skills.map((skill) => skill.name),
+    ["review"],
+  );
+  assert.equal(
+    agent.details.tools.find((tool) => tool.name === "remote").server,
+    "known",
+  );
+  assert.equal(
+    agent.details.tools.find((tool) => tool.name === "mcp__not_evidence")
+      .source,
+    "unknown",
+  );
+  assert.equal(
+    agent.details.tools.some((tool) => tool.name === "old-only"),
+    false,
+  );
+
+  // A full entry refresh may have started before this newer get_state landed.
+  state = C.entries(state, "main", {
+    reset: true,
+    entries: [
+      prompt,
+      call("read", "p", "read", "skill://review"),
+      result("done", "read", "read"),
+    ],
+    leafId: "done",
+  });
+  agent = C.view(state).agents[0];
+  assert.equal(agent.details.model.id, "model-b");
+  assert.equal(agent.details.usage.tokens, 90);
+  assert.match(agent.details.systemPrompt[0].text, /^Fresh/);
+  assert.equal(
+    agent.details.tools.find((tool) => tool.name === "remote").server,
+    "known",
+  );
+  assert.equal(
+    agent.details.tools.some((tool) => tool.name === "old-only"),
+    false,
+  );
+  assert.equal(agent.details.retainedSkills, null);
+
+  state = C.rpc(state, {
+    model: { provider: "other", id: "model-c", contextWindow: 3000 },
+  });
+  agent = C.view(state).agents[0];
+  assert.equal(agent.details.model.id, "model-c");
+  assert.equal(agent.details.usage, null);
+  assert.deepEqual(agent.details.systemPrompt, []);
+  assert.deepEqual(agent.details.tools, []);
+  assert.match(agent.note, /unavailable/);
+});
+
+test("current native prompt and active schemas populate estimated context categories without double counting skills", () => {
+  const state = C.rpc(scan([snapshot()]), {
+    model: { provider: "local", id: "model", contextWindow: 1000 },
+    contextUsage: { tokens: 100, contextWindow: 1000 },
+    systemPrompt: ["base<skills>review</skills>"],
+    dumpTools: [{ name: "read", description: "text", parameters: {} }],
+  });
+  const agent = C.view(state).agents[0];
+  assert.deepEqual(
+    agent.details.breakdown.map(({ id, tokens, estimated }) => ({
+      id,
+      tokens,
+      estimated,
+    })),
+    [
+      { id: "system", tokens: 1, estimated: true },
+      { id: "tools", tokens: 3, estimated: true },
+      { id: "skills", tokens: 6, estimated: true },
+      { id: "messages", tokens: 90, estimated: true },
+    ],
+  );
+  assert.deepEqual(
+    agent.skills,
+    [],
+    "catalog tokens are not evidence of using a skill",
+  );
+});
+
+test("category estimates exclude inactive schemas, handle UTF-8 and refresh with native usage", () => {
+  const prompt = snapshot("p", null, ["é😀"]);
+  prompt.data.details = observedDetails({
+    usage: { tokens: 10, contextWindow: 1000 },
+    tools: [
+      {
+        name: "inactive",
+        description: "x".repeat(400),
+        active: false,
+        parameters: {},
+      },
+    ],
+  });
+  let state = scan([prompt]);
+  assert.deepEqual(
+    C.view(state).agents[0].details.breakdown.map((part) => part.tokens),
+    [2, 0, 0, 8],
+  );
+  state = C.rpc(state, {
+    model: { provider: "example", id: "model-a", contextWindow: 1000 },
+    contextUsage: { tokens: 20, contextWindow: 1000 },
+  });
+  assert.deepEqual(
+    C.view(state).agents[0].details.breakdown.map((part) => part.tokens),
+    [2, 0, 0, 18],
+  );
+  state = C.rpc(state, { contextUsage: { tokens: 1, contextWindow: 1000 } });
+  assert.equal(
+    C.view(state).agents[0].details.breakdown.find(
+      (part) => part.id === "messages",
+    ).tokens,
+    0,
+    "approximation differences never produce negative message counts",
+  );
+  state = C.rpc(state, {
+    model: { provider: "example", id: "other", contextWindow: 2000 },
+  });
+  assert.ok(
+    C.view(state).agents[0].details.breakdown.every(
+      (part) => part.tokens === null,
+    ),
+    "a new model without current inputs must not inherit the old estimates",
+  );
+});
+
+test("server-side deferred schemas are not charged to local context estimates", () => {
+  const state = C.rpc(scan([snapshot()]), {
+    model: {
+      provider: "local",
+      id: "model",
+      contextWindow: 1000,
+      toolSchemasInContext: false,
+    },
+    contextUsage: { tokens: 20, contextWindow: 1000 },
+    systemPrompt: ["base"],
+    dumpTools: [
+      { name: "large", description: "x".repeat(400), parameters: {} },
+    ],
+  });
+  assert.deepEqual(
+    C.view(state).agents[0].details.breakdown.map((part) => part.tokens),
+    [1, 0, 0, 19],
+  );
+});
+
+test("old observations remain compatible and RPC prompt/tool limits are explicit", () => {
+  let state = scan([snapshot()]);
+  assert.equal(C.view(state).agents[0].details, null);
+  state = C.rpc(state, {
+    model: { provider: "example", id: "model", contextWindow: 100 },
+    systemPrompt: ["a".repeat(512 * 1024 + 1)],
+    dumpTools: [
+      {
+        name: "large",
+        parameters: { description: "x".repeat(512 * 1024 + 1) },
+      },
+    ],
+  });
+  const agent = C.view(state).agents[0];
+  assert.equal(agent.details.systemPrompt[0].text.length, 512 * 1024);
+  assert.deepEqual(agent.details.tools[0].parameters, {});
+  assert.match(agent.note, /truncated/);
+  assert.equal(agent.details.retainedSkills, null);
+  assert.ok(agent.details.breakdown.every((part) => part.tokens === null));
+});
+
+test("native observer refreshes model and usage after compaction and captures explicit tool metadata", () => {
+  const handlers = new Map(),
+    written = [];
+  let currentModel = { provider: "example", id: "a", contextWindow: 1000 };
+  let currentUsage = { tokens: 400, contextWindow: 1000, percent: 40 };
+  let prompt = ["Old system prompt"];
+  observer({
+    on: (name, fn) => handlers.set(name, fn),
+    appendEntry: (_type, data) => written.push(data),
+    getCommands: () => [],
+    getActiveTools: () => ["remote"],
+    getAllTools: () => [
+      {
+        name: "remote",
+        description: "MCP",
+        parameters: { type: "object" },
+        sourceInfo: { source: "mcp" },
+        mcpServerName: "server:one",
+        mcpToolName: "query",
+      },
+      {
+        name: "mcp__fake",
+        description: "Local",
+        parameters: {},
+        sourceInfo: { source: "builtin" },
+      },
+    ],
+  });
+  const ctx = {
+    sessionManager: { getSessionFile: () => "session" },
+    getSystemPrompt: () => prompt,
+    getContextUsage: () => currentUsage,
+    get model() {
+      return currentModel;
+    },
+    agent: { kind: "main" },
+  };
+  handlers.get("session_start")({}, ctx);
+  assert.equal(written[0].details.tools[0].server, "server:one");
+  assert.equal(written[0].details.tools[1].source, "builtin");
+  assert.equal(written[0].details.tools[1].server, null);
+  assert.equal(written[0].details.tools[1].active, false);
+  currentUsage = { tokens: 80, contextWindow: 1000, percent: 8 };
+  prompt = ["After compaction"];
+  handlers.get("session_compact")({}, ctx);
+  assert.equal(written.at(-1).details.usage.tokens, 80);
+  assert.deepEqual(written.at(-1).blocks, ["After compaction"]);
+  currentModel = { provider: "example", id: "b", contextWindow: 4000 };
+  currentUsage = { tokens: 80, contextWindow: 4000, percent: 2 };
+  handlers.get("agent_end")({}, ctx);
+  assert.equal(written.at(-1).details.model.id, "b");
+  assert.equal(written.at(-1).details.usage.contextWindow, 4000);
+  assert.equal(written.at(-1).details.retainedSkills, null);
+  assert.equal(written.at(-1).details.retainedCallIds, null);
+});
+
+test("asynchronous memory status never blocks or commits across file, branch or model changes", async () => {
+  const handlers = new Map(),
+    written = [],
+    requests = [];
+  let file = "one",
+    leaf = "root";
+  let currentModel = { provider: "example", id: "a", contextWindow: 1000 };
+  observer({
+    on: (name, fn) => handlers.set(name, fn),
+    appendEntry: (_type, data) => {
+      written.push(data);
+      leaf = `observer-${written.length}`;
+    },
+  });
+  const ctx = {
+    sessionManager: { getSessionFile: () => file, getLeafId: () => leaf },
+    getSystemPrompt: () => ["Prompt"],
+    get model() {
+      return currentModel;
+    },
+    agent: { kind: "main" },
+    memory: {
+      status: () =>
+        new Promise((resolve, reject) => requests.push({ resolve, reject })),
+      search: () => {
+        throw new Error("search must not be called");
+      },
+      save: () => {
+        throw new Error("save must not be called");
+      },
+    },
+  };
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  assert.equal(handlers.get("session_start")({}, ctx), undefined);
+  handlers.get("before_provider_request")({}, ctx);
+  await Promise.resolve();
+  assert.equal(requests.length, 1);
+  const initialWrites = written.length;
+  currentModel = { provider: "example", id: "b", contextWindow: 2000 };
+  requests[0].resolve({ backend: "local", active: true });
+  await settle();
+  assert.equal(written.length, initialWrites);
+
+  handlers.get("agent_start")({}, ctx);
+  await Promise.resolve();
+  const afterModel = written.length;
+  file = "two";
+  requests[1].resolve({ backend: "local", active: true });
+  await settle();
+  assert.equal(written.length, afterModel);
+
+  handlers.get("session_switch")({}, ctx);
+  await Promise.resolve();
+  handlers.get("session_tree")({}, ctx);
+  await Promise.resolve();
+  const afterBranch = written.length;
+  requests[2].resolve({ backend: "local", active: true });
+  await settle();
+  assert.equal(written.length, afterBranch);
+  requests[3].resolve({ backend: "off", active: false });
+  await settle();
+  assert.equal(written.at(-1).details.memory.status, "off");
+  assert.equal(written.at(-1).details.memory.backend, "off");
+  assert.equal(written.at(-1).details.model.id, "b");
+});
+
+test("memory errors are reported without retaining an exception body", async () => {
+  const handlers = new Map(),
+    written = [];
+  observer({
+    on: (name, fn) => handlers.set(name, fn),
+    appendEntry: (_type, data) => written.push(data),
+  });
+  const ctx = {
+    sessionManager: { getSessionFile: () => "one" },
+    getSystemPrompt: () => ["Prompt"],
+    agent: { kind: "main" },
+    memory: {
+      status: () => Promise.reject(new Error("private backend exception")),
+    },
+  };
+  handlers.get("session_start")({}, ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(written.at(-1).details.memory.status, "unavailable");
+  assert.match(written.at(-1).details.memory.note, /could not be read/);
+  assert.doesNotMatch(JSON.stringify(written), /private backend exception/);
+});
+
+test("native observer bounds schema data and reports truncation without losing the skill catalog", () => {
+  const handlers = new Map(),
+    written = [];
+  observer({
+    on: (name, fn) => handlers.set(name, fn),
+    appendEntry: (_type, data) => written.push(data),
+    getCommands: () => [
+      {
+        source: "skill",
+        name: "skill:review",
+        path: join(homedir(), ".agents", "skills", "review", "SKILL.md"),
+      },
+    ],
+    getActiveTools: () => ["large"],
+    getAllTools: () => [
+      {
+        name: "large",
+        sourceInfo: { source: "builtin" },
+        parameters: { description: "x".repeat(512 * 1024 + 1) },
+      },
+    ],
+  });
+  handlers.get("session_start")(
+    {},
+    {
+      sessionManager: { getSessionFile: () => "one" },
+      getSystemPrompt: () => ["Prompt"],
+      agent: { kind: "main" },
+    },
+  );
+  assert.equal(written[0].version, 1);
+  assert.equal(written[0].skills[0].name, "review");
+  assert.deepEqual(written[0].details.tools[0].parameters, {});
+  assert.equal(written[0].detailsTruncated, true);
+});
+
+test("a missing or temporarily unavailable native tool API is not an empty inventory", () => {
+  const handlers = new Map(),
+    written = [];
+  observer({
+    on: (name, fn) => handlers.set(name, fn),
+    appendEntry: (_type, data) => written.push(data),
+    getActiveTools: () => {
+      throw new Error("not initialized");
+    },
+    getAllTools: () => [],
+  });
+  handlers.get("session_start")(
+    {},
+    {
+      sessionManager: { getSessionFile: () => "one" },
+      getSystemPrompt: () => ["Prompt"],
+      agent: { kind: "main" },
+    },
+  );
+  assert.equal(written[0].details.toolsAvailable, false);
+  const entryWithDetails = snapshot();
+  entryWithDetails.data = written[0];
+  const agent = C.view(scan([entryWithDetails])).agents[0];
+  assert.equal(agent.details.toolsAvailable, false);
+  assert.match(agent.note, /Tool inventory is unavailable/);
+});

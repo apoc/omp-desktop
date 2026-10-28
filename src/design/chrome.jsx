@@ -252,9 +252,9 @@ function StatusBar({ ctx, todoDone, todoTotal, onTodo, onSettings, settingsActiv
       <span className="status-cell st-ctx mono">
         <span style={{ color: "var(--fg-3)" }}>{ctx.label}</span>
         <span className="status-bar-tube">
-          <span className="status-bar-fill" style={{ width: `${ctx.pct}%` }} />
+          <span className="status-bar-fill" style={{ width: `${Math.min(100, ctx.pct ?? 0)}%` }} />
         </span>
-        <span className="st-ctx-pct" style={{ color: "var(--fg-4)" }}>{(+ctx.pct).toFixed(1)}%</span>
+        <span className="st-ctx-pct" style={{ color: "var(--fg-4)" }}>{ctx.pct == null ? "—" : `${ctx.pct.toFixed(1)}%`}</span>
       </span>
       <span className="status-sep st-cost">·</span>
       <span className="status-cell st-cost mono"><span style={{ color: "var(--fg-3)" }}>cost</span> {ctx.cost}</span>

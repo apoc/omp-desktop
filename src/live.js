@@ -37,7 +37,7 @@
     commands: LOCAL_COMMANDS,
     models: [],
     activity: [],
-    ctx: { used: 0, total: 200000, pct: 0, label: "0 / 200k", cost: "$0.00", tokensPerSec: 0 },
+    ctx: { used: null, total: null, pct: null, status: "unavailable", modelKey: null, label: "— / —", cost: "$0.00", tokensPerSec: 0 },
     microcopy: {
       empty:        "Hand me a project. I'll set the table.",
       streamingTip: "Press ⎋ to interrupt — your cursor is in the room.",
@@ -136,11 +136,12 @@
     if (!sessionContext.contextSync?.current()) {
       sessionContext.contextSync?.dispose();
       const owner = sessionContext, gen = _switchGen, id = activeSessionId;
+      const revision = owner.contextRevision || 0;
       owner.contextSync = window.OMP_AGENT_CONTEXT_SYNC.create({
         request: _sendWithResponse, get: () => state.agentContext,
         set: next => { state.agentContext = next; }, changed: notify,
         subagents: () => state.subagents,
-        current: () => sessionContext === owner && _switchGen === gen && activeSessionId === id && _switchAwayFrom == null,
+        current: () => sessionContext === owner && _switchGen === gen && activeSessionId === id && _switchAwayFrom == null && (owner.contextRevision || 0) === revision,
       });
     }
     return sessionContext.contextSync;
@@ -287,7 +288,7 @@
    * @param {object}  cmd         Command body (type + args, no id).
    * @param {number}  [timeout]   Ms to wait before rejecting (0 = no timeout).
    */
-  function _sendWithResponse(cmd, timeout = 120000, idPrefix = "d") {
+  function _sendWithResponse(cmd, timeout = 120000, idPrefix = "d", apply = null) {
     let handedOff = Promise.resolve(false);
     let commandId = null;
     const response = new Promise((resolve, reject) => {
@@ -306,7 +307,7 @@
         }, timeout);
       }
       _pendingResponses.set(id, {
-        resolve(data) { clearTimeout(timer); resolve(data); },
+        resolve(data) { clearTimeout(timer); apply?.(data); resolve(data); },
         reject(err)   { clearTimeout(timer); reject(err);   },
       });
       // A failed hand-off (the tab's process is gone) never produces a
@@ -2192,6 +2193,7 @@
     // A cancelled or timed-out contextual history request must not be
     // treated as the ordinary, uncorrelated transcript refresh on replay.
     if (resp.command === "get_messages" && typeof resp.id === "string" && resp.id.startsWith("live-history-")) return;
+    if (resp.command === "get_state" && typeof resp.id === "string" && resp.id.startsWith("context-state-")) return;
     // Compact — handle success and failure both (must come before early-return below)
     if (resp.command === "compact") {
       let idx = -1;
@@ -2205,6 +2207,9 @@
           : { status: "error" };
         state.messages = state.messages.map((m, i) => i === idx ? { ...m, ...update } : m);
       }
+      _invalidateContext(null, false);
+      _send({ type: "get_state" });
+      void _agentContextSync().loadMain().catch(() => {});
       notify();
       return;
     }
@@ -2218,7 +2223,10 @@
       userAbortInFlight = false;
       return;
     }
-    if (!resp.success) return;
+    if (!resp.success) {
+      if (resp.command === "set_model" || resp.command === "cycle_model") _send({ type: "get_state" });
+      return;
+    }
     const { command, data } = resp;
 
     if (command === "get_state") {
@@ -2255,6 +2263,9 @@
       if (data) {
         state.model  = _buildModelEntry(data);
         state.models = state.models.map(m => ({ ...m, current: m.id === data.id }));
+        _invalidateContext(data);
+        _send({ type: "get_state" });
+        void _agentContextSync().loadMain().catch(() => {});
         notify();
       }
 
@@ -2263,6 +2274,9 @@
         // A re-clamped thinking level arrives as `thinking_level_changed`.
         state.model  = _buildModelEntry(data.model);
         state.models = state.models.map(m => ({ ...m, current: m.id === data.model.id }));
+        _invalidateContext(data.model);
+        _send({ type: "get_state" });
+        void _agentContextSync().loadMain().catch(() => {});
         notify();
       }
 
@@ -2358,6 +2372,21 @@
     }
     _agentContextSync().observe(ev);
 
+    if (type === "auto_compaction_start" || type === "auto_compaction_end") {
+      _invalidateContext(null, type === "auto_compaction_start");
+      if (type === "auto_compaction_end") {
+        _send({ type: "get_state" });
+        void _agentContextSync().loadMain().catch(() => {});
+      }
+      return;
+    }
+    if (type === "model_changed") {
+      _invalidateContext();
+      _send({ type: "get_state" });
+      void _agentContextSync().loadMain().catch(() => {});
+      return;
+    }
+
     if (type === "available_commands_update") {
       _applyCommands(ev.commands);
       return;
@@ -2440,6 +2469,10 @@
     // response to key off. Re-fetch rather than duplicate _applyRpcState's
     // model/thinkingLevel/sessionName derivation here.
     if (type === "config_update" || type === "session_info_update") {
+      if (type === "config_update") {
+        _invalidateContext();
+        void _agentContextSync().loadMain().catch(() => {});
+      }
       // `session_info_update` carries the title omp just set (our automatic
       // `/rename`, or a manual one) — apply it to the tab right away so the
       // rename lands even if the confirming get_state races a tab switch.
@@ -2960,6 +2993,7 @@
   function _applyRpcState(rpcState) {
     if (!rpcState) return;
     state.rpcState      = rpcState;
+    state.agentContext = CONTEXT.rpc(state.agentContext, rpcState);
     state.isStreaming   = rpcState.isStreaming ?? false;
     // Background work that will wake the agent (see `state.asyncPending`);
     // this is also how a tab activated mid-wait learns about it.
@@ -3092,6 +3126,42 @@
     state.ctx = window.buildCtx(state.rpcState, state.sessionCost, state.currentTps);
   }
 
+  // A new model or compacted history invalidates every older accounting read.
+  // Keep the new capacity when known, never an old model's usage percentage.
+  function _invalidateContext(model = null, compacting = false) {
+    sessionContext.contextRevision = (sessionContext.contextRevision || 0) + 1;
+    const previousModel = state.rpcState?.model;
+    const nextModel = model || (previousModel ? { ...previousModel, contextWindow: undefined } : null);
+    state.rpcState = { ...state.rpcState, model: nextModel, contextUsage: undefined,
+      contextRefreshing: true, isCompacting: compacting };
+    _refreshCtx();
+    notify();
+  }
+
+  function _requestState() {
+    const owner = sessionContext, gen = _switchGen, id = activeSessionId;
+    const revision = owner.contextRevision || 0;
+    const request = owner.stateRequest = (owner.stateRequest || 0) + 1;
+    const current = () => sessionContext === owner && _switchGen === gen && activeSessionId === id
+      && _switchAwayFrom == null && (owner.contextRevision || 0) === revision && owner.stateRequest === request;
+    // Apply inside response dispatch, not a promise microtask: a later frame
+    // in the same journal replay must remain newer than this state snapshot.
+    return _sendWithResponse({ type: "get_state" }, QUICK_CMD_TIMEOUT_MS, "context-state-", data => {
+      if (!current()) return;
+      _applyRpcState(data);
+      if (_syncRecoveredAsks()) notify();
+      void _applyApprovalModes();
+    }).then(() => current(), error => {
+        if (current()) {
+          state.rpcState = { ...state.rpcState, contextUsage: undefined, contextRefreshing: false };
+          _refreshCtx();
+          notify();
+          console.warn("[live] context state refresh failed:", error);
+        }
+        return false;
+      });
+  }
+
   function _initFetch() {
     // Negotiate protocol v2 first so oversized responses (get_available_models
     // is ~2 MiB, well past the v1 1 MiB frame cap) arrive as reassembled
@@ -3151,6 +3221,7 @@
   // ignore it (failures are logged here either way).
   function _send(cmd) {
     if (!window.__TAURI__ || !activeSessionId) return Promise.resolve(false);
+    if (cmd.type === "get_state") return _requestState();
     return _invokeSend(cmd).then(() => true, e => { _logSendError(e); return false; });
   }
 
@@ -4194,6 +4265,7 @@
       if (rest) sessionRegistry.set(id, { ...cur, renameNotes: rest });
     },
     setModel(model) {
+      _invalidateContext(model);
       _send({ type: "set_model", provider: model.provider, modelId: model.id });
     },
     /** Model keys (`provider/modelId`) `profile` used most recently, newest
@@ -4233,6 +4305,7 @@
       );
     },
     compact() {
+      _invalidateContext(null, true);
       const id = "cmpct-" + _nextCmdId++;
       state.messages = [
         ...state.messages,

@@ -34,7 +34,6 @@
     "showContext": true,
     "showRadar": true,
     "showSubagents": true,
-    "showAgentContext": true,
     "showChanges": true,
     "showMinimap": true,
     "railOrder": null,

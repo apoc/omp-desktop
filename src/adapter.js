@@ -122,14 +122,20 @@
 
   // ── RPC state + cost + tps → design ctx object ────────────────────────────
   function buildCtx(rpcState, sessionCost, tps) {
-    const cu    = rpcState?.contextUsage;
-    const used  = cu?.tokens ?? 0;
-    const total = cu?.contextWindow ?? 200000;
-    const pct   = cu?.percent ?? (used ? Math.round((used / total) * 100) : 0);
+    const valid = value => typeof value === "number" && Number.isFinite(value) && value >= 0;
+    const cu = rpcState?.contextUsage;
+    const refreshing = rpcState?.contextRefreshing === true || rpcState?.isCompacting === true;
+    const used = !refreshing && valid(cu?.tokens) ? cu.tokens : null;
+    const window = valid(cu?.contextWindow) && cu.contextWindow > 0
+      ? cu.contextWindow : rpcState?.model?.contextWindow;
+    const total = valid(window) && window > 0 ? window : null;
+    const pct = used != null && total != null ? used / total * 100 : null;
     return {
       used,
       total,
       pct,
+      status: refreshing ? "refreshing" : pct != null ? "ready" : "unavailable",
+      modelKey: rpcState?.model?.id ? `${rpcState.model.provider}/${rpcState.model.id}` : null,
       label: `${formatTokens(used)} / ${formatTokens(total)}`,
       cost: sessionCost != null ? `$${sessionCost.toFixed(2)}` : "$0.00",
       tokensPerSec: Math.round(tps ?? 0),

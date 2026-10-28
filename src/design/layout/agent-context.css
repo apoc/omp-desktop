@@ -1,209 +1,143 @@
-/* Compact agent context rail and content preview. */
-.agent-context {
-  display: block;
+/* Context accounting stays compact until the inventory is requested. */
+.context-card {
   min-width: 0;
 }
-.agent-context summary {
-  cursor: pointer;
-}
-.agent-context-head {
+.context-card-head {
   color: var(--fg-2);
 }
-.agent-context-head::after {
-  content: "▸";
-  color: var(--fg-3);
-}
-.agent-context[open] > .agent-context-head::after {
-  content: "▾";
-}
-.agent-context-head::marker,
-.agent-context-agent-head::marker {
-  color: var(--fg-3);
-}
-.agent-context-count {
+.context-card-toggle {
   margin-left: auto;
-  color: var(--fg-3);
-  font-size: var(--d-text-xs);
-  white-space: nowrap;
-}
-.agent-context-body {
-  display: grid;
-  gap: 7px;
-  padding-top: 9px;
-}
-.agent-context-main,
-.agent-context-agent {
-  min-width: 0;
-}
-.agent-context-agent {
-  border-top: 1px solid var(--line);
-  padding-top: 7px;
-}
-.agent-context-agent-head,
-.agent-context-main-label {
-  color: var(--fg-2);
-  font-size: var(--d-text-sm);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.agent-context-agent-label,
-.agent-context-main-label {
-  font-weight: 600;
-}
-.agent-context-status {
-  color: var(--fg-3);
-  font-size: var(--d-text-xs);
-}
-.agent-context-agent-body {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-.agent-context-agent > .agent-context-agent-body,
-.agent-context-main-label + .agent-context-agent-body {
-  padding-top: 6px;
-}
-.agent-context-inspect {
-  width: fit-content;
-  padding: 2px 4px;
-  border: 1px solid var(--line-bright);
+  padding: 3px 4px;
+  border: 0;
   border-radius: 4px;
-  background: transparent;
+  background: none;
   color: var(--fg-2);
   font: inherit;
   font-size: var(--d-text-xs);
   cursor: pointer;
 }
-.agent-context-inspect:hover,
-.agent-context-entry:hover {
+.context-card-toggle:hover,
+.context-card-links button:hover,
+.context-card-inspect:hover {
   background: var(--bg-hover);
+  color: var(--fg);
 }
-.agent-context :focus-visible,
+.context-card :focus-visible,
 .minimap-cell:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-.agent-context-note,
-.agent-context-empty {
+.context-card-metrics {
+  min-width: 0;
+  color: var(--fg-3);
+  font-size: var(--d-text-xs);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.context-card-metrics > :first-child {
+  color: var(--fg);
+  font-size: var(--d-text-sm);
+}
+.context-card .rail-spark-foot {
+  color: var(--fg-3);
+}
+.context-card .rail-spark-foot span:last-child {
+  color: var(--accent);
+}
+.context-card-expanded {
+  display: grid;
+  gap: 7px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.context-card-expanded[hidden] {
+  display: none;
+}
+.context-card-subhead {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--fg-2);
+  font-size: var(--d-text-xs);
+  font-weight: 600;
+}
+.context-card-subhead span:last-child {
+  color: var(--fg-3);
+  font-weight: 400;
+}
+.context-card-note {
   margin: 0;
   color: var(--fg-3);
   font-size: var(--d-text-xs);
 }
-.agent-context-note {
+.context-breakdown {
+  display: grid;
+  gap: 6px;
+  max-height: 155px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.context-breakdown-row {
+  min-width: 0;
+  color: var(--fg-2);
+  font-size: var(--d-text-xs);
+}
+.context-breakdown-row > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.context-breakdown-row > div:first-child span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.agent-context-empty {
-  padding: 4px 0 4px 15px;
-}
-.agent-context-group {
-  min-width: 0;
-}
-.agent-context-group-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 2px;
-  color: var(--fg-2);
-  font-size: var(--d-text-xs);
-  list-style: none;
-}
-.agent-context-group-head::-webkit-details-marker {
-  display: none;
-}
-.agent-context-group-head::before {
-  content: "▸";
+.context-breakdown-row > div:first-child span:last-child {
+  flex: none;
   color: var(--fg-3);
 }
-.agent-context-group[open] > .agent-context-group-head::before {
-  content: "▾";
-}
-.agent-context-group-count {
-  margin-left: auto;
-  color: var(--fg-3);
-}
-.agent-context-list {
-  max-height: 150px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  list-style: none;
-  margin: 0 0 2px;
-  padding: 0 0 0 14px;
-}
-.agent-context-entry {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
+.context-breakdown-track {
+  height: 3px;
+  margin-top: 3px;
+  border-radius: 3px;
+  background: var(--line);
   overflow: hidden;
-  padding: 3px 5px;
-  border: 0;
-  border-radius: 4px;
+}
+.context-breakdown-track span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+}
+.context-card-links {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+}
+.context-card-links button,
+.context-card-inspect {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+  min-width: 0;
+  padding: 5px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
   background: transparent;
-  color: var(--fg);
+  color: var(--fg-2);
   font: inherit;
   font-size: var(--d-text-xs);
   text-align: left;
   cursor: pointer;
 }
-.agent-context-entry-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.agent-context-origin {
-  flex: none;
-  margin-left: auto;
-  padding: 1px 5px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  color: var(--fg-2);
-  font-size: var(--d-text-xs);
-  white-space: nowrap;
-}
-.agent-context-preview {
-  width: min(900px, 88vw);
-}
-.agent-context-preview-title {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--fg);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.agent-context-preview-path {
-  padding: 7px 16px;
-  overflow-wrap: anywhere;
-  border-bottom: 1px solid var(--line);
-  color: var(--fg-3);
-  font-size: var(--d-text-xs);
-  white-space: pre-wrap;
-  user-select: text;
-}
-.agent-context-preview-origin {
-  padding: 9px 16px;
-  border-bottom: 1px solid var(--line);
-  color: var(--fg-2);
-  font-size: var(--d-text-xs);
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-  user-select: text;
-}
-.agent-context-preview-origin p {
-  margin: 3px 0;
+.context-card-links button span,
+.context-card-inspect span {
   color: var(--fg-3);
 }
-.agent-context-preview-text {
-  margin: 0;
-  padding: 16px;
-  color: var(--fg);
-  font-size: var(--d-text-sm);
-  line-height: 1.6;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+.context-card-inspect {
+  color: var(--accent);
+  border-color: var(--line-bright);
 }
 .minimap-cell {
   width: 100%;

@@ -107,7 +107,7 @@ const AnnotablePlan = ({ text, annotations, onAnnotate }) => {
   );
 };
 
-Object.assign(window, { Icon, TOOL_META, Sparkline, TokenGauge, ActivityRadar, MarkdownContent, AnnotablePlan });
+Object.assign(window, { Icon, TOOL_META, Sparkline, ActivityRadar, MarkdownContent, AnnotablePlan });
 
 
 Object.assign(window, { AnnotablePlan, segmentPlan });

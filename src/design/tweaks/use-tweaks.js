@@ -11,7 +11,10 @@ function _load(defaults) {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return defaults;
-    return { ...defaults, ...JSON.parse(raw) };
+    const stored = JSON.parse(raw);
+    const migrated = window.OMP_AMBIENT_RAIL.migrate(stored);
+    if (migrated !== stored) _save(migrated);
+    return { ...defaults, ...migrated };
   } catch {
     return defaults;
   }

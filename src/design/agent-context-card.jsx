@@ -1,311 +1,264 @@
-/* Catalog entries are available skills, not evidence that an agent used them. */
-const { Icon: _AC_Icon, useModalLayer: _AC_useModalLayer } = window;
+/* Usage and the read-only, scoped context inventory share one ambient card. */
+const _CC_number = (value) =>
+  typeof value === "number" && Number.isFinite(value)
+    ? value.toLocaleString()
+    : "—";
 
-function _AC_Entries({
-  label,
-  entries,
-  agent,
-  kind,
-  onPreview,
-  showOrigin = false,
+function ContextCard({
+  ctx,
+  context,
+  readSkill,
+  onSelectAgent,
+  onOpenSubagents,
+  onJumpToCall,
+  messages,
+  sparklineValues,
+  viewState,
+  onViewStateChange,
 }) {
-  if (!entries.length) return null;
-  return (
-    <details className="agent-context-group">
-      <summary className="agent-context-group-head">
-        <span>{label}</span>
-        <span className="agent-context-group-count mono">{entries.length}</span>
-      </summary>
-      <ul className="agent-context-list">
-        {entries.map((entry, i) => (
-          <li key={entry.id ?? entry.path ?? i}>
-            <button
-              type="button"
-              className="agent-context-entry"
-              onClick={() => onPreview({ agentId: agent.id, entry, kind })}
-              title={entry.name}
-            >
-              <span className="agent-context-entry-name">{entry.name}</span>
-              {showOrigin && entry.origin && (
-                <span
-                  className="agent-context-origin"
-                  title={entry.origin.explanation}
-                >
-                  {entry.origin.badge}
-                </span>
-              )}
-            </button>
-          </li>
-        ))}
-      </ul>
-    </details>
+  const [localView, setLocalView] = React.useState({});
+  const view = viewState || localView;
+  const updateView = onViewStateChange || setLocalView;
+  const expanded = !!view.expanded;
+  const [inspector, setInspector] = React.useState(false);
+  const bodyId = React.useId();
+  const closeInspector = React.useCallback(() => setInspector(false), []);
+  const updateInspector = React.useCallback(
+    (next) =>
+      updateView((previous) => {
+        const view = previous || {};
+        const inspector = view.inspector || {};
+        return {
+          ...view,
+          inspector: typeof next === "function" ? next(inspector) : next,
+        };
+      }),
+    [updateView],
   );
-}
-
-function _AC_AgentBody({ agent, onSelectAgent, onPreview }) {
-  return (
-    <div className="agent-context-agent-body">
-      {agent.id !== "main" && onSelectAgent && (
-        <button
-          type="button"
-          className="agent-context-inspect"
-          onClick={() => onSelectAgent(agent.id)}
-        >
-          open inspector
-        </button>
-      )}
-      {agent.note && (
-        <p className="agent-context-note" title={agent.note}>
-          {agent.note}
-        </p>
-      )}
-      <_AC_Entries
-        label="Used this session"
-        entries={agent.skills || []}
-        agent={agent}
-        kind="skill"
-        showOrigin
-        onPreview={onPreview}
-      />
-      {(agent.skillGroups || []).map((group) => (
-        <_AC_Entries
-          key={group.id}
-          label={group.label}
-          entries={group.entries}
-          agent={agent}
-          kind="skill"
-          showOrigin={group.id === "other"}
-          onPreview={onPreview}
-        />
-      ))}
-      <_AC_Entries
-        label="Loaded instructions"
-        entries={agent.instructions || []}
-        agent={agent}
-        kind="instruction"
-        onPreview={onPreview}
-      />
-      {!agent.skills?.length &&
-        !agent.skillGroups?.length &&
-        !agent.instructions?.length && (
-          <p className="agent-context-empty">
-            No skills or instructions recorded yet.
-          </p>
-        )}
-    </div>
-  );
-}
-
-function _AC_Preview({ target, readSkill, onClose }) {
-  const scrimRef = React.useRef(null);
-  const downOnScrim = React.useRef(false);
-  const [result, setResult] = React.useState(null);
-  _AC_useModalLayer(scrimRef);
-
-  React.useEffect(() => {
-    let live = true;
-    if (target.kind === "skill") {
-      Promise.resolve()
-        .then(() => {
-          if (typeof readSkill !== "function")
-            throw new Error("Skill preview is unavailable.");
-          return readSkill(target.agentId, target.entry.name);
-        })
-        .then((res) => {
-          if (live)
-            setResult({
-              target,
-              res: res ?? { ok: false, error: "No preview was returned." },
-            });
-        })
-        .catch((error) => {
-          if (live)
-            setResult({
-              target,
-              res: { ok: false, error: error?.message || String(error) },
-            });
-        });
-    }
-    return () => {
-      live = false;
-    };
-  }, [target, readSkill]);
-
-  React.useEffect(() => {
-    const onKey = (event) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [onClose]);
-
-  const res =
-    target.kind === "instruction"
-      ? typeof target.entry.text === "string"
-        ? { ok: true, value: target.entry }
-        : { ok: false, error: "Instruction content is unavailable." }
-      : result?.target === target
-        ? result.res
-        : null;
-  const value = res?.ok ? res.value : null;
-  const error =
-    res &&
-    (!res.ok
-      ? res.error || "Preview is unavailable."
-      : typeof value?.text !== "string"
-        ? "Preview content is unavailable."
-        : null);
-  const errorText =
-    error &&
-    (typeof error === "string" ? error : error.message || String(error));
-  const path = target.entry.path || value?.path;
-
-  return ReactDOM.createPortal(
-    <div
-      ref={scrimRef}
-      className="fp-scrim"
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Preview of ${target.entry.name}`}
-      tabIndex={-1}
-      onMouseDown={(event) => {
-        downOnScrim.current = event.target === event.currentTarget;
-      }}
-      onClick={(event) => {
-        if (downOnScrim.current && event.target === event.currentTarget)
-          onClose();
-        downOnScrim.current = false;
-      }}
-    >
-      <div className="fp-panel agent-context-preview">
-        <div className="fp-head">
-          <_AC_Icon name="file" size={13} color="var(--cyan)" />
-          <span
-            className="agent-context-preview-title"
-            title={path || target.entry.name}
-          >
-            {target.entry.name}
-          </span>
-          {value?.truncated && (
-            <span className="chip warn mono">truncated</span>
-          )}
-          <div className="fp-spacer" />
-          <button type="button" className="btn ghost" onClick={onClose}>
-            Close
-          </button>
-        </div>
-        {path && (
-          <div className="agent-context-preview-path mono">
-            {target.kind === "skill" ? "Source path: " : ""}
-            {path}
-          </div>
-        )}
-        {target.kind === "skill" && target.entry.origin && (
-          <div className="agent-context-preview-origin">
-            <strong>{target.entry.origin.badge}</strong>
-            {target.entry.origin.label.replace(/\s/g, "") !==
-              target.entry.origin.badge.replace(/\s/g, "") && (
-              <span> · {target.entry.origin.label}</span>
-            )}
-            <p>{target.entry.origin.explanation}</p>
-            {target.entry.origin.root && (
-              <div className="mono">
-                Source root: {target.entry.origin.root}
-              </div>
-            )}
-            {value?.path && value.path !== path && (
-              <div className="mono">Preview file: {value.path}</div>
-            )}
-          </div>
-        )}
-        <div className="fp-body" tabIndex={0} aria-live="polite">
-          {!res ? (
-            <div className="fp-state">Loading…</div>
-          ) : errorText ? (
-            <div className="fp-state">
-              <div>
-                <div className="fp-state-title">Can't preview this content</div>
-                <div className="fp-state-sub">{errorText}</div>
-              </div>
-            </div>
-          ) : (
-            <pre className="agent-context-preview-text">{value.text}</pre>
-          )}
-        </div>
-      </div>
-    </div>,
-    document.body,
-  );
-}
-
-function AgentContextCard({ context, onSelectAgent, readSkill }) {
-  const agents = context?.agents || [];
-  const [preview, setPreview] = React.useState(null);
-  const closePreview = React.useCallback(() => setPreview(null), []);
+  const openInspector = (tab) => {
+    if (tab) updateInspector((previous) => ({ ...previous, tab }));
+    setInspector(true);
+  };
+  const main = (context?.agents || []).find((agent) => agent.id === "main");
+  const details = window.OMP_CONTEXT_DETAILS(main, ctx);
+  const ready = ctx?.status === "ready";
+  const used = ready ? ctx?.used : null;
+  const total = ctx?.total;
+  const pct =
+    ready && typeof ctx?.pct === "number" && Number.isFinite(ctx.pct)
+      ? ctx.pct
+      : null;
+  const circumference = 2 * Math.PI * 22;
+  const tone =
+    pct > 80 ? "var(--rose)" : pct > 60 ? "var(--amber)" : "var(--accent)";
+  const breakdown = ready ? details?.breakdown || [] : [];
+  const throughput =
+    ctx?.tokensPerSec == null ? "—" : `${ctx.tokensPerSec} t/s`;
   return (
     <>
-      <details className="rail-card glass agent-context" open>
-        <summary className="rail-card-head agent-context-head">
-          <_AC_Icon name="context" size={11} color="var(--lilac)" />
-          <span className="mono">agent context</span>
-          <span className="agent-context-count mono">
-            {agents.length} {agents.length === 1 ? "agent" : "agents"}
-          </span>
-        </summary>
-        <div className="agent-context-body">
-          {agents.length === 0 ? (
-            <p className="agent-context-note">Context metadata unavailable.</p>
-          ) : (
-            agents.map((agent) =>
-              agent.id === "main" ? (
-                <div key={agent.id} className="agent-context-main">
-                  {agents.length > 1 && (
-                    <div className="agent-context-main-label">
-                      main · {agent.label}
-                    </div>
-                  )}
-                  <_AC_AgentBody
-                    agent={agent}
-                    onSelectAgent={onSelectAgent}
-                    onPreview={setPreview}
-                  />
-                </div>
-              ) : (
-                <details className="agent-context-agent" key={agent.id}>
-                  <summary className="agent-context-agent-head">
-                    <span className="agent-context-agent-label">
-                      subagent · {agent.label}
-                    </span>
-                    {agent.status && (
-                      <span className="agent-context-status mono">
-                        {" "}
-                        · {agent.status}
-                      </span>
-                    )}
-                  </summary>
-                  <_AC_AgentBody
-                    agent={agent}
-                    onSelectAgent={onSelectAgent}
-                    onPreview={setPreview}
-                  />
-                </details>
-              ),
-            )
-          )}
+      <section
+        className="rail-card glass context-card"
+        data-ambient-card="showContext"
+        aria-label="Context"
+      >
+        <div className="rail-card-head context-card-head">
+          <window.Icon name="context" size={11} color="var(--lilac)" />
+          <span className="mono">context</span>
+          <button
+            type="button"
+            className="context-card-toggle"
+            aria-expanded={expanded}
+            aria-controls={bodyId}
+            onClick={() =>
+              updateView((previous) => ({
+                ...previous,
+                expanded: !previous?.expanded,
+              }))
+            }
+          >
+            {expanded ? "Less ▴" : "More ▾"}
+          </button>
         </div>
-      </details>
-      {preview && (
-        <_AC_Preview
-          target={preview}
+        <div className="token-gauge">
+          <svg
+            width="56"
+            height="56"
+            viewBox="0 0 56 56"
+            role="img"
+            aria-label={
+              pct == null
+                ? "Context usage unavailable"
+                : `Context usage ${pct.toFixed(1)} percent`
+            }
+          >
+            <circle
+              cx="28"
+              cy="28"
+              r="22"
+              stroke="var(--line)"
+              strokeWidth="3"
+              fill="none"
+            />
+            {pct != null && (
+              <circle
+                cx="28"
+                cy="28"
+                r="22"
+                stroke={tone}
+                strokeWidth="3"
+                strokeLinecap="round"
+                fill="none"
+                strokeDasharray={`${(Math.max(0, Math.min(pct, 100)) / 100) * circumference} ${circumference}`}
+                transform="rotate(-90 28 28)"
+              />
+            )}
+            <text
+              x="28"
+              y="31"
+              textAnchor="middle"
+              fontSize="11"
+              fontFamily="var(--font-mono)"
+              fill="var(--fg)"
+            >
+              {pct == null ? "—" : `${pct.toFixed(1)}%`}
+            </text>
+          </svg>
+          <div className="context-card-metrics">
+            <div className="mono">
+              {_CC_number(used)} / {_CC_number(total)}
+            </div>
+            <div>
+              tokens ·{" "}
+              {ready
+                ? "capacity"
+                : ctx?.status === "refreshing"
+                  ? "refreshing"
+                  : "unavailable"}
+            </div>
+            <div>
+              cost {ctx?.cost ?? "—"} · {throughput}
+            </div>
+          </div>
+        </div>
+        <div className="rail-spark">
+          {sparklineValues?.length > 0 && (
+            <window.Sparkline
+              values={sparklineValues}
+              width={210}
+              height={28}
+            />
+          )}
+          <div className="rail-spark-foot mono">
+            <span>throughput</span>
+            <span>{throughput}</span>
+          </div>
+        </div>
+        <div id={bodyId} className="context-card-expanded" hidden={!expanded}>
+          <div className="context-card-subhead">
+            <span>Context breakdown</span>
+            <span className="mono">tokens</span>
+          </div>
+          {breakdown.length ? (
+            <div className="context-breakdown">
+              {breakdown.map((part) => (
+                <div className="context-breakdown-row" key={part.id}>
+                  <div>
+                    <span>{part.label}</span>
+                    <span
+                      className="mono"
+                      aria-label={
+                        part.tokens == null
+                          ? "Unavailable"
+                          : `${part.estimated ? "Approximately " : ""}${_CC_number(part.tokens)} tokens`
+                      }
+                      title={
+                        part.estimated && part.tokens != null
+                          ? "Local text estimate (UTF-8 bytes ÷ 4). Skills counts the prompt catalog, not loaded skill files; Messages is the remainder of the native total. Estimates may differ from provider accounting."
+                          : undefined
+                      }
+                    >
+                      {part.estimated && typeof part.tokens === "number"
+                        ? "≈"
+                        : ""}
+                      {_CC_number(part.tokens)}
+                    </span>
+                  </div>
+                  {typeof part.tokens === "number" &&
+                    Number.isFinite(part.tokens) &&
+                    typeof total === "number" &&
+                    total > 0 && (
+                      <div
+                        className="context-breakdown-track"
+                        aria-hidden="true"
+                      >
+                        <span
+                          style={{
+                            width: `${Math.min(100, Math.max(0, (part.tokens / total) * 100))}%`,
+                          }}
+                        />
+                      </div>
+                    )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="context-card-note">
+              {ctx?.status === "refreshing"
+                ? "Refreshing context…"
+                : "Breakdown unavailable."}
+            </p>
+          )}
+          {breakdown.some((part) => part.estimated) && (
+            <p className="context-card-note">
+              ≈ Local estimates · Messages is the remainder.
+            </p>
+          )}
+          <div className="context-card-subhead">
+            <span>Explore</span>
+            <span>read-only</span>
+          </div>
+          <div className="context-card-links">
+            {[
+              ["skills", "Skills"],
+              ["tools", "MCP tools"],
+              ["calls", "Calls"],
+              ["instructions", "Instructions"],
+              ["memory", "Memory"],
+            ].map(([tab, label]) => (
+              <button
+                type="button"
+                key={tab}
+                onClick={() => openInspector(tab)}
+              >
+                {label}
+                <span aria-hidden="true">↗</span>
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="context-card-inspect"
+            onClick={() => openInspector()}
+          >
+            Inspect context <span aria-hidden="true">→</span>
+          </button>
+        </div>
+      </section>
+      {inspector && (
+        <window.ContextInspector
+          ctx={ctx}
+          context={context}
           readSkill={readSkill}
-          onClose={closePreview}
+          onSelectAgent={onSelectAgent}
+          onOpenSubagents={onOpenSubagents}
+          onJumpToCall={onJumpToCall}
+          messages={messages}
+          viewState={view.inspector || {}}
+          onViewStateChange={updateInspector}
+          onClose={closeInspector}
         />
       )}
     </>
   );
 }
-
-Object.assign(window, { AgentContextCard });
+window.ContextCard = ContextCard;

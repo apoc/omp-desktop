@@ -47,7 +47,7 @@ PY
 
 ## Where cards appear
 
-Widget cards sit in the ambient rail. By default, plugin cards follow the built-in context, radar, subagents, Agent context and Changes cards, followed by the active tab's omp extension cards and the minimap. Plugin cards follow `widgets.json` order; an approval and its eventual result share one position. Error cards about `widgets.json` stay at the top.
+Widget cards sit in the ambient rail. By default, plugin cards follow the built-in Context, radar, subagents and Changes cards, followed by the active tab's omp extension cards and the minimap. Plugin cards follow `widgets.json` order; an approval and its eventual result share one position. Error cards about `widgets.json` stay at the top.
 
 Use the header's **Ambient controls** gear to hide/show individual cards and drag them into your preferred order, or use the move-up/down buttons. **Settings → Rail → Card order** offers the same ordering controls. Order is saved across tabs and restarts; hidden cards keep their place, and cards absent from one project regain their saved position when they return.
 

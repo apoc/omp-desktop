@@ -97,3 +97,16 @@ test("invalid and same-card drops leave the saved layout unchanged", () => {
   assert.equal(move(cards, saved, "missing", "context", false), saved);
   assert.equal(move(cards, saved, "context", "missing", false), saved);
 });
+
+test("merging context cards preserves visibility and the first saved slot without reviving the old card", () => {
+  const saved = { showContext: false, showAgentContext: true,
+    railOrder: ["showRadar", "showAgentContext", "widget:other", "showContext", "showMinimap"] };
+  const next = win.OMP_AMBIENT_RAIL.migrate(saved);
+  assert.equal(next.showContext, true);
+  assert.equal("showAgentContext" in next, false);
+  assert.deepEqual(next.railOrder, ["showRadar", "showContext", "widget:other", "showMinimap"]);
+  assert.equal(saved.showContext, false);
+  assert.equal(win.OMP_AMBIENT_RAIL.migrate(next), next, "migration is idempotent");
+  assert.equal(win.OMP_AMBIENT_RAIL.migrate({ showContext: false, showAgentContext: false }).showContext, false);
+  assert.equal(win.OMP_AMBIENT_RAIL.migrate({ showContext: false }).showContext, false);
+});

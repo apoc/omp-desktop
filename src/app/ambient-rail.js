@@ -2,10 +2,9 @@
 // keys so Settings and the inline controls share the same lifecycle effects.
 (function () {
   const BUILT_INS = [
-    { id: "showContext", label: "Context gauge" },
+    { id: "showContext", label: "Context" },
     { id: "showRadar", label: "Agent radar" },
     { id: "showSubagents", label: "Subagents" },
-    { id: "showAgentContext", label: "Agent context" },
     { id: "showChanges", label: "Changes" },
   ];
   const MINIMAP = { id: "showMinimap", label: "Minimap" };
@@ -31,6 +30,19 @@
     return Array.isArray(saved)
       ? [...new Set(saved.filter((id) => typeof id === "string"))]
       : [];
+  }
+
+  // Merge the former gauge/inventory cards once, preserving either visible
+  // surface and the first of their saved positions. Remove the obsolete key.
+  function migrate(values) {
+    if (!values || typeof values !== "object" || Array.isArray(values)) return {};
+    const legacy = Object.prototype.hasOwnProperty.call(values, "showAgentContext");
+    const orderedLegacy = Array.isArray(values.railOrder) && values.railOrder.includes("showAgentContext");
+    if (!legacy && !orderedLegacy) return values;
+    const { showAgentContext, ...next } = values;
+    if (legacy) next.showContext = values.showContext !== false || showAgentContext !== false;
+    if (orderedLegacy) next.railOrder = savedIds(values.railOrder.map(id => id === "showAgentContext" ? "showContext" : id));
+    return next;
   }
 
   /** Missing/new cards retain their default order; stale ids render nothing. */
@@ -67,5 +79,5 @@
     return order;
   }
 
-  window.OMP_AMBIENT_RAIL = { items, ordered, move };
+  window.OMP_AMBIENT_RAIL = { items, ordered, move, migrate };
 })();

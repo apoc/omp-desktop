@@ -26,7 +26,7 @@ const {
   INTENT_FRAMING, APPROVAL_PROMPT,
   useBridgeSnapshot, useThemeEffect, useSubagentManager, useUpdater, useConversationTree, useGoalMode, useTerminal, TerminalPanels, timeNow,
   useKeymap, useKeymapDispatch, useBrowser, BrowserDock, MarkdownLinkContext: _AL_MdLinkCtx,
-  usePaneWidths, ResizeHandle, useRemote, useNotifications, usePrAutomation, PrAutomationCard, AgentContextCard,
+  usePaneWidths, ResizeHandle, useRemote, useNotifications, usePrAutomation, PrAutomationCard, ContextCard,
 } = window;
 const { routeSubmit: _routeSubmit } = window.OMP_SLASH;
 const { mergeIntoMessage: _mergeBrowserChips, browserCommand: _browserCommand, MIN_WIDTH: _AL_BROWSER_MIN } = window.OMP_BROWSER;
@@ -137,6 +137,18 @@ function App() {
   // Each entry: { id, name, path, color, branch }
   const [sessions,        setSessions]        = React.useState([]);
   const [activeSessionId, setActiveSessionId] = React.useState("");
+  const [contextViews, setContextViews] = React.useState({});
+  const updateContextView = React.useCallback(update => {
+    setContextViews(previous => ({ ...previous, [activeSessionId]: typeof update === "function"
+      ? update(previous[activeSessionId] || {}) : update }));
+  }, [activeSessionId]);
+  React.useEffect(() => {
+    setContextViews(previous => {
+      const liveIds = new Set(sessions.map(session => session.id));
+      const entries = Object.entries(previous).filter(([id]) => liveIds.has(id));
+      return entries.length === Object.keys(previous).length ? previous : Object.fromEntries(entries);
+    });
+  }, [sessions]);
 
   // ── Profiles — every selectable omp profile ({id, name}) ─────────────────
   // The profile itself is per tab (see sessions[].profile); this is just the
@@ -1137,8 +1149,11 @@ function App() {
                   onMinimapHover={setHoveredMsgIdx}
                   onMinimapClick={handleMinimapClick}
                   cards={{
-                    showAgentContext: <AgentContextCard key={`context:${activeSessionId}`} context={agentContextView}
-                      onSelectAgent={subagentUi.open} readSkill={bridge.readContextSkill} />,
+                    showContext: <ContextCard key={`context:${activeSessionId}`} ctx={liveCtx} context={agentContextView}
+                      viewState={contextViews[activeSessionId]} onViewStateChange={updateContextView}
+                      onSelectAgent={subagentUi.open} onOpenSubagents={() => { if (!showSplit) subagentUi.togglePane(); }}
+                      onJumpToCall={id => { const index = messages.findIndex(m => m._toolCallId === id); if (index >= 0) handleMinimapClick(index); }}
+                      readSkill={bridge.readContextSkill} messages={messages} sparklineValues={sparkline} />,
                     showChanges: <PrAutomationCard key={planKey} automation={prAutomation} bridge={bridge}
                       available={!!activeProject.path && !!bridge?.isConnected}
                       onOpenChanges={() => setGitOpen({ path: null, project: gitProject })} />,

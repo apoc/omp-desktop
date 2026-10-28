@@ -1,4 +1,4 @@
-/* ui/sparks.jsx — Sparkline + TokenGauge + ActivityRadar.
+/* ui/sparks.jsx — Sparkline + ActivityRadar.
    Small ambient peripherals shown in the right rail. */
 
 const { TOOL_META: _SP_TOOL_META } = window;
@@ -29,37 +29,6 @@ const Sparkline = ({ values, width = 80, height = 18, color = "var(--accent)", g
   );
 };
 
-// ── Token gauge — radial, with usage + budget tick ───────────────────
-const TokenGauge = ({ used, total, pct, label, sub }) => {
-  const r = 22;
-  const C = 2 * Math.PI * r;
-  const dash = (Math.min(pct, 100) / 100) * C;
-  const tone = pct > 80 ? "var(--rose)" : pct > 60 ? "var(--amber)" : "var(--accent)";
-  return (
-    <div className="token-gauge">
-      <svg width="56" height="56" viewBox="0 0 56 56">
-        <circle cx="28" cy="28" r={r} stroke="var(--line)" strokeWidth="3" fill="none" />
-        <circle cx="28" cy="28" r={r}
-          stroke={tone}
-          strokeWidth="3"
-          strokeLinecap="round"
-          fill="none"
-          strokeDasharray={`${dash} ${C}`}
-          transform="rotate(-90 28 28)"
-          style={{ filter: `drop-shadow(0 0 4px ${tone})`, transition: "stroke-dasharray 600ms var(--ease-out)" }}
-        />
-        <text x="28" y="31" textAnchor="middle" fontSize="11" fontFamily="var(--font-mono)" fill="var(--fg)">
-          {(+pct).toFixed(1)}%
-        </text>
-      </svg>
-      <div>
-        <div style={{ fontSize: "var(--d-text-sm)", color: "var(--fg-2)", fontFamily: "var(--font-mono)" }}>{label}</div>
-        <div style={{ fontSize: "var(--d-text-xs)", color: "var(--fg-4)" }}>{sub}</div>
-      </div>
-    </div>
-  );
-};
-
 // ── Activity radar — 60s strip of tool calls colored by kind ─────────
 const ActivityRadar = ({ activity, tps }) => {
   const cells = Array.from({ length: 60 }, (_, i) => activity.find((a) => a.t === i));
@@ -86,4 +55,4 @@ const ActivityRadar = ({ activity, tps }) => {
 };
 
 
-Object.assign(window, { Sparkline, TokenGauge, ActivityRadar });
+Object.assign(window, { Sparkline, ActivityRadar });

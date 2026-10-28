@@ -110,10 +110,9 @@
         custom("railOrder", "Card order", "Drag cards or use the move buttons. Hidden cards keep their place. Also available in Ambient controls at the top of the rail.", "ambient arrange reorder position top bottom", { keys: ["railOrder"] }),
       ] },
       { name: "Built-in cards", rows: [
-        tweak("showContext", "toggle", "Context gauge", "How full the model's context window is.", "tokens"),
+        tweak("showContext", "toggle", "Context", "Current model window usage, grouped skills and instructions, tools, MCP calls and memory. Expand or search the read-only inspector.", "tokens compaction model skills repo global shared omp profile provenance source instructions agent context used session MCP memory"),
         tweak("showRadar", "toggle", "Agent radar", "What the agent is doing right now.", "activity"),
         tweak("showSubagents", "toggle", "Subagents", "Running and finished subagents of this tab.", "tasks"),
-        tweak("showAgentContext", "toggle", "Agent context", "Project, Shared, OMP/profile and other skill sources, loaded instructions, and skills used this session. Read origin details without adding chat events.", "skills repo global shared omp profile provenance source instructions agent context used session"),
         tweak("showChanges", "toggle", "Changes", "Show the PR for this project's current branch. Off also stops PR monitoring and turns off Auto-fix; enabling this card does not enable Auto-fix.", "github pull request pr auto fix ci checks review"),
         tweak("showMinimap", "toggle", "Minimap", "An overview of the transcript to jump around in.", "overview"),
       ] },

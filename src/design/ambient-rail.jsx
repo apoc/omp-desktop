@@ -23,9 +23,7 @@ function AmbientRail({
 }) {
   const {
     Icon,
-    TokenGauge,
     ActivityRadar,
-    Sparkline,
     TOOL_META,
     SubagentRailCard,
     SessionMinimap,
@@ -38,34 +36,12 @@ function AmbientRail({
     () => window.OMP_AMBIENT_RAIL.ordered(items, tweaks.railOrder),
     [items, tweaks.railOrder],
   );
-  const sparkVals = sparklineValues?.length
-    ? sparklineValues
-    : Array(30).fill(0);
   const closeControls = () => {
     setControlsOpen(false);
     controlsButton.current?.focus();
   };
   const builtIns = {
-    showContext: (
-      <div className="rail-card glass" data-ambient-card="showContext">
-        <TokenGauge
-          used={ctx.used}
-          total={ctx.total}
-          pct={ctx.pct}
-          label={ctx.label}
-          sub={`cost ${ctx.cost} · ${ctx.tokensPerSec} t/s`}
-        />
-        <div className="rail-spark">
-          <Sparkline values={sparkVals} width={210} height={28} />
-          <div className="rail-spark-foot mono">
-            <span style={{ color: "var(--fg-4)" }}>throughput</span>
-            <span style={{ color: "var(--accent)" }}>
-              {ctx.tokensPerSec} t/s
-            </span>
-          </div>
-        </div>
-      </div>
-    ),
+    showContext: cards.showContext,
     showRadar: (
       <div className="rail-card glass" data-ambient-card="showRadar">
         <div className="rail-card-head">
