@@ -1,11 +1,7 @@
-// Transcript merge: how live.js lays omp's persisted transcript (get_messages,
-// adapted by adapter.js `adaptAgentMessages`) over a tab's live one after a
-// tab switch. Entries are matched by the omp message they stand for — its
-// `timestamp`, which live frames and get_messages share — not by position:
-// the live transcript holds entries omp never returns (cards, notes, job
-// rows, bubbles of messages the adapter skips), and omp drops messages from
-// its context on its own (a retried attempt, a refusal, an empty turn), so
-// any positional pairing shifts every later entry once the two disagree.
+// Reconcile the saved active branch and model context with a tab's live
+// transcript. Bubbles match omp message timestamps, tools match call ids;
+// neither may be paired by display position. Desktop-only notes and rows,
+// and messages omp dropped from its context, stay where the user saw them.
 //
 // Exposes `window.OMP_TRANSCRIPT`; IIFE per the project rule for plain
 // <script> tags. Regression: test-transcript-merge.mjs.
@@ -17,12 +13,32 @@
     return Number.isFinite(msg?.timestamp) ? msg.timestamp : null;
   }
 
-  /** The omp message a transcript entry stands for, as `kind:timestamp`:
-   *  user and assistant entries carry omp's message `timestamp` as `ts`
-   *  (live frames and the adapter both copy it, via `tsOf`). Null for
-   *  everything the desktop builds itself — cards, notes, job rows — and for
-   *  a bubble whose echo never came (a command omp ran locally). */
+  // get_messages is the model's current context, not the saved conversation:
+  // compaction and provider filtering can remove tools and earlier turns.
+  // Follow the raw snapshot's active ancestry; never include abandoned branches.
+  function messagesFromEntries(data) {
+    if (!Array.isArray(data?.entries) || !(data.leafId === null || typeof data.leafId === "string")) return null;
+    const records = new Map();
+    for (const entry of data.entries) {
+      if (!entry || typeof entry.id !== "string" || records.has(entry.id)) return null;
+      records.set(entry.id, entry);
+    }
+    const seen = new Set(), messages = [];
+    for (let id = data.leafId; id != null;) {
+      const entry = records.get(id);
+      if (!entry || seen.has(id) || !(entry.parentId === null || typeof entry.parentId === "string")) return null;
+      seen.add(id);
+      if (entry.type === "message") messages.push(entry.message);
+      id = entry.parentId;
+    }
+    return messages.reverse();
+  }
+
+  /** Bubbles identify omp messages by timestamp; tool cards identify the
+   *  persisted call/result pair by call id. Desktop-only notes and rows
+   *  have neither key and stay in place. */
   function messageKey(m) {
+    if (m?.kind === "tool" && m._toolCallId) return `tool:${m._toolCallId}`;
     if (m?.kind !== "user" && m?.kind !== "assistant") return null;
     return Number.isFinite(m.ts) ? `${m.kind}:${m.ts}` : null;
   }
@@ -37,6 +53,10 @@
   // for an attempt omp retried but kept in its context (a failed tool-call
   // turn), staying `retried` / `superseded` with its failure still pending.
   function _withLiveFields(copy, live) {
+    // Preserve completed live timing/streamed details. A later model-context
+    // result without its call must not erase arguments recovered from raw entries.
+    if (live.kind === "tool" && live.status !== "running" &&
+        (!live._historySource || (live._historySource === "call" && copy._historySource === "result"))) return live;
     let out = live._id == null ? copy : { ...copy, _id: live._id };
     const verdict = live.failure?.retryable;
     if (typeof verdict === "boolean" && copy.failure && copy.failure.retryable !== verdict) {
@@ -75,17 +95,25 @@
    *  copy takes its place. Any other streaming entry is left out — the
    *  caller re-appends its streaming bubble. */
   function mergeTranscript(live, persisted, { trimmed = false } = {}) {
+    // Include provisional cards when locating a previously trimmed head,
+    // even if richer raw calls replace them below.
+    const liveKeys = trimmed ? new Set(live.map(messageKey)) : null;
+    let first = Infinity;
+    // A provider can return results alone in completion order. Replace those
+    // provisional cards when raw calls restore invocation order and arguments.
+    const recoveredCalls = new Set(persisted.filter(m => m._historySource === "call").map(messageKey));
+    live = live.filter(m => m._historySource !== "result" || !recoveredCalls.has(messageKey(m)));
     const slots = new Map(); // key → indices into `persisted`, in omp's order
     persisted.forEach((p, i) => {
       const key = messageKey(p);
       if (!key) return;
+      if (liveKeys?.has(key) && i < first) first = i;
       const queue = slots.get(key);
       if (queue) queue.push(i);
       else slots.set(key, [i]);
     });
     const copyOf = live.map(m => slots.get(messageKey(m))?.shift() ?? -1);
     const claimed = new Set(copyOf);
-    const first = Math.min(...copyOf.filter(i => i !== -1));
     // Indices into `persisted`, in order, that no live entry stands for.
     const missed = [];
     persisted.forEach((p, i) => {
@@ -127,5 +155,5 @@
     return merged;
   }
 
-  window.OMP_TRANSCRIPT = Object.freeze({ tsOf, mergeTranscript });
+  window.OMP_TRANSCRIPT = Object.freeze({ tsOf, messagesFromEntries, mergeTranscript });
 })();

@@ -216,7 +216,7 @@ function ToolCard({ msg, idx, highlighted, onInspectSubagent, onOpenFile, onPrev
             <span className="chip accent" style={{ animation: "pulseDot 1.4s infinite" }}>
               <span className="dot live" /> running
             </span>
-          ) : (
+          ) : msg.duration != null && (
             <span className="chip muted">
               <span className="mono">{msg.duration}ms</span>
             </span>

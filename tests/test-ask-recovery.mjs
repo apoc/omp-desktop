@@ -219,6 +219,46 @@ function harness(storage = new Map()) {
   };
 }
 
+test("reopening rebuilds tool cards from the saved branch even when model history omitted them", async () => {
+  const h = harness();
+  const saved = [
+    { role: "user", timestamp: 1, content: [{ type: "text", text: "Run the check" }] },
+    { role: "assistant", timestamp: 2, stopReason: "toolUse", content: [
+      { type: "toolCall", id: "check", name: "bash", arguments: { command: "npm test" }, intent: "Checking the fix" },
+    ] },
+    { role: "toolResult", timestamp: 3, toolCallId: "check", toolName: "bash", isError: false,
+      content: [{ type: "text", text: "passed" }], details: { exitCode: 0, wallTimeMs: 80 } },
+  ];
+  h.setHistory([]);
+  h.setEntries(saved.map((message, i) => ({ type: "message", id: `saved-${i}`, parentId: i ? `saved-${i - 1}` : null, message })));
+  await h.reopen();
+  const messages = h.w.OMP_BRIDGE.getState().messages;
+  assert.deepEqual(messages.map((m) => m.kind), ["user", "tool"]);
+  assert.equal(messages[1].tool, "bash");
+  assert.equal(messages[1].title, "Checking the fix");
+  assert.equal(messages[1].target, "npm test");
+  assert.equal(messages[1].outputText, "passed");
+  assert.equal(messages[1].duration, 80);
+});
+
+test("large saved tool histories are bounded immediately while retaining their newest entries", async () => {
+  const h = harness();
+  const messages = [
+    { role: "user", timestamp: 1, content: [{ type: "text", text: "Inspect the files" }] },
+    { role: "assistant", timestamp: 2, stopReason: "toolUse", content: Array.from({ length: 200 }, (_, i) =>
+      ({ type: "toolCall", id: `call-${i}`, name: "read", arguments: { path: `src/file-${i}.js` } })) },
+    ...Array.from({ length: 200 }, (_, i) => ({ role: "toolResult", timestamp: 3 + i,
+      toolCallId: `call-${i}`, toolName: "read", content: [{ type: "text", text: "contents" }] })),
+  ];
+  h.setHistory([]);
+  h.setEntries(messages.map((message, i) => ({ type: "message", id: `m${i}`, parentId: i ? `m${i - 1}` : null, message })));
+  await h.reopen();
+  const restored = h.w.OMP_BRIDGE.getState().messages;
+  assert.ok(restored.length <= 169 && restored.length >= 157);
+  assert.equal(restored[0].target, "src/file-38.js");
+  assert.equal(restored.at(-1).target, "src/file-199.js");
+});
+
 test("reopening a saved conversation restores its unanswered question", async () => {
   const h = harness();
   await h.reopen();
@@ -602,80 +642,38 @@ test("a later user-authored native custom message supersedes the old question", 
   );
 });
 
-test("repeated skill observations cannot evict reasoning or an unanswered question from scrollback", async () => {
+test("native context observations do not flood restored chat; real skill reads remain visible", async () => {
   const h = harness();
   const reasoning = {
-    role: "assistant",
-    timestamp: 2,
+    role: "assistant", timestamp: 2,
     content: [
       { type: "thinking", thinking: "Check the constraints before choosing." },
       { type: "text", text: "Here is the decision." },
+      { type: "toolCall", id: "skill-read", name: "read", arguments: { path: "skill://review" } },
     ],
   };
-  h.setHistory([pending[0], reasoning, { ...pending[1], timestamp: 3 }]);
-  const entries = [
-    { type: "message", id: "user", parentId: null, message: pending[0] },
-    { type: "message", id: "reasoning", parentId: "user", message: reasoning },
-    {
-      type: "custom",
-      customType: "omp-desktop:agent-context",
-      id: "context",
-      parentId: "reasoning",
-      data: { version: 1, blocks: ["OMP system prompt"] },
-    },
-  ];
-  let parentId = "context";
+  const messages = [pending[0], reasoning, {
+    role: "toolResult", toolCallId: "skill-read", toolName: "read", isError: false,
+    content: [{ type: "text", text: "Review instructions" }],
+  }];
+  const entries = messages.map((message, i) => ({ type: "message", id: `m${i}`, parentId: i ? `m${i - 1}` : null, message }));
+  let parentId = "m2";
   for (let i = 0; i < 200; i++) {
-    entries.push(
-      {
-        type: "message",
-        id: `read-${i}`,
-        parentId,
-        message: {
-          role: "assistant",
-          content: [
-            {
-              type: "toolCall",
-              id: `tool-${i}`,
-              name: "read",
-              arguments: { path: "skill://review" },
-            },
-          ],
-        },
-      },
-      {
-        type: "message",
-        id: `result-${i}`,
-        parentId: `read-${i}`,
-        message: {
-          role: "toolResult",
-          toolCallId: `tool-${i}`,
-          toolName: "read",
-          isError: false,
-        },
-      },
-    );
-    parentId = `result-${i}`;
+    entries.push({
+      type: "custom", customType: "omp-desktop:agent-context", id: `context-${i}`, parentId,
+      data: { version: 1, blocks: ["OMP system prompt"] },
+    });
+    parentId = `context-${i}`;
   }
-  entries.push({ type: "message", id: "ask", parentId, message: pending[1] });
+  entries.push({ type: "message", id: "ask", parentId, message: { ...pending[1], timestamp: 3 } });
+  h.setHistory(messages);
   h.setEntries(entries);
   await h.reopen();
   const state = h.w.OMP_BRIDGE.getState();
-  assert.deepEqual(
-    state.messages.map((m) => m.kind),
-    ["user", "assistant", "ask"],
-  );
+  assert.deepEqual(state.messages.map((m) => m.kind), ["user", "assistant", "tool", "ask"]);
   assert.equal(state.messages[0].text, "Plan the change.");
-  assert.equal(
-    state.messages[1].thought,
-    "Check the constraints before choosing.",
-  );
-  assert.deepEqual(state.messages[1].blocks, [
-    { type: "text", text: "Here is the decision." },
-  ]);
-  assert.equal(state.messages[2].questions[0].question, "Which approach?");
-  assert.deepEqual(
-    state.agentContext.byId.main.skills.map((s) => s.name),
-    ["review"],
-  );
+  assert.equal(state.messages[1].thought, "Check the constraints before choosing.");
+  assert.equal(state.messages[2].target, "skill://review");
+  assert.equal(state.messages[3].questions[0].question, "Which approach?");
+  assert.deepEqual(state.agentContext.byId.main.skills.map((s) => s.name), ["review"]);
 });

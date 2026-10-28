@@ -81,8 +81,8 @@ const CompactRow = React.memo(function CompactRow({ msg }) {
 
 // A background job whose result omp just delivered (`async-result`,
 // app/turn-status.js `finishedJobsOf`): the agent's next reply is what that
-// result woke it for, so the job is named above it. Live-only, like tool
-// cards — get_messages' merge keeps it in place.
+// result woke it for, so the job is named above it. This row is live-only;
+// the history merge keeps it in place.
 const JobRow = React.memo(function JobRow({ msg, idx, highlighted }) {
   const { color, icon, label } = _CV_TOOL_META.job;
   return (

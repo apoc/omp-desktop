@@ -26,8 +26,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Reopening a conversation restores its saved tool cards and minimap colors, including eval cells, edit diffs and command output, instead of retaining only text and thinking. Recovery uses the saved active branch rather than only the model's compacted/filtered context, never reruns tools, and does not duplicate cards on tab switches.
 - The ambient minimap grows to three full rows before scrolling, instead of being squeezed to a single row by the cards above it. The rail scrolls its cards without compressing them; its header and visibility controls stay reachable.
-- Agent context no longer floods the chat and minimap with repeated skill, instruction or omp-runtime events. Repeated skill reads deduplicate in the rail instead of displacing reasoning and ordinary messages from scrollback.
+- Agent context no longer floods the chat and minimap with repeated skill, instruction or omp-runtime observation events. Context observations deduplicate in the rail; actual tool calls still appear as tool cards.
 - Unanswered ask-tool questions now return when a conversation is reopened after quitting or updating the app. Restored questions retain their choices and accept an answer as a new reply in the same conversation, without replaying tools or approvals. Cancelled or already answered questions stay closed.
 - macOS traffic lights are vertically centred with the app toolbar instead of sitting against its top edge; the 38px toolbar no longer shrinks under layout pressure.
 - PR refresh timeouts, lost connections and unavailable lookups now quietly keep the last status and wait for the next normal check instead of flashing warnings across shared conversations. Auto-fix cannot use the unverified cache and resumes after a fresh valid read. A failed fetch immediately before a fix handoff skips the attempt without inserting a prompt or requiring an off/on reset; actual send failures still stop automatic retries.

@@ -344,7 +344,7 @@
   function _trimMessages() {
     if (state.isStreaming) return;                  // wait for clean turn boundary
     if (state.messages.length <= MINIMAP_MAX) return;
-    const drop = MINIMAP_COLS;                      // evict one full row (13)
+    const drop = Math.ceil((state.messages.length - MINIMAP_MAX) / MINIMAP_COLS) * MINIMAP_COLS;
     state.messages = state.messages.slice(drop);
     state.trimmed = true;
     for (const [id, idx] of activeToolCards) {
@@ -1125,12 +1125,11 @@
     activeListeners = [ulLine, ulExit];
 
     // Catch up on events the journal captured while this tab had no live
-    // listener attached (backgrounded tab switch) — recovers tool cards /
-    // ask bubbles / streaming state that a text-only get_messages refetch
-    // below cannot reconstruct. The journal is a bounded in-memory ring
-    // (see AgentBridge::replay_events) — a `dropped` reply means some
-    // events between `lastSeq` and the ring's window were evicted and are
-    // gone for good; get_messages still recovers the persisted text below.
+    // listener attached (backgrounded tab switch) — recovers live asks,
+    // approvals and streaming state that persisted messages cannot rebuild.
+    // The journal is a bounded in-memory ring (AgentBridge::replay_events):
+    // a `dropped` reply means earlier events were evicted. Saved messages
+    // and completed tool cards still come from the history fetch below.
     try {
       const replay = await window.__TAURI__.core.invoke("replay_events", { sessionId: id, afterSeq: lastSeq });
       if (!current()) return; // superseded by a newer switch, or detached
@@ -2143,6 +2142,33 @@
     _handleEvent(obj);
   }
 
+  // Both the model-context refresh and the raw saved branch feed the same
+  // identity-based merge. Never replace the transcript positionally.
+  function _applyMessages(messages) {
+    const completed = window.adaptAgentMessages(messages);
+    const merged = mergeTranscript(state.messages, completed, { trimmed: state.trimmed });
+    activeToolCards = new Map();
+    for (let i = 0; i < merged.length; i++) {
+      const m = merged[i];
+      if (m.kind === "tool" && m.status === "running" && m._toolCallId) {
+        activeToolCards.set(m._toolCallId, i);
+      }
+    }
+    // A persisted assistant message ended while its end frame was lost.
+    const streamingTs = streamingBubble?.ts;
+    if (streamingTs != null && messages.some(m => m?.role === "assistant" && m.timestamp === streamingTs)) {
+      streamingBubble = null;
+    }
+    state.messages = streamingBubble ? [...merged, streamingBubble] : merged;
+    if (activeSessionId) {
+      const prior = window.OMP_PROMPT_HISTORY.promptsFromMessages(merged, PROMPT_NORMALIZE);
+      promptHistories.set(activeSessionId, window.OMP_PROMPT_HISTORY.mergeOlder(
+        promptHistories.get(activeSessionId) ?? [], prior, promptHistoryLimit,
+      ));
+    }
+    notify();
+  }
+
   // ── RPC response handler ──────────────────────────────────────────────────
   function _handleResponse(resp) {
     // `branch` / `fork` moved the process onto a new file whether or not a
@@ -2207,46 +2233,7 @@
       void _applyApprovalModes();
 
     } else if (command === "get_messages") {
-      const completed = window.adaptAgentMessages(data.messages ?? []);
-      // Each live entry that stands for an omp message (`ts`) takes its
-      // ground-truth copy; everything else — cards, notes, job rows,
-      // bubbles of messages the adapter skips or omp dropped — stays in
-      // place, and turns the live transcript missed go in at their place in
-      // omp's order (`mergeTranscript`, app/transcript-merge.js; it also
-      // keeps what omp never persists: the live `retryable` verdict and the
-      // `retries` chip of omp's automatic retries).
-      // activeToolCards indices are rebuilt so in-flight
-      // tool_execution_update events keep landing on the right array slot.
-      const merged = mergeTranscript(state.messages, completed, { trimmed: state.trimmed });
-      // Rebuild activeToolCards — merged entries may have moved
-      activeToolCards = new Map();
-      for (let i = 0; i < merged.length; i++) {
-        const m = merged[i];
-        if (m.kind === "tool" && m.status === "running" && m._toolCallId) {
-          activeToolCards.set(m._toolCallId, i);
-        }
-      }
-      // omp adds a message to get_messages only at its `message_end`: a
-      // streaming bubble whose message is already there ended while its
-      // frames were lost, and the merge put that copy in its place.
-      // Raw messages, not the adapted ones: the adapter skips a message that
-      // went straight to a tool call, and that bubble is just as stale.
-      const streamingTs = streamingBubble?.ts;
-      if (streamingTs != null && (data.messages ?? []).some(m => m?.role === "assistant" && m.timestamp === streamingTs)) {
-        streamingBubble = null;
-      }
-      state.messages = streamingBubble ? [...merged, streamingBubble] : merged;
-      // Backfill prompt history from the persisted transcript — runs on
-      // every arrival (plain tab switch, or a resumed/restored session),
-      // not just once: mergeOlder is a no-op for prompts already known, so
-      // this only ever adds prompts this in-memory list hasn't seen yet.
-      if (activeSessionId) {
-        const prior = window.OMP_PROMPT_HISTORY.promptsFromMessages(merged, PROMPT_NORMALIZE);
-        promptHistories.set(activeSessionId, window.OMP_PROMPT_HISTORY.mergeOlder(
-          promptHistories.get(activeSessionId) ?? [], prior, promptHistoryLimit,
-        ));
-      }
-      notify();
+      _applyMessages(data.messages ?? []);
 
     } else if (command === "get_available_models") {
       state.models = (data.models ?? []).map(m => ({
@@ -3135,13 +3122,16 @@
         if (!sessionPrefs.autoRetry) _send({ type: "set_auto_retry", enabled: false });
         _send({ type: "get_state" });
         _send({ type: "get_messages" });
-        // get_messages is provider-filtered and can omit the unfinished ask
-        // itself. Raw entries plus the active leaf retain the real question.
+        // The saved active branch retains tool calls/results and pre-compaction
+        // turns that the model's get_messages context may omit.
         const file = sessionRegistry.get(activeSessionId)?.sessionFile;
         const request = _agentContextSync().loadMain();
         conversation.askRecoveryRequest = request;
         request.then(data => {
-          if (!data || _switchGen !== gen || sessionContext !== conversation || conversation.askRecoveryRequest !== request) return;
+          if (!data || _switchGen !== gen || sessionContext !== conversation) return;
+          const messages = window.OMP_TRANSCRIPT.messagesFromEntries(data);
+          if (messages) _applyMessages(messages);
+          if (conversation.askRecoveryRequest !== request) return;
           if (file && window.OMP_ASK_RECOVERY) {
             state.askRecovery = window.OMP_ASK_RECOVERY.fromEntries(data, file);
             if (_syncRecoveredAsks()) notify();

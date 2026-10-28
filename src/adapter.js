@@ -309,7 +309,7 @@
 
   // ── tool_execution_end → finalized tool card ──────────────────────────────
   function finalizeToolCard(card, event) {
-    const duration = card._startMs ? Date.now() - card._startMs : (event.duration ?? 0);
+    const duration = card._startMs != null ? Date.now() - card._startMs : (event.duration ?? null);
     const details  = event.result?.details;
     const extra    = {};
 
@@ -473,14 +473,36 @@
     return { text, images };
   }
 
-  // ── AgentMessage[] (from get_messages) → design message array ─────────────
-  // Skips pure tool-result turns; maps thinking blocks to thought field.
-  // `ts` is omp's message timestamp: the merge after a tab switch matches
-  // live entries to these by it (app/transcript-merge.js).
+  // ── AgentMessage[] (model context or saved branch) → design messages ─────
+  // Rebuild completed tools with the live card builders. Calls establish order
+  // and arguments; results carry the persisted output and failure verdict.
+  // Bubbles match by timestamp, tools by call id (app/transcript-merge.js).
   function adaptAgentMessages(apiMessages) {
     const result = [];
     const messages = Array.isArray(apiMessages) ? apiMessages : [];
     const failures = window.OMP_TURN_STATUS.finalFailures(messages);
+    const results = new Map();
+    const restored = new Set();
+    for (const msg of messages) {
+      if (msg?.role === "toolResult" && typeof msg.toolCallId === "string") results.set(msg.toolCallId, msg);
+    }
+    const restoreTool = (call, msg, time) => {
+      if (!msg || restored.has(msg.toolCallId)) return;
+      const card = buildToolStartCard({
+        toolName: call?.name ?? msg.toolName,
+        toolCallId: msg.toolCallId,
+        args: call?.arguments,
+        intent: call?.intent,
+      }, time);
+      // Loading history did not start this tool. Never invent elapsed time.
+      card._startMs = null;
+      card._historySource = call ? "call" : "result";
+      result.push(finalizeToolCard(card, {
+        result: msg, isError: msg.isError,
+        duration: msg.details?.wallTimeMs ?? msg.details?.durationMs,
+      }));
+      restored.add(msg.toolCallId);
+    };
     for (const [index, msg] of messages.entries()) {
       if (!msg || typeof msg !== "object") continue;
       const { role, content } = msg;
@@ -502,7 +524,7 @@
           } else if (block.type === "text" && block.text?.trim()) {
             designBlocks.push({ type: "text", text: block.text });
           }
-          // tool_use blocks already rendered as separate tool cards; skip here
+          // Tool calls become their own cards below, not assistant text.
         }
         // A failed request has no text: its failure is the turn
         // (app/turn-status.js). Only a failure that ended its run counts —
@@ -524,6 +546,14 @@
             ...(failure ? { failure } : {}),
           });
         }
+        for (const block of blocks) {
+          if (block?.type === "toolCall" && typeof block.id === "string") {
+            restoreTool(block, results.get(block.id), time);
+          }
+        }
+      } else if (role === "toolResult" && typeof msg.toolCallId === "string" && typeof msg.toolName === "string") {
+        // A provider-filtered history can retain a result without its call.
+        restoreTool(null, msg, time);
       }
     }
     return result;
