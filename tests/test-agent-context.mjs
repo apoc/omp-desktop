@@ -239,11 +239,11 @@ test("available repo/global skills and automatic injections never become session
   ]);
   const main = C.view(state).agents[0];
   assert.deepEqual(
-    main.repoSkills.map((s) => s.name),
+    main.skillGroups.find((g) => g.id === "project").entries.map((s) => s.name),
     ["repo-check"],
   );
   assert.deepEqual(
-    main.globalSkills.map((s) => s.name),
+    main.skillGroups.find((g) => g.id === "other").entries.map((s) => s.name),
     ["review"],
   );
   assert.deepEqual(main.skills, []);
@@ -291,7 +291,7 @@ test("a successful read credits an automatically injected skill exactly once", (
     [["review", "/global/review/SKILL.md"]],
   );
   assert.deepEqual(
-    main.globalSkills.map((s) => s.name),
+    main.skillGroups.find((g) => g.id === "other").entries.map((s) => s.name),
     ["review"],
   );
 });
@@ -306,9 +306,12 @@ test("catalog updates and identical instruction files stay unique on the active 
     { name: "new", path: "/project/new/SKILL.md", scope: "repo" },
   ];
   const main = C.view(scan([first, latest])).agents[0];
-  assert.deepEqual(main.globalSkills, []);
   assert.deepEqual(
-    main.repoSkills.map((s) => s.name),
+    main.skillGroups.map((g) => g.id),
+    ["project"],
+  );
+  assert.deepEqual(
+    main.skillGroups.find((g) => g.id === "project").entries.map((s) => s.name),
     ["new"],
   );
   assert.deepEqual(
@@ -580,4 +583,258 @@ test("native catalog retains scoped skill paths and refreshes independently of p
     written[1].skills.map((s) => s.name),
     ["new"],
   );
+});
+
+test("native skill origins separate project, shared, OMP/profile and other providers", () => {
+  const project = join(homedir(), "projects", "origin-fixture");
+  const fixtures = [
+    [
+      "project",
+      join(project, ".omp", "skills", "build", "SKILL.md"),
+      "project",
+      ".omp",
+    ],
+    [
+      "ancestor",
+      join(project, ".agents", "skills", "review", "SKILL.md"),
+      "project",
+      ".agents",
+    ],
+    [
+      "shared",
+      join(homedir(), ".agents", "skills", "review", "SKILL.md"),
+      "shared",
+      ".agents",
+    ],
+    [
+      "profile",
+      join(
+        homedir(),
+        ".omp",
+        "profiles",
+        "work",
+        "agent",
+        "skills",
+        "check",
+        "SKILL.md",
+      ),
+      "omp",
+      "OMP / profile",
+    ],
+    [
+      "claude",
+      join(homedir(), ".claude", "skills", "check", "SKILL.md"),
+      "other",
+      "Claude",
+    ],
+    [
+      "custom",
+      join(homedir(), "custom-skills", "check", "SKILL.md"),
+      "other",
+      "Other",
+    ],
+  ];
+  const handlers = new Map(),
+    written = [];
+  observer({
+    on: (name, fn) => handlers.set(name, fn),
+    appendEntry: (_type, data) => written.push(data),
+    getCommands: () =>
+      fixtures.map(([name, path]) => ({
+        source: "skill",
+        name: `skill:${name}`,
+        path,
+      })),
+  });
+  handlers.get("session_start")(
+    {},
+    {
+      cwd: join(project, "src"),
+      sessionManager: { getSessionFile: () => "origins" },
+      getSystemPrompt: () => ["Native prompt"],
+      agent: { kind: "main" },
+    },
+  );
+  assert.deepEqual(
+    written[0].skills.map((s) => [s.name, s.origin?.kind, s.origin?.label]),
+    fixtures.map(([name, _path, kind, label]) => [name, kind, label]),
+  );
+});
+
+test("source groups and used entries retain native provenance without crediting availability", () => {
+  const prompt = snapshot();
+  prompt.data.skills = [
+    {
+      name: "repo",
+      path: "/project/.omp/skills/check/SKILL.md",
+      scope: "repo",
+      origin: {
+        kind: "project",
+        label: ".omp",
+        root: "/project/.omp",
+        basis: "project-root",
+      },
+    },
+    {
+      name: "shared",
+      path: "/home/me/.agents/skills/check/SKILL.md",
+      scope: "global",
+      origin: {
+        kind: "shared",
+        label: ".agents",
+        root: "/home/me/.agents/skills",
+        basis: "user-root",
+      },
+    },
+    {
+      name: "omp",
+      path: "/home/me/.omp/profiles/work/agent/skills/check/SKILL.md",
+      scope: "global",
+      origin: {
+        kind: "omp",
+        label: "OMP / profile",
+        root: "/home/me/.omp",
+        basis: "user-root",
+      },
+    },
+    {
+      name: "claude",
+      path: "/home/me/.claude/skills/check/SKILL.md",
+      scope: "global",
+      origin: {
+        kind: "other",
+        label: "Claude",
+        root: "/home/me/.claude",
+        basis: "user-root",
+      },
+    },
+  ];
+  const unused = C.view(scan([prompt])).agents[0];
+  assert.deepEqual(unused.skills, []);
+  assert.deepEqual(
+    unused.skillGroups.map((g) => [g.id, g.entries.map((s) => s.name)]),
+    [
+      ["project", ["repo"]],
+      ["shared", ["shared"]],
+      ["omp", ["omp"]],
+      ["other", ["claude"]],
+    ],
+  );
+  const used = C.view(
+    scan([
+      prompt,
+      call("read", "prompt", "one", "skill://omp"),
+      result("done", "read", "one"),
+    ]),
+  ).agents[0].skills[0];
+  assert.equal(used.origin.kind, "omp");
+  assert.equal(used.origin.badge, "OMP/profile");
+  assert.equal(used.origin.root, "/home/me/.omp");
+  assert.match(used.origin.explanation, /path/i);
+});
+
+test("configured OMP roots and project metadata outrank path resemblance", () => {
+  const before = process.env.PI_CODING_AGENT_DIR;
+  const customRoot = join(homedir(), "custom-omp-profile");
+  process.env.PI_CODING_AGENT_DIR = customRoot;
+  try {
+    const handlers = new Map(),
+      written = [];
+    const fixtures = [
+      {
+        source: "skill",
+        name: "skill:custom-profile",
+        path: join(customRoot, "skills", "check", "SKILL.md"),
+      },
+      {
+        source: "skill",
+        name: "skill:project",
+        location: "project",
+        path: join(customRoot, "skills", "project", "SKILL.md"),
+      },
+      {
+        source: "skill",
+        name: "skill:not-shared",
+        path: join(homedir(), ".agents-copy", "skills", "check", "SKILL.md"),
+      },
+      {
+        source: "skill",
+        name: "skill:user-not-project",
+        location: "user",
+        path: join(homedir(), "project", "custom", "SKILL.md"),
+      },
+    ];
+    observer({
+      on: (name, fn) => handlers.set(name, fn),
+      appendEntry: (_type, data) => written.push(data),
+      getCommands: () => fixtures,
+    });
+    handlers.get("session_start")(
+      {},
+      {
+        cwd: join(homedir(), "project"),
+        sessionManager: { getSessionFile: () => "origins" },
+        getSystemPrompt: () => ["Native prompt"],
+        agent: { kind: "main" },
+      },
+    );
+    assert.deepEqual(
+      written[0].skills.map((s) => s.origin.kind),
+      ["omp", "project", "other", "other"],
+    );
+    assert.equal(written[0].skills[0].origin.root, customRoot);
+    assert.equal(written[0].skills[0].origin.basis, "agent-dir");
+  } finally {
+    if (before === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = before;
+  }
+});
+
+test("older catalogs and unknown sources stay visible without inventing OMP provenance", () => {
+  const prompt = snapshot();
+  prompt.data.skills = [
+    {
+      name: "unknown",
+      path: "/somewhere/.omp/skills/check/SKILL.md",
+      scope: "global",
+    },
+  ];
+  const main = C.view(
+    scan([
+      prompt,
+      call("read", "prompt", "one", "skill://unknown"),
+      result("done", "read", "one"),
+    ]),
+  ).agents[0];
+  assert.deepEqual(
+    main.skillGroups.map((g) => g.id),
+    ["other"],
+  );
+  assert.equal(main.skills[0].origin.badge, "Other");
+  assert.match(main.skills[0].origin.explanation, /not.*record|did not record/);
+});
+
+test("a recorded invocation is not relabeled as a different current skill with the same name", () => {
+  const prompt = snapshot();
+  prompt.data.skills = [
+    {
+      name: "review",
+      path: "/new/shared/review/SKILL.md",
+      scope: "global",
+      origin: { kind: "shared", label: ".agents", basis: "user-root" },
+    },
+  ];
+  const used = C.view(
+    scan([
+      prompt,
+      entry("invoke", "prompt", {
+        type: "custom_message",
+        customType: "skill-prompt",
+        attribution: "user",
+        details: { name: "review", path: "/prior/profile/review/SKILL.md" },
+      }),
+    ]),
+  ).agents[0].skills[0];
+  assert.equal(used.path, "/prior/profile/review/SKILL.md");
+  assert.equal(used.origin.kind, "other");
 });

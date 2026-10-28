@@ -113,7 +113,7 @@
         tweak("showContext", "toggle", "Context gauge", "How full the model's context window is.", "tokens"),
         tweak("showRadar", "toggle", "Agent radar", "What the agent is doing right now.", "activity"),
         tweak("showSubagents", "toggle", "Subagents", "Running and finished subagents of this tab.", "tasks"),
-        tweak("showAgentContext", "toggle", "Agent context", "Compact repo/global skill catalogs, loaded instructions, and skills used this session. Read details without adding chat events.", "skills repo global instructions agent context used session"),
+        tweak("showAgentContext", "toggle", "Agent context", "Project, Shared, OMP/profile and other skill sources, loaded instructions, and skills used this session. Read origin details without adding chat events.", "skills repo global shared omp profile provenance source instructions agent context used session"),
         tweak("showChanges", "toggle", "Changes", "Show the PR for this project's current branch. Off also stops PR monitoring and turns off Auto-fix; enabling this card does not enable Auto-fix.", "github pull request pr auto fix ci checks review"),
         tweak("showMinimap", "toggle", "Minimap", "An overview of the transcript to jump around in.", "overview"),
       ] },

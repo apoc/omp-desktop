@@ -133,7 +133,9 @@
   padding: 0 0 0 14px;
 }
 .agent-context-entry {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   width: 100%;
   overflow: hidden;
   padding: 3px 5px;
@@ -144,9 +146,23 @@
   font: inherit;
   font-size: var(--d-text-xs);
   text-align: left;
+  cursor: pointer;
+}
+.agent-context-entry-name {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: pointer;
+}
+.agent-context-origin {
+  flex: none;
+  margin-left: auto;
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--fg-2);
+  font-size: var(--d-text-xs);
+  white-space: nowrap;
 }
 .agent-context-preview {
   width: min(900px, 88vw);
@@ -160,12 +176,25 @@
 }
 .agent-context-preview-path {
   padding: 7px 16px;
-  overflow: hidden;
+  overflow-wrap: anywhere;
   border-bottom: 1px solid var(--line);
   color: var(--fg-3);
   font-size: var(--d-text-xs);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-wrap;
+  user-select: text;
+}
+.agent-context-preview-origin {
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--fg-2);
+  font-size: var(--d-text-xs);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.agent-context-preview-origin p {
+  margin: 3px 0;
+  color: var(--fg-3);
 }
 .agent-context-preview-text {
   margin: 0;

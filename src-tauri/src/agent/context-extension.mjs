@@ -15,49 +15,70 @@ export default function desktopContext(api) {
         !path.isAbsolute(relative))
     );
   };
-  const scopeOf = (command, cwd) => {
-    if (command.location === "project") return "repo";
-    if (command.location === "user") return "global";
+  // getCommands exposes the selected skill's path, not its loader's provider.
+  // Record exactly which known root matched; never infer that OMP shipped it.
+  const originOf = (command, cwd) => {
     const file = path.resolve(command.path);
     const home = path.resolve(os.homedir());
     const project = path.resolve(cwd);
-    // Home-level sources are user skills even when the project is under home.
-    for (const dir of [
-      ".agent",
-      ".agents",
-      ".omp",
-      ".claude",
-      ".codex",
-      ".config",
-    ]) {
+    if (command.location === "project")
+      return { kind: "project", label: "Project", basis: "native-project" };
+    const agentDir = process.env.PI_CODING_AGENT_DIR;
+    if (agentDir && path.isAbsolute(agentDir) && inside(agentDir, file))
+      return {
+        kind: "omp",
+        label: "OMP / profile",
+        root: agentDir,
+        basis: "agent-dir",
+      };
+    const roots = [
+      [".agent/skills", "shared", ".agent"],
+      [".agents/skills", "shared", ".agents"],
+      [process.env.PI_CONFIG_DIR || ".omp", "omp", "OMP / profile"],
+      [".claude", "other", "Claude"],
+      [".codex", "other", "Codex"],
+      [".config/opencode", "other", "OpenCode"],
+      [".opencode", "other", "OpenCode"],
+    ];
+    for (const [dir, kind, label] of roots) {
+      const root = path.join(home, dir);
       if (
-        inside(path.join(home, dir), file) &&
-        !inside(path.join(home, dir), project)
+        inside(root, file) &&
+        (command.location === "user" || !inside(root, project))
       )
-        return "global";
+        return { kind, label, root, basis: "user-root" };
     }
-    if (inside(project, file)) return "repo";
-    // Walk-up discovery includes .agent/.agents and other provider roots in
-    // project ancestors; do not mistake an unrelated sibling for a repo skill.
-    for (
-      let dir = path.dirname(project);
-      dir !== path.dirname(dir);
-      dir = path.dirname(dir)
-    ) {
-      if (dir === home) break;
-      for (const source of [
-        ".agent",
-        ".agents",
-        ".omp",
-        ".claude",
-        ".codex",
-        ".github",
-        ".opencode",
-      ]) {
-        if (inside(path.join(dir, source), file)) return "repo";
+    if (command.location !== "user") {
+      for (let dir = project; dir !== home; dir = path.dirname(dir)) {
+        for (const source of [
+          ".agent",
+          ".agents",
+          ".omp",
+          ".claude",
+          ".codex",
+          ".github",
+          ".opencode",
+        ]) {
+          const root = path.join(dir, source);
+          if (inside(root, file))
+            return {
+              kind: "project",
+              label: source,
+              root,
+              basis: "project-root",
+            };
+        }
+        if (dir === path.dirname(dir)) break;
       }
+      if (inside(project, file))
+        return {
+          kind: "project",
+          label: "Project",
+          root: project,
+          basis: "project-path",
+        };
     }
-    return "global";
+    return { kind: "other", label: "Other", basis: "unclassified" };
   };
   const record = (ctx) => {
     const file = ctx.sessionManager.getSessionFile();
@@ -72,14 +93,18 @@ export default function desktopContext(api) {
           typeof command.path === "string" &&
           path.isAbsolute(command.path),
       )
-      .map((command) => ({
-        name: command.name.slice("skill:".length),
-        path: command.path,
-        scope: scopeOf(command, ctx.cwd || process.cwd()),
-        ...(typeof command.description === "string" && command.description
-          ? { description: command.description }
-          : {}),
-      }));
+      .map((command) => {
+        const origin = originOf(command, ctx.cwd || process.cwd());
+        return {
+          name: command.name.slice("skill:".length),
+          path: command.path,
+          scope: origin.kind === "project" ? "repo" : "global",
+          origin,
+          ...(typeof command.description === "string" && command.description
+            ? { description: command.description }
+            : {}),
+        };
+      });
     let left = LIMIT,
       truncated = false;
     const blocks = [];

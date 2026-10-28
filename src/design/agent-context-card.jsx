@@ -1,31 +1,43 @@
 /* Catalog entries are available skills, not evidence that an agent used them. */
 const { Icon: _AC_Icon, useModalLayer: _AC_useModalLayer } = window;
 
-function _AC_Entries({ label, entries, agent, kind, onPreview }) {
+function _AC_Entries({
+  label,
+  entries,
+  agent,
+  kind,
+  onPreview,
+  showOrigin = false,
+}) {
+  if (!entries.length) return null;
   return (
     <details className="agent-context-group">
       <summary className="agent-context-group-head">
         <span>{label}</span>
         <span className="agent-context-group-count mono">{entries.length}</span>
       </summary>
-      {entries.length === 0 ? (
-        <p className="agent-context-empty">None</p>
-      ) : (
-        <ul className="agent-context-list">
-          {entries.map((entry, i) => (
-            <li key={entry.id ?? entry.path ?? i}>
-              <button
-                type="button"
-                className="agent-context-entry"
-                onClick={() => onPreview({ agentId: agent.id, entry, kind })}
-                title={entry.name}
-              >
-                {entry.name}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <ul className="agent-context-list">
+        {entries.map((entry, i) => (
+          <li key={entry.id ?? entry.path ?? i}>
+            <button
+              type="button"
+              className="agent-context-entry"
+              onClick={() => onPreview({ agentId: agent.id, entry, kind })}
+              title={entry.name}
+            >
+              <span className="agent-context-entry-name">{entry.name}</span>
+              {showOrigin && entry.origin && (
+                <span
+                  className="agent-context-origin"
+                  title={entry.origin.explanation}
+                >
+                  {entry.origin.badge}
+                </span>
+              )}
+            </button>
+          </li>
+        ))}
+      </ul>
     </details>
   );
 }
@@ -48,19 +60,24 @@ function _AC_AgentBody({ agent, onSelectAgent, onPreview }) {
         </p>
       )}
       <_AC_Entries
-        label="Repo skills"
-        entries={agent.repoSkills || []}
+        label="Used this session"
+        entries={agent.skills || []}
         agent={agent}
         kind="skill"
+        showOrigin
         onPreview={onPreview}
       />
-      <_AC_Entries
-        label="Global skills"
-        entries={agent.globalSkills || []}
-        agent={agent}
-        kind="skill"
-        onPreview={onPreview}
-      />
+      {(agent.skillGroups || []).map((group) => (
+        <_AC_Entries
+          key={group.id}
+          label={group.label}
+          entries={group.entries}
+          agent={agent}
+          kind="skill"
+          showOrigin={group.id === "other"}
+          onPreview={onPreview}
+        />
+      ))}
       <_AC_Entries
         label="Loaded instructions"
         entries={agent.instructions || []}
@@ -68,13 +85,13 @@ function _AC_AgentBody({ agent, onSelectAgent, onPreview }) {
         kind="instruction"
         onPreview={onPreview}
       />
-      <_AC_Entries
-        label="Used this session"
-        entries={agent.skills || []}
-        agent={agent}
-        kind="skill"
-        onPreview={onPreview}
-      />
+      {!agent.skills?.length &&
+        !agent.skillGroups?.length &&
+        !agent.instructions?.length && (
+          <p className="agent-context-empty">
+            No skills or instructions recorded yet.
+          </p>
+        )}
     </div>
   );
 }
@@ -144,7 +161,7 @@ function _AC_Preview({ target, readSkill, onClose }) {
   const errorText =
     error &&
     (typeof error === "string" ? error : error.message || String(error));
-  const path = value?.path || target.entry.path;
+  const path = target.entry.path || value?.path;
 
   return ReactDOM.createPortal(
     <div
@@ -180,7 +197,30 @@ function _AC_Preview({ target, readSkill, onClose }) {
             Close
           </button>
         </div>
-        {path && <div className="agent-context-preview-path mono">{path}</div>}
+        {path && (
+          <div className="agent-context-preview-path mono">
+            {target.kind === "skill" ? "Source path: " : ""}
+            {path}
+          </div>
+        )}
+        {target.kind === "skill" && target.entry.origin && (
+          <div className="agent-context-preview-origin">
+            <strong>{target.entry.origin.badge}</strong>
+            {target.entry.origin.label.replace(/\s/g, "") !==
+              target.entry.origin.badge.replace(/\s/g, "") && (
+              <span> · {target.entry.origin.label}</span>
+            )}
+            <p>{target.entry.origin.explanation}</p>
+            {target.entry.origin.root && (
+              <div className="mono">
+                Source root: {target.entry.origin.root}
+              </div>
+            )}
+            {value?.path && value.path !== path && (
+              <div className="mono">Preview file: {value.path}</div>
+            )}
+          </div>
+        )}
         <div className="fp-body" tabIndex={0} aria-live="polite">
           {!res ? (
             <div className="fp-state">Loading…</div>

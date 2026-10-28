@@ -145,6 +145,44 @@
     return [...files.values()];
   }
 
+  const ORIGINS = [
+    { id: "project", label: "Project skills", badge: "Project" },
+    { id: "shared", label: "Shared skills", badge: "Shared" },
+    { id: "omp", label: "OMP / current profile", badge: "OMP/profile" },
+    { id: "other", label: "Other sources", badge: "Other" },
+  ];
+  const ORIGIN_REASONS = {
+    "native-project":
+      "OMP's native catalog explicitly marks this skill as project-scoped.",
+    "project-root":
+      "The native catalog path is inside a configuration directory of this project or one of its parents.",
+    "project-path":
+      "The native catalog path is inside the current project folder.",
+    "user-root":
+      "The native catalog path matches the recorded user-level source root below. This identifies its location, not who authored or bundled it.",
+    "agent-dir":
+      "The native catalog path is inside OMP's configured agent directory for this process. This does not mean the skill was bundled with OMP.",
+    unclassified:
+      "The native catalog supplied this path, but it does not match a recognized project, shared, or OMP source root.",
+  };
+
+  function skillOrigin(value, scope) {
+    const group =
+      ORIGINS.find((g) => g.id === value?.kind) ||
+      ORIGINS[scope === "repo" ? 0 : 3];
+    const label = text(value?.label) || group.badge;
+    const basis = text(value?.basis);
+    return {
+      kind: group.id,
+      label,
+      badge: group.id === "other" ? label : group.badge,
+      root: text(value?.root),
+      explanation: own(ORIGIN_REASONS, basis)
+        ? ORIGIN_REASONS[basis]
+        : "This observation did not record source details; its origin has not been guessed.",
+    };
+  }
+
   function nativeSkills(value) {
     const skills = new Map();
     for (const item of Array.isArray(value) ? value : []) {
@@ -161,6 +199,7 @@
         path: item.path,
         scope: item.scope,
         description: text(item.description),
+        origin: skillOrigin(item.origin, item.scope),
       });
     }
     return [...skills.values()];
@@ -194,7 +233,12 @@
       return byPath.get(file);
     };
     const addSkill = (skill) => {
-      if (skill?.name) skills.set(skill.name, { id: skill.name, ...skill });
+      if (skill?.name)
+        skills.set(skill.name, {
+          id: skill.name,
+          ...skill,
+          origin: skill.origin || skillOrigin(),
+        });
     };
     for (const e of branch) {
       const data =
@@ -211,8 +255,18 @@
         currentInstructions = instructions(blocks, agent.id !== "main");
       }
       for (const call of e.calls || []) calls.set(call.id, call);
-      if (typeof e.skill?.name === "string" && typeof e.skill.path === "string")
-        addSkill(byName.get(e.skill.name) || e.skill);
+      if (
+        typeof e.skill?.name === "string" &&
+        typeof e.skill.path === "string"
+      ) {
+        const selected = byName.get(e.skill.name);
+        addSkill(
+          selected?.path.replace(/\\/g, "/") ===
+            e.skill.path.replace(/\\/g, "/")
+            ? selected
+            : e.skill,
+        );
+      }
       if (e.result && !e.result.isError) {
         const source = e.result.source;
         const resolved =
@@ -330,10 +384,13 @@
           note: agent.note,
           instructions: agent.instructions,
           skills: agent.skills,
-          repoSkills: agent.availableSkills.filter((s) => s.scope === "repo"),
-          globalSkills: agent.availableSkills.filter(
-            (s) => s.scope === "global",
-          ),
+          skillGroups: ORIGINS.map((group) => ({
+            id: group.id,
+            label: group.label,
+            entries: agent.availableSkills.filter(
+              (skill) => skill.origin.kind === group.id,
+            ),
+          })).filter((group) => group.entries.length > 0),
         };
       }),
     };
