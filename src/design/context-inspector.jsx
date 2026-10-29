@@ -417,6 +417,13 @@ function ContextInspector({
           className={`ci-columns${currentSelection ? " ci-has-detail" : ""}`}
         >
           <div className="ci-list" aria-label="Context items">
+            {tab === "all" && !query.trim() && (
+              <window.ContextBreakdown
+                details={details}
+                total={usage?.contextWindow}
+                refreshing={agent?.id === "main" && ctx?.status === "refreshing"}
+              />
+            )}
             {agent?.note && <p className="ci-state">{agent.note}</p>}
             {unavailable && (
               <p className="ci-state" role="status">
@@ -564,4 +571,4 @@ function ContextInspector({
     document.body,
   );
 }
-Object.assign(window, { ContextInspector, OMP_CONTEXT_DETAILS: _CI_details });
+window.ContextInspector = ContextInspector;

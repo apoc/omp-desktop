@@ -1,0 +1,53 @@
+.context-policy-small-ring {
+  flex: 0 0 56px;
+  overflow: visible;
+}
+.context-policy-ring-track {
+  fill: none;
+  stroke: var(--line-bright);
+}
+.context-policy-ring-tick {
+  stroke: var(--fg);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.context-policy-ring-text,
+.context-policy-ring-large-text {
+  fill: var(--fg);
+  font-family: var(--font-mono);
+}
+.context-policy-ring-text {
+  font-size: 11px;
+}
+.context-policy-large-ring {
+  flex: 0 1 144px;
+  width: 144px;
+  max-width: 100%;
+  min-width: 0;
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  cursor: crosshair;
+  touch-action: none;
+}
+.context-policy-large-ring[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.context-policy-large-ring svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.context-policy-ring-marker {
+  fill: var(--bg-surface);
+  stroke: var(--accent);
+  stroke-width: 3;
+}
+.context-policy-ring-large-text {
+  font-size: 15px;
+}
+.context-policy-ring-caption {
+  fill: var(--fg-3);
+  font: 10px var(--font-mono);
+}

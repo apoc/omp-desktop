@@ -1,44 +1,48 @@
 import {
+  PolicyReadRace,
   plain,
   same,
   valueAt,
   activeModel,
   modelOf,
+  modelKey,
   identity,
 } from "./context-policy-native.mjs";
 
 export function createPolicyMutation(
   state,
-  { methodOrder, budgetBounds, snapshot },
+  { methodOrder, budgetBounds, inheritedSettings, snapshot },
 ) {
   const { api, entryType, profileId, rawOverride } = state;
   const editable = new Set([
     "enabled",
-    "threshold",
-    "budget",
+    "targetPercent",
     "method",
     "asyncEnabled",
     "midTurnEnabled",
   ]);
+  const fields = ["enabled", "asyncEnabled", "midTurnEnabled"];
+  const empty = () => ({ version: 2, values: {}, targets: {} });
+
   function restoreOwned() {
     const { settings, native, owned } = state;
     if (!settings || !native) {
       owned.clear();
       return;
     }
-    for (const [id, state] of owned) {
+    for (const [id, entry] of owned) {
       const handle = native.handles[id];
-      if (!same(rawOverride(handle), state.applied)) continue;
-      if (state.previous === undefined) handle.clearOverride(settings);
-      else handle.override(settings, state.previous);
+      if (!same(rawOverride(handle), entry.applied)) continue;
+      if (entry.previous === undefined) handle.clearOverride(settings);
+      else handle.override(settings, entry.previous);
     }
     owned.clear();
   }
   function setOwned(id, value) {
     const { settings, native, owned } = state;
-    const handle = native.handles[id];
-    const current = rawOverride(handle);
-    const old = owned.get(id);
+    const handle = native.handles[id],
+      current = rawOverride(handle),
+      old = owned.get(id);
     if (value === undefined) {
       if (old && same(current, old.applied)) {
         if (old.previous === undefined) handle.clearOverride(settings);
@@ -47,204 +51,365 @@ export function createPolicyMutation(
       owned.delete(id);
       return;
     }
+    if (old && same(current, old.applied) && same(value, old.applied)) return;
     const previous = old && same(current, old.applied) ? old.previous : current;
     handle.override(settings, value);
     owned.set(id, { previous, applied: value });
   }
-  function planOverrides(values) {
-    const { native } = state;
-    const h = native.handles,
-      plan = {};
-    for (const id of ["enabled", "asyncEnabled", "midTurnEnabled"])
-      if (Object.hasOwn(values, id)) plan[id] = values[id];
-    if (Object.hasOwn(values, "method"))
-      plan.methodOrder = methodOrder(values.method);
-    if (Object.hasOwn(values, "threshold")) {
-      plan.thresholdTokens = values.threshold === "tokens" ? values.budget : -1;
-      plan.thresholdPercent =
-        values.threshold === "percent" ? values.budget : -1;
-      plan.modelThresholdsEnabled = false;
-    }
-    for (const [id, value] of Object.entries(plan)) h[id].assertWritable(value);
-    return plan;
-  }
-  function installConversation(values) {
-    const { owned } = state;
-    const plan = planOverrides(values);
-    const keys = new Set([...owned.keys(), ...Object.keys(plan)]);
-    for (const id of keys) setOwned(id, plan[id]);
-    state.conversation = { ...values };
-  }
-  function restoreBranch(ctx) {
-    restoreOwned();
-    state.conversation = {};
-    const entries = ctx.sessionManager.getBranch();
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const entry = entries[i];
-      if (entry.type !== "custom" || entry.customType !== entryType) continue;
-      const data = entry.data;
-      if (
-        !plain(data) ||
-        data.version !== 1 ||
-        data.profileId !== profileId ||
-        data.sessionId !== ctx.sessionManager.getSessionId() ||
-        !plain(data.values)
-      )
-        continue;
-      validateValues(data.values, true);
-      installConversation(data.values);
-      break;
-    }
-  }
-  function validateValues(values, stored = false) {
-    const { native } = state;
-    if (!plain(values) || Object.keys(values).some((key) => !editable.has(key)))
+  function validateValues(values, stored = false, legacy = false) {
+    const allowed = legacy
+      ? new Set([...fields, "method", "threshold", "budget"])
+      : stored
+        ? new Set([...fields, "method", "idleEnabled"])
+        : editable;
+    if (!plain(values) || Object.keys(values).some((key) => !allowed.has(key)))
       throw new Error("Invalid policy values");
-    for (const id of ["enabled", "asyncEnabled", "midTurnEnabled"])
+    for (const id of [...fields, ...(stored ? ["idleEnabled"] : [])])
       if (Object.hasOwn(values, id) && typeof values[id] !== "boolean")
         throw new Error(`Invalid ${id}`);
     if (
       Object.hasOwn(values, "method") &&
       (typeof values.method !== "string" ||
         (values.method !== "native" &&
-          !native.options.some((option) => option.value === values.method)))
+          !state.native.options.some(
+            (option) => option.value === values.method,
+          )))
     )
       throw new Error("Invalid compaction method");
+    if (stored && values.method === "native")
+      throw new Error("Invalid saved conversation policy");
     if (
-      Object.hasOwn(values, "threshold") &&
-      !["inherit", "tokens", "percent"].includes(values.threshold)
+      !stored &&
+      Object.hasOwn(values, "targetPercent") &&
+      values.targetPercent !== null &&
+      (typeof values.targetPercent !== "number" ||
+        !Number.isFinite(values.targetPercent) ||
+        values.targetPercent < 1 ||
+        values.targetPercent > 99)
     )
-      throw new Error("Invalid threshold type");
+      throw new Error("Invalid target percentage");
     if (
-      Object.hasOwn(values, "budget") &&
-      (typeof values.budget !== "number" ||
-        !Number.isFinite(values.budget) ||
-        values.budget <= 0)
-    )
-      throw new Error("Invalid compaction budget");
-    if (
-      stored &&
+      legacy &&
       ((Object.hasOwn(values, "threshold") &&
-        (values.threshold === "inherit" || !Object.hasOwn(values, "budget"))) ||
+        (!["tokens", "percent"].includes(values.threshold) ||
+          !Object.hasOwn(values, "budget"))) ||
         (!Object.hasOwn(values, "threshold") &&
           Object.hasOwn(values, "budget")) ||
-        (values.threshold === "percent" &&
-          (values.budget < 1 || values.budget > 99)) ||
-        (values.threshold === "tokens" &&
-          !Number.isSafeInteger(values.budget)) ||
-        values.method === "native")
+        (Object.hasOwn(values, "budget") &&
+          (typeof values.budget !== "number" ||
+            !Number.isFinite(values.budget) ||
+            values.budget <= 0 ||
+            (values.threshold === "tokens" &&
+              !Number.isSafeInteger(values.budget)) ||
+            (values.threshold === "percent" &&
+              (values.budget < 1 || values.budget > 99)))))
     )
       throw new Error("Invalid saved conversation policy");
   }
-  function normalizeChanges(request, current) {
-    const values = request.values ?? {};
-    validateValues(values);
-    const changes = { ...values };
+  function decode(data) {
     if (
-      Object.hasOwn(changes, "threshold") ||
-      Object.hasOwn(changes, "budget")
-    ) {
-      const kind = changes.threshold ?? current.threshold;
-      if (kind === "inherit") {
-        if (Object.hasOwn(changes, "budget"))
-          throw new Error("An inherited threshold cannot have a budget");
-        changes.threshold = "inherit";
-      } else {
-        const budget = changes.budget ?? current.budget;
-        if (
-          typeof budget !== "number" ||
-          !Number.isFinite(budget) ||
-          budget <= 0 ||
-          (kind === "tokens" && !Number.isSafeInteger(budget)) ||
-          (kind === "percent" && (budget < 1 || budget > 99))
-        )
-          throw new Error("Enter a valid threshold budget");
-        changes.threshold = kind;
-        changes.budget = budget;
-      }
-    }
-    return changes;
-  }
-  function validateHeadroom(ctx, changes) {
-    const { native, settings } = state;
-    if (!Object.hasOwn(changes, "threshold") || changes.threshold === "inherit")
-      return;
-    const window = activeModel(ctx).contextWindow,
-      proposed = settings.overlay();
-    native.handles.modelThresholdsEnabled.override(proposed, false);
-    native.handles.thresholdTokens.override(
-      proposed,
-      changes.threshold === "tokens" ? changes.budget : -1,
-    );
-    native.handles.thresholdPercent.override(
-      proposed,
-      changes.threshold === "percent" ? changes.budget : -1,
-    );
-    const policy = native.resolve(proposed, activeModel(ctx));
-    const trigger = native.engine.resolveThresholdTokens(window, policy);
-    const bounds = budgetBounds(window, policy),
-      range = bounds[changes.threshold];
-    if (
-      changes.budget < range.min ||
-      changes.budget > range.max ||
-      trigger < bounds.tokens.min ||
-      trigger > bounds.tokens.max ||
-      (changes.threshold === "tokens" && trigger !== changes.budget)
+      !plain(data) ||
+      data.profileId !== profileId ||
+      typeof data.sessionId !== "string"
     )
-      throw new Error(
-        `Threshold must be between ${bounds.tokens.min} and ${bounds.tokens.max} tokens to leave room for native compaction.`,
-      );
-  }
-  function profilePlan(changes, reset) {
-    const { native } = state;
-    if (reset)
-      return Object.fromEntries(
-        [
-          "enabled",
-          "thresholdTokens",
-          "thresholdPercent",
-          "methodOrder",
-          "asyncEnabled",
-          "midTurnEnabled",
-        ].map((id) => [id, undefined]),
-      );
-    const plan = {};
-    for (const id of ["enabled", "asyncEnabled", "midTurnEnabled"])
-      if (Object.hasOwn(changes, id)) plan[id] = changes[id];
-    if (Object.hasOwn(changes, "method"))
-      plan.methodOrder = methodOrder(changes.method);
-    if (Object.hasOwn(changes, "threshold")) {
-      plan.thresholdTokens =
-        changes.threshold === "tokens" ? changes.budget : undefined;
-      plan.thresholdPercent =
-        changes.threshold === "percent" ? changes.budget : undefined;
+      return null;
+    if (data.version === 1) {
+      validateValues(data.values, true, true);
+      const values = { ...data.values },
+        legacy = Object.hasOwn(values, "threshold")
+          ? { threshold: values.threshold, budget: values.budget }
+          : undefined;
+      delete values.threshold;
+      delete values.budget;
+      return { version: 1, values, targets: {}, ...(legacy ? { legacy } : {}) };
     }
-    for (const [id, value] of Object.entries(plan))
-      if (value !== undefined) native.handles[id].assertWritable(value);
-    return plan;
+    if (data.version !== 2 || !plain(data.targets)) return null;
+    validateValues(data.values, true);
+    if (data.legacy !== undefined) {
+      if (!plain(data.legacy))
+        throw new Error("Invalid saved conversation policy");
+      validateValues(data.legacy, true, true);
+      if (!Object.hasOwn(data.legacy, "threshold"))
+        throw new Error("Invalid saved conversation policy");
+    }
+    const entries = Object.entries(data.targets);
+    if (entries.length > 128) throw new Error("Too many saved model targets");
+    for (const [key, target] of entries) {
+      if (
+        key.length > 512 ||
+        !/^[^/]+\/.+$/.test(key) ||
+        !plain(target) ||
+        Object.keys(target).some(
+          (name) => !["percent", "window"].includes(name),
+        ) ||
+        (target.percent !== null &&
+          (typeof target.percent !== "number" ||
+            !Number.isFinite(target.percent) ||
+            target.percent < 1 ||
+            target.percent > 99)) ||
+        !Number.isSafeInteger(target.window) ||
+        target.window <= 0 ||
+        (target.percent === null && !data.legacy)
+      )
+        throw new Error("Invalid saved model target");
+    }
+    return {
+      version: 2,
+      values: { ...data.values },
+      targets: { ...data.targets },
+      ...(data.legacy ? { legacy: { ...data.legacy } } : {}),
+    };
   }
-  async function writeProfile(plan) {
-    const before = state.settings.getGlobalSettings();
-    try {
-      for (const [id, value] of Object.entries(plan))
-        value === undefined
-          ? state.native.handles[id].unset(state.settings)
-          : state.native.handles[id].set(state.settings, value);
-      await state.settings.flush();
-      await state.settings.reloadFromDisk();
-    } catch (error) {
-      for (const id of Object.keys(plan)) {
-        const handle = state.native.handles[id],
-          previous = valueAt(before, handle.segments);
-        try {
-          previous === undefined || previous === null
-            ? handle.unset(state.settings)
-            : handle.set(state.settings, previous);
-        } catch {
-          /* report the original persistence failure */
+  function encode(conversation, sessionId) {
+    if (conversation.version === 1)
+      return {
+        version: 1,
+        profileId,
+        sessionId,
+        values: { ...conversation.values, ...conversation.legacy },
+      };
+    return {
+      version: 2,
+      profileId,
+      sessionId,
+      values: conversation.values,
+      targets: conversation.targets,
+      ...(conversation.legacy ? { legacy: conversation.legacy } : {}),
+    };
+  }
+  async function planOverrides(ctx, conversation) {
+    const { native, owned } = state,
+      h = native.handles,
+      plan = {};
+    for (const id of [...fields, "idleEnabled"])
+      if (Object.hasOwn(conversation.values, id))
+        plan[id] = conversation.values[id];
+    if (Object.hasOwn(conversation.values, "method"))
+      plan.methodOrder = methodOrder(conversation.values.method);
+    const targets = Object.entries(conversation.targets),
+      legacy = conversation.legacy;
+    if (legacy) {
+      plan.thresholdTokens = legacy.threshold === "tokens" ? legacy.budget : -1;
+      plan.thresholdPercent =
+        legacy.threshold === "percent" ? legacy.budget : -1;
+      // Version 1 intentionally suppressed all model rules. Preserve that behavior
+      // for untouched models, even after a particular model is explicitly edited.
+      plan.modelThresholdsEnabled = false;
+    }
+    if (targets.length) {
+      const current = rawOverride(h.modelThresholds),
+        old = owned.get("modelThresholds");
+      const previous =
+        old && same(current, old.applied) ? old.previous : current;
+      const map = plain(previous) ? { ...previous } : {};
+      let baseline;
+      if (legacy) {
+        baseline = await inheritedSettings(ctx);
+        plan.modelThresholdsEnabled = h.modelThresholdsEnabled.get(baseline);
+        for (const key of Object.keys(h.modelThresholds.get(baseline)))
+          map[key] = null;
+      }
+      for (const [key, target] of targets) {
+        if (target.percent !== null) map[key] = `${target.percent}%`;
+        else {
+          const slash = key.indexOf("/"),
+            model = {
+              provider: key.slice(0, slash),
+              id: key.slice(slash + 1),
+              contextWindow: target.window,
+            };
+          const policy = native.resolve(baseline, model);
+          map[key] =
+            `f${native.engine.resolveThresholdTokens(target.window, policy)}`;
         }
       }
-      throw new Error(`Could not persist profile policy: ${error.message}`);
+      plan.modelThresholds = map;
+    }
+    for (const [id, value] of Object.entries(plan)) h[id].assertWritable(value);
+    return plan;
+  }
+  async function installConversation(ctx, conversation) {
+    const session = identity(ctx),
+      model = modelOf(ctx),
+      generation = state.generation,
+      settings = state.settings,
+      settingsRevision = settings.revision;
+    const plan = await planOverrides(ctx, conversation);
+    if (
+      !same(session, identity(ctx)) ||
+      !same(session, state.activeSession) ||
+      !same(model, modelOf(ctx)) ||
+      generation !== state.generation ||
+      settings !== state.settings ||
+      settingsRevision !== settings.revision
+    )
+      throw new PolicyReadRace(
+        "The conversation, model or policy changed; reload before applying",
+      );
+    const keys = new Set([...state.owned.keys(), ...Object.keys(plan)]);
+    for (const id of keys) setOwned(id, plan[id]);
+    state.conversation = conversation;
+    return {
+      generation: state.generation,
+      settingsRevision: settings.revision,
+      settings,
+    };
+  }
+  async function restoreBranch(ctx) {
+    restoreOwned();
+    state.conversation = empty();
+    const entries = ctx.sessionManager.getBranch();
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      if (entry.type !== "custom" || entry.customType !== entryType) continue;
+      // Branched sessions carry their ancestor's entries under a new session ID.
+      const conversation = decode(entry.data);
+      if (!conversation) continue;
+      await installConversation(ctx, conversation);
+      break;
+    }
+  }
+  async function refreshConversation(ctx) {
+    await installConversation(ctx, state.conversation);
+  }
+  function normalizeChanges(request) {
+    const values = request.values ?? {};
+    validateValues(values);
+    return { ...values };
+  }
+  function validateHeadroom(ctx, changes) {
+    const percent = changes.targetPercent;
+    if (percent === undefined || percent === null) return;
+    const { native, settings } = state,
+      model = activeModel(ctx),
+      window = model.contextWindow;
+    const policy = native.resolve(settings, model);
+    const bounds = budgetBounds(window, policy);
+    const trigger = native.engine.resolveThresholdTokens(window, {
+      ...policy,
+      baseWindowTokens: undefined,
+      thresholdTokens: -1,
+      thresholdPercent: percent,
+    });
+    if (
+      percent < bounds.percent.min ||
+      percent > bounds.percent.max ||
+      trigger < bounds.tokens.min ||
+      trigger > bounds.tokens.max
+    )
+      throw new Error(
+        `Target must be between ${bounds.tokens.min} and ${bounds.tokens.max} tokens to leave room for native compaction.`,
+      );
+  }
+  function profilePlan(changes, reset, model) {
+    const { native } = state,
+      plan = {};
+    if (reset) {
+      for (const id of [
+        "enabled",
+        "idleEnabled",
+        "thresholdTokens",
+        "thresholdPercent",
+        "methodOrder",
+        "asyncEnabled",
+        "midTurnEnabled",
+      ])
+        plan[id] = undefined;
+      plan.modelTarget = { key: modelKey(model), value: undefined };
+    } else {
+      for (const id of fields)
+        if (Object.hasOwn(changes, id)) plan[id] = changes[id];
+      if (changes.enabled === false) plan.idleEnabled = false;
+      if (Object.hasOwn(changes, "method"))
+        plan.methodOrder = methodOrder(changes.method);
+      if (Object.hasOwn(changes, "targetPercent"))
+        plan.modelTarget = {
+          key: modelKey(model),
+          value:
+            changes.targetPercent === null
+              ? undefined
+              : `${changes.targetPercent}%`,
+        };
+    }
+    for (const [id, value] of Object.entries(plan)) {
+      if (id === "modelTarget") {
+        if (value.value !== undefined)
+          native.handles.modelThresholds.assertWritable({
+            [value.key]: value.value,
+          });
+      } else if (value !== undefined) native.handles[id].assertWritable(value);
+    }
+    return plan;
+  }
+  async function writeProfile(plan, isCurrent, refresh) {
+    const { settings, native } = state,
+      before = settings.getGlobalSettings();
+    const apply = (id, value) => {
+      if (id === "modelTarget")
+        native.handles.modelThresholds.setEntry(
+          settings,
+          value.key,
+          value.value,
+        );
+      else if (value === undefined) native.handles[id].unset(settings);
+      else native.handles[id].set(settings, value);
+    };
+    const policyLayers = () => {
+      const global = settings.getGlobalSettings(),
+        project = settings.getProjectSettings();
+      return Object.values(native.handles).map((handle) => [
+        valueAt(global, handle.segments),
+        valueAt(project, handle.segments),
+        handle.get(settings),
+        settings.getProvenance(handle),
+      ]);
+    };
+    try {
+      for (const [id, value] of Object.entries(plan)) apply(id, value);
+      const expectedGeneration = state.generation,
+        expectedLayers = policyLayers();
+      const check = () => {
+        if (
+          !isCurrent() ||
+          settings !== state.settings ||
+          state.generation !== expectedGeneration ||
+          !same(expectedLayers, policyLayers())
+        )
+          throw new Error(
+            "The conversation, model or policy changed during the update",
+          );
+      };
+      await settings.flush();
+      check();
+      await settings.reloadFromDisk();
+      check();
+      await refresh();
+      if (!isCurrent() || settings !== state.settings)
+        throw new Error("The conversation or model changed during the update");
+    } catch (error) {
+      let repairError;
+      try {
+        for (const [id, value] of Object.entries(plan)) {
+          if (id === "modelTarget") {
+            const previous = valueAt(
+              before,
+              native.handles.modelThresholds.segments,
+            )?.[value.key];
+            apply(id, { key: value.key, value: previous ?? undefined });
+          } else {
+            const previous = valueAt(before, native.handles[id].segments);
+            apply(id, previous ?? undefined);
+          }
+        }
+        await settings.flush();
+        await settings.reloadFromDisk();
+        if (isCurrent() && settings === state.settings) await refresh();
+      } catch (failure) {
+        repairError = failure;
+      }
+      throw new Error(
+        `Could not persist profile policy: ${error.message}${repairError ? `; restoration failed: ${repairError.message}` : ""}`,
+      );
     }
   }
   async function writeConversation(
@@ -264,43 +429,84 @@ export function createPolicyMutation(
       throw new Error(
         "Native conversation policy persistence is unavailable in this session",
       );
-    const next = reset ? {} : { ...state.conversation, ...changes };
-    if (next.threshold === "inherit") {
-      delete next.threshold;
-      delete next.budget;
+    const previous = state.conversation;
+    const next = reset
+      ? empty()
+      : {
+          version: 2,
+          values: { ...previous.values },
+          targets: { ...previous.targets },
+          ...(previous.legacy ? { legacy: { ...previous.legacy } } : {}),
+        };
+    if (!reset) {
+      for (const id of fields)
+        if (Object.hasOwn(changes, id)) next.values[id] = changes[id];
+      if (changes.enabled === false) next.values.idleEnabled = false;
+      if (Object.hasOwn(changes, "method")) {
+        if (changes.method === "native") delete next.values.method;
+        else next.values.method = changes.method;
+      }
+      if (Object.hasOwn(changes, "targetPercent")) {
+        const key = modelKey(model);
+        if (key.length > 512) throw new Error("Model identifier is too long");
+        if (changes.targetPercent === null && !next.legacy)
+          delete next.targets[key];
+        else
+          next.targets[key] = {
+            percent: changes.targetPercent,
+            window: model.contextWindow,
+          };
+      }
     }
-    if (next.method === "native") delete next.method;
-    validateValues(next, true);
+    if (Object.keys(next.targets).length > 128)
+      throw new Error("Too many conversation model targets");
+    validateValues(next.values, true);
     await manager.ensureOnDisk();
     const isCurrent = () =>
       same(session, identity(ctx)) &&
       same(session, state.activeSession) &&
       same(model, modelOf(ctx));
-    if (!isCurrent() || snapshot(ctx).revision !== revision)
+    const snapshotGeneration = state.generation,
+      snapshotSettings = state.settings,
+      snapshotSettingsRevision = snapshotSettings.revision;
+    if (
+      !isCurrent() ||
+      (await snapshot(ctx)).revision !== revision ||
+      !isCurrent() ||
+      snapshotGeneration !== state.generation ||
+      snapshotSettings !== state.settings ||
+      snapshotSettingsRevision !== snapshotSettings.revision
+    )
       throw new Error(
         "The conversation, model or policy changed; reload before applying",
       );
-    const previous = { ...state.conversation };
     const entry = (values) =>
-      api.appendEntry(entryType, {
-        version: 1,
-        profileId,
-        sessionId: session.id,
-        values,
-      });
+      api.appendEntry(entryType, encode(values, session.id));
     let appended = false;
     try {
-      installConversation(next);
+      const installed = await installConversation(ctx, next);
+      const check = () => {
+        if (
+          !isCurrent() ||
+          state.conversation !== next ||
+          installed.settings !== state.settings ||
+          installed.generation !== state.generation ||
+          installed.settingsRevision !== installed.settings.revision
+        )
+          throw new Error(
+            "The conversation, model or policy changed during the update",
+          );
+      };
+      check();
       entry(next);
       appended = true;
       await manager.flush();
-      if (!isCurrent())
-        throw new Error("The conversation or model changed during the update");
+      check();
     } catch (error) {
       let repairError;
       if (same(session, identity(ctx)) && same(session, state.activeSession)) {
         try {
-          installConversation(previous);
+          await installConversation(ctx, previous);
           if (appended) {
             entry(previous);
             try {
@@ -316,20 +522,19 @@ export function createPolicyMutation(
         } catch (failure) {
           repairError = failure;
         }
-      } else if (appended) {
+      } else if (appended)
         repairError = new Error(
           "The session changed before its policy entry could be restored",
         );
-      }
       throw new Error(
         `Could not persist conversation policy: ${error.message}${repairError ? `; restoration failed: ${repairError.message}` : ""}`,
       );
     }
   }
-
   return {
     restoreOwned,
     restoreBranch,
+    refreshConversation,
     normalizeChanges,
     validateHeadroom,
     profilePlan,

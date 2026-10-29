@@ -1,153 +1,157 @@
-/* Compact enough for the ambient rail, without constraining a Settings host. */
-.context-policy-editor,
-.context-policy-summary {
+.context-policy-editor {
+  display: grid;
+  gap: 7px;
   min-width: 0;
   color: var(--fg-2);
   font-size: var(--d-text-sm);
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
-.context-policy-editor {
-  display: grid;
-  gap: 9px;
-}
-.context-policy-summary {
-  display: grid;
-  gap: 6px;
-}
-.context-policy-summary-head,
-.context-policy-toolbar {
+.context-policy-gauge {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
+  width: 100%;
   min-width: 0;
-}
-.context-policy-toolbar {
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
-}
-.context-policy-kicker,
-.context-policy-status {
-  font-family: var(--font-mono);
-  font-size: var(--d-text-xs);
-}
-.context-policy-kicker {
-  color: var(--fg-2);
-  font-weight: 600;
-}
-.context-policy-status {
-  color: var(--accent);
-}
-.context-policy-metrics {
-  display: grid;
-  gap: 3px;
-  margin: 0;
-}
-.context-policy-metrics > div {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-}
-.context-policy-metrics dt {
-  color: var(--fg-3);
-}
-.context-policy-metrics dd {
-  margin: 0;
-  color: var(--fg);
-  text-align: right;
-  font-family: var(--font-mono);
-}
-.context-policy-metrics dd span {
-  color: var(--fg-3);
-  font-size: var(--d-text-xs);
-}
-.context-policy-note,
-.context-policy-error,
-.context-policy-notice {
-  margin: 0;
-  font-size: var(--d-text-xs);
-}
-.context-policy-note {
-  color: var(--fg-3);
-}
-.context-policy-error {
-  color: var(--rose);
-}
-.context-policy-notice {
-  color: var(--accent);
-}
-.context-policy-scope {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 12px;
-  min-width: 0;
-  margin: 0;
-  padding: 0;
+  padding: 2px;
   border: 0;
-}
-.context-policy-scope legend {
-  padding: 0;
-  margin-bottom: 5px;
-  color: var(--fg-2);
-  font-weight: 600;
-}
-.context-policy-scope label {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
+  border-radius: var(--r-1);
+  background: transparent;
+  color: inherit;
+  text-align: left;
   cursor: pointer;
 }
-.context-policy-scope input,
-.context-policy-field input[type="checkbox"] {
-  margin: 0;
-  accent-color: var(--accent);
-}
-.context-policy-fields {
-  display: grid;
-  gap: 9px;
-  min-width: 0;
-}
-.context-policy-field {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-.context-policy-field.is-boolean {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 8px;
-}
-.context-policy-field-label {
+.context-policy-gauge-copy,
+.context-policy-usage {
   display: grid;
   gap: 2px;
   min-width: 0;
 }
-.context-policy-field label {
+.context-policy-usage strong {
   color: var(--fg);
-  font-weight: 500;
+  font: 500 var(--d-text-sm) var(--font-mono);
 }
-.context-policy-help {
+.context-policy-usage small,
+.context-policy-source,
+.context-policy-note {
   color: var(--fg-3);
   font-size: var(--d-text-xs);
 }
-.context-policy-field select,
-.context-policy-field input[type="number"] {
+.context-policy-target {
+  color: var(--accent);
+  font-size: var(--d-text-xs);
+}
+.context-policy-source {
+  font-family: var(--font-mono);
+}
+.context-policy-surface {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--r-2);
+  background: var(--bg-input);
+}
+.context-policy-surface-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
+}
+.context-policy-surface-usage {
+  color: var(--fg-2);
+  font-size: var(--d-text-xs);
+}
+.context-policy-surface-usage strong {
+  color: var(--fg);
+  font: 500 var(--d-text-sm) var(--font-mono);
+}
+.context-policy-adjust {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  min-width: 0;
+}
+.context-policy-adjust-copy {
+  display: grid;
+  flex: 1 1 128px;
+  gap: 5px;
+  min-width: 0;
+}
+.context-policy-percent-label {
+  display: grid;
+  gap: 4px;
+  color: var(--fg);
+  font-weight: 500;
+}
+.context-policy-percent-input {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg-2);
+}
+.context-policy-percent-input input,
+.context-policy-method select {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
   padding: 6px 8px;
   border: 1px solid var(--line-bright);
   border-radius: var(--r-1);
-  background: var(--bg-input);
+  background: var(--bg-surface);
   color: var(--fg);
-  font: inherit;
-  font-family: var(--font-mono);
+  font: var(--d-text-sm) var(--font-mono);
 }
-.context-policy-field input[type="checkbox"] {
-  width: 15px;
-  height: 15px;
-  margin-top: 2px;
+.context-policy-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--fg);
+}
+.context-policy-option label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.context-policy-option input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.context-policy-help-wrap {
+  display: contents;
+}
+.context-policy-help-button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--line-bright);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--fg-2);
+  font: 11px var(--font-mono);
+  cursor: help;
+}
+.context-policy-help-text {
+  display: none;
+  grid-column: 1 / -1;
+  box-sizing: border-box;
+  padding: 8px;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--r-1);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font-size: var(--d-text-xs);
+  font-weight: 400;
+  line-height: 1.4;
+}
+.context-policy-help-wrap.is-open .context-policy-help-text {
+  display: block;
 }
 .context-policy-advanced {
   padding-top: 7px;
@@ -156,62 +160,90 @@
 .context-policy-advanced summary {
   color: var(--fg-2);
   cursor: pointer;
-  font-family: var(--font-mono);
-  font-size: var(--d-text-xs);
+  font: var(--d-text-xs) var(--font-mono);
 }
-.context-policy-advanced[open] summary {
-  margin-bottom: 9px;
+.context-policy-options {
+  display: grid;
+  gap: 9px;
+  margin-top: 9px;
 }
-.context-policy-stale {
+.context-policy-method {
   display: grid;
   gap: 5px;
-  padding: 7px 8px;
-  border-left: 2px solid var(--amber);
-  background: var(--bg-input);
-  color: var(--fg-2);
-  font-size: var(--d-text-xs);
-}
-.context-policy-stale .context-policy-link {
-  justify-self: start;
 }
 .context-policy-actions {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
   gap: 6px;
 }
 .context-policy-editor button {
-  font: inherit;
-  cursor: pointer;
+  font-family: inherit;
 }
 .context-policy-link,
-.context-policy-reset {
-  padding: 3px 4px;
-  border: 0;
+.context-policy-apply {
   border-radius: var(--r-1);
+  cursor: pointer;
+  font-size: var(--d-text-xs);
+}
+.context-policy-link {
+  justify-self: start;
+  padding: 2px;
+  border: 0;
   background: transparent;
-  color: var(--fg-2);
-  font-family: var(--font-mono) !important;
-  font-size: var(--d-text-xs) !important;
+  color: var(--accent);
+  text-align: left;
 }
 .context-policy-apply {
-  padding: 6px 9px;
+  padding: 6px 8px;
   border: 1px solid color-mix(in oklab, var(--accent) 50%, transparent);
-  border-radius: var(--r-1);
   background: var(--accent-soft);
   color: var(--accent);
+  text-align: left;
 }
 .context-policy-editor button:not(:disabled):hover {
-  background: var(--bg-hover);
-  color: var(--fg);
+  background-color: var(--bg-hover);
 }
 .context-policy-editor :disabled {
-  opacity: 0.55;
+  opacity: 0.6;
   cursor: not-allowed;
 }
 .context-policy-editor :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+.context-policy-stale,
+.context-policy-warning {
+  margin: 0;
+  padding: 6px 8px;
+  border-left: 2px solid var(--amber);
+  color: var(--fg);
+  font-size: var(--d-text-xs);
+}
+.context-policy-stale {
+  display: grid;
+  gap: 4px;
+}
+.context-policy-error,
+.context-policy-notice {
+  margin: 0;
+  font-size: var(--d-text-xs);
+}
+.context-policy-error {
+  color: var(--rose);
+}
+.context-policy-notice {
+  color: var(--accent);
+}
+.context-policy-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 .st-context-policy {
   max-width: 620px;

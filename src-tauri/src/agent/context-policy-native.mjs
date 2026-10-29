@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 export const plain = (value) =>
   value !== null &&
@@ -18,16 +21,20 @@ export const modelOf = (ctx) => {
     contextWindow: model?.contextWindow ?? null,
   };
 };
+export const modelKey = (model) => `${model.provider}/${model.id}`;
 export const identity = (ctx) => ({
   id: ctx.sessionManager.getSessionId(),
   file: ctx.sessionManager.getSessionFile() ?? null,
 });
+export class PolicyReadRace extends Error {}
 
 export function createPolicyNative(state) {
   const { profileId, rawOverride } = state;
-  let nativePromise;
+  let nativePromise, inheritedCache, overlayFilesCache;
+  const overlayLayers = new WeakMap();
   const ids = [
     "enabled",
+    "idleEnabled",
     "thresholdTokens",
     "thresholdPercent",
     "methodOrder",
@@ -44,10 +51,8 @@ export function createPolicyNative(state) {
     profileId,
     model: modelOf(ctx),
     enabled: false,
-    thresholdTokens: null,
     source: "unavailable",
     revision: "",
-    conversationOverride: false,
     controls: [],
     profileControls: [],
   });
@@ -59,7 +64,8 @@ export function createPolicyNative(state) {
         import("@oh-my-pi/pi-coding-agent/session/model-compaction-threshold"),
         import("@oh-my-pi/pi-coding-agent/config/compaction-threshold"),
         import("@oh-my-pi/pi-agent-core/compaction"),
-      ]).then(([root, registry, model, matching, engine]) => {
+        import("bun"),
+      ]).then(([root, registry, model, matching, engine, bun]) => {
         const handles = Object.fromEntries(
           ids.map((id) => [id, registry.lookup(`compaction.${id}`)]),
         );
@@ -78,11 +84,14 @@ export function createPolicyNative(state) {
             throw new Error(`Native compaction setting ${id} is unavailable`);
         }
         if (
+          typeof handles.modelThresholds.setEntry !== "function" ||
           typeof root.SettingsManager?.create !== "function" ||
           typeof root.getAgentDir !== "function" ||
+          typeof root.Settings?.loadReadOnly !== "function" ||
           typeof model.resolveModelCompactionSettings !== "function" ||
           typeof matching.matchModelCompactionThreshold !== "function" ||
           typeof engine.resolveThresholdTokens !== "function" ||
+          typeof bun.YAML?.parse !== "function" ||
           typeof engine.promptBudgetTokens !== "function"
         )
           throw new Error("Native compaction resolver is unavailable");
@@ -102,6 +111,7 @@ export function createPolicyNative(state) {
           handles,
           resolve: model.resolveModelCompactionSettings,
           match: matching.matchModelCompactionThreshold,
+          yaml: bun.YAML,
           engine,
           options,
         };
@@ -126,13 +136,6 @@ export function createPolicyNative(state) {
       ? order[0]
       : "none";
   }
-  function thresholdValue(tokens, percent) {
-    return tokens > 0
-      ? { threshold: "tokens", budget: tokens }
-      : percent > 0
-        ? { threshold: "percent", budget: percent }
-        : { threshold: "inherit", budget: 0 };
-  }
   function savedValues() {
     const { native, settings } = state;
     const raw = settings.getGlobalSettings(),
@@ -149,7 +152,6 @@ export function createPolicyNative(state) {
     const order = get("methodOrder");
     return {
       enabled: get("enabled"),
-      ...thresholdValue(get("thresholdTokens"), get("thresholdPercent")),
       method: methodValue(order),
       methodOrder: order,
       asyncEnabled: get("asyncEnabled"),
@@ -162,8 +164,6 @@ export function createPolicyNative(state) {
     const retained = Number.isFinite(policy.keepRecentTokens)
       ? Math.max(0, policy.keepRecentTokens)
       : 0;
-    // OMP caps retention to the recovery band on small windows. Keep the editor
-    // usable there while preferring room above the configured retained tail.
     const min = Math.min(ceiling, Math.max(1, Math.ceil(retained) + 1));
     let minPercent = Math.max(1, (min * 100) / window);
     let maxPercent = Math.min(99, (ceiling * 100) / window);
@@ -174,7 +174,6 @@ export function createPolicyNative(state) {
         thresholdTokens: -1,
         thresholdPercent: percent,
       });
-    // Account for the native resolver's floor and floating-point rounding.
     if (percentTrigger(minPercent) < min)
       minPercent += Number.EPSILON * Math.max(1, minPercent);
     if (percentTrigger(maxPercent) > ceiling)
@@ -184,9 +183,9 @@ export function createPolicyNative(state) {
       percent: { min: minPercent, max: maxPercent },
     };
   }
-  function controls(values, bounds) {
-    const { native } = state;
-    const h = native.handles;
+  function controls(values) {
+    const { native } = state,
+      h = native.handles;
     const field = (id, handle, type, value, defaultValue, extra = {}) => ({
       id,
       label: handle.ui?.label ?? id,
@@ -198,40 +197,6 @@ export function createPolicyNative(state) {
     });
     return [
       field("enabled", h.enabled, "boolean", values.enabled, h.enabled.default),
-      field(
-        "threshold",
-        h.thresholdPercent,
-        "select",
-        values.threshold,
-        "inherit",
-        {
-          options: [
-            {
-              value: "inherit",
-              label: "Native default",
-              description: "Use the native reserve-based threshold.",
-            },
-            {
-              value: "tokens",
-              label: "Tokens",
-              description: h.thresholdTokens.ui?.description,
-            },
-            {
-              value: "percent",
-              label: "Percent",
-              description: h.thresholdPercent.ui?.description,
-            },
-          ],
-        },
-      ),
-      field(
-        "budget",
-        values.threshold === "percent" ? h.thresholdPercent : h.thresholdTokens,
-        "number",
-        values.budget,
-        0,
-        bounds[values.threshold === "percent" ? "percent" : "tokens"],
-      ),
       field("method", h.methodOrder, "select", values.method, "native", {
         description:
           `Choose a preferred method; omp tries the native fallback order afterward. ${h.methodOrder.ui?.description ?? ""}`.trim(),
@@ -260,8 +225,7 @@ export function createPolicyNative(state) {
       ),
     ];
   }
-  function provenance(handle) {
-    const { settings } = state;
+  function provenance(settings, handle) {
     const env = handle.envValue?.();
     if (
       env !== undefined &&
@@ -269,12 +233,273 @@ export function createPolicyNative(state) {
     )
       return "environment";
     const source = settings.getProvenance(handle);
-    return source === "global" ? "profile" : source;
+    return source === "global"
+      ? "profile"
+      : source === "runtime"
+        ? "native runtime"
+        : source;
   }
-  function snapshot(ctx) {
+  // An inherited view must not temporarily clear live overrides. Build it with
+  // OMP's non-persisting settings loader instead: cloneForCwd can quarantine a
+  // malformed project file and registers another long-lived native WeakRef.
+  // Cache by policy inputs, not by the Settings revision (which also changes
+  // for no-op reloads and unrelated settings).
+  async function inheritedSettings(ctx) {
+    const { settings, native, owned } = state;
+    if (owned.size === 0) {
+      overlayLayers.delete(settings);
+      return settings;
+    }
+    const h = native.handles,
+      global = settings.getGlobalSettings(),
+      project = settings.getProjectSettings(),
+      overrides = settings.overlayLayers().overrides,
+      files = settings.getConfigFiles(),
+      revision = settings.revision;
+    const entries = ids.map((id) => {
+      const handle = h[id],
+        current = valueAt(overrides, handle.segments),
+        own = owned.get(id);
+      const previous =
+        own && same(current, own.applied) ? own.previous : current;
+      return [
+        id,
+        valueAt(global, handle.segments),
+        valueAt(project, handle.segments),
+        previous,
+        current,
+        handle.get(settings),
+        provenance(settings, handle),
+        handle.envValue?.(),
+      ];
+    });
+    let overlayStamp = "",
+      layers = [];
+    if (files.length) {
+      if (
+        !overlayFilesCache ||
+        overlayFilesCache.settings !== settings ||
+        overlayFilesCache.revision !== revision ||
+        !same(overlayFilesCache.files, files)
+      ) {
+        const pending = Promise.all(
+          files.map((file) => readFile(file, "utf8")),
+        ).then((contents) => {
+          const policyLayers = contents.map((content) => {
+            const parsed = native.yaml.parse(content);
+            if (parsed == null) return {};
+            if (!plain(parsed))
+              throw new Error("Config overlay must be a YAML mapping");
+            return Object.fromEntries(
+              Object.entries(parsed).filter(
+                ([key]) =>
+                  key === "compaction" || key.startsWith("compaction."),
+              ),
+            );
+          });
+          return {
+            layers: policyLayers,
+            stamp: createHash("sha256")
+              .update(JSON.stringify(policyLayers))
+              .digest("hex"),
+          };
+        });
+        overlayFilesCache = { settings, revision, files, pending };
+      }
+      ({ stamp: overlayStamp, layers } = await overlayFilesCache.pending);
+      if (settings !== state.settings || settings.revision !== revision)
+        throw new PolicyReadRace(
+          "The policy changed while reading its config overlays",
+        );
+    }
+    overlayLayers.set(settings, layers);
+    const keyEntries = entries.map(
+      ([
+        id,
+        globalValue,
+        projectValue,
+        previous,
+        current,
+        effective,
+        source,
+        env,
+      ]) => [
+        id,
+        globalValue,
+        projectValue,
+        previous === undefined ? [false] : [true, previous],
+        current === undefined ? [false] : [true, current],
+        effective,
+        source,
+        env,
+      ],
+    );
+    const key = JSON.stringify([
+      ctx.cwd,
+      settings.getAgentDir(),
+      files,
+      overlayStamp,
+      keyEntries,
+    ]);
+    if (inheritedCache?.settings === settings && inheritedCache.key === key)
+      return await inheritedCache.pending;
+    const pending = (async () => {
+      // Settings automatically prepends PI_CONFIG_FILES to configFiles.
+      const envFiles = (process.env.PI_CONFIG_FILES ?? "")
+        .split(path.delimiter)
+        .filter(Boolean)
+        .map((file) =>
+          path.resolve(
+            ctx.cwd,
+            file === "~"
+              ? os.homedir()
+              : file.startsWith("~/")
+                ? path.join(os.homedir(), file.slice(2))
+                : file,
+          ),
+        );
+      if (envFiles.some((file, index) => files[index] !== file))
+        throw new Error(
+          "The native config overlay environment changed; reload the session",
+        );
+      const copy = await native.root.Settings.loadReadOnly({
+        cwd: ctx.cwd,
+        agentDir: settings.getAgentDir(),
+        configFiles: files.slice(envFiles.length),
+      });
+      const diskProject = copy.getProjectSettings(),
+        diskGlobal = copy.getGlobalSettings();
+      const tombstones = {};
+      for (const [id, globalValue, projectValue, previous] of entries) {
+        const handle = h[id];
+        if (!same(projectValue, valueAt(diskProject, handle.segments)))
+          throw new PolicyReadRace(
+            "The native project policy changed while it was being read",
+          );
+        if (!same(globalValue, valueAt(diskGlobal, handle.segments))) {
+          if (globalValue === undefined || globalValue === null)
+            handle.unset(copy);
+          else handle.set(copy, globalValue);
+        }
+        if (previous === null) tombstones[handle.id] = null;
+      }
+      const view = Object.keys(tombstones).length
+        ? copy.overlay(tombstones)
+        : copy;
+      for (const [id, , , previous] of entries)
+        if (previous !== undefined && previous !== null)
+          h[id].override(view, previous);
+      overlayLayers.set(view, layers);
+      return view;
+    })();
+    const item = { settings, key, pending };
+    inheritedCache = item;
+    try {
+      return await pending;
+    } catch (error) {
+      if (inheritedCache === item) inheritedCache = undefined;
+      throw error;
+    }
+  }
+  function describe(settings, model) {
+    const { native } = state,
+      h = native.handles;
+    const policy = native.resolve(settings, model);
+    const thresholds = h.modelThresholdsEnabled.get(settings)
+      ? h.modelThresholds.get(settings)
+      : undefined;
+    const match = native.match(thresholds, model);
+    const tokens = native.engine.resolveThresholdTokens(
+      model.contextWindow,
+      policy,
+    );
+    let mode =
+      policy.thresholdTokens > 0
+        ? "tokens"
+        : policy.thresholdPercent > 0
+          ? "percent"
+          : "native";
+    let source;
+    if (match) {
+      if (match.threshold.thresholdTokens > 0 && !match.threshold.fixed)
+        mode = "native";
+      const current = thresholds?.[match.key];
+      const runtime = valueAt(
+        settings.overlayLayers().overrides,
+        h.modelThresholds.segments,
+      );
+      const project = valueAt(
+        settings.getProjectSettings(),
+        h.modelThresholds.segments,
+      );
+      const global = valueAt(
+        settings.getGlobalSettings(),
+        h.modelThresholds.segments,
+      );
+      const overall = provenance(settings, h.modelThresholds);
+      let overlayValue;
+      for (const layer of overlayLayers.get(settings) ?? []) {
+        const compaction = layer.compaction;
+        if (compaction === null || compaction?.modelThresholds === null)
+          overlayValue = undefined;
+        const record = compaction?.modelThresholds;
+        if (plain(record) && Object.hasOwn(record, match.key))
+          overlayValue = record[match.key];
+      }
+      if (
+        plain(runtime) &&
+        Object.hasOwn(runtime, match.key) &&
+        same(runtime[match.key], current)
+      )
+        source = "native runtime";
+      else if (overall === "environment") source = overall;
+      else if (
+        overlayValue !== undefined &&
+        overlayValue !== null &&
+        same(overlayValue, current)
+      )
+        source = "overlay";
+      else if (
+        overall === "overlay" &&
+        (!plain(project) || !same(project[match.key], current))
+      )
+        source = "overlay";
+      else if (
+        plain(project) &&
+        Object.hasOwn(project, match.key) &&
+        same(project[match.key], current)
+      )
+        source = "project";
+      else if (
+        plain(global) &&
+        Object.hasOwn(global, match.key) &&
+        same(global[match.key], current)
+      )
+        source = "profile";
+      else source = overall;
+    } else {
+      const id =
+        policy.thresholdTokens > 0
+          ? "thresholdTokens"
+          : policy.thresholdPercent > 0
+            ? "thresholdPercent"
+            : "reserveTokens";
+      source = provenance(settings, h[id]);
+    }
+    return {
+      percent: (tokens / model.contextWindow) * 100,
+      tokens,
+      mode,
+      source,
+    };
+  }
+  async function snapshot(ctx) {
     const { native, settings, owned, conversation } = state;
     const h = native.handles,
-      model = modelOf(ctx);
+      model = modelOf(ctx),
+      session = identity(ctx),
+      generation = state.generation,
+      settingsRevision = settings.revision;
     if (
       !model.provider ||
       !model.id ||
@@ -285,42 +510,81 @@ export function createPolicyNative(state) {
         ctx,
         "The active model and context window are not available.",
       );
+    const inherited = await inheritedSettings(ctx);
+    if (
+      generation !== state.generation ||
+      settingsRevision !== settings.revision ||
+      settings !== state.settings ||
+      conversation !== state.conversation ||
+      !same(session, identity(ctx)) ||
+      !same(session, state.activeSession) ||
+      !same(model, modelOf(ctx))
+    )
+      throw new PolicyReadRace(
+        "The conversation, model or policy changed; reload the policy",
+      );
     const resolved = native.resolve(settings, activeModel(ctx));
-    const thresholds = h.modelThresholdsEnabled.get(settings)
-      ? h.modelThresholds.get(settings)
+    const base = describe(inherited, model);
+    const actual = describe(settings, model);
+    const key = modelKey(model);
+    const selected = conversation.targets?.[key];
+    const legacy = conversation.legacy;
+    const thresholdsEnabled = h.modelThresholdsEnabled.get(settings);
+    const ownedMap = owned.get("modelThresholds");
+    const ownMapActive =
+      ownedMap && same(rawOverride(h.modelThresholds), ownedMap.applied);
+    const ownThresholdActive =
+      legacy &&
+      ["thresholdTokens", "thresholdPercent"].every((id) => {
+        const item = owned.get(id);
+        return (
+          item &&
+          same(rawOverride(h[id]), item.applied) &&
+          same(h[id].get(settings), item.applied) &&
+          provenance(settings, h[id]) !== "environment"
+        );
+      });
+    const match = thresholdsEnabled
+      ? native.match(h.modelThresholds.get(settings), model)
       : undefined;
-    const match = native.match(thresholds, activeModel(ctx));
+    const targetApplied =
+      selected?.percent != null &&
+      ownMapActive &&
+      match?.key === key &&
+      h.modelThresholds.get(settings)[key] === `${selected.percent}%`;
+    const resetApplied =
+      selected?.percent === null && ownMapActive && match?.key === key;
+    if (targetApplied || (ownThresholdActive && !match))
+      actual.source = "conversation";
+    else if (resetApplied) {
+      actual.source = base.source;
+      actual.mode = base.mode;
+    }
+    const global = valueAt(
+      settings.getGlobalSettings(),
+      h.modelThresholds.segments,
+    );
+    const profileEntry = plain(global) ? global[key] : undefined;
+    const profileMatch =
+      typeof profileEntry === "string" &&
+      /^(\d+(?:\.\d+)?)%$/.exec(profileEntry.trim());
+    const target = {
+      ...actual,
+      conversationOverride:
+        selected?.percent != null || (!!legacy && selected === undefined),
+      profileOverride: profileEntry !== undefined && profileEntry !== null,
+      profilePercent: profileMatch ? Number(profileMatch[1]) : null,
+      conversationPercent: selected?.percent ?? null,
+      inherited: base,
+    };
     const effective = {
       enabled: resolved.enabled,
-      ...thresholdValue(resolved.thresholdTokens, resolved.thresholdPercent),
       method: methodValue(resolved.methodOrder),
       asyncEnabled: resolved.asyncEnabled,
       midTurnEnabled: resolved.midTurnEnabled,
     };
-    const sourceParts = [];
-    if (match) sourceParts.push(`model ${match.key}`);
-    const relevant = [
-      "enabled",
-      "thresholdTokens",
-      "thresholdPercent",
-      "methodOrder",
-      "asyncEnabled",
-      "midTurnEnabled",
-    ];
-    const sources = relevant.map((id) => {
-      const source = provenance(h[id]);
-      return source === "runtime" &&
-        owned.has(id) &&
-        same(rawOverride(h[id]), owned.get(id).applied)
-        ? "conversation"
-        : source === "runtime"
-          ? "native runtime"
-          : source;
-    });
-    sourceParts.push(...sources);
     const saved = savedValues(),
       bounds = budgetBounds(model.contextWindow, resolved);
-    const session = identity(ctx);
     const policy = {
       supported: true,
       profileId,
@@ -328,31 +592,36 @@ export function createPolicyNative(state) {
       sessionFile: session.file,
       model,
       enabled: resolved.enabled && resolved.strategy !== "off",
-      thresholdTokens:
-        resolved.enabled && resolved.strategy !== "off"
-          ? native.engine.resolveThresholdTokens(model.contextWindow, resolved)
-          : null,
-      source: [...new Set(sourceParts)].join(" / "),
-      conversationOverride: Object.keys(conversation).length > 0,
-      controls: controls(effective, bounds),
-      profileControls: controls(saved, bounds),
+      idleEnabled: resolved.idleEnabled,
+      thresholdTokens: actual.tokens,
+      source: actual.source,
+      target,
+      controls: controls(effective),
+      profileControls: controls(saved),
       budgetBounds: bounds,
       methodOrder: resolved.methodOrder,
       profileMethodOrder: saved.methodOrder,
       methods: native.options.map((option) => option.value),
+      lastMaintenance: null,
     };
     const raw = settings.getGlobalSettings();
     const layers = ids.map((id) => [
       id,
       valueAt(raw, h[id].segments),
       h[id].get(settings),
-      provenance(h[id]),
+      provenance(settings, h[id]),
     ]);
     policy.revision = createHash("sha256")
       .update(JSON.stringify([policy, layers, conversation]))
       .digest("hex");
     return policy;
   }
-
-  return { loadNative, methodOrder, budgetBounds, snapshot, unsupported };
+  return {
+    loadNative,
+    methodOrder,
+    budgetBounds,
+    inheritedSettings,
+    snapshot,
+    unsupported,
+  };
 }

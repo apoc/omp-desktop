@@ -8,6 +8,7 @@ function useContextPolicy({
   active,
   snapshot,
   processStartedAt,
+  ctx,
 }) {
   const owner = JSON.stringify([
     tabId,
@@ -56,6 +57,7 @@ function useContextPolicy({
         ? "Open a conversation to edit its profile's native context policy."
         : null),
     profileName,
+    ctx,
     onRefresh: refresh,
     onApply: apply,
   };

@@ -371,4 +371,13 @@
   color: var(--fg-4);
   font-size: var(--d-text-xs);
 }
+.btn.ambient-reopen {
+  flex: none;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 7px;
+  color: var(--accent);
+  font-size: var(--d-text-xs);
+  white-space: nowrap;
+}
 

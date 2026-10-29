@@ -1581,6 +1581,7 @@
       sessionFile: null,
       autoRenameArmed: true,
       autoRenameInFlight: false,
+      autoRenameAttempt: null,
       autoRenameTurns: 0,
       autoRenameLeft: 0,
       autoRenameSessionId: null,
@@ -1884,9 +1885,28 @@
     sessionRegistry.set(activeSessionId, {
       ...entry,
       autoRenameInFlight: false,
-      ...(rearm ? { autoRenameArmed: true } : {}),
+      ...(rearm ? { autoRenameArmed: true, autoRenameAttempt: null } : {}),
     });
     if (rearm) _send({ type: "get_state" });
+  }
+
+  // Keep the first title eligible until it actually lands. The attempt token
+  // both prevents retries on repeated idle snapshots and owns a failed IPC
+  // hand-off, which may settle after a tab switch or a fresh conversation.
+  function _sendAutoRename(entry, refinement) {
+    const id = activeSessionId;
+    const attempt = {};
+    sessionRegistry.set(id, {
+      ...entry, autoRenameAttempt: attempt, autoRenameInFlight: true,
+      autoRenameLeft: refinement ? entry.autoRenameLeft - 1 : STITLE.REFINE_MAX,
+      autoRenameTurns: 0,
+    });
+    _send({ type: "prompt", message: "/rename" }).then(sent => {
+      const current = sessionRegistry.get(id);
+      if (!sent && current?.autoRenameAttempt === attempt && current.autoRenameInFlight) {
+        sessionRegistry.set(id, { ...current, autoRenameInFlight: false });
+      }
+    });
   }
 
   /** Spawn omp for `cwd` (optionally resuming a saved session), register the
@@ -1925,22 +1945,18 @@
       // `_applyRpcState`). `resumeSession` matches on it to focus instead of
       // spawning a duplicate.
       sessionFile: resume ?? null,
-      // Auto-rename state machine (src/app/session-title.js): a fresh tab
-      // is armed to ask omp for a session title after its first completed
-      // turn (RPC mode never auto-titles); a resume keeps its saved name
-      // and stays unarmed. `inFlight` spans the `/rename` send until its
-      // outcome is confirmed, gating both the one-shot trigger and the
-      // suppression of the builtin's outcome note. After the initial
-      // rename, the title is refreshed every REFINE_EVERY_TURNS completed
-      // agent turns (`turns` counts them, reset on each title write)
-      // while `left` budget lasts; a resume starts with no budget because
-      // `get_state` cannot tell a saved auto-title from a manual one, and
-      // manual titles must never be overwritten. `sessionId` binds this
-      // state to the omp session it was granted for (set by the first
-      // `get_state` that finds it armed or budgeted, see `_applyRpcState`
-      // and `STITLE.isRenameStateStale`).
-      autoRenameArmed: !resume,
+      // Auto-naming also covers resumed conversations with no saved title.
+      // Observing a title retires the initial request; a resumed named tab
+      // has no refinement budget, since its title may have been manual.
+      // `attempt` owns the IPC hand-off and gates another initial request
+      // until a successful terminal turn. `inFlight` lasts until the outcome
+      // note, so delayed confirmations never become transcript bubbles.
+      // A successful initial title gets REFINE_MAX refreshes, spaced by
+      // REFINE_EVERY_TURNS. The native session id binds that budget; an
+      // in-process switch retires it (`STITLE.isRenameStateStale`).
+      autoRenameArmed: true,
       autoRenameInFlight: false,
+      autoRenameAttempt: null,
       autoRenameTurns: 0,
       autoRenameLeft: 0,
       autoRenameSessionId: null,
@@ -2611,9 +2627,9 @@
           // initial, a refinement, or a manual rename alike. The budget
           // itself belongs to the send sites (granted on the initial send,
           // decremented per refinement, zeroed on a manual `/rename`), so
-          // this handler only moves the odometer.
+          // this handler retires the initial request and resets the odometer.
           const e = sessionRegistry.get(activeSessionId);
-          sessionRegistry.set(activeSessionId, { ...e, name: title, autoRenameTurns: 0 });
+          sessionRegistry.set(activeSessionId, { ...e, name: title, autoRenameArmed: false, autoRenameTurns: 0 });
           notify();
         }
       }
@@ -3073,13 +3089,14 @@
     }
 
     if (type === "agent_start" || type === "agent_end") {
-      // Refinement counter: terminal agent turns since the last title
-      // write. Non-terminal ends are scheduling pauses, not new material
-      // (`countsAsRefineTurn`). A bare `/rename` is consumed as a builtin
-      // (no turn, no agent_end), so our own rename prompts never count.
+      // Terminal turns since the last title write/attempt. An initial retry
+      // needs a successful one; refinements keep their existing cadence.
+      // Scheduling pauses and our `/rename` builtin never count.
       if (STITLE.countsAsRefineTurn(ev) && activeSessionId && sessionRegistry.has(activeSessionId)) {
         const e = sessionRegistry.get(activeSessionId);
-        sessionRegistry.set(activeSessionId, { ...e, autoRenameTurns: (e.autoRenameTurns ?? 0) + 1 });
+        if (!e.autoRenameArmed || lastTurnOk) {
+          sessionRegistry.set(activeSessionId, { ...e, autoRenameTurns: (e.autoRenameTurns ?? 0) + 1 });
+        }
       }
       if (type === "agent_end") {
         // A yield is the run's final outcome — omp's own retries are behind it.
@@ -3178,7 +3195,7 @@
     // name set at tab-open time intact when sessionName is absent.
     if (rpcState.sessionName && activeSessionId && sessionRegistry.has(activeSessionId)) {
       const entry = sessionRegistry.get(activeSessionId);
-      sessionRegistry.set(activeSessionId, { ...entry, name: rpcState.sessionName });
+      sessionRegistry.set(activeSessionId, { ...entry, name: rpcState.sessionName, autoRenameArmed: false });
     }
     // Remember which conversation this tab runs, for `resumeSession`'s
     // focus-existing lookup. Re-read: the `sessionName` write above may have
@@ -3193,16 +3210,12 @@
     // exchange the app asks: send the bare `/rename` builtin, which
     // generates a title from the conversation, emits `session_info_update`
     // (applied above), then prints an outcome note (swallowed above while
-    // in flight). Armed→in-flight flips on the send, so nothing
-    // re-triggers even if the model never produces a title; `lastTurnOk`
-    // keeps a failed or aborted exchange from silently spending it (omp
-    // counts error/aborted assistant messages in messageCount). The
-    // initial send simultaneously grants the refinement budget: every
-    // STITLE.REFINE_EVERY_TURNS terminal agent turns (counted on
-    // agent_end; non-terminal continuations do not count, and our own
-    // `/rename` prompts are builtins and never emit agent_end) the title
-    // is refreshed while `autoRenameLeft` lasts — and each refresh rides
-    // the same in-flight/note machinery as the initial one.
+    // in flight). The initial title remains armed until a title is observed.
+    // A refusal or failed IPC may retry after another completed terminal turn,
+    // never on repeated snapshots or while an earlier attempt is still running.
+    // `lastTurnOk` keeps failed/aborted exchanges from triggering a request.
+    // Once titled, the existing bounded refinement cadence applies: every
+    // STITLE.REFINE_EVERY_TURNS terminal agent turns, at most REFINE_MAX times.
     // Nothing in this get_state path may clear in-flight on a title check.
     // A previous version cleared it on any confirming `sessionName` — a
     // race: the next turn's `agent_start` get_state answers with the OLD
@@ -3232,30 +3245,23 @@
         // be manual).
         entry = {
           ...entry, autoRenameArmed: false, autoRenameInFlight: false,
-          autoRenameLeft: 0, autoRenameTurns: 0, autoRenameSessionId: null,
+          autoRenameAttempt: null, autoRenameLeft: 0, autoRenameTurns: 0, autoRenameSessionId: null,
         };
         sessionRegistry.set(activeSessionId, entry);
       }
       // Settings → Session "Name tabs automatically" off: neither the first
       // title nor a refresh is sent. Tabs stay armed, so turning it back on
       // titles the ones still untitled at their next settled turn.
-      if (sessionPrefs.autoName && STITLE.shouldAutoRename(rpcState, entry.autoRenameArmed, lastTurnOk)) {
-        sessionRegistry.set(activeSessionId, {
-          ...entry, autoRenameArmed: false, autoRenameInFlight: true,
-          autoRenameLeft: STITLE.REFINE_MAX, autoRenameTurns: 0,
-        });
-        _send({ type: "prompt", message: "/rename" });
-      } else if (sessionPrefs.autoName && !entry.autoRenameInFlight &&
+      if (sessionPrefs.autoName && !entry.autoRenameInFlight &&
+          (!entry.autoRenameAttempt || entry.autoRenameTurns > 0) &&
+          STITLE.shouldAutoRename(rpcState, entry.autoRenameArmed, lastTurnOk)) {
+        _sendAutoRename(entry, false);
+      } else if (sessionPrefs.autoName && !entry.autoRenameArmed && !entry.autoRenameInFlight &&
                  STITLE.shouldRefineTitle(rpcState, entry.autoRenameTurns ?? 0,
                                           entry.autoRenameLeft ?? 0, lastTurnOk)) {
-        // Budget is spent at send, not at confirmation: a low-signal or
-        // failed generation costs one refresh slot, which keeps the total
-        // tiny-model cost bounded even if the model keeps refusing.
-        sessionRegistry.set(activeSessionId, {
-          ...entry, autoRenameInFlight: true,
-          autoRenameLeft: entry.autoRenameLeft - 1, autoRenameTurns: 0,
-        });
-        _send({ type: "prompt", message: "/rename" });
+        // A failed refresh still spends its slot; only the initial title
+        // remains eligible until it succeeds.
+        _sendAutoRename(entry, true);
       }
     }
 

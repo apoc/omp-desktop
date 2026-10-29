@@ -1,74 +1,20 @@
-/* Native context policy: the snapshot is authoritative; edits are scoped. */
-const _CP_IDS = new Set([
-  "threshold",
-  "budget",
-  "enabled",
-  "method",
-  "asyncEnabled",
-  "midTurnEnabled",
-]);
-const _CP_PRIMARY = new Set(["threshold", "budget", "enabled"]);
-
-function _CP_owner(policy) {
-  return policy?.supported
-    ? JSON.stringify([
-        policy.profileId,
-        policy.model?.provider,
-        policy.model?.id,
-        policy.sessionId,
-        policy.sessionFile,
-      ])
-    : null;
+/* One in-place target editor is shared by the Context card and Settings. */
+const _CP_finite = (n) => typeof n === "number" && Number.isFinite(n);
+const _CP_number = (n) =>
+  _CP_finite(n) ? Math.round(n).toLocaleString() : "—";
+const _CP_percent = (n) => (_CP_finite(n) ? `${Number(n.toFixed(2))}%` : "—");
+const _CP_message = (error) =>
+  typeof error === "string" ? error : error?.message || String(error || "");
+function _CP_source(target) {
+  const source = target?.source || "unavailable";
+  if (source === "conversation") return "Session";
+  if (source === "profile") return "Profile default";
+  return `Inherited · ${source}`;
 }
 
-function _CP_controls(policy, scope = "conversation") {
-  const controls =
-    scope === "profile" && Array.isArray(policy?.profileControls)
-      ? policy.profileControls
-      : policy?.controls || [];
-  return controls.filter(
-    (control) =>
-      _CP_IDS.has(control.id) &&
-      ["boolean", "number", "select"].includes(control.type),
-  );
-}
-
-function _CP_values(policy, scope) {
-  return Object.fromEntries(
-    _CP_controls(policy, scope).map((control) => [
-      control.id,
-      control.type === "number"
-        ? control.value == null
-          ? ""
-          : String(control.value)
-        : control.value,
-    ]),
-  );
-}
-
-function _CP_snapshot(policy, scope) {
-  const values = _CP_values(policy, scope);
-  return {
-    owner: _CP_owner(policy),
-    revision: policy.revision,
-    values,
-    draft: { ...values },
-    key: JSON.stringify(values),
-  };
-}
-
-function _CP_dirty(state) {
-  return !!state && JSON.stringify(state.draft) !== state.key;
-}
-
-function _CP_message(error) {
-  return typeof error === "string"
-    ? error
-    : error?.message || String(error || "");
-}
-
-function ContextPolicyEditor({
+function ContextPolicyGauge({
   policy,
+  ctx,
   loading = false,
   saving = false,
   error = null,
@@ -76,107 +22,106 @@ function ContextPolicyEditor({
   onApply,
   profileName,
 }) {
-  const owner = _CP_owner(policy);
-  const [scope, setScope] = React.useState("profile");
-  const controls = _CP_controls(policy, scope);
-  const profileKey = JSON.stringify(_CP_values(policy, "profile"));
-  const conversationKey = JSON.stringify(_CP_values(policy, "conversation"));
-  const valuesKey = scope === "profile" ? profileKey : conversationKey;
-  const [drafts, setDrafts] = React.useState(() =>
-    owner
-      ? {
-          profile: _CP_snapshot(policy, "profile"),
-          conversation: _CP_snapshot(policy, "conversation"),
-        }
-      : {},
-  );
-  const state = drafts[scope];
+  const T = window.OMP_CONTEXT_TARGET;
+  const [open, setOpen] = React.useState(false);
+  const [draft, setDraft] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
   const [localError, setLocalError] = React.useState(null);
   const [notice, setNotice] = React.useState(null);
-  const [ack, setAck] = React.useState(null);
+  const [helpDismissal, setHelpDismissal] = React.useState(0);
+  const trigger = React.useRef(null);
+  const surfaceRef = React.useRef(null);
+  const savedDrag = React.useRef(null);
+  const latest = React.useRef({ policy, ctx });
   const busyRef = React.useRef(false);
-  const latest = React.useRef(policy);
-  const previousOwner = React.useRef(owner);
-  latest.current = policy;
-  const scopeId = React.useId();
-
+  latest.current = { policy, ctx };
+  const bounds = T.bounds(policy);
+  const mismatch = !!ctx?.modelKey && ctx.modelKey !== T.modelKey(policy);
+  const available = !!T.createDraft(policy) && !mismatch;
+  const stale = open && T.stale(draft, policy, ctx?.modelKey);
   React.useEffect(() => {
-    if (!owner) return;
-    if (previousOwner.current !== owner) {
-      previousOwner.current = owner;
-      setScope("profile");
-      setNotice(null);
-      setLocalError(null);
-    }
-    const confirmed =
-      ack && ack.owner === owner && policy.revision === ack.revision;
-    if (ack && (confirmed || ack.owner !== owner)) {
-      setAck(null);
-      if (confirmed) setNotice("Policy refreshed.");
-    }
-    setDrafts((previous) => {
-      const next = { ...previous };
-      let changed = false;
-      for (const target of ["profile", "conversation"]) {
-        const old = previous[target];
-        const key = target === "profile" ? profileKey : conversationKey;
-        if (
-          !old ||
-          old.owner !== owner ||
-          (confirmed && ack.scope === target) ||
-          (!_CP_dirty(old) &&
-            (old.revision !== policy.revision || old.key !== key))
-        ) {
-          next[target] = _CP_snapshot(policy, target);
-          changed = true;
-        }
-      }
-      return changed ? next : previous;
+    if (!open) return;
+    requestAnimationFrame(() => {
+      const surface = surfaceRef.current;
+      (
+        surface?.querySelector('[role="slider"]:not([aria-disabled="true"])') ||
+        surface?.querySelector("button:not(:disabled)")
+      )?.focus();
     });
-  }, [owner, policy?.revision, profileKey, conversationKey, ack]);
-
-  const dirty = _CP_dirty(state);
-  const stale =
-    !!state &&
-    !!owner &&
-    (state.owner !== owner ||
-      state.revision !== policy.revision ||
-      state.key !== valuesKey ||
-      (!!ack && ack.owner === owner && ack.revision !== policy.revision));
-  const pending = loading || saving || busy;
-  const disabled = pending || !state || state.owner !== owner || !!ack;
-  const edit = (id, value) => {
-    setNotice(null);
+  }, [open, stale]);
+  const pending = busy || loading || saving;
+  const disabled = pending || stale || !available;
+  const dirty = T.dirty(draft);
+  const optionsChanged =
+    !!draft &&
+    ["enabled", "method", "asyncEnabled", "midTurnEnabled"].some(
+      (id) => !Object.is(draft.values[id], draft.initial[id]),
+    );
+  const modelUsage =
+    !policy?.model || !ctx?.modelKey || ctx.modelKey === T.modelKey(policy);
+  const usage =
+    ctx?.status === "ready" && modelUsage && _CP_finite(ctx?.pct)
+      ? ctx.pct
+      : null;
+  const used = ctx?.status === "ready" && modelUsage ? ctx?.used : null;
+  const total = modelUsage
+    ? (ctx?.total ?? policy?.model?.contextWindow)
+    : null;
+  const target = mismatch ? null : policy?.target;
+  const preview = draft?.targetChange === "reset" ? target?.inherited : target;
+  const numericDraft = draft?.percent !== "" ? Number(draft?.percent) : NaN;
+  const previewPercent =
+    draft?.targetChange === "percent" && Number.isFinite(numericDraft)
+      ? numericDraft
+      : preview?.percent;
+  const previewTokens =
+    draft?.targetChange === "percent" &&
+    Number.isFinite(numericDraft) &&
+    _CP_finite(policy?.model?.contextWindow)
+      ? Math.floor((policy.model.contextWindow * numericDraft) / 100)
+      : preview?.tokens;
+  const exceeded =
+    usage != null &&
+    _CP_finite(previewPercent) &&
+    usage >= previewPercent &&
+    (draft ? draft.values.enabled : policy?.enabled);
+  const shadowed =
+    !!target?.conversationOverride && draft?.targetChange === "percent";
+  const profile = profileName || policy?.profileId || "this profile";
+  const close = () => {
+    setOpen(false);
+    setDraft(null);
     setLocalError(null);
-    setDrafts((previous) =>
-      previous[scope]
-        ? {
-            ...previous,
-            [scope]: {
-              ...previous[scope],
-              draft: { ...previous[scope].draft, [id]: value },
-            },
-          }
-        : previous,
+    requestAnimationFrame(() => trigger.current?.focus());
+  };
+  const begin = () => {
+    const next = T.createDraft(policy);
+    if (!next || mismatch || pending) return;
+    setDraft(next);
+    setLocalError(null);
+    setNotice(null);
+    setOpen(true);
+  };
+  const edit = (id, value) => {
+    setLocalError(null);
+    setNotice(null);
+    setDraft(
+      (old) => old && { ...old, values: { ...old.values, [id]: value } },
     );
   };
-  const useLatest = () => {
-    if (!policy?.supported) return;
-    setAck(null);
-    setDrafts((previous) => ({
-      ...previous,
-      [scope]: _CP_snapshot(policy, scope),
-    }));
+  const setPercent = (value) => {
     setLocalError(null);
     setNotice(null);
+    setDraft(
+      (old) =>
+        old && { ...old, percent: String(value), targetChange: "percent" },
+    );
   };
   const refresh = async () => {
-    if (!onRefresh || busyRef.current || loading || saving) return;
+    if (!onRefresh || busyRef.current || pending) return;
     busyRef.current = true;
     setBusy(true);
     setLocalError(null);
-    setNotice(null);
     try {
       await onRefresh();
     } catch (failure) {
@@ -186,94 +131,71 @@ function ContextPolicyEditor({
       setBusy(false);
     }
   };
-  const apply = async (reset) => {
+  const save = async (scope) => {
     if (
       !onApply ||
       busyRef.current ||
-      pending ||
       disabled ||
-      stale ||
-      (!reset && !dirty)
+      !dirty ||
+      (scope === "profile" && draft.targetChange === "reset")
     )
       return;
-    const values = {};
-    if (!reset) {
-      const thresholdChanged = !Object.is(
-        state.draft.threshold,
-        state.values.threshold,
-      );
-      const budgetChanged = !Object.is(state.draft.budget, state.values.budget);
-      const thresholdTouched = thresholdChanged || budgetChanged;
-      if (
-        scope === "profile" &&
-        policy.conversationOverride &&
-        !Array.isArray(policy.profileControls) &&
-        thresholdTouched
-      ) {
-        setLocalError(
-          "Saved profile threshold values are unavailable. Reload before changing the profile threshold.",
-        );
-        return;
-      }
-      for (const control of controls) {
-        const bounds =
-          control.id === "budget"
-            ? policy.budgetBounds?.[state.draft.threshold]
-            : null;
-        const min = bounds?.min ?? control.min,
-          max = bounds?.max ?? control.max;
-        const value = state.draft[control.id];
-        const coupled =
-          thresholdTouched &&
-          (control.id === "threshold" ||
-            (control.id === "budget" && state.draft.threshold !== "inherit"));
-        if (!coupled && Object.is(value, state.values[control.id])) continue;
-        if (
-          control.id === "budget" &&
-          state.draft.threshold === "inherit" &&
-          thresholdTouched
-        )
-          continue;
-        if (control.type === "number") {
-          const parsed = Number(value);
-          if (
-            value === "" ||
-            !Number.isFinite(parsed) ||
-            (min != null && parsed < min) ||
-            (max != null && parsed > max)
-          ) {
-            setLocalError(
-              `Enter a valid value for ${control.label}${min != null ? ` (minimum ${min})` : ""}${max != null ? ` (maximum ${max})` : ""}.`,
-            );
-            return;
-          }
-          values[control.id] = parsed;
-        } else {
-          values[control.id] = value;
-        }
-      }
+    let values;
+    try {
+      values = T.requestValues(draft, policy);
+    } catch (failure) {
+      setLocalError(_CP_message(failure));
+      return;
     }
+    const owner = draft.owner,
+      revision = draft.revision;
+    const model = { provider: policy.model.provider, id: policy.model.id };
     busyRef.current = true;
     setBusy(true);
     setLocalError(null);
     setNotice(null);
     try {
-      const refreshed = await onApply({
-        scope,
-        reset,
-        values,
-        revision: state.revision,
-        model: { provider: policy.model?.provider, id: policy.model?.id },
-      });
-      const returned =
-        refreshed?.supported &&
-        Array.isArray(refreshed.controls) &&
-        _CP_owner(refreshed) === owner;
-      if (returned && _CP_owner(latest.current) === owner) {
-        setAck({ owner, scope, revision: refreshed.revision });
-      }
+      const returned = await onApply({ scope, values, revision, model });
+      if (
+        T.owner(latest.current.policy) !== owner ||
+        (latest.current.ctx?.modelKey &&
+          latest.current.ctx.modelKey !== draft.modelKey)
+      )
+        return;
+      if (
+        !returned?.supported ||
+        T.owner(returned) !== owner ||
+        !returned.target
+      )
+        throw new Error(
+          "The updated policy could not be confirmed. Refresh before trying again.",
+        );
+      const result = returned.target;
+      const targetSaved = Object.hasOwn(values, "targetPercent");
+      const shadowed =
+        scope === "profile" && targetSaved && result.source !== "profile";
+      const requestedTokens =
+        typeof values.targetPercent === "number"
+          ? Math.floor(
+              (policy.model.contextWindow * values.targetPercent) / 100,
+            )
+          : null;
+      const targetDiffers =
+        requestedTokens != null && requestedTokens !== result.tokens;
+      setNotice(
+        (scope === "profile"
+          ? `Default saved in ${profile}.`
+          : "Saved for this conversation.") +
+          (shadowed ? ` ${_CP_source(result)} still takes precedence.` : "") +
+          (targetDiffers
+            ? ` Effective target remains ${_CP_percent(result.percent)}.`
+            : ""),
+      );
+      setOpen(false);
+      setDraft(null);
+      requestAnimationFrame(() => trigger.current?.focus());
     } catch (failure) {
-      if (_CP_owner(latest.current) === owner)
+      if (T.owner(latest.current.policy) === owner)
         setLocalError(_CP_message(failure));
     } finally {
       busyRef.current = false;
@@ -281,164 +203,90 @@ function ContextPolicyEditor({
     }
   };
   const visibleError = localError || (error && _CP_message(error));
-  const primary = controls.filter((control) => _CP_PRIMARY.has(control.id));
-  const advanced = controls.filter((control) => !_CP_PRIMARY.has(control.id));
-  const missingProfileBudget =
-    scope === "profile" &&
-    policy?.conversationOverride &&
-    !Array.isArray(policy.profileControls);
-  const field = (control) => {
-    const bounds =
-      control.id === "budget"
-        ? policy?.budgetBounds?.[state?.draft.threshold]
-        : null;
-    return (
-      <window.ContextPolicyField
-        key={control.id}
-        control={bounds ? { ...control, ...bounds } : control}
-        value={state?.draft[control.id]}
-        methods={policy?.methods}
-        disabled={
-          disabled ||
-          (control.id === "budget" && state?.draft.threshold === "inherit") ||
-          (missingProfileBudget &&
-            (control.id === "threshold" || control.id === "budget"))
-        }
-        onChange={(value) => edit(control.id, value)}
-      />
-    );
-  };
-
   return (
     <section
       className="context-policy-editor"
-      aria-label="Context policy editor"
+      aria-label="Context usage and auto-compaction"
+      data-st-esc={open ? "" : undefined}
       onKeyDown={(event) => {
-        if (event.key === "Escape") event.stopPropagation();
+        if (event.key === "Escape" && open) {
+          event.preventDefault();
+          event.stopPropagation();
+          const tips = event.currentTarget.querySelectorAll(
+            ".context-policy-help-wrap.is-open .context-policy-help-text",
+          );
+          if (Array.from(tips).some((tip) => tip.getClientRects().length))
+            setHelpDismissal((value) => value + 1);
+          else close();
+        }
       }}
     >
-      <window.ContextPolicySummary
-        policy={policy}
-        loading={loading}
-        error={error}
-        profileName={profileName}
-      />
-      <div className="context-policy-toolbar">
-        <span className="context-policy-kicker">edit policy</span>
-        {onRefresh && (
-          <button
-            type="button"
-            className="context-policy-link"
-            onClick={refresh}
-            disabled={pending}
-          >
-            Refresh
-          </button>
-        )}
-      </div>
-      {!policy?.supported ? (
-        <p className="context-policy-note">
-          Editing is unavailable for this snapshot.
+      {!open && (
+        <window.ContextPolicyCollapsed
+          trigger={trigger}
+          begin={begin}
+          available={available && !pending}
+          usage={usage}
+          used={used}
+          total={total}
+          target={target}
+          policy={policy}
+          loading={loading}
+          number={_CP_number}
+          percent={_CP_percent}
+          source={_CP_source}
+        />
+      )}
+      {!open && exceeded && (
+        <p className="context-policy-warning" role="status">
+          Current usage is already at or above the auto-compaction target.
         </p>
-      ) : (
-        <>
-          <fieldset className="context-policy-scope" disabled={disabled}>
-            <legend>Apply to</legend>
-            <label>
-              <input
-                type="radio"
-                name={scopeId}
-                value="profile"
-                checked={scope === "profile"}
-                onChange={() => {
-                  setScope("profile");
-                  setNotice(null);
-                }}
-              />{" "}
-              Profile default
-            </label>
-            <label>
-              <input
-                type="radio"
-                name={scopeId}
-                value="conversation"
-                checked={scope === "conversation"}
-                onChange={() => {
-                  setScope("conversation");
-                  setNotice(null);
-                }}
-              />{" "}
-              This conversation
-            </label>
-          </fieldset>
-          <p className="context-policy-note">
-            {scope === "profile"
-              ? `Changes apply to conversations inheriting ${profileName || policy.profileId || "this profile"}. A conversation override can still take precedence.`
-              : "Changes apply only to this conversation; the profile default is unchanged."}{" "}
-            {scope === "profile" && Array.isArray(policy.profileControls)
-              ? "Fields show the saved profile values."
-              : "Fields show the current effective policy."}{" "}
-            Threshold and budget are applied together unless inherited.
-          </p>
-          {missingProfileBudget && (
-            <p className="context-policy-note">
-              Saved profile threshold values are unavailable. Threshold editing
-              is disabled to avoid copying the conversation override.
-            </p>
-          )}
-          {stale && (
-            <div className="context-policy-stale" role="status">
-              <span>
-                {ack
-                  ? "Waiting for the refreshed policy. Refresh or use the latest available settings."
-                  : "Policy changed externally. Reload the latest settings before applying; your draft will be discarded."}
-              </span>
-              <button
-                type="button"
-                className="context-policy-link"
-                disabled={pending}
-                onClick={useLatest}
-              >
-                Use latest
-              </button>
-            </div>
-          )}
-          <div className="context-policy-fields">{primary.map(field)}</div>
-          {advanced.length > 0 && (
-            <details className="context-policy-advanced">
-              <summary>Advanced options</summary>
-              <div className="context-policy-fields">{advanced.map(field)}</div>
-            </details>
-          )}
-          {controls.length === 0 && (
-            <p className="context-policy-note">
-              No editable controls are available.
-            </p>
-          )}
-          <div className="context-policy-actions">
-            <button
-              type="button"
-              className="context-policy-apply"
-              disabled={disabled || stale || !dirty || !onApply}
-              onClick={() => apply(false)}
-            >
-              {pending ? "Working…" : "Apply changes"}
-            </button>
-            <button
-              type="button"
-              className="context-policy-reset"
-              disabled={disabled || stale || !onApply}
-              onClick={() => apply(true)}
-            >
-              {scope === "profile"
-                ? "Reset profile default"
-                : "Reset conversation override"}
-            </button>
-          </div>
-          {dirty && !stale && (
-            <p className="context-policy-note">Unsaved changes</p>
-          )}
-        </>
+      )}
+      {open && draft && (
+        <window.ContextPolicySurface
+          surfaceRef={surfaceRef}
+          savedDrag={savedDrag}
+          view={{
+            policy,
+            draft,
+            usage,
+            used,
+            total,
+            target,
+            preview,
+            previewPercent,
+            previewTokens,
+            bounds,
+            stale,
+            available,
+            pending,
+            disabled,
+            dirty,
+            optionsChanged,
+            exceeded,
+            shadowed,
+            profile,
+            canApply: !!onApply,
+            helpDismissal,
+          }}
+          number={_CP_number}
+          onLatest={() => {
+            setDraft(T.createDraft(policy));
+            setLocalError(null);
+          }}
+          onPercent={setPercent}
+          onRestoreDrag={() => {
+            if (savedDrag.current) setDraft(savedDrag.current);
+            savedDrag.current = null;
+          }}
+          onReset={() => {
+            setDraft((old) => ({ ...old, targetChange: "reset" }));
+            setLocalError(null);
+          }}
+          onEdit={edit}
+          onSave={save}
+          onClose={close}
+        />
       )}
       {visibleError && (
         <p className="context-policy-error" role="alert">
@@ -450,8 +298,21 @@ function ContextPolicyEditor({
           {notice}
         </p>
       )}
+      {!available && !open && onRefresh && (
+        <button
+          type="button"
+          className="context-policy-link context-policy-close"
+          disabled={pending}
+          onClick={refresh}
+        >
+          Refresh policy
+        </button>
+      )}
     </section>
   );
 }
 
-window.ContextPolicyEditor = ContextPolicyEditor;
+function ContextPolicyEditor(props) {
+  return <ContextPolicyGauge {...props} />;
+}
+Object.assign(window, { ContextPolicyGauge, ContextPolicyEditor });

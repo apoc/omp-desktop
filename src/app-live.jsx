@@ -240,7 +240,7 @@ function App() {
   const policyUi = window.useContextPolicy({
     bridge, tabId: activeProject.id, profileId: activeProfileId, profileName: activeProfileLabel,
     processStartedAt: activeProject.processStartedAt,
-    model, active: t.showContext || (stab.active && stab.section === "agent"), snapshot: contextPolicy,
+    model, ctx, active: t.showContext || (stab.active && stab.section === "agent"), snapshot: contextPolicy,
   });
   // Status-bar approvals cell: the mode the rendered tab's omp runs, or
   // `running ⇢ target` while a change waits for its turn to end. Read
@@ -1013,6 +1013,12 @@ function App() {
             updateVersion={updater.pillVersion}
             onUpdate={updater.openModal}
             onCheckUpdate={updater.check}
+            ambientHidden={!showRail || side !== "rail"}
+            onShowAmbient={() => {
+              setTweak("layout", "rail");
+              setSide("rail");
+              setStab(s => window.OMP_SETTINGS_TAB.selectProject(s));
+            }}
             settings={{ open: stab.open, active: stab.active, changed: settingsChanged }}
             onSelectSettings={() => openSettings()}
             onCloseSettings={closeSettings}

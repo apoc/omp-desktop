@@ -14,6 +14,7 @@
 @import "./agent-context.css";
 @import "./context-inspector.css";
 @import "./context-policy.css";
+@import "./context-policy-ring.css";
 @import "./pr-status.css";
 @import "./browser.css";
 @import "./widgets.css";

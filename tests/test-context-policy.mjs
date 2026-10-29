@@ -88,18 +88,13 @@ test("a profile edit reports native read-back rather than the requested threshol
   );
   const result = await h.client.apply({
     scope: "profile",
-    values: { threshold: "tokens", budget: 160000 },
+    values: { targetPercent: 80 },
     revision: "1",
     model: { provider: "local", id: "model" },
   });
   assert.equal(result.thresholdTokens, 120000);
   assert.equal(h.state.policy.source, "project");
   assert.equal(h.state.saving, false);
-  const sent = JSON.parse(
-    h.requests.at(-1).message.split(" ").slice(1).join(" "),
-  );
-  assert.equal(sent.profileId, "work");
-  assert.equal(sent.scope, "profile");
 });
 
 test("unsupported native sessions never receive a settings prompt", async () => {

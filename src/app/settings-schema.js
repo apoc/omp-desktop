@@ -110,7 +110,7 @@
         custom("railOrder", "Card order", "Drag cards or use the move buttons. Hidden cards keep their place. Also available in Ambient controls at the top of the rail.", "ambient arrange reorder position top bottom", { keys: ["railOrder"] }),
       ] },
       { name: "Built-in cards", rows: [
-        tweak("showContext", "toggle", "Context", "Current model window usage, grouped skills and instructions, tools, MCP calls and memory. Expand or search the read-only inspector.", "tokens compaction model skills repo global shared omp profile provenance source instructions agent context used session MCP memory"),
+        tweak("showContext", "toggle", "Context", "Usage and the compaction target. Inspect skills, instructions, tools and memory on demand.", "tokens compaction model skills repo global shared omp profile provenance source instructions agent context used session MCP memory"),
         tweak("showBackgroundTasks", "toggle", "Background tasks", "Running jobs, the agent's wait, and recent outcomes. Hiding this card never stops tasks.", "activity async bash eval task jobs background waiting"),
         tweak("showRadar", "toggle", "Agent radar", "What the agent is doing right now.", "activity"),
         tweak("showSubagents", "toggle", "Subagents", "Running and finished subagents of this tab.", "tasks"),
@@ -149,7 +149,7 @@
         custom("goalContinue", "Keep working on a goal", "omp continues an active goal on its own after each turn instead of waiting for you. Costs tokens while unattended.", "goal auto continue"),
       ] },
       { name: "omp behaviour", rows: [
-        custom("contextPolicy", "Context budget and compaction", "Edit omp's native context policy. Saved defaults belong to the selected profile; conversation overrides are explicit.", "compaction context window threshold budget handoff tokens profile"),
+        custom("contextPolicy", "Context and compaction", "Adjust the selected model's target here or directly in the Context ring.", "compaction context window threshold budget percentage percent model handoff tokens profile"),
         tweak("autoRetry", "toggle", "Retry failed requests", "omp retries a request the provider refused or dropped, with a retry row you can stop.", "retry error rate limit"),
       ] },
     ] },

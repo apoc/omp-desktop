@@ -5,19 +5,6 @@
 .context-card-head {
   color: var(--fg-2);
 }
-.context-card-toggle {
-  margin-left: auto;
-  padding: 3px 4px;
-  border: 0;
-  border-radius: 4px;
-  background: none;
-  color: var(--fg-2);
-  font: inherit;
-  font-size: var(--d-text-xs);
-  cursor: pointer;
-}
-.context-card-toggle:hover,
-.context-card-links button:hover,
 .context-card-inspect:hover {
   background: var(--bg-hover);
   color: var(--fg);
@@ -27,48 +14,28 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-.context-card-metrics {
-  min-width: 0;
-  color: var(--fg-3);
-  font-size: var(--d-text-xs);
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-.context-card-metrics > :first-child {
-  color: var(--fg);
-  font-size: var(--d-text-sm);
-}
 .context-card .rail-spark-foot {
   color: var(--fg-3);
 }
 .context-card .rail-spark-foot span:last-child {
   color: var(--accent);
 }
-.context-card-expanded {
-  display: grid;
-  gap: 7px;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
+.ci-breakdown {
+  margin: 0 0 14px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--line);
 }
-.context-card-expanded[hidden] {
-  display: none;
-}
-.context-card-subhead {
-  display: flex;
-  justify-content: space-between;
-  gap: 6px;
+.ci-breakdown summary {
+  padding: 6px 0;
   color: var(--fg-2);
-  font-size: var(--d-text-xs);
-  font-weight: 600;
+  font-size: var(--d-text-sm);
+  cursor: pointer;
 }
-.context-card-subhead span:last-child {
-  color: var(--fg-3);
-  font-weight: 400;
+.ci-breakdown[open] summary {
+  margin-bottom: 8px;
 }
-.context-card-note {
-  margin: 0;
-  color: var(--fg-3);
-  font-size: var(--d-text-xs);
+.ci-breakdown .ci-state {
+  margin-bottom: 0;
 }
 .context-breakdown {
   display: grid;
@@ -109,12 +76,6 @@
   background: var(--accent);
   border-radius: inherit;
 }
-.context-card-links {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 3px;
-}
-.context-card-links button,
 .context-card-inspect {
   display: flex;
   align-items: center;
@@ -131,7 +92,6 @@
   text-align: left;
   cursor: pointer;
 }
-.context-card-links button span,
 .context-card-inspect span {
   color: var(--fg-3);
 }

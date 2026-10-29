@@ -1,6 +1,7 @@
 import path from "node:path";
 import {
   createPolicyNative,
+  PolicyReadRace,
   plain,
   same,
   valueAt,
@@ -19,10 +20,12 @@ export default function desktopContextPolicy(api) {
   const entryType = "omp-desktop:context-policy";
   let native, settings, activeContext, activeSession, unsubscribe;
   let owned = new Map(),
-    conversation = {},
+    conversation = { version: 2, values: {}, targets: {} },
     lastPublished,
     suppress = 0,
-    closed = false;
+    closed = false,
+    generation = 0,
+    publishSequence = 0;
   let serial = Promise.resolve();
   const notify = (ctx, id, result) =>
     ctx.ui.notify(prefix + JSON.stringify({ command, id, ...result }), "info");
@@ -46,6 +49,9 @@ export default function desktopContextPolicy(api) {
     set conversation(value) {
       conversation = value;
     },
+    get generation() {
+      return generation;
+    },
     get activeSession() {
       return activeSession;
     },
@@ -55,6 +61,7 @@ export default function desktopContextPolicy(api) {
   const {
     restoreOwned,
     restoreBranch,
+    refreshConversation,
     normalizeChanges,
     validateHeadroom,
     profilePlan,
@@ -73,6 +80,8 @@ export default function desktopContextPolicy(api) {
         "getProvenance",
         "overlayLayers",
         "overlay",
+        "getConfigFiles",
+        "getProjectSettings",
         "onEffectiveChange",
         "reloadFromDisk",
         "flush",
@@ -86,16 +95,20 @@ export default function desktopContextPolicy(api) {
       restoreOwned();
       unsubscribe?.();
       settings = next;
+      generation++;
       unsubscribe = settings.onEffectiveChange(
         Object.values(native.handles),
-        scheduleBroadcast,
+        () => {
+          generation++;
+          scheduleBroadcast();
+        },
       );
     }
   }
   function rawOverride(handle) {
     return valueAt(settings.overlayLayers().overrides, handle.segments);
   }
-  function publish(ctx) {
+  async function publish(ctx) {
     if (
       closed ||
       suppress ||
@@ -105,12 +118,46 @@ export default function desktopContextPolicy(api) {
       !same(identity(ctx), activeSession)
     )
       return;
-    let policy;
+    const sequence = ++publishSequence,
+      session = identity(ctx),
+      model = modelOf(ctx);
+    const boundSettings = settings;
+    let policy, publishedGeneration, settingsRevision;
     try {
-      policy = snapshot(ctx);
+      if (
+        sequence !== publishSequence ||
+        closed ||
+        suppress ||
+        boundSettings !== settings ||
+        !same(session, activeSession) ||
+        !same(session, identity(ctx)) ||
+        !same(model, modelOf(ctx))
+      )
+        return;
+      publishedGeneration = generation;
+      settingsRevision = settings.revision;
+      policy = await snapshot(ctx);
     } catch (error) {
+      if (
+        publishedGeneration === undefined ||
+        generation !== publishedGeneration ||
+        boundSettings.revision !== settingsRevision
+      )
+        return;
       policy = unsupported(ctx, `Native policy unavailable: ${error.message}`);
     }
+    if (
+      sequence !== publishSequence ||
+      closed ||
+      suppress ||
+      boundSettings !== settings ||
+      generation !== publishedGeneration ||
+      boundSettings.revision !== settingsRevision ||
+      !same(session, activeSession) ||
+      !same(session, identity(ctx)) ||
+      !same(model, modelOf(ctx))
+    )
+      return;
     const key = JSON.stringify(policy);
     if (key !== lastPublished) {
       lastPublished = key;
@@ -120,8 +167,64 @@ export default function desktopContextPolicy(api) {
   function scheduleBroadcast() {
     if (suppress || !activeContext) return;
     queueMicrotask(() => {
-      if (activeContext) publish(activeContext);
+      if (activeContext) void publish(activeContext);
     });
+  }
+  async function checkedSnapshot(ctx) {
+    const session = identity(ctx),
+      model = modelOf(ctx),
+      boundSettings = settings,
+      settingsRevision = settings.revision,
+      currentGeneration = generation;
+    const policy = await snapshot(ctx);
+    if (
+      boundSettings !== settings ||
+      settingsRevision !== boundSettings.revision ||
+      currentGeneration !== generation ||
+      !same(session, activeSession) ||
+      !same(session, identity(ctx)) ||
+      !same(model, modelOf(ctx))
+    )
+      throw new PolicyReadRace(
+        "The conversation, model or policy changed; reload the policy",
+      );
+    return policy;
+  }
+  // OMP increments Settings.revision on every disk reload, even when the
+  // compaction policy did not change. A watcher can finish such a reload while
+  // the inherited-settings view is being prepared. Retry only the read in that
+  // case; the request's model, session and policy revision remain guarded.
+  async function readCurrent(ctx, session, model) {
+    const boundSettings = settings;
+    for (let attempt = 0; ; attempt++) {
+      const before = boundSettings.revision,
+        beforeGeneration = generation;
+      try {
+        await refreshConversation(ctx);
+        const policy = await checkedSnapshot(ctx);
+        if (
+          settings !== boundSettings ||
+          !same(session, activeSession) ||
+          !same(session, identity(ctx)) ||
+          !same(model, modelOf(ctx))
+        )
+          throw new Error(
+            "The conversation or model changed; reload the policy",
+          );
+        return policy;
+      } catch (error) {
+        if (
+          !(error instanceof PolicyReadRace) ||
+          attempt >= 7 ||
+          settings !== boundSettings ||
+          !same(session, activeSession) ||
+          !same(session, identity(ctx)) ||
+          !same(model, modelOf(ctx)) ||
+          (before === boundSettings.revision && beforeGeneration === generation)
+        )
+          throw error;
+      }
+    }
   }
   async function processRequest(ctx, request) {
     if (
@@ -158,7 +261,7 @@ export default function desktopContextPolicy(api) {
     if (!activeSession || !same(identity(ctx), activeSession)) {
       activeContext = ctx;
       activeSession = identity(ctx);
-      restoreBranch(ctx);
+      await restoreBranch(ctx);
       lastPublished = undefined;
     }
     if (request.op === "get") {
@@ -171,7 +274,7 @@ export default function desktopContextPolicy(api) {
         !same(model, modelOf(ctx))
       )
         throw new Error("The conversation or model changed; reload the policy");
-      return snapshot(ctx);
+      return await readCurrent(ctx, session, model);
     }
     if (
       !["profile", "conversation"].includes(request.scope) ||
@@ -195,7 +298,7 @@ export default function desktopContextPolicy(api) {
       !same(model, modelOf(ctx))
     )
       throw new Error("The conversation or model changed; reload the policy");
-    const current = snapshot(ctx);
+    const current = await readCurrent(ctx, session, model);
     if (
       !current.supported ||
       current.revision !== request.revision ||
@@ -205,24 +308,26 @@ export default function desktopContextPolicy(api) {
       throw new Error("The policy or model changed; reload before applying");
     if (request.reset && Object.keys(request.values ?? {}).length)
       throw new Error("Reset cannot include policy values");
-    const baseline = Object.fromEntries(
-      (request.scope === "profile"
-        ? current.profileControls
-        : current.controls
-      ).map((item) => [item.id, item.value]),
-    );
-    const changes = normalizeChanges(request, baseline);
+    const changes = normalizeChanges(request);
     if (!request.reset && !Object.keys(changes).length)
       throw new Error("No policy changes provided");
     validateHeadroom(ctx, changes);
     const plan =
       request.scope === "profile"
-        ? profilePlan(changes, !!request.reset)
+        ? profilePlan(changes, !!request.reset, model)
         : null;
     suppress++;
     try {
-      if (plan) await writeProfile(plan);
-      else
+      if (plan) {
+        await writeProfile(
+          plan,
+          () =>
+            same(session, identity(ctx)) &&
+            same(session, activeSession) &&
+            same(model, modelOf(ctx)),
+          () => refreshConversation(ctx),
+        );
+      } else
         await writeConversation(
           ctx,
           changes,
@@ -233,7 +338,7 @@ export default function desktopContextPolicy(api) {
         );
       if (!same(session, identity(ctx)) || !same(model, modelOf(ctx)))
         throw new Error("The conversation or model changed during the update");
-      return snapshot(ctx);
+      return await checkedSnapshot(ctx);
     } finally {
       suppress--;
       scheduleBroadcast();
@@ -287,12 +392,12 @@ export default function desktopContextPolicy(api) {
           bindSettings(ctx);
           activeContext = ctx;
           activeSession = identity(ctx);
-          restoreBranch(ctx);
+          await restoreBranch(ctx);
           lastPublished = undefined;
         } finally {
           suppress--;
         }
-        publish(ctx);
+        void publish(ctx);
       } catch (error) {
         activeContext = ctx;
         activeSession = identity(ctx);
@@ -305,17 +410,24 @@ export default function desktopContextPolicy(api) {
       }
     });
   for (const event of ["agent_start", "turn_end", "agent_end"])
-    api.on(event, (_event, ctx) => {
+    api.on(event, async (_event, ctx) => {
       if (
         ctx.agent?.kind === "main" &&
         activeSession &&
         same(identity(ctx), activeSession)
       ) {
         activeContext = ctx;
-        publish(ctx);
+        if (
+          event === "agent_start" &&
+          conversation.legacy &&
+          Object.keys(conversation.targets).length
+        )
+          await refreshConversation(ctx);
+        void publish(ctx);
       }
     });
   api.on("session_shutdown", () => {
+    publishSequence++;
     closed = true;
     unsubscribe?.();
     restoreOwned();

@@ -124,6 +124,7 @@ function TabBar({
   projects, activeId, onSelect, onClose, onRename, onNew, onHistory, onNewInProject, onConfigureProject, onReorder,
   sidebarOpen, onToggleSidebar, prStatuses = {},
   profiles = [], appVersion, updateVersion, onUpdate, onCheckUpdate,
+  ambientHidden = false, onShowAmbient,
   settings, onSelectSettings, onCloseSettings,
 }) {
   // Tabs can run under different profiles, so a tab whose profile is not the
@@ -229,6 +230,12 @@ function TabBar({
         {updateVersion && (
           <button className="btn outlined update-pill" onClick={onUpdate} title={`OMP Desktop v${updateVersion} is available`}>
             <Icon name="arrowUp" size={9} />v{updateVersion}
+          </button>
+        )}
+        {ambientHidden && (
+          <button type="button" className="btn ghost ambient-reopen" onClick={onShowAmbient}
+            aria-label="Show Ambient" title="Show Ambient">
+            <Icon name="radar" size={12} />Ambient
           </button>
         )}
         <button className="btn ghost app-version" onClick={onCheckUpdate} title="check for updates">
