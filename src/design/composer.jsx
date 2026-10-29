@@ -729,7 +729,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
 
       <div className="composer-foot">
         <button className="composer-pill" onClick={onOpenModel}>
-          <span className="dot on" />
+          <span className={`dot ${isStreaming ? "live" : "on"}`} />
           <span style={{ color: "var(--fg-2)" }}>{currentModel?.name}</span>
           <Icon name="chev" size={10} color="var(--fg-4)" />
         </button>

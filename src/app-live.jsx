@@ -1019,6 +1019,7 @@ function App() {
               tree, browser panel, subagent split) ever narrows it. */}
           <StatusBar
             ctx={liveCtx}
+            running={streaming}
             todoDone={todoCounts.done}
             todoTotal={todoCounts.total}
             onTodo={() => setPlanOpen(true)}

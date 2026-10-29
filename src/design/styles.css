@@ -351,8 +351,9 @@ input, textarea { font: inherit; color: inherit; background: transparent; border
 }
 .dot.live { background: var(--accent); box-shadow: 0 0 0 0 var(--accent-glow); animation: pulseDot 1.4s var(--loop-steps) infinite; }
 /* Accent without the pulse, for a dot that is always on screen (status bar,
-   model pill): even a stepped endless loop keeps an idle window compositing
-   every frame (measured: 3.5 s of webview CPU per idle 15 s, 0.08 s without). */
+   model pill) while its tab is idle; it pulses (`live`) only while the tab
+   runs. Even a stepped endless loop keeps an idle window compositing every
+   frame (measured: 3.5 s of webview CPU per idle 15 s, 0.08 s without). */
 .dot.on { background: var(--accent); }
 .dot.warn { background: var(--amber); }
 .dot.error { background: var(--rose); }

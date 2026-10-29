@@ -215,10 +215,12 @@ function TabBar({
 // pills below the prompt box show (and change) both. It spans the window
 // under the workspace; the st-ctx meter, st-cost and st-tps cells (each
 // with its separator) drop out when the window is narrow (layout/rail.css).
-function StatusBar({ ctx, todoDone, todoTotal, onTodo, onSettings, settingsActive = false, onChanges, onRules, approvalMode, onStats, onTree, onTerminal, terminalOpen, onBrowser, browserOpen = false }) {
+function StatusBar({ ctx, running = false, todoDone, todoTotal, onTodo, onSettings, settingsActive = false, onChanges, onRules, approvalMode, onStats, onTree, onTerminal, terminalOpen, onBrowser, browserOpen = false }) {
   return (
     <div className="status">
-      <span className="status-cell"><span className="dot on" /> connected</span>
+      {/* Pulses only while the active tab runs: an endless loop always on
+          screen keeps an idle window compositing every frame (styles.css .dot.on). */}
+      <span className="status-cell"><span className={`dot ${running ? "live" : "on"}`} /> connected</span>
       <span className="status-sep">·</span>
       <span className="status-cell st-ctx mono">
         <span style={{ color: "var(--fg-3)" }}>{ctx.label}</span>
