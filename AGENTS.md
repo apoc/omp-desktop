@@ -49,6 +49,7 @@ User-facing rail widget contract (`widgets.json`, approval, output schema v1, li
 |All JS regression scripts|`npm test`|
 |One JS regression|`node tests/test-<name>.mjs` (or `npm run test:<name>`)|
 |Probe omp RPC (needs a live omp, not in `npm test`)|`node tests/test-rpc.mjs`|
+|Simulated omp: replays a recorded session (no model, no network)|`bun build --compile scripts/omp-sim.mjs --outfile <dir>/omp.exe`, then start the app with `<dir>` first on PATH and `OMP_SIM_SESSION=<session.jsonl>` (other `OMP_SIM_*` knobs: header of `scripts/omp-sim.mjs`)|
 
 Regression files are mostly named after the `src/app/<name>.js` module they cover (`app/turn-status.js` → `test-turn-status.mjs`); exceptions: `test-markdown.mjs` (`app/marked-setup.js`), `test-recent-models.mjs` (`adapter.js`), `test-tool-output.mjs` (bash tool card), `test-updater-json.mjs` (`.github/scripts/updater-json.mjs`), `test-widget-examples.mjs` (`examples/widgets/git.sh`, parsed with `app/widgets.js`), `test-browser-runtime.mjs` (`app/browser-screen.js` and `app/use-browser.jsx`, run against DOM/React stubs). A new test file must be added to the `npm test` chain in `package.json`, with its own `test:<name>` script.
 
@@ -104,7 +105,7 @@ Regression files are mostly named after the `src/app/<name>.js` module they cove
 |`src/app/remote-view.js`, `src/app/use-remote.jsx`, `src/design/settings/rows-remote-{shared,server,phones}.jsx`|bounded phone views + serial action dispatch (`OMP_REMOTE_VIEW`), the publisher hook, shared remote settings state/controls and the server/phone row families|
 |`src/app/path-setting.js`, `src/design/path-setting.jsx`|a Rust-owned program path setting in Settings (terminal shell, browser Chromium): menu rows (`OMP_PATH_SETTING`); `usePathSetting` / `PathPicker`|
 |`src/index.html`|script load order = dependency graph|
-|`scripts/`|`build-frontend.mjs` (`dist/`), `vendor-react.mjs`, `vendor-xterm.mjs`|
+|`scripts/`|`build-frontend.mjs` (`dist/`), `vendor-react.mjs`, `vendor-xterm.mjs`, `omp-sim.mjs` (omp RPC simulator replaying a session file: full/delta `message_update`, pacing, timing log)|
 |`tests/`|JS regression scripts|
 |`.github/`|`workflows/{tests,ci,release}.yml`, `scripts/updater-json.mjs`|
 
