@@ -5,7 +5,7 @@
 
 /* ── Shared bits ────────────────────────────────────────────────────── */
 .sa-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--fg-5); }
-.sa-dot.running  { background: var(--accent); animation: pulseDot 1.4s var(--loop-steps) infinite; }
+.sa-dot.running  { background: var(--accent); animation: pulseDot 1.4s ease-in-out infinite; }
 .sa-dot.pending  { background: transparent; box-shadow: inset 0 0 0 1px var(--fg-4); }
 .sa-dot.completed { background: var(--fg-3); }
 .sa-dot.failed   { background: var(--rose); }
@@ -25,7 +25,7 @@
   color: var(--sa-tool);
   font-family: var(--font-mono); font-size: var(--d-text-xs);
 }
-.sa-tool.running { animation: pulseDot 1.6s var(--loop-steps) infinite; }
+.sa-tool.running { animation: pulseDot 1.6s ease-in-out infinite; }
 .sa-elapsed { font-family: var(--font-mono); font-size: var(--d-text-xs); color: var(--fg-4); flex: none; font-variant-numeric: tabular-nums; }
 .sa-muted { color: var(--fg-4); }
 .sa-empty { font-size: var(--d-text-xs); color: var(--fg-4); line-height: 1.5; }
@@ -89,7 +89,7 @@
 .sa-lane-track { position: relative; height: 10px; border-radius: 3px; background: var(--line-soft); overflow: hidden; transition: background 120ms; }
 .sa-lane-span { position: absolute; top: 0; bottom: 0; background: color-mix(in oklab, var(--sa-hue) 16%, transparent); }
 .sa-lane-tick { position: absolute; top: 2px; bottom: 2px; width: 3px; margin-left: -1px; border-radius: 1px; box-shadow: 0 0 4px currentColor; }
-.sa-lane-run { position: absolute; top: 1px; bottom: 1px; border-radius: 2px; opacity: 0.85; animation: pulseDot 1.6s var(--loop-steps) infinite; }
+.sa-lane-run { position: absolute; top: 1px; bottom: 1px; border-radius: 2px; opacity: 0.85; animation: pulseDot 1.6s ease-in-out infinite; }
 .sa-lane-axis { display: flex; justify-content: space-between; padding-left: 80px; font-family: var(--font-mono); font-size: 9px; color: var(--fg-5); }
 
 .sa-filters { display: flex; gap: 4px; flex-wrap: wrap; }

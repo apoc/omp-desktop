@@ -242,16 +242,17 @@
 .tab-run-dot {
   width: 6px; height: 6px; border-radius: 50%; flex: none;
 }
-.tab-run-dot.running { background: var(--accent); box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 30%, transparent); animation: tab-run-pulse 1.6s var(--loop-steps) infinite; }
+.tab-run-dot.running { background: var(--accent); box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 30%, transparent); animation: tab-run-pulse 1.6s ease-in-out infinite; }
 /* The agent yielded, a background job will wake it: a hollow ring, slower. */
-.tab-run-dot.background { box-shadow: inset 0 0 0 1.5px var(--accent); animation: tab-run-pulse 2.6s var(--loop-steps) infinite; }
+.tab-run-dot.background { box-shadow: inset 0 0 0 1.5px var(--accent); animation: tab-run-pulse 2.6s ease-in-out infinite; }
 .tab-run-dot.waiting-user { background: var(--amber); }
 .tab-run-dot.failed { background: var(--rose); }
 /* omp is retrying a failed request: an amber ring that spins. */
 .tab-run-dot.retrying { box-sizing: border-box; border: 1.5px solid var(--amber); border-top-color: transparent; animation: spin 1s linear infinite; }
 @keyframes tab-run-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
+  /* Stepped like every endless loop (styles.css, motion utilities). */
+  0%, 100% { opacity: 1; animation-timing-function: steps(4); }
+  50% { opacity: 0.45; animation-timing-function: steps(4); }
 }
 .tab-close {
   width: 1rem; height: 1rem; padding: 0;

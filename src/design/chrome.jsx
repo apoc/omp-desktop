@@ -215,12 +215,10 @@ function TabBar({
 // pills below the prompt box show (and change) both. It spans the window
 // under the workspace; the st-ctx meter, st-cost and st-tps cells (each
 // with its separator) drop out when the window is narrow (layout/rail.css).
-function StatusBar({ ctx, running = false, todoDone, todoTotal, onTodo, onSettings, settingsActive = false, onChanges, onRules, approvalMode, onStats, onTree, onTerminal, terminalOpen, onBrowser, browserOpen = false }) {
+function StatusBar({ ctx, todoDone, todoTotal, onTodo, onSettings, settingsActive = false, onChanges, onRules, approvalMode, onStats, onTree, onTerminal, terminalOpen, onBrowser, browserOpen = false }) {
   return (
     <div className="status">
-      {/* Pulses only while the active tab runs: an endless loop always on
-          screen keeps an idle window compositing every frame (styles.css .dot.on). */}
-      <span className="status-cell"><span className={`dot ${running ? "live" : "on"}`} /> connected</span>
+      <span className="status-cell"><span className="dot live" /> connected</span>
       <span className="status-sep">·</span>
       <span className="status-cell st-ctx mono">
         <span style={{ color: "var(--fg-3)" }}>{ctx.label}</span>
@@ -397,7 +395,7 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
 // (Settings → Rail, keys showContext/showRadar/showSubagents/showMinimap);
 // `children` (widget plugin cards) sit between subagents and the minimap.
 function AmbientRail({
-  ctx, activity, running = false, messages, microcopy, onClose, sparklineValues, hoveredMsgIdx, onMinimapHover, onMinimapClick,
+  ctx, activity, messages, microcopy, onClose, sparklineValues, hoveredMsgIdx, onMinimapHover, onMinimapClick,
   subagents, subagentPaneOpen, onOpenSubagent, onToggleSubagentPane, onOpenTree,
   show = {}, children,
 }) {
@@ -441,7 +439,7 @@ function AmbientRail({
             <span className="mono" style={{ color: "var(--fg-2)" }}>agent radar</span>
             <span className="chip muted mono" style={{ marginLeft: "auto" }}>last 60s</span>
           </div>
-          <ActivityRadar activity={activity} tps={ctx.tokensPerSec} running={running} />
+          <ActivityRadar activity={activity} tps={ctx.tokensPerSec} />
           <div className="legend">
             {Object.entries(TOOL_META).filter(([k]) => ["read","search","edit","bash"].includes(k)).map(([k, m]) => (
               <span key={k} className="legend-item">

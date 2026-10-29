@@ -603,7 +603,7 @@ fn take_pending_open_projects(state: State<'_, OpenProjectState>) -> Vec<String>
 /// Events a session's frontend hasn't seen yet, per its bounded event
 /// journal. Called on tab reactivation (after re-arming the live listener)
 /// to recover state that arrived while no listener was attached — the
-/// journal is in-memory only, capped per session at `EVENT_JOURNAL_CAPACITY` lines (4096) and `EVENT_JOURNAL_MAX_BYTES` (8 MiB); a caller
+/// journal is in-memory only, capped per session (`agent::EVENT_JOURNAL_CAPACITY` lines, `EVENT_JOURNAL_MAX_BYTES`); a caller
 /// whose `after_seq` predates the ring window gets `dropped: true` and
 /// falls back to its existing full-state refetch for that gap.
 #[tauri::command]

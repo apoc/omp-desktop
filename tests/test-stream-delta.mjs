@@ -96,7 +96,7 @@ check("seed copies the backend's message, so streaming on never changes it", () 
 });
 
 check("view: the last non-blank thinking and the non-empty text blocks", () => {
-  assert.deepEqual(D.view([]), { thought: null, blocks: [{ type: "text", text: "" }] });
+  assert.deepEqual(D.view([]), { thought: null, lead: null, blocks: [{ type: "text", text: "" }] });
   assert.deepEqual(
     D.view([
       { type: "thinking", thinking: "first" },
@@ -107,7 +107,7 @@ check("view: the last non-blank thinking and the non-empty text blocks", () => {
       { type: "text", text: "" },
       { type: "text", text: "b" },
     ]),
-    { thought: "first", blocks: [{ type: "text", text: "a" }, { type: "text", text: "b" }] },
+    { thought: "first", lead: "thinking", blocks: [{ type: "text", text: "a" }, { type: "text", text: "b" }] },
   );
 });
 

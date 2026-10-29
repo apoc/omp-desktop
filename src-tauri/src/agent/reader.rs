@@ -362,17 +362,18 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
                     // in between names an older seq, so the frontend still
                     // applies this frame from the replay.
                     ext_ui::record(&ext_ui, seq, frame_type, parsed.as_ref());
-                    let turn_ended = frame_type == Some("agent_end");
-                    // Last use of the parse: the in-flight copy takes its blocks.
-                    inflight::record(&inflight, seq, parsed);
                     if should_emit(&alive) {
                         let _ = app.emit(&line_event, LineEvent { seq, text: &shared });
                         // Rail widgets with a `turn_end` trigger rerun after
                         // the turn's last frame. Reuses the parse above.
-                        if turn_ended {
+                        if frame_type == Some("agent_end") {
                             crate::widgets::notify_turn_end(&app, &sid);
                         }
                     }
+                    // Last use of the parse: the in-flight copy takes its
+                    // blocks. After the journal push like `ext_ui`, so a
+                    // snapshot never names a seq the journal lacks.
+                    inflight::record(&inflight, seq, parsed);
                 }
                 Err(e) => {
                     exit_reason = format!("stdout read error: {e}");

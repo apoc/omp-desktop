@@ -23,11 +23,16 @@
   }
 
   function useListKeys({ open, count, index, setIndex, onEnter, onClose, guard = false }) {
+    // Read through a ref, as usePopoverDismiss does: the callers' inline
+    // callbacks and the moving index do not re-attach the listener every render.
+    const latest = React.useRef(null);
+    latest.current = { count, index, setIndex, onEnter, onClose };
     React.useEffect(() => {
       if (!open) return undefined;
       const take = (e) => { e.preventDefault(); if (guard) e.stopPropagation(); };
       const onKey = (e) => {
         if (guard && (e.ctrlKey || e.altKey || e.metaKey)) return;
+        const { count, index, setIndex, onEnter, onClose } = latest.current;
         if (e.key === "Escape") {
           take(e);
           onClose();
@@ -45,7 +50,7 @@
       };
       window.addEventListener("keydown", onKey, guard);
       return () => window.removeEventListener("keydown", onKey, guard);
-    }, [open, count, index, setIndex, onEnter, onClose, guard]);
+    }, [open, guard]);
   }
 
   window.useActiveRowIntoView = useActiveRowIntoView;

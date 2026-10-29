@@ -815,7 +815,9 @@ function App() {
     <_AL_MdLinkCtx.Provider value={handleChatLinkClick}>
       <div className="app-backdrop" />
       <div className="app">
-        <div className={`window scanlines ${showSplit ? "is-split" : ""}`}>
+        {/* `is-running`: the active tab streams; the always-visible loops
+            (status/model dots, activity radar) run only then (styles.css). */}
+        <div className={`window scanlines ${showSplit ? "is-split" : ""}${streaming ? " is-running" : ""}`}>
           <WindowChrome
             project={activeProject}
             onCmd={() => setBridgeOpen(true)}
@@ -973,7 +975,6 @@ function App() {
                 <AmbientRail
                   ctx={liveCtx}
                   activity={activity}
-                  running={streaming}
                   subagents={subagentList}
                   subagentPaneOpen={showSplit}
                   onOpenSubagent={subagentUi.open}
@@ -1020,7 +1021,6 @@ function App() {
               tree, browser panel, subagent split) ever narrows it. */}
           <StatusBar
             ctx={liveCtx}
-            running={streaming}
             todoDone={todoCounts.done}
             todoTotal={todoCounts.total}
             onTodo={() => setPlanOpen(true)}

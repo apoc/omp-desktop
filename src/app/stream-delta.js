@@ -6,9 +6,10 @@
 // a tab whose replay came back `dropped`: `accFor` starts the message from
 // that copy. See docs/architecture/turn-status.md.
 (function () {
-  /** A block at `index`, created empty when a start event was lost. */
-  function blockAt(blocks, index, type, field) {
-    if (!blocks[index]) blocks[index] = { type, [field]: "" };
+  /** The `field` ("text" | "thinking") block at `index`, created empty when
+   *  its start event was lost. */
+  function blockAt(blocks, index, field) {
+    if (!blocks[index]) blocks[index] = { type: field, [field]: "" };
     return blocks[index];
   }
 
@@ -28,17 +29,15 @@
         return true;
       case "text_start":
       case "thinking_start":
+      case "toolcall_start":
         if (!Number.isInteger(i)) return false;
         blocks[i] = { ...ev.block };
-        return true;
-      case "toolcall_start":
-        if (Number.isInteger(i)) blocks[i] = { ...ev.block };
-        return false;
+        return ev.type !== "toolcall_start";
       case "text_delta":
       case "thinking_delta": {
         if (!Number.isInteger(i) || typeof ev.delta !== "string") return false;
         const field = ev.type === "text_delta" ? "text" : "thinking";
-        const block = blockAt(blocks, i, ev.type === "text_delta" ? "text" : "thinking", field);
+        const block = blockAt(blocks, i, field);
         block[field] = (block[field] ?? "") + ev.delta;
         return true;
       }
@@ -46,9 +45,8 @@
       case "thinking_end": {
         if (!Number.isInteger(i)) return false;
         const field = ev.type === "text_end" ? "text" : "thinking";
-        const block = blockAt(blocks, i, field, field);
         // `content` is the final text; `block` adds only what it cannot (a signature).
-        Object.assign(block, ev.block, typeof ev.content === "string" ? { [field]: ev.content } : {});
+        Object.assign(blockAt(blocks, i, field), ev.block, typeof ev.content === "string" ? { [field]: ev.content } : {});
         return true;
       }
       case "toolcall_end":
@@ -69,8 +67,9 @@
     return Array.isArray(message?.content) ? message.content.map(b => (b && typeof b === "object" ? { ...b } : b)) : [];
   }
 
-  /** What the bubble shows of `blocks`: the last non-blank thinking, and the
-   *  non-empty text blocks (one empty text block while there is none yet). */
+  /** What the bubble shows of `blocks`: the last non-blank thinking (and the
+   *  `lead` it gives), and the non-empty text blocks (one empty text block
+   *  while there is none yet). */
   function view(blocks) {
     let thought = null;
     const text = [];
@@ -79,7 +78,7 @@
       if (block.type === "thinking" && block.thinking?.trim()) thought = block.thinking;
       else if (block.type === "text" && block.text) text.push({ type: "text", text: block.text });
     }
-    return { thought, blocks: text.length > 0 ? text : [{ type: "text", text: "" }] };
+    return { thought, lead: thought ? "thinking" : null, blocks: text.length > 0 ? text : [{ type: "text", text: "" }] };
   }
 
   /**

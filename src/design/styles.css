@@ -32,13 +32,6 @@
   /* motion */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-  /* Timing of every endless decorative loop (live dots, run pulses, the
-     activity radar). A smooth loop makes the compositor draw every display
-     frame (120/s) for as long as it runs; four steps per keyframe interval (eight per cycle for the 0→50→100% loops) look the same
-     at a glance. Measured on a release build streaming a recorded session:
-     webview CPU 8.4 s → 2.8 s per 30 s, mostly the GPU process. Transient
-     spinners (retry, page load, update download) stay smooth. */
-  --loop-steps: steps(4);
 }
 
 /* ── Aurora (default) ──────────────────────────────────────────────────── */
@@ -279,14 +272,22 @@ input, textarea { font: inherit; color: inherit; background: transparent; border
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ── Common motion utilities ──────────────────────────────────────────── */
+/* The endless decorative loops (shimmer, pulseDot, drift; tab-run-pulse in
+   layout/chrome.css, wdg-attn-* in layout/widgets.css) step through each
+   keyframe interval, whatever timing the rule using them names: a smooth
+   loop makes the compositor draw every display frame (120/s) for as long as
+   it runs. Measured on a release build streaming a recorded session: webview
+   CPU 8.4 s → 2.8 s per 30 s, mostly the GPU process. Transient spinners
+   (spin, page load, update download) stay smooth. */
 @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes shimmer {
-  0% { background-position: -200% 0; }
+  /* background-position repaints the text: 12 steps per sweep. */
+  0% { background-position: -200% 0; animation-timing-function: steps(12); }
   100% { background-position: 200% 0; }
 }
 @keyframes pulseDot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.55; transform: scale(0.8); }
+  0%, 100% { opacity: 1; transform: scale(1); animation-timing-function: steps(4); }
+  50% { opacity: 0.55; transform: scale(0.8); animation-timing-function: steps(4); }
 }
 @keyframes typeBlink {
   0%, 50% { opacity: 1; }
@@ -297,8 +298,8 @@ input, textarea { font: inherit; color: inherit; background: transparent; border
   to { opacity: 1; transform: none; }
 }
 @keyframes drift {
-  0%, 100% { transform: translate(0, 0); }
-  50% { transform: translate(0, -3px); }
+  0%, 100% { transform: translate(0, 0); animation-timing-function: steps(4); }
+  50% { transform: translate(0, -3px); animation-timing-function: steps(4); }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -314,8 +315,7 @@ input, textarea { font: inherit; color: inherit; background: transparent; border
     color-mix(in oklab, var(--fg) 70%, transparent) 100%
   );
   background-size: 200% 100%;
-  /* background-position repaints the text: 12 steps per sweep, not 120 frames/s. */
-  animation: shimmer 2.4s steps(12) infinite;
+  animation: shimmer 2.4s linear infinite;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -349,12 +349,13 @@ input, textarea { font: inherit; color: inherit; background: transparent; border
   display: inline-block; width: 6px; height: 6px; border-radius: 50%;
   background: var(--fg-4);
 }
-.dot.live { background: var(--accent); box-shadow: 0 0 0 0 var(--accent-glow); animation: pulseDot 1.4s var(--loop-steps) infinite; }
-/* Accent without the pulse, for a dot that is always on screen (status bar,
-   model pill) while its tab is idle; it pulses (`live`) only while the tab
-   runs. Even a stepped endless loop keeps an idle window compositing every
-   frame (measured: 3.5 s of webview CPU per idle 15 s, 0.08 s without). */
-.dot.on { background: var(--accent); }
+.dot.live { background: var(--accent); box-shadow: 0 0 0 0 var(--accent-glow); animation: pulseDot 1.4s ease-in-out infinite; }
+/* Loops always on screen, whatever the tab does: they run only while the
+   active tab streams (`.window.is-running`, app-live.jsx). Even a stepped
+   endless loop keeps an idle window compositing every frame (measured: 3.5 s
+   of webview CPU per idle 15 s, 0.08 s without). */
+.window:not(.is-running) :is(.status-cell, .composer-pill) > .dot.live,
+.window:not(.is-running) .radar-cell.on { animation: none; }
 .dot.warn { background: var(--amber); }
 .dot.error { background: var(--rose); }
 

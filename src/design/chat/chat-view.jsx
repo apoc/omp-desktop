@@ -59,7 +59,7 @@ const CompactRow = React.memo(function CompactRow({ msg }) {
           </span>
           <div className="tool-card-spacer" />
           {pending && (
-            <span className="chip accent" style={{ animation: "pulseDot 1.4s var(--loop-steps) infinite" }}>
+            <span className="chip accent" style={{ animation: "pulseDot 1.4s infinite" }}>
               <span className="dot live" />{" "}running
             </span>
           )}

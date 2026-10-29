@@ -18,16 +18,17 @@
 .wdg-attn { --wdg-attn: var(--accent); }
 .wdg-attn.tone-warn { --wdg-attn: var(--amber); }
 .wdg-attn.tone-error { --wdg-attn: var(--rose); }
-.rail-card.wdg-attn { animation: wdg-attn-border 1.5s var(--loop-steps) infinite; }
-.wdg-attn > .rail-card-head .wdg-dot { background: var(--wdg-attn); animation: wdg-attn-dot 1.5s var(--loop-steps) infinite; }
-.wdg-attn > .rail-card-head .wdg-dot.pulse-dot { animation: pulseDot 1.4s var(--loop-steps) infinite, wdg-attn-dot 1.5s var(--loop-steps) infinite; }
+.rail-card.wdg-attn { animation: wdg-attn-border 1.5s ease-in-out infinite; }
+.wdg-attn > .rail-card-head .wdg-dot { background: var(--wdg-attn); animation: wdg-attn-dot 1.5s ease-in-out infinite; }
+.wdg-attn > .rail-card-head .wdg-dot.pulse-dot { animation: pulseDot 1.4s ease-in-out infinite, wdg-attn-dot 1.5s ease-in-out infinite; }
+/* Stepped like every endless loop (styles.css, motion utilities). */
 @keyframes wdg-attn-border {
-  0%, 100% { border-color: color-mix(in oklab, var(--wdg-attn) 25%, var(--line)); }
-  50%      { border-color: var(--wdg-attn); }
+  0%, 100% { border-color: color-mix(in oklab, var(--wdg-attn) 25%, var(--line)); animation-timing-function: steps(4); }
+  50%      { border-color: var(--wdg-attn); animation-timing-function: steps(4); }
 }
 @keyframes wdg-attn-dot {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--wdg-attn) 55%, transparent); }
-  50%      { box-shadow: 0 0 0 4px transparent; }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--wdg-attn) 55%, transparent); animation-timing-function: steps(4); }
+  50%      { box-shadow: 0 0 0 4px transparent; animation-timing-function: steps(4); }
 }
 @media (prefers-reduced-motion: reduce) {
   .rail-card.wdg-attn { animation: none; border-color: var(--wdg-attn); box-shadow: inset 0 0 0 1px var(--wdg-attn); }

@@ -60,13 +60,9 @@ impl Kind {
 }
 
 impl InFlight {
-    /// Apply one parsed stdout frame (journal `seq`). Only an assistant
-    /// message's `message_start` / `message_update` / `message_end` and
-    /// `agent_end` change anything.
-    pub fn apply(&mut self, seq: u64, mut frame: Value) {
-        let Some(kind) = Kind::of(&frame) else {
-            return;
-        };
+    /// Apply one parsed stdout frame of `kind` (journal `seq`). Only an
+    /// assistant message's frames and `agent_end` change anything.
+    fn apply(&mut self, seq: u64, kind: Kind, mut frame: Value) {
         let is_current = |current: &Snapshot, frame: &Value| {
             frame.get("messageId").and_then(Value::as_str) == Some(current.message_id.as_str())
         };
@@ -116,20 +112,24 @@ impl InFlight {
 /// Tool-call argument deltas are not kept: the arguments arrive whole with
 /// `toolcall_end`, and nothing shows them before that.
 fn apply_event(message: &mut Value, mut event: Value) {
-    /// What an event does to the message; read before its fields move out.
+    /// What an event does to the message's block at `contentIndex`.
     #[derive(Clone, Copy)]
     enum Step {
-        Restart,
-        Open,
         Append(&'static str),
         Finish(&'static str),
-        /// The whole block, under this field (`toolcall_end`, `image_end`).
+        /// Replace it with the event's block under this field.
         Whole(&'static str),
     }
     let take = |event: &mut Value, field: &str| event.get_mut(field).map(Value::take);
     let step = match event.get("type").and_then(Value::as_str) {
-        Some("start") => Step::Restart,
-        Some("text_start" | "thinking_start" | "toolcall_start") => Step::Open,
+        Some("start") => {
+            // A restarted message: the frame carries it whole.
+            if let Some(restart) = take(&mut event, "message") {
+                *message = restart;
+            }
+            return;
+        }
+        Some("text_start" | "thinking_start" | "toolcall_start") => Step::Whole("block"),
         Some("text_delta") => Step::Append("text"),
         Some("thinking_delta") => Step::Append("thinking"),
         Some("text_end") => Step::Finish("text"),
@@ -138,13 +138,6 @@ fn apply_event(message: &mut Value, mut event: Value) {
         Some("image_end") => Step::Whole("content"),
         _ => return,
     };
-    if matches!(step, Step::Restart) {
-        // A restarted message: the frame carries it whole.
-        if let Some(restart) = take(&mut event, "message") {
-            *message = restart;
-        }
-        return;
-    }
     let Some(index) = event
         .get("contentIndex")
         .and_then(Value::as_u64)
@@ -156,12 +149,6 @@ fn apply_event(message: &mut Value, mut event: Value) {
         return;
     };
     match step {
-        Step::Restart => {}
-        Step::Open => {
-            if let Some(block) = take(&mut event, "block") {
-                set_block(content, index, block);
-            }
-        }
         Step::Append(field) => append(content, index, field, event.get("delta")),
         Step::Finish(field) => finish(content, index, field, &mut event),
         Step::Whole(field) => {
@@ -221,15 +208,15 @@ fn finish(content: &mut [Value], index: usize, field: &str, event: &mut Value) {
     }
 }
 
-/// The stdout reader's per-line hook, after the line's journal push: takes
-/// the parsed frame, the last thing the reader needs it for. Other frames
+/// The stdout reader's per-line hook, after the line's journal push and its
+/// emit: takes the parsed frame, the reader's last use of it. Other frames
 /// never take the lock; a poisoned lock leaves the state as it is.
 pub(super) fn record(state: &std::sync::Mutex<InFlight>, seq: u64, frame: Option<Value>) {
-    let Some(frame) = frame.filter(|f| Kind::of(f).is_some()) else {
+    let Some((kind, frame)) = frame.and_then(|f| Some((Kind::of(&f)?, f))) else {
         return;
     };
     if let Ok(mut state) = state.lock() {
-        state.apply(seq, frame);
+        state.apply(seq, kind, frame);
     }
 }
 
@@ -249,12 +236,20 @@ mod tests {
     fn end(id: &str) -> Value {
         json!({ "type": "message_end", "messageId": id })
     }
+    impl InFlight {
+        /// `apply` with the frame classified as `record` does.
+        fn feed(&mut self, seq: u64, frame: Value) {
+            if let Some(kind) = Kind::of(&frame) {
+                self.apply(seq, kind, frame);
+            }
+        }
+    }
 
     /// `frames` applied with journal seqs 1, 2, ….
     fn streamed(frames: impl IntoIterator<Item = Value>) -> InFlight {
         let mut state = InFlight::default();
         for (seq, frame) in (1..).zip(frames) {
-            state.apply(seq, frame);
+            state.feed(seq, frame);
         }
         state
     }
@@ -308,8 +303,8 @@ mod tests {
                 { "type": "toolCall", "id": "t", "name": "read", "arguments": {} },
             ])
         );
-        s.apply(10, update("msg-1", json!({ "type": "toolcall_end", "contentIndex": 2, "toolCall": { "type": "toolCall", "id": "t", "name": "read", "arguments": { "path": "a" } } })));
-        s.apply(11, update("msg-1", json!({ "type": "image_end", "contentIndex": 3, "content": { "type": "image", "data": "AA==" } })));
+        s.feed(10, update("msg-1", json!({ "type": "toolcall_end", "contentIndex": 2, "toolCall": { "type": "toolCall", "id": "t", "name": "read", "arguments": { "path": "a" } } })));
+        s.feed(11, update("msg-1", json!({ "type": "image_end", "contentIndex": 3, "content": { "type": "image", "data": "AA==" } })));
         let content = &s.snapshot().unwrap().message["content"];
         assert_eq!(content[2]["arguments"]["path"], "a");
         assert_eq!(content[3]["data"], "AA==");
@@ -365,17 +360,17 @@ mod tests {
     fn only_the_open_assistant_message_is_kept_until_its_end() {
         let mut s = streamed([start("msg-1", "user")]);
         assert_eq!(s.snapshot(), None, "a user message is not streamed");
-        s.apply(2, start("msg-2", "assistant"));
+        s.feed(2, start("msg-2", "assistant"));
         // A record nested inside the reply (its own id) neither ends nor feeds it.
-        s.apply(3, update("msg-3", json!({ "type": "text_start", "contentIndex": 0, "block": { "type": "text", "text": "x" } })));
-        s.apply(4, end("msg-3"));
+        s.feed(3, update("msg-3", json!({ "type": "text_start", "contentIndex": 0, "block": { "type": "text", "text": "x" } })));
+        s.feed(4, end("msg-3"));
         let snap = s.snapshot().unwrap();
         assert_eq!((snap.message_id.as_str(), snap.seq), ("msg-2", 2));
         assert_eq!(snap.message["content"], json!([]));
-        s.apply(5, end("msg-2"));
+        s.feed(5, end("msg-2"));
         assert_eq!(s.snapshot(), None);
-        s.apply(6, start("msg-4", "assistant"));
-        s.apply(7, json!({ "type": "agent_end" }));
+        s.feed(6, start("msg-4", "assistant"));
+        s.feed(7, json!({ "type": "agent_end" }));
         assert_eq!(
             s.snapshot(),
             None,
@@ -392,7 +387,7 @@ mod tests {
             json!({ "contentIndex": 0 }),
             json!({ "type": "text_end", "contentIndex": 5, "content": "out of range" }),
         ] {
-            s.apply(2, update("msg-1", event));
+            s.feed(2, update("msg-1", event));
         }
         assert_eq!(s.snapshot().unwrap().message["content"], json!([]));
     }

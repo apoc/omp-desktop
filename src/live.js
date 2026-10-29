@@ -610,11 +610,9 @@
   // replay loaded one for it (`streamSnapshot`).
   function _startStreamingBubble(mid, ts, time) {
     streamAcc = DELTA.accFor(null, mid, streamSnapshot, lastSeq).acc;
-    const { thought, blocks } = DELTA.view(streamAcc.blocks);
     return {
       kind: "assistant", time, ts,
-      thought, lead: thought ? "thinking" : null,
-      blocks,
+      ...DELTA.view(streamAcc.blocks),
       streaming: true,
       model: state.model?.name ?? "–",
     };
@@ -2477,12 +2475,9 @@
       if (!step.skip) changed = DELTA.applyEvent(streamAcc.blocks, ev.assistantMessageEvent) || changed;
       if (!changed) return;
 
-      const { thought, blocks } = DELTA.view(streamAcc.blocks);
-      streamingBubble.thought = thought;
-      streamingBubble.lead    = thought ? "thinking" : null;
-      streamingBubble.blocks  = blocks;
+      Object.assign(streamingBubble, DELTA.view(streamAcc.blocks));
 
-      const updated = { ...streamingBubble, blocks: [...streamingBubble.blocks] };
+      const updated = { ...streamingBubble };
       // Find by streaming flag — indexOf fails after the first update because
       // each update replaces the entry with a new copy; ask bubbles may also
       // sit after the streaming bubble in state.messages.
@@ -2554,6 +2549,10 @@
         }
         streamingBubble = null;
       }
+      // Settled: its rebuilt blocks (a whole file write, image data) and the
+      // backend's copy of it are done with, and no later frame can need them.
+      if (!streamingBubble) streamAcc = null;
+      if (streamSnapshot?.messageId === ev.messageId) streamSnapshot = null;
       // A retried request answered: the retries are over even if more turns
       // follow in this run (app/turn-status.js `retryFinished`). By omp's
       // rule only output counts: after an empty stop omp keeps retrying.
