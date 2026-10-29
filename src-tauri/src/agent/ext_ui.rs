@@ -5,7 +5,7 @@
 //! omp sends both as fire-and-forget `extension_ui_request` frames and keeps
 //! no state of its own that could be queried later. The frontend applies the
 //! frames of the tab it is showing; a background tab's frames wait in the
-//! event journal, whose 256-line ring one streamed turn overflows. The stdout
+//! event journal, whose bounded ring (4096 lines / 8 MiB, `agent/mod.rs`) a long streamed turn overflows. The stdout
 //! reader therefore applies every frame here as well, and a reactivated tab
 //! whose replay came back `dropped` loads this state instead
 //! (`extension_ui_state` command). `seq` names the last frame applied, so the

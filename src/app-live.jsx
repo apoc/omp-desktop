@@ -973,6 +973,7 @@ function App() {
                 <AmbientRail
                   ctx={liveCtx}
                   activity={activity}
+                  running={streaming}
                   subagents={subagentList}
                   subagentPaneOpen={showSplit}
                   onOpenSubagent={subagentUi.open}

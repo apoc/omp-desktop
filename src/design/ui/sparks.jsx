@@ -61,10 +61,13 @@ const TokenGauge = ({ used, total, pct, label, sub }) => {
 };
 
 // ── Activity radar — 60s strip of tool calls colored by kind ─────────
-const ActivityRadar = ({ activity, tps }) => {
+// Lit cells drift only while the tab runs (`running`): they stay lit after a
+// turn until the next tool call, and an endless loop keeps an idle window
+// compositing every frame.
+const ActivityRadar = ({ activity, tps, running = false }) => {
   const cells = Array.from({ length: 60 }, (_, i) => activity.find((a) => a.t === i));
   return (
-    <div className="radar">
+    <div className={`radar${running ? " live" : ""}`}>
       <div className="radar-row">
         {cells.map((c, i) => (
           <div key={i}

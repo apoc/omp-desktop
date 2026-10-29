@@ -97,9 +97,10 @@
 
   let streamingBubble = null;
   // The streaming message's content, rebuilt from delta frames
-  // (app/stream-delta.js): `{ mid, blocks, seeded }` — omp's `messageId`,
-  // its blocks so far, and whether `streamSnapshot` was applied. Kept off the
-  // bubble, which the transcript (and the phone) carries.
+  // (app/stream-delta.js `accFor`): `{ mid, blocks, seed }` — omp's
+  // `messageId`, its blocks so far, and the `streamSnapshot` they started
+  // from (or null). Kept off the bubble, which the transcript (and the
+  // phone) carries.
   let streamAcc = null;
   let activeToolCards = new Map();    // toolCallId → message index
   const ASK_FLUSH_MS = 150;         // upper bound on how long an ask may stay buffered
@@ -608,8 +609,7 @@
   // content): empty, or as far as the backend's copy got when a dropped
   // replay loaded one for it (`streamSnapshot`).
   function _startStreamingBubble(mid, ts, time) {
-    const snap = streamSnapshot?.messageId === mid ? streamSnapshot : null;
-    streamAcc = { mid, blocks: snap ? DELTA.seed(snap.message) : [], seeded: !!snap };
+    streamAcc = DELTA.accFor(null, mid, streamSnapshot, lastSeq).acc;
     const { thought, blocks } = DELTA.view(streamAcc.blocks);
     return {
       kind: "assistant", time, ts,
@@ -1026,15 +1026,16 @@
         }
         // The message streaming now: omp sends only increments, so its
         // bubble cannot be rebuilt from what is left of the journal.
-        streamSnapshot = await _invokeSafe("streaming_message", { sessionId: id }, null);
+        const streaming = await _invokeSafe("streaming_message", { sessionId: id }, null);
         if (!current()) return; // superseded by a newer switch, or detached
+        streamSnapshot = streaming;
       }
       for (const ev of replay.events) _dispatchEnvelope(ev);
       // A pending auto-`/rename` whose outcome note fell out of the ring
       // will never be swallowed, and nothing else would release the flag:
       // refinements would stay blocked for good. The replayed events above
       // had their chance to swallow it; if the note is in fact still to
-      // come (generation outlasting 256 lines of output), the cost is one
+      // come (generation outlasting the journal's window), the cost is one
       // plumbing line in the transcript.
       if (replay.dropped && sessionRegistry.get(id)?.autoRenameInFlight) {
         sessionRegistry.set(id, { ...sessionRegistry.get(id), autoRenameInFlight: false });
@@ -2456,30 +2457,24 @@
     if (type === "message_update") {
       // Delta frames (app/stream-delta.js): `message` carries only the role.
       const mid = ev.messageId;
-      const snap = streamSnapshot?.messageId === mid ? streamSnapshot : null;
       let changed = false;
-      if (!streamingBubble && snap) {
+      if (!streamingBubble && streamSnapshot?.messageId === mid) {
         // The message's start fell out of a dropped replay: show it from the
         // backend's copy.
-        streamingBubble = _startStreamingBubble(mid, tsOf(snap.message), time);
+        streamingBubble = _startStreamingBubble(mid, tsOf(streamSnapshot.message), time);
         state.messages = [...state.messages, streamingBubble];
         changed = true;
       }
       if (!streamingBubble) return;
-      if (streamAcc?.mid !== mid) {
-        // After lost frames a bubble left streaming receives the next
-        // message's updates: it shows that message from here on (see
-        // get_messages for the `ts` it carries).
-        streamAcc = { mid, blocks: snap ? DELTA.seed(snap.message) : [], seeded: !!snap };
-        if (snap) streamingBubble.ts = tsOf(snap.message) ?? streamingBubble.ts;
-        changed = true;
-      } else if (snap && !streamAcc.seeded) {
-        // Streaming before the tab was left, gap since: the copy holds it all.
-        streamAcc = { mid, blocks: DELTA.seed(snap.message), seeded: true };
-        changed = true;
-      }
-      // A frame at or below the copy's `seq` is already in it.
-      if (!(snap && lastSeq <= snap.seq)) changed = DELTA.applyEvent(streamAcc.blocks, ev.assistantMessageEvent) || changed;
+      // Another message than the bubble's restarts it (lost frames); the
+      // copy, when it is this message's, seeds it. A delta carries no
+      // timestamp, so the bubble takes the copy's `ts`, else keeps its own
+      // until `message_end` (see get_messages).
+      const step = DELTA.accFor(streamAcc, mid, streamSnapshot, lastSeq);
+      if (step.changed && step.acc.seed) streamingBubble.ts = tsOf(step.acc.seed.message) ?? streamingBubble.ts;
+      streamAcc = step.acc;
+      changed = step.changed || changed;
+      if (!step.skip) changed = DELTA.applyEvent(streamAcc.blocks, ev.assistantMessageEvent) || changed;
       if (!changed) return;
 
       const { thought, blocks } = DELTA.view(streamAcc.blocks);

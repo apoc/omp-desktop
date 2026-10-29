@@ -13,6 +13,10 @@
 //! message's replayed frames at or below it and applies only newer ones.
 //! Like [`super::ext_ui`], it lives on the session's map entry and ends with
 //! the process.
+//!
+//! The reader hands over its parsed frame (the journal keeps the line itself),
+//! so blocks are moved out of it, never copied: a `toolcall_end` carries a
+//! whole file write, an `image_end` base64 image data.
 
 use serde_json::Value;
 
@@ -34,54 +38,71 @@ pub struct Snapshot {
     pub message: Value,
 }
 
+/// The frames that change the in-flight message.
+#[derive(Clone, Copy)]
+enum Kind {
+    Start,
+    Update,
+    End,
+    AgentEnd,
+}
+
+impl Kind {
+    fn of(frame: &Value) -> Option<Self> {
+        match frame.get("type").and_then(Value::as_str)? {
+            "message_start" => Some(Self::Start),
+            "message_update" => Some(Self::Update),
+            "message_end" => Some(Self::End),
+            "agent_end" => Some(Self::AgentEnd),
+            _ => None,
+        }
+    }
+}
+
 impl InFlight {
     /// Apply one parsed stdout frame (journal `seq`). Only an assistant
     /// message's `message_start` / `message_update` / `message_end` and
     /// `agent_end` change anything.
-    pub fn apply(&mut self, seq: u64, frame_type: &str, frame: &Value) {
-        let message_id = frame.get("messageId").and_then(Value::as_str);
-        match frame_type {
-            "message_start" => {
-                let message = frame.get("message");
-                if message.and_then(|m| m.get("role")).and_then(Value::as_str) != Some("assistant")
-                {
+    pub fn apply(&mut self, seq: u64, mut frame: Value) {
+        let Some(kind) = Kind::of(&frame) else {
+            return;
+        };
+        let is_current = |current: &Snapshot, frame: &Value| {
+            frame.get("messageId").and_then(Value::as_str) == Some(current.message_id.as_str())
+        };
+        match kind {
+            Kind::Start => {
+                let Some(message) = frame.get_mut("message").map(Value::take) else {
+                    return;
+                };
+                if message.get("role").and_then(Value::as_str) != Some("assistant") {
                     return;
                 }
-                if let (Some(id), Some(message)) = (message_id, message) {
+                if let Some(Value::String(message_id)) = frame.get_mut("messageId").map(Value::take)
+                {
                     self.current = Some(Snapshot {
-                        message_id: id.to_owned(),
+                        message_id,
                         seq,
-                        // The start frame's message is small (no content
-                        // streamed yet); the updates grow this copy in place.
-                        message: message.clone(),
+                        message,
                     });
                 }
             }
-            "message_update" => {
-                let Some(current) = self
-                    .current
-                    .as_mut()
-                    .filter(|c| Some(c.message_id.as_str()) == message_id)
-                else {
+            Kind::Update => {
+                let Some(current) = self.current.as_mut().filter(|c| is_current(c, &frame)) else {
                     return;
                 };
-                if let Some(event) = frame.get("assistantMessageEvent") {
+                if let Some(event) = frame.get_mut("assistantMessageEvent").map(Value::take) {
                     apply_event(&mut current.message, event);
                 }
                 current.seq = seq;
             }
-            "message_end" => {
-                if self
-                    .current
-                    .as_ref()
-                    .is_some_and(|c| Some(c.message_id.as_str()) == message_id)
-                {
+            Kind::End => {
+                if self.current.as_ref().is_some_and(|c| is_current(c, &frame)) {
                     self.current = None;
                 }
             }
             // A run never leaves a message open; drop what a lost end stranded.
-            "agent_end" => self.current = None,
-            _ => {}
+            Kind::AgentEnd => self.current = None,
         }
     }
 
@@ -94,14 +115,33 @@ impl InFlight {
 /// `messageUpdates: "delta"` projection (`rpc-session-events.ts` `toDelta`).
 /// Tool-call argument deltas are not kept: the arguments arrive whole with
 /// `toolcall_end`, and nothing shows them before that.
-fn apply_event(message: &mut Value, event: &Value) {
-    let Some(kind) = event.get("type").and_then(Value::as_str) else {
-        return;
+fn apply_event(message: &mut Value, mut event: Value) {
+    /// What an event does to the message; read before its fields move out.
+    #[derive(Clone, Copy)]
+    enum Step {
+        Restart,
+        Open,
+        Append(&'static str),
+        Finish(&'static str),
+        /// The whole block, under this field (`toolcall_end`, `image_end`).
+        Whole(&'static str),
+    }
+    let take = |event: &mut Value, field: &str| event.get_mut(field).map(Value::take);
+    let step = match event.get("type").and_then(Value::as_str) {
+        Some("start") => Step::Restart,
+        Some("text_start" | "thinking_start" | "toolcall_start") => Step::Open,
+        Some("text_delta") => Step::Append("text"),
+        Some("thinking_delta") => Step::Append("thinking"),
+        Some("text_end") => Step::Finish("text"),
+        Some("thinking_end") => Step::Finish("thinking"),
+        Some("toolcall_end") => Step::Whole("toolCall"),
+        Some("image_end") => Step::Whole("content"),
+        _ => return,
     };
-    if kind == "start" {
+    if matches!(step, Step::Restart) {
         // A restarted message: the frame carries it whole.
-        if let Some(restart) = event.get("message") {
-            restart.clone_into(message);
+        if let Some(restart) = take(&mut event, "message") {
+            *message = restart;
         }
         return;
     }
@@ -115,27 +155,20 @@ fn apply_event(message: &mut Value, event: &Value) {
     let Some(content) = content_mut(message) else {
         return;
     };
-    match kind {
-        "text_start" | "thinking_start" | "toolcall_start" => {
-            if let Some(block) = event.get("block") {
-                set_block(content, index, block.clone());
+    match step {
+        Step::Restart => {}
+        Step::Open => {
+            if let Some(block) = take(&mut event, "block") {
+                set_block(content, index, block);
             }
         }
-        "text_delta" => append(content, index, "text", event.get("delta")),
-        "thinking_delta" => append(content, index, "thinking", event.get("delta")),
-        "text_end" => finish(content, index, "text", event),
-        "thinking_end" => finish(content, index, "thinking", event),
-        "toolcall_end" => {
-            if let Some(call) = event.get("toolCall") {
-                set_block(content, index, call.clone());
+        Step::Append(field) => append(content, index, field, event.get("delta")),
+        Step::Finish(field) => finish(content, index, field, &mut event),
+        Step::Whole(field) => {
+            if let Some(block) = take(&mut event, field) {
+                set_block(content, index, block);
             }
         }
-        "image_end" => {
-            if let Some(image) = event.get("content") {
-                set_block(content, index, image.clone());
-            }
-        }
-        _ => {}
     }
 }
 
@@ -175,40 +208,28 @@ fn append(content: &mut [Value], index: usize, field: &str, delta: Option<&Value
 }
 
 /// `text_end` / `thinking_end`: the final text (`content`) plus what only the
-/// block carries (a signature).
-fn finish(content: &mut [Value], index: usize, field: &str, event: &Value) {
+/// block carries (a signature), both moved out of the event.
+fn finish(content: &mut [Value], index: usize, field: &str, event: &mut Value) {
     let Some(block) = content.get_mut(index).and_then(Value::as_object_mut) else {
         return;
     };
-    if let Some(meta) = event.get("block").and_then(Value::as_object) {
-        for (key, value) in meta {
-            if key != field {
-                block.insert(key.clone(), value.clone());
-            }
-        }
+    if let Some(Value::Object(meta)) = event.get_mut("block").map(Value::take) {
+        block.extend(meta.into_iter().filter(|(key, _)| key != field));
     }
-    if let Some(text) = event.get("content").and_then(Value::as_str) {
-        block.insert(field.to_owned(), Value::String(text.to_owned()));
+    if let Some(text @ Value::String(_)) = event.get_mut("content").map(Value::take) {
+        block.insert(field.to_owned(), text);
     }
 }
 
-/// The stdout reader's per-line hook, after the line's journal push. A
-/// poisoned lock leaves the state as it is.
-pub(super) fn record(
-    state: &std::sync::Mutex<InFlight>,
-    seq: u64,
-    frame_type: Option<&str>,
-    frame: Option<&Value>,
-) {
-    let (
-        Some(frame_type @ ("message_start" | "message_update" | "message_end" | "agent_end")),
-        Some(frame),
-    ) = (frame_type, frame)
-    else {
+/// The stdout reader's per-line hook, after the line's journal push: takes
+/// the parsed frame, the last thing the reader needs it for. Other frames
+/// never take the lock; a poisoned lock leaves the state as it is.
+pub(super) fn record(state: &std::sync::Mutex<InFlight>, seq: u64, frame: Option<Value>) {
+    let Some(frame) = frame.filter(|f| Kind::of(f).is_some()) else {
         return;
     };
     if let Ok(mut state) = state.lock() {
-        state.apply(seq, frame_type, frame);
+        state.apply(seq, frame);
     }
 }
 
@@ -225,77 +246,56 @@ mod tests {
         json!({ "type": "message_start", "messageId": id, "message": { "role": role, "content": [], "timestamp": 7 } })
     }
 
-    fn streamed(state: &mut InFlight, frames: &[(&str, Value)]) {
-        for (seq, (kind, frame)) in (1..).zip(frames) {
-            state.apply(seq, kind, frame);
+    fn end(id: &str) -> Value {
+        json!({ "type": "message_end", "messageId": id })
+    }
+
+    /// `frames` applied with journal seqs 1, 2, ….
+    fn streamed(frames: impl IntoIterator<Item = Value>) -> InFlight {
+        let mut state = InFlight::default();
+        for (seq, frame) in (1..).zip(frames) {
+            state.apply(seq, frame);
         }
+        state
     }
 
     #[test]
     fn rebuilds_text_thinking_and_tool_calls_from_deltas() {
-        let mut s = InFlight::default();
-        streamed(
-            &mut s,
-            &[
-                ("message_start", start("msg-1", "assistant")),
-                (
-                    "message_update",
-                    update(
-                        "msg-1",
-                        json!({ "type": "thinking_start", "contentIndex": 0, "block": { "type": "thinking", "thinking": "" } }),
-                    ),
-                ),
-                (
-                    "message_update",
-                    update(
-                        "msg-1",
-                        json!({ "type": "thinking_delta", "contentIndex": 0, "delta": "hm" }),
-                    ),
-                ),
-                (
-                    "message_update",
-                    update(
-                        "msg-1",
-                        json!({ "type": "thinking_end", "contentIndex": 0, "content": "hmm", "block": { "type": "thinking", "thinkingSignature": "sig" } }),
-                    ),
-                ),
-                (
-                    "message_update",
-                    update(
-                        "msg-1",
-                        json!({ "type": "text_start", "contentIndex": 1, "block": { "type": "text", "text": "" } }),
-                    ),
-                ),
-                (
-                    "message_update",
-                    update(
-                        "msg-1",
-                        json!({ "type": "text_delta", "contentIndex": 1, "delta": "Hel" }),
-                    ),
-                ),
-                (
-                    "message_update",
-                    update(
-                        "msg-1",
-                        json!({ "type": "text_delta", "contentIndex": 1, "delta": "lo" }),
-                    ),
-                ),
-                (
-                    "message_update",
-                    update(
-                        "msg-1",
-                        json!({ "type": "toolcall_start", "contentIndex": 2, "block": { "type": "toolCall", "id": "t", "name": "read", "arguments": {} } }),
-                    ),
-                ),
-                (
-                    "message_update",
-                    update(
-                        "msg-1",
-                        json!({ "type": "toolcall_delta", "contentIndex": 2, "delta": "{\"pa" }),
-                    ),
-                ),
-            ],
-        );
+        let mut s = streamed([
+            start("msg-1", "assistant"),
+            update(
+                "msg-1",
+                json!({ "type": "thinking_start", "contentIndex": 0, "block": { "type": "thinking", "thinking": "" } }),
+            ),
+            update(
+                "msg-1",
+                json!({ "type": "thinking_delta", "contentIndex": 0, "delta": "hm" }),
+            ),
+            update(
+                "msg-1",
+                json!({ "type": "thinking_end", "contentIndex": 0, "content": "hmm", "block": { "type": "thinking", "thinkingSignature": "sig" } }),
+            ),
+            update(
+                "msg-1",
+                json!({ "type": "text_start", "contentIndex": 1, "block": { "type": "text", "text": "" } }),
+            ),
+            update(
+                "msg-1",
+                json!({ "type": "text_delta", "contentIndex": 1, "delta": "Hel" }),
+            ),
+            update(
+                "msg-1",
+                json!({ "type": "text_delta", "contentIndex": 1, "delta": "lo" }),
+            ),
+            update(
+                "msg-1",
+                json!({ "type": "toolcall_start", "contentIndex": 2, "block": { "type": "toolCall", "id": "t", "name": "read", "arguments": {} } }),
+            ),
+            update(
+                "msg-1",
+                json!({ "type": "toolcall_delta", "contentIndex": 2, "delta": "{\"pa" }),
+            ),
+        ]);
         let snap = s.snapshot().unwrap();
         assert_eq!(snap.message_id, "msg-1");
         assert_eq!(snap.seq, 9);
@@ -308,43 +308,53 @@ mod tests {
                 { "type": "toolCall", "id": "t", "name": "read", "arguments": {} },
             ])
         );
-        s.apply(10, "message_update", &update("msg-1", json!({ "type": "toolcall_end", "contentIndex": 2, "toolCall": { "type": "toolCall", "id": "t", "name": "read", "arguments": { "path": "a" } } })));
+        s.apply(10, update("msg-1", json!({ "type": "toolcall_end", "contentIndex": 2, "toolCall": { "type": "toolCall", "id": "t", "name": "read", "arguments": { "path": "a" } } })));
+        s.apply(11, update("msg-1", json!({ "type": "image_end", "contentIndex": 3, "content": { "type": "image", "data": "AA==" } })));
+        let content = &s.snapshot().unwrap().message["content"];
+        assert_eq!(content[2]["arguments"]["path"], "a");
+        assert_eq!(content[3]["data"], "AA==");
+    }
+
+    #[test]
+    fn the_end_event_text_wins_over_what_the_deltas_built() {
+        let s = streamed([
+            start("msg-1", "assistant"),
+            update(
+                "msg-1",
+                json!({ "type": "text_start", "contentIndex": 0, "block": { "type": "text", "text": "" } }),
+            ),
+            update(
+                "msg-1",
+                json!({ "type": "text_delta", "contentIndex": 0, "delta": "Hel" }),
+            ),
+            update(
+                "msg-1",
+                json!({ "type": "text_end", "contentIndex": 0, "content": "Hello", "block": { "type": "text" } }),
+            ),
+        ]);
         assert_eq!(
-            s.snapshot().unwrap().message["content"][2]["arguments"]["path"],
-            "a"
+            s.snapshot().unwrap().message["content"],
+            json!([{ "type": "text", "text": "Hello" }])
         );
     }
 
     #[test]
     fn a_restart_replaces_the_message_whole() {
-        let mut s = InFlight::default();
-        streamed(
-            &mut s,
-            &[
-                ("message_start", start("msg-1", "assistant")),
-                (
-                    "message_update",
-                    update(
-                        "msg-1",
-                        json!({ "type": "text_start", "contentIndex": 0, "block": { "type": "text", "text": "" } }),
-                    ),
-                ),
-                (
-                    "message_update",
-                    update(
-                        "msg-1",
-                        json!({ "type": "text_delta", "contentIndex": 0, "delta": "stale" }),
-                    ),
-                ),
-                (
-                    "message_update",
-                    update(
-                        "msg-1",
-                        json!({ "type": "start", "message": { "role": "assistant", "content": [{ "type": "text", "text": "fresh" }] } }),
-                    ),
-                ),
-            ],
-        );
+        let s = streamed([
+            start("msg-1", "assistant"),
+            update(
+                "msg-1",
+                json!({ "type": "text_start", "contentIndex": 0, "block": { "type": "text", "text": "" } }),
+            ),
+            update(
+                "msg-1",
+                json!({ "type": "text_delta", "contentIndex": 0, "delta": "stale" }),
+            ),
+            update(
+                "msg-1",
+                json!({ "type": "start", "message": { "role": "assistant", "content": [{ "type": "text", "text": "fresh" }] } }),
+            ),
+        ]);
         assert_eq!(
             s.snapshot().unwrap().message["content"],
             json!([{ "type": "text", "text": "fresh" }])
@@ -353,28 +363,19 @@ mod tests {
 
     #[test]
     fn only_the_open_assistant_message_is_kept_until_its_end() {
-        let mut s = InFlight::default();
-        s.apply(1, "message_start", &start("msg-1", "user"));
+        let mut s = streamed([start("msg-1", "user")]);
         assert_eq!(s.snapshot(), None, "a user message is not streamed");
-        s.apply(2, "message_start", &start("msg-2", "assistant"));
+        s.apply(2, start("msg-2", "assistant"));
         // A record nested inside the reply (its own id) neither ends nor feeds it.
-        s.apply(3, "message_update", &update("msg-3", json!({ "type": "text_start", "contentIndex": 0, "block": { "type": "text", "text": "x" } })));
-        s.apply(
-            4,
-            "message_end",
-            &json!({ "type": "message_end", "messageId": "msg-3" }),
-        );
+        s.apply(3, update("msg-3", json!({ "type": "text_start", "contentIndex": 0, "block": { "type": "text", "text": "x" } })));
+        s.apply(4, end("msg-3"));
         let snap = s.snapshot().unwrap();
         assert_eq!((snap.message_id.as_str(), snap.seq), ("msg-2", 2));
         assert_eq!(snap.message["content"], json!([]));
-        s.apply(
-            5,
-            "message_end",
-            &json!({ "type": "message_end", "messageId": "msg-2" }),
-        );
+        s.apply(5, end("msg-2"));
         assert_eq!(s.snapshot(), None);
-        s.apply(6, "message_start", &start("msg-4", "assistant"));
-        s.apply(7, "agent_end", &json!({ "type": "agent_end" }));
+        s.apply(6, start("msg-4", "assistant"));
+        s.apply(7, json!({ "type": "agent_end" }));
         assert_eq!(
             s.snapshot(),
             None,
@@ -384,15 +385,14 @@ mod tests {
 
     #[test]
     fn malformed_events_leave_the_message_as_it_was() {
-        let mut s = InFlight::default();
-        s.apply(1, "message_start", &start("msg-1", "assistant"));
+        let mut s = streamed([start("msg-1", "assistant")]);
         for event in [
             json!({ "type": "text_delta", "contentIndex": 0, "delta": "no block yet" }),
             json!({ "type": "text_delta", "delta": "no index" }),
             json!({ "contentIndex": 0 }),
             json!({ "type": "text_end", "contentIndex": 5, "content": "out of range" }),
         ] {
-            s.apply(2, "message_update", &update("msg-1", event));
+            s.apply(2, update("msg-1", event));
         }
         assert_eq!(s.snapshot().unwrap().message["content"], json!([]));
     }
@@ -400,20 +400,10 @@ mod tests {
     #[test]
     fn record_ignores_other_frames() {
         let state = std::sync::Mutex::new(InFlight::default());
-        record(
-            &state,
-            1,
-            Some("turn_start"),
-            Some(&json!({ "type": "turn_start" })),
-        );
-        record(&state, 2, Some("message_start"), None);
+        record(&state, 1, Some(json!({ "type": "turn_start" })));
+        record(&state, 2, None);
         assert_eq!(state.lock().unwrap().snapshot(), None);
-        record(
-            &state,
-            3,
-            Some("message_start"),
-            Some(&start("msg-1", "assistant")),
-        );
+        record(&state, 3, Some(start("msg-1", "assistant")));
         assert_eq!(state.lock().unwrap().snapshot().unwrap().seq, 3);
     }
 }

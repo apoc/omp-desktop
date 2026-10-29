@@ -94,7 +94,8 @@
   background: var(--line-soft);
   transition: background 240ms var(--ease-out);
 }
-.radar-cell.on { animation: drift 2.4s var(--loop-steps) infinite; box-shadow: 0 0 4px currentColor; }
+.radar-cell.on { box-shadow: 0 0 4px currentColor; }
+.radar.live .radar-cell.on { animation: drift 2.4s var(--loop-steps) infinite; }
 .radar-foot {
   display: flex; justify-content: space-between;
   font-size: var(--d-text-xs);

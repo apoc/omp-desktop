@@ -52,8 +52,8 @@ const EVENT_JOURNAL_CAPACITY: usize = 4096;
 
 /// Total byte budget for one session's event journal. Bounds the ring by
 /// size as well as entry count: a single RPC line may be up to
-/// `reader::MAX_LINE_BYTES` (16 MiB), so 256 entries alone would permit
-/// gigabytes of resident memory per open tab. 8 MiB comfortably holds a
+/// `reader::MAX_LINE_BYTES` (16 MiB), so the line count alone (4096 × 16 MiB)
+/// would permit tens of gigabytes of resident memory per open tab. 8 MiB comfortably holds a
 /// normal background-tab gap while capping the pathological case.
 const EVENT_JOURNAL_MAX_BYTES: usize = 8 * 1024 * 1024;
 
@@ -117,7 +117,7 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "cancel_subagent",
     // Conversation tree (src/app/conversation-tree.js): "Branch here" starts
     // a new file from a user prompt, "Fork after the reply" from a turn's last
-    // assistant entry. `fork` first shipped in omp 18.4.11 (the version floor).
+    // assistant entry. `fork` first shipped in omp 18.4.11 (below the version floor).
     "branch",
     "fork",
     // Goal mode: omp's `goal` command (get/create/resume/pause/drop).

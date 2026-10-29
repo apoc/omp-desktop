@@ -1,10 +1,10 @@
 // The streaming assistant message, rebuilt from omp's `messageUpdates:
 // "delta"` frames (every omp process runs with that filter, set by Rust at
 // spawn): a `message_update` carries only its increment, so the content so
-// far lives here, on the streaming bubble (`live.js` `_acc`). The same
-// projection runs in Rust (`agent/inflight.rs`) for a tab whose replay came
-// back `dropped`: `seed` starts a bubble from that copy.
-// See docs/architecture/turn-status.md.
+// far is kept by `live.js` in `streamAcc`, off the bubble the transcript and
+// the phone carry. The same projection runs in Rust (`agent/inflight.rs`) for
+// a tab whose replay came back `dropped`: `accFor` starts the message from
+// that copy. See docs/architecture/turn-status.md.
 (function () {
   /** A block at `index`, created empty when a start event was lost. */
   function blockAt(blocks, index, type, field) {
@@ -82,5 +82,28 @@
     return { thought, blocks: text.length > 0 ? text : [{ type: "text", text: "" }] };
   }
 
-  window.OMP_STREAM_DELTA = { applyEvent, seed, view };
+  /**
+   * The accumulator a frame of omp message `mid` (journal `seq`) streams
+   * into, given the current one (`acc`: `{ mid, blocks, seed }`, or null) and
+   * the backend's copy a dropped replay loaded (`snap`: `{ messageId, seq,
+   * message }`, or null). Returns `{ acc, changed, skip }`:
+   * - another message than `acc`'s starts afresh, from `snap` when it is that
+   *   message's copy (after lost frames a bubble left streaming shows the
+   *   next message);
+   * - a copy `acc` was not seeded from (a later dropped replay, a tab left
+   *   mid-message) replaces its blocks: it holds everything up to its `seq`;
+   * - `skip`: the frame is at or below the copy's `seq`, already in it.
+   * `seed` is the copy object itself, not a flag, so every new dropped replay
+   * reseeds — also a tab restored with an older seed.
+   */
+  function accFor(acc, mid, snap, seq) {
+    const copy = snap && snap.messageId === mid ? snap : null;
+    let next = acc;
+    if (!acc || acc.mid !== mid || (copy && acc.seed !== copy)) {
+      next = { mid, blocks: copy ? seed(copy.message) : [], seed: copy };
+    }
+    return { acc: next, changed: next !== acc, skip: !!copy && seq <= copy.seq };
+  }
+
+  window.OMP_STREAM_DELTA = { applyEvent, seed, view, accFor };
 })();

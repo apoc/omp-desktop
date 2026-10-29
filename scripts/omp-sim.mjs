@@ -201,6 +201,8 @@ async function run(prompt) {
   await plainMessage({ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() });
   let turnOpen = false;
   let replayed = 0;
+  // Tool calls started but not yet answered: an abort ends them, as omp does.
+  const pendingTools = new Map();
   for (; cursor < recorded.length && !running.aborted; cursor++) {
     const message = recorded[cursor];
     if (message.role === "user" && !REPLAY_ALL && replayed > 0) break;
@@ -212,9 +214,11 @@ async function run(prompt) {
       turnOpen = true;
       const final = await streamAssistant({ ...message, timestamp: Date.now() });
       for (const call of final.content.filter(b => b.type === "toolCall")) {
+        pendingTools.set(call.id, call.name);
         await emit({ type: "tool_execution_start", toolCallId: call.id, toolName: call.name, args: call.arguments, intent: call.intent });
       }
     } else if (message.role === "toolResult") {
+      pendingTools.delete(message.toolCallId);
       await emit({
         type: "tool_execution_end", toolCallId: message.toolCallId, toolName: message.toolName,
         result: { content: message.content, details: message.details }, isError: message.isError === true,
@@ -223,6 +227,11 @@ async function run(prompt) {
     } else {
       await plainMessage({ ...message, timestamp: Date.now() });
     }
+  }
+  for (const [toolCallId, toolName] of pendingTools) {
+    const content = [{ type: "text", text: "Tool execution was aborted." }];
+    await emit({ type: "tool_execution_end", toolCallId, toolName, result: { content, details: {} }, isError: true });
+    await plainMessage({ role: "toolResult", toolCallId, toolName, content, isError: true, timestamp: Date.now() });
   }
   if (cursor < recorded.length && recorded[cursor].role === "user") cursor++;
   if (turnOpen) await emit({ type: "turn_end", message: history.at(-1), toolResults: [] });

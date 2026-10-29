@@ -397,7 +397,7 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
 // (Settings → Rail, keys showContext/showRadar/showSubagents/showMinimap);
 // `children` (widget plugin cards) sit between subagents and the minimap.
 function AmbientRail({
-  ctx, activity, messages, microcopy, onClose, sparklineValues, hoveredMsgIdx, onMinimapHover, onMinimapClick,
+  ctx, activity, running = false, messages, microcopy, onClose, sparklineValues, hoveredMsgIdx, onMinimapHover, onMinimapClick,
   subagents, subagentPaneOpen, onOpenSubagent, onToggleSubagentPane, onOpenTree,
   show = {}, children,
 }) {
@@ -441,7 +441,7 @@ function AmbientRail({
             <span className="mono" style={{ color: "var(--fg-2)" }}>agent radar</span>
             <span className="chip muted mono" style={{ marginLeft: "auto" }}>last 60s</span>
           </div>
-          <ActivityRadar activity={activity} tps={ctx.tokensPerSec} />
+          <ActivityRadar activity={activity} tps={ctx.tokensPerSec} running={running} />
           <div className="legend">
             {Object.entries(TOOL_META).filter(([k]) => ["read","search","edit","bash"].includes(k)).map(([k, m]) => (
               <span key={k} className="legend-item">
