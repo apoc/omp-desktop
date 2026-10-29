@@ -86,9 +86,11 @@ pub fn omp_output<S: AsRef<OsStr>>(args: &[S]) -> Result<std::process::Output, S
 /// commands, events or state fields the app relies on. Raise it in the change
 /// that starts using a newer omp feature; nothing else has to follow.
 ///
-/// 18.4.11: the RPC `fork` command (the conversation tree's "Fork after the
-/// reply").
-const MIN_OMP_VERSION: [u32; 3] = [18, 4, 11];
+/// 18.13.2: `message_update` frames in `messageUpdates: "delta"` carry what a
+/// client needs to rebuild the message (the block on start/end events, the
+/// message on a restart), so every process streams deltas
+/// (`agent::DELTA_EVENT_FILTER`). Earlier delta frames cannot be rebuilt.
+const MIN_OMP_VERSION: [u32; 3] = [18, 13, 2];
 
 /// The binary whose `omp --version` check passed. Only a pass is
 /// remembered, and only for that path: after a refusal the next tab start

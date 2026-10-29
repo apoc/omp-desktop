@@ -23,6 +23,7 @@
   const TURN = window.OMP_TURN_STATUS;
   const GOAL = window.OMP_GOAL;
   const EXT = window.OMP_EXT_WIDGETS;
+  const DELTA = window.OMP_STREAM_DELTA;
   const { tsOf, mergeTranscript } = window.OMP_TRANSCRIPT;
 
   // ── Safe defaults so design components never crash on missing fields ──────
@@ -95,6 +96,12 @@
   };
 
   let streamingBubble = null;
+  // The streaming message's content, rebuilt from delta frames
+  // (app/stream-delta.js `accFor`): `{ mid, blocks, seed }` — omp's
+  // `messageId`, its blocks so far, and the `streamSnapshot` they started
+  // from (or null). Kept off the bubble, which the transcript (and the
+  // phone) carries.
+  let streamAcc = null;
   let activeToolCards = new Map();    // toolCallId → message index
   const ASK_FLUSH_MS = 150;         // upper bound on how long an ask may stay buffered
   // Ask bubbles (and auto-approval rows) awaiting a flush into
@@ -111,6 +118,10 @@
   // after a dropped replay): replayed and buffered setStatus / setWidget
   // frames at or below it are already in `state.extWidgets`. 0 = none.
   let extSnapshotSeq  = 0;
+  // The backend's copy of the message streaming when a dropped replay ran
+  // (`streaming_message`: `{ messageId, seq, message }`), or null. Its frames
+  // at or below `seq` are already in it.
+  let streamSnapshot  = null;
   // The user's `abort` is in flight — set by `abort()`, cleared by its
   // id-less response. omp pauses an active goal on abort, and that pause is
   // labelled as the user's stop (app/goal.js `fromFrame`).
@@ -594,6 +605,19 @@
     };
   }
 
+  // The bubble of omp message `mid` starting to stream (`streamAcc` holds its
+  // content): empty, or as far as the backend's copy got when a dropped
+  // replay loaded one for it (`streamSnapshot`).
+  function _startStreamingBubble(mid, ts, time) {
+    streamAcc = DELTA.accFor(null, mid, streamSnapshot, lastSeq).acc;
+    return {
+      kind: "assistant", time, ts,
+      ...DELTA.view(streamAcc.blocks),
+      streaming: true,
+      model: state.model?.name ?? "–",
+    };
+  }
+
   // Show a run's final failure (`make(previous)` builds it, app/turn-status.js)
   // on the bubble its failed message created: the one with the failed
   // message's `ts` when the caller knows it — even one still marked
@@ -768,6 +792,8 @@
       extWidgets:    EXT.EMPTY,
     });
     streamingBubble = null;
+    streamAcc       = null;
+    streamSnapshot  = null;
     lastTurnOk  = true;
     pendingAskBubbles = [];
     _disarmAskFlush();
@@ -817,6 +843,7 @@
       extWidgets:    state.extWidgets,
       // volatile vars
       streamingBubble,
+      streamAcc,
       activeToolCards: new Map(activeToolCards),
       tpsSamples:    [...tpsSamples],
       turnStartTime,
@@ -857,6 +884,7 @@
       extWidgets:    snap.extWidgets ?? EXT.EMPTY,
     });
     streamingBubble = snap.streamingBubble;
+    streamAcc       = snap.streamAcc ?? null;
     activeToolCards = snap.activeToolCards;
     tpsSamples      = snap.tpsSamples;
     turnStartTime   = snap.turnStartTime;
@@ -920,6 +948,7 @@
     // (never lost, never double-processed) — drained once replay is applied.
     _replayBuffer = [];
     extSnapshotSeq = 0;
+    streamSnapshot = null;
 
     // Each callback checks it still belongs to this activation: an unlisten
     // only settles after an IPC round-trip, and until it does a superseded
@@ -993,13 +1022,18 @@
           state.extWidgets = EXT.fromSnapshot(ext);
           extSnapshotSeq = Number.isInteger(ext.seq) ? ext.seq : 0;
         }
+        // The message streaming now: omp sends only increments, so its
+        // bubble cannot be rebuilt from what is left of the journal.
+        const streaming = await _invokeSafe("streaming_message", { sessionId: id }, null);
+        if (!current()) return; // superseded by a newer switch, or detached
+        streamSnapshot = streaming;
       }
       for (const ev of replay.events) _dispatchEnvelope(ev);
       // A pending auto-`/rename` whose outcome note fell out of the ring
       // will never be swallowed, and nothing else would release the flag:
       // refinements would stay blocked for good. The replayed events above
       // had their chance to swallow it; if the note is in fact still to
-      // come (generation outlasting 256 lines of output), the cost is one
+      // come (generation outlasting the journal's window), the cost is one
       // plumbing line in the transcript.
       if (replay.dropped && sessionRegistry.get(id)?.autoRenameInFlight) {
         sessionRegistry.set(id, { ...sessionRegistry.get(id), autoRenameInFlight: false });
@@ -2411,13 +2445,7 @@
           }
         }
       } else if (role === "assistant") {
-        streamingBubble = {
-          kind: "assistant", time, ts,
-          thought: null, lead: null,
-          blocks: [{ type: "text", text: "" }],
-          streaming: true,
-          model: state.model?.name ?? "–",
-        };
+        streamingBubble = _startStreamingBubble(ev.messageId, ts, time);
         state.messages = [...state.messages, streamingBubble];
         notify();
       }
@@ -2425,26 +2453,31 @@
     }
 
     if (type === "message_update") {
-      if (!streamingBubble) return;
-      const msg = ev.message;
-      if (!msg) return;
-
-      const blocks = Array.isArray(msg.content) ? msg.content : [];
-      let thought = null;
-      const designBlocks = [];
-      for (const block of blocks) {
-        if (block.type === "thinking" && block.thinking?.trim()) thought = block.thinking;
-        else if (block.type === "text" && block.text) designBlocks.push({ type: "text", text: block.text });
+      // Delta frames (app/stream-delta.js): `message` carries only the role.
+      const mid = ev.messageId;
+      let changed = false;
+      if (!streamingBubble && streamSnapshot?.messageId === mid) {
+        // The message's start fell out of a dropped replay: show it from the
+        // backend's copy.
+        streamingBubble = _startStreamingBubble(mid, tsOf(streamSnapshot.message), time);
+        state.messages = [...state.messages, streamingBubble];
+        changed = true;
       }
+      if (!streamingBubble) return;
+      // Another message than the bubble's restarts it (lost frames); the
+      // copy, when it is this message's, seeds it. A delta carries no
+      // timestamp, so the bubble takes the copy's `ts`, else keeps its own
+      // until `message_end` (see get_messages).
+      const step = DELTA.accFor(streamAcc, mid, streamSnapshot, lastSeq);
+      if (step.changed && step.acc.seed) streamingBubble.ts = tsOf(step.acc.seed.message) ?? streamingBubble.ts;
+      streamAcc = step.acc;
+      changed = step.changed || changed;
+      if (!step.skip) changed = DELTA.applyEvent(streamAcc.blocks, ev.assistantMessageEvent) || changed;
+      if (!changed) return;
 
-      streamingBubble.thought = thought;
-      streamingBubble.lead    = thought ? "thinking" : null;
-      streamingBubble.blocks  = designBlocks.length > 0 ? designBlocks : [{ type: "text", text: "" }];
-      // The message this bubble shows: after frames were lost, a bubble left
-      // streaming can receive the next message's updates (see get_messages).
-      if (msg.role === "assistant") streamingBubble.ts = tsOf(msg) ?? streamingBubble.ts;
+      Object.assign(streamingBubble, DELTA.view(streamAcc.blocks));
 
-      const updated = { ...streamingBubble, blocks: [...streamingBubble.blocks] };
+      const updated = { ...streamingBubble };
       // Find by streaming flag — indexOf fails after the first update because
       // each update replaces the entry with a new copy; ask bubbles may also
       // sit after the streaming bubble in state.messages.
@@ -2516,6 +2549,10 @@
         }
         streamingBubble = null;
       }
+      // Settled: its rebuilt blocks (a whole file write, image data) and the
+      // backend's copy of it are done with, and no later frame can need them.
+      if (!streamingBubble) streamAcc = null;
+      if (streamSnapshot?.messageId === ev.messageId) streamSnapshot = null;
       // A retried request answered: the retries are over even if more turns
       // follow in this run (app/turn-status.js `retryFinished`). By omp's
       // rule only output counts: after an empty stop omp keeps retrying.

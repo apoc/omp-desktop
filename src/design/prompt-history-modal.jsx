@@ -26,10 +26,7 @@ function PromptHistoryModal({ open, entries, onClose, onPick }) {
 
   const clampedIdx = entries.length > 0 ? Math.max(0, Math.min(activeIdx, entries.length - 1)) : 0;
 
-  React.useEffect(() => {
-    if (!open || !listRef.current) return;
-    listRef.current.children[clampedIdx]?.scrollIntoView({ block: "nearest" });
-  }, [clampedIdx, open]);
+  window.useActiveRowIntoView(listRef, clampedIdx, open);
 
   const pick = (text) => { onPick?.(text); onClose(); };
 
@@ -39,31 +36,10 @@ function PromptHistoryModal({ open, entries, onClose, onPick }) {
   // before the event ever reaches the composer's onKeyDown — same
   // pattern as settings/shortcuts-editor.jsx's chord recorder. Modified keys are
   // let through untouched so Ctrl+Up still reaches the keymap toggle.
-  React.useEffect(() => {
-    if (!open) return;
-    const onKey = (e) => {
-      if (e.ctrlKey || e.altKey || e.metaKey) return;
-      if (e.key === "Escape") {
-        e.preventDefault(); e.stopPropagation();
-        onClose();
-      } else if (e.key === "ArrowDown") {
-        e.preventDefault(); e.stopPropagation();
-        setActiveIdx(Math.max(0, Math.min(clampedIdx + 1, entries.length - 1)));
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault(); e.stopPropagation();
-        setActiveIdx(Math.max(clampedIdx - 1, 0));
-      } else if (e.key === "Enter") {
-        // Swallowed unconditionally, even with an empty list (nothing to
-        // pick): this listener exists precisely so Enter can never reach
-        // the composer's send() while the picker is open, regardless of
-        // whether there's an entry under the cursor.
-        e.preventDefault(); e.stopPropagation();
-        if (entries[clampedIdx]) pick(entries[clampedIdx]);
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [open, onClose, entries, clampedIdx]);
+  window.useListKeys({
+    open, count: entries.length, index: clampedIdx, setIndex: setActiveIdx,
+    onEnter: i => pick(entries[i]), onClose, guard: true,
+  });
 
   if (!open) return null;
 

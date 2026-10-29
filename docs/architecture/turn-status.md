@@ -35,3 +35,45 @@ One replaceable `Arc<dyn TrackerSink>` receives committed changes after both
 tracker locks are released. Sinks must only enqueue work; transport and push
 fan-out belong to the remote manager, not the stdout reader. The tracker reports
 every timed finish; push consumers apply the 30-second notification threshold.
+
+## Streaming replies (delta frames)
+
+Every omp process runs with `set_event_filter { events: null, messageUpdates:
+"delta" }`, written by `start_session` (`agent/mod.rs` `DELTA_EVENT_FILTER`)
+right after the spawn, before the frontend sends anything; omp 18.13.2 (the
+floor) is the first whose delta frames can be rebuilt. A `message_update` then
+carries `message: { role }` and the event without its `partial` snapshot:
+`*_start` the empty block, `*_delta` the increment, `text_end` /
+`thinking_end` the final text (`content`) plus the block's metadata (a
+signature), `toolcall_end` the whole call, `image_end` the image block
+(`content`), `start` (a restarted message) the message whole. A
+whole-snapshot frame grows with the reply, so streaming one
+cost bytes quadratic in its length.
+
+- **Frontend**: `app/stream-delta.js` (`window.OMP_STREAM_DELTA`, regression
+  `test-stream-delta.mjs`) applies an event to the message's blocks
+  (`applyEvent`, in place) and projects them onto the bubble (`view`).
+  `live.js` keeps the blocks in `streamAcc` (`{ mid, blocks, seed }`, per tab
+  in the snapshot places), not on the bubble, which the transcript and the
+  phone carry. `applyEvent` reports whether text or thinking changed, so a
+  tool call's streamed arguments (its card comes from `tool_execution_*`)
+  never cost a render. Which accumulator a frame streams into, and whether it
+  is skipped, is `accFor`: an update for another `messageId` than
+  `streamAcc`'s restarts the bubble's content on that message — from the
+  backend's copy when `streamSnapshot` names it (and with its `ts`), otherwise
+  empty (only what streams from there on, the bubble's `ts` unchanged until
+  `message_end`).
+- **Dropped replay**: a frame the frontend never saw cannot be made up by a
+  later one, and a long reply overflows a background tab's journal. The stdout
+  reader applies every assistant message frame to `agent/inflight.rs` as well
+  (after the journal push, like `ext_ui`), and a reactivated tab whose replay
+  came back `dropped` loads it (`streaming_message`: `{ messageId, seq,
+  message }`, `streamSnapshot`, assigned only if the switch is still current).
+  The bubble of that `messageId` starts from the copy — a `message_start` in
+  the replay, an update whose start was evicted, or a bubble that was
+  streaming when the tab was left — and that message's frames at or below
+  `seq` are skipped. `seed` is the copy object itself, so every new dropped
+  replay reseeds, a tab restored with an older seed too. `message_end` still
+  carries the whole message and settles the bubble as before. The reader
+  hands its parsed frame to `inflight.rs`, which moves blocks out of it
+  rather than copying them.

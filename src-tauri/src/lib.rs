@@ -603,7 +603,7 @@ fn take_pending_open_projects(state: State<'_, OpenProjectState>) -> Vec<String>
 /// Events a session's frontend hasn't seen yet, per its bounded event
 /// journal. Called on tab reactivation (after re-arming the live listener)
 /// to recover state that arrived while no listener was attached — the
-/// journal is in-memory only, capped at 256 lines per session; a caller
+/// journal is in-memory only, capped per session (`agent::EVENT_JOURNAL_CAPACITY` lines, `EVENT_JOURNAL_MAX_BYTES`); a caller
 /// whose `after_seq` predates the ring window gets `dropped: true` and
 /// falls back to its existing full-state refetch for that gap.
 #[tauri::command]
@@ -626,6 +626,18 @@ fn extension_ui_state(
     bridge: State<'_, AgentBridge>,
 ) -> agent::ext_ui::ExtUiState {
     bridge.extension_ui_state(&session_id)
+}
+
+/// The assistant message a session is streaming, as far as it got: omp sends
+/// only increments (`agent::inflight`), so a reactivated tab whose replay
+/// came back `dropped` seeds its streaming bubble from this. `None` between
+/// messages and for an unknown or ended session.
+#[tauri::command]
+fn streaming_message(
+    session_id: String,
+    bridge: State<'_, AgentBridge>,
+) -> Option<agent::inflight::Snapshot> {
+    bridge.streaming_message(&session_id)
 }
 
 /// List tool-approval rules currently in effect for a session/project pair.
@@ -1515,6 +1527,7 @@ pub fn run() {
             session_status,
             replay_events,
             extension_ui_state,
+            streaming_message,
             open_project,
             take_pending_open_projects,
             start_git_watch,

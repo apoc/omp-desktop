@@ -250,8 +250,9 @@
 /* omp is retrying a failed request: an amber ring that spins. */
 .tab-run-dot.retrying { box-sizing: border-box; border: 1.5px solid var(--amber); border-top-color: transparent; animation: spin 1s linear infinite; }
 @keyframes tab-run-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
+  /* Stepped like every endless loop (styles.css, motion utilities). */
+  0%, 100% { opacity: 1; animation-timing-function: steps(4); }
+  50% { opacity: 0.45; animation-timing-function: steps(4); }
 }
 .tab-close {
   width: 1rem; height: 1rem; padding: 0;

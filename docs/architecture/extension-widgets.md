@@ -47,7 +47,7 @@ Non-string lines are skipped; a non-array `widgetLines` is a removal. Key and li
 
 ## Why a copy in Rust
 
-The frontend processes only the active tab's frames; a background tab's lines wait in its event journal (`agent/journal.rs`, 256 lines / 8 MiB) until activation replays them. One streamed turn overflows that ring, and omp has no command to query its current widgets. Without the backend copy, every `setStatus`/`setWidget` among the evicted lines would be lost, and a tab would come back after a background turn with stale or missing cards.
+The frontend processes only the active tab's frames; a background tab's lines wait in its event journal (`agent/journal.rs`, 4096 lines / 8 MiB, set in `agent/mod.rs`) until activation replays them. A long streamed turn overflows that ring, and omp has no command to query its current widgets. Without the backend copy, every `setStatus`/`setWidget` among the evicted lines would be lost, and a tab would come back after a background turn with stale or missing cards.
 
 So the stdout reader applies each `extension_ui_request` frame to the session's `ExtUiState` right after pushing the line to the journal, stamping `seq` with that line's journal seq (a type check on the frame it already parsed; other frames cost nothing more). Applied or ignored, every such frame advances `seq`.
 

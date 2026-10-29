@@ -815,7 +815,9 @@ function App() {
     <_AL_MdLinkCtx.Provider value={handleChatLinkClick}>
       <div className="app-backdrop" />
       <div className="app">
-        <div className={`window scanlines ${showSplit ? "is-split" : ""}`}>
+        {/* `is-running`: the active tab streams; the always-visible loops
+            (status/model dots, activity radar) run only then (styles.css). */}
+        <div className={`window scanlines ${showSplit ? "is-split" : ""}${streaming ? " is-running" : ""}`}>
           <WindowChrome
             project={activeProject}
             onCmd={() => setBridgeOpen(true)}
