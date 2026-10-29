@@ -36,7 +36,7 @@ function hintKeyFor(actionId, fallback) {
 // ── The composer (input + plan/steer modes + send) ────────────────────
 // `submitKey` ("enter" | "ctrl+enter") and `pasteCollapseLines` come from the
 // tweaks (Settings › Composer); the defaults match TWEAK_DEFAULTS.
-function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, planBlocked = "", goalMode = false, goalTint = false, onToggleGoal, goalBlocked = "", goalStrip = null, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued, onSendQueuedNow, browserChips = [], onRemoveBrowserChip, onBrowserChipClick, submitKey = "enter", pasteCollapseLines = 5, liveVoice, liveError, onLiveAction, dictation, dictationError, onDictationAction, dictationCompleted, onAckDictation }) {
+function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, planBlocked = "", goalMode = false, goalTint = false, onToggleGoal, goalBlocked = "", goalStrip = null, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, pendingRequests = [], onOpenPending, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued, onSendQueuedNow, browserChips = [], onRemoveBrowserChip, onBrowserChipClick, submitKey = "enter", pasteCollapseLines = 5, liveVoice, liveError, onLiveAction, dictation, dictationError, onDictationAction, dictationCompleted, onAckDictation }) {
   // Drafts are per tab (issue #28). The composer stays mounted across tab
   // switches and keeps one draft per session id (app/session-ui.js
   // DRAFT_IDLE): text, pending image attachments (sent alongside the next
@@ -602,6 +602,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
       {goalStrip}
       <LiveVoicePanel voice={liveVoice} error={liveError} onAction={onLiveAction} dictationActive={!!dictation?.active} />
       <DictationPanel dictation={dictation} error={dictationError} onAction={onDictationAction} />
+      <PendingInput requests={pendingRequests} concurrentWork={backgroundWork} onOpen={onOpenPending} />
 
       {showSlash && (
         <div className="slash-pop" ref={listRef}>
@@ -710,8 +711,15 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
                 <Icon name={goalMode ? "goal" : "arrow"} size={10} color={goalMode ? "var(--lilac)" : "var(--amber)"} /> {goalMode ? "start goal" : "steer"}
               </button>
             )}
-            <button className="btn danger" onClick={onAbort}>
-              <Icon name="stop" size={10} /> abort {abortHint && <span className="kbd">{abortHint}</span>}
+            {!steerable && pendingRequests.length > 0 && (
+              <button type="button" className="btn outlined composer-answer" onClick={() => onOpenPending(pendingRequests[0].id)}>
+                Answer <Icon name="arrow" size={10} />
+              </button>
+            )}
+            <button className={`btn danger${pendingRequests.length ? " composer-abort-waiting" : ""}`} onClick={onAbort}
+              aria-label={pendingRequests.length ? "Stop turn and cancel pending questions" : "Abort turn"}
+              title={pendingRequests.length ? `Stop this turn and cancel its pending questions${abortHint ? ` (${abortHint})` : ""}` : undefined}>
+              <Icon name="stop" size={10} /> {!pendingRequests.length && <>abort {abortHint && <span className="kbd">{abortHint}</span>}</>}
             </button>
           </>
         ) : (
@@ -722,6 +730,11 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
                 <Icon name="play" size={10} color="var(--amber)" /> approve
               </button>
             )}
+            {pendingRequests.length > 0 && !sendable ? (
+              <button type="button" className="btn outlined composer-answer" onClick={() => onOpenPending(pendingRequests[0].id)}>
+                Answer <Icon name="arrow" size={10} />
+              </button>
+            ) : (
             <button className={`btn primary${goalMode ? " goal-start" : ""}`} onClick={send}
               disabled={!sendable || pendingImages > 0}>
               {goalMode
@@ -731,6 +744,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
                 : "send"}
               {" "}<Icon name="arrow" size={11} />
             </button>
+            )}
           </>
         )}
       </div>
@@ -755,7 +769,12 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
           <span style={{ color: goalMode ? "var(--lilac)" : "var(--fg-2)" }}>goal</span>
         </button>
         <div style={{ flex: 1 }} />
-        {backgroundWork && (
+        {pendingRequests.length > 0 ? (
+          <span className="composer-bg-note composer-wait-note">
+            <TabRunDot state="waiting-user" />
+            waiting for your answer{backgroundWork ? " · other tasks active" : ""}
+          </span>
+        ) : backgroundWork && (
           <span className="composer-bg-note" title="omp reports background work (an async bash, task or eval job) whose result will wake the agent">
             <TabRunDot state="background" />
             background job running · the agent resumes when it finishes

@@ -360,8 +360,8 @@ pub(super) fn spawn_omp(
     // piped. No `cmd /C` wrapper on Windows: killing cmd.exe would orphan
     // omp without a Job Object.
     let mut cmd = omp.command();
-    // Load only the embedded observer. Keep the browser-only config last.
-    super::context_extension::apply(&mut cmd)?;
+    // Load only embedded desktop extensions. Keep the browser-only config last.
+    super::context_extension::apply(&mut cmd, profile)?;
     cmd.env("OMP_DESKTOP_CONTEXT_EPOCH", context_epoch);
     cmd.args(&args)
         .stdin(Stdio::piped())

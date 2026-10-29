@@ -92,6 +92,10 @@ function App() {
   // ── Live data (all per-session — driven by OMP_BRIDGE.onUpdate) ───────────
   const [messages,      setMessages]      = React.useState([]);
   const [streaming,     setStreaming]     = React.useState(false);
+  const [asyncPending, setAsyncPending] = React.useState(false);
+  const pendingRequests = React.useMemo(() => window.OMP_PENDING_INPUT.pending(messages), [messages]);
+  const [requestJump, setRequestJump] = React.useState(null);
+  const requestJumpSeq = React.useRef(0);
   const [model,         setModelState]    = React.useState(NULL_MODEL);
   const [thinkingLevel, setThinkingLevel] = React.useState(null);
   const [ctx,           setCtx]           = React.useState(data.ctx);
@@ -109,8 +113,11 @@ function App() {
   // on-demand agent transcripts.
   const [subagents,           setSubagents]           = React.useState(() => window.OMP_SUBAGENTS.emptySubagents());
   const [subagentTranscripts, setSubagentTranscripts] = React.useState({});
+  const [backgroundTasks, setBackgroundTasks] = React.useState(() => window.OMP_BACKGROUND_TASKS.empty());
+  const backgroundView = React.useMemo(() => window.OMP_BACKGROUND_TASKS.view(backgroundTasks), [backgroundTasks]);
   const [agentContext, setAgentContext] = React.useState(() => window.OMP_AGENT_CONTEXT.empty());
   const agentContextView = React.useMemo(() => window.OMP_AGENT_CONTEXT.view(agentContext), [agentContext]);
+  const [contextPolicy, setContextPolicy] = React.useState(null);
   // omp's steer / follow-up queue + this tab's unacknowledged sends
   // (app/message-queue.js), rendered by the composer's queue strip.
   const [queue,        setQueue]        = React.useState(() => window.OMP_QUEUE.EMPTY_QUEUE);
@@ -137,6 +144,7 @@ function App() {
   // Each entry: { id, name, path, color, branch }
   const [sessions,        setSessions]        = React.useState([]);
   const [activeSessionId, setActiveSessionId] = React.useState("");
+  React.useEffect(() => { setRequestJump(null); }, [activeSessionId]);
   const [contextViews, setContextViews] = React.useState({});
   const updateContextView = React.useCallback(update => {
     setContextViews(previous => ({ ...previous, [activeSessionId]: typeof update === "function"
@@ -170,12 +178,12 @@ function App() {
 
   // ── Cross-cutting effects ─────────────────────────────────────────────────
   useBridgeSnapshot(bridge, {
-    setMessages, setStreaming, setCtx, setKanban, setPlanMeta,
+    setMessages, setStreaming, setAsyncPending, setCtx, setKanban, setPlanMeta,
     setModels, setActivity, setSparkline,
     setModelState, setThinkingLevel,
     setSessions, setActiveSessionId, setProfiles, setStartupProfileId, setRecentProjects,
     setNoTabProfileId, setWorkspaceNotes, setApprovalModes, setCloseConfirm, setConversationSetup,
-    setPromptHistory, setSubagents, setSubagentTranscripts, setAgentContext, setQueue, setQueueSending, setGoal, setExtWidgets, setLiveVoice, setDictation, setDictationCompleted,
+    setPromptHistory, setSubagents, setSubagentTranscripts, setBackgroundTasks, setAgentContext, setContextPolicy, setQueue, setQueueSending, setGoal, setExtWidgets, setLiveVoice, setDictation, setDictationCompleted,
   });
   useRemote({ bridge });
   useNotifications({ sessions, viewedSession: stab.active ? null : activeSessionId, tweaks: t });
@@ -229,6 +237,11 @@ function App() {
   // usage-stats panel's header label, instead of a second copy.
   const activeProfileId    = activeProject.id ? activeProject.profile : noTabProfileId;
   const activeProfileLabel = profiles.find(p => p.id === activeProfileId)?.name ?? activeProfileId;
+  const policyUi = window.useContextPolicy({
+    bridge, tabId: activeProject.id, profileId: activeProfileId, profileName: activeProfileLabel,
+    processStartedAt: activeProject.processStartedAt,
+    model, active: t.showContext || (stab.active && stab.section === "agent"), snapshot: contextPolicy,
+  });
   // Status-bar approvals cell: the mode the rendered tab's omp runs, or
   // `running ⇢ target` while a change waits for its turn to end. Read
   // late-bound: app/approval-mode.js is a plain module like the others.
@@ -561,6 +574,7 @@ function App() {
   const handleConfirmAsk = React.useCallback((id, confirmed) => { bridge?.answerConfirm(id, confirmed); }, [bridge]);
   const handleCancelAsk  = React.useCallback((id) => { bridge?.cancelAsk(id); }, [bridge]);
   const handleGrantApproval = React.useCallback((prompt, scope) => { bridge?.approveAndRemember(prompt, scope); }, [bridge]);
+  const handleOpenPending = id => setRequestJump({ id, sessionId: activeSessionId, nonce: ++requestJumpSeq.current });
   const handleStopRetry  = () => { prAutomation.pause(); bridge?.stopRetry(); };
   const handlePickLogin = async (provider) => {
     if (!bridge) return;
@@ -944,6 +958,7 @@ function App() {
     widgets, widgetTweakKey: _widgetTweakKey, extToggles, ambientItems, keyOpts: settingsKeyOpts,
     panes, terminalHeight: terminal.height, updater,
     goal: { profileId: activeProfileId },
+    contextPolicy: policyUi,
     openApprovals: () => setRulesOpen(true),
     section: stab.section,
     setSection: id => setStab(s => window.OMP_SETTINGS_TAB.setSection(s, id)),
@@ -1051,6 +1066,7 @@ function App() {
                     onToggleCollapse={handleToggleCollapse}
                     followOutput={t.followOutput}
                     submitKey={t.submitKey}
+                    requestJump={requestJump?.sessionId === activeSessionId ? requestJump : null}
                   />
                   <TerminalPanels sessions={sessions} activeId={planKey} terminal={terminal} />
                   <Composer
@@ -1080,7 +1096,9 @@ function App() {
                     onLoadThinkingLevels={() => bridge.thinkingLevels()}
                     onSetThinking={level => bridge.setThinkingLevel(level)}
                     isStreaming={streaming}
-                    backgroundWork={activeProject.runState === "background"}
+                    backgroundWork={backgroundView.backgroundActive.length > 0 || backgroundView.pendingUnknown}
+                    pendingRequests={pendingRequests}
+                    onOpenPending={handleOpenPending}
                     onAbort={handleAbort}
                     onApprove={handleApprovePlan}
                     annotationCount={Object.keys(plan.annotations).length}
@@ -1151,9 +1169,16 @@ function App() {
                   cards={{
                     showContext: <ContextCard key={`context:${activeSessionId}`} ctx={liveCtx} context={agentContextView}
                       viewState={contextViews[activeSessionId]} onViewStateChange={updateContextView}
+                      policyEditor={policyUi}
                       onSelectAgent={subagentUi.open} onOpenSubagents={() => { if (!showSplit) subagentUi.togglePane(); }}
                       onJumpToCall={id => { const index = messages.findIndex(m => m._toolCallId === id); if (index >= 0) handleMinimapClick(index); }}
                       readSkill={bridge.readContextSkill} messages={messages} sparklineValues={sparkline} />,
+                    showBackgroundTasks: <window.BackgroundTasksCard key={`tasks:${activeSessionId}`} state={backgroundTasks}
+                      awaitingAsyncWork={asyncPending && !streaming}
+                      canOpenTool={id => messages.some(message => message._toolCallId === id)}
+                      canOpenSubagent={(id, item) => { const agent = window.OMP_SUBAGENTS.getAgent(subagents, id); return !!agent && (!item.sessionFile || !agent.sessionFile || item.sessionFile === agent.sessionFile) && (!item.toolCallId || !agent.parentToolCallId || item.toolCallId === agent.parentToolCallId); }}
+                      onOpenTool={id => { const index = messages.findIndex(m => m._toolCallId === id); if (index >= 0) handleMinimapClick(index); }}
+                      onOpenSubagent={subagentUi.open} />,
                     showChanges: <PrAutomationCard key={planKey} automation={prAutomation} bridge={bridge}
                       available={!!activeProject.path && !!bridge?.isConnected}
                       onOpenChanges={() => setGitOpen({ path: null, project: gitProject })} />,

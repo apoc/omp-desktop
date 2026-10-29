@@ -207,18 +207,19 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
           )}
           {msg.cancelled && (
             <span className="chip" style={{ color: "var(--fg-4)", borderColor: "var(--line-bright)" }}>
-              {msg.closedByOmp ? "closed by omp" : "cancelled"}
+              {msg.closeReason === "process-exited" ? "process ended" : msg.closeReason === "no-longer-pending" ? "no longer pending" : msg.closedByOmp ? "closed by omp" : "cancelled"}
             </span>
           )}
         </div>
         {msg.recovery && !done && <div className="ask-confirm-message">Restored after restart. Answering continues this conversation.</div>}
-        {msg.recoveryError && <div className="ask-confirm-message" role="alert">{msg.recoveryError}</div>}
-        {msg.recovery ? (
-          <fieldset disabled={Boolean(msg.recoverySending)} aria-busy={Boolean(msg.recoverySending)} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
-            {body}
-            {msg.recoverySending && <span className="ask-progress" role="status">Sending answer…</span>}
-          </fieldset>
-        ) : body}
+        {msg.closeReason === "omp" && <div className="ask-confirm-message">omp closed this request. Its cancellation event did not include a reason.</div>}
+        {msg.closeReason === "process-exited" && <div className="ask-confirm-message">The agent process ended before this request was answered.</div>}
+        {msg.closeReason === "no-longer-pending" && <div className="ask-confirm-message">The native process is no longer waiting on this request; its outcome is unavailable.</div>}
+        {(msg.sendError || msg.recoveryError) && <div className="ask-confirm-message" role="alert">{msg.sendError || msg.recoveryError}</div>}
+        <fieldset disabled={Boolean(msg.sending || msg.recoverySending)} aria-busy={Boolean(msg.sending || msg.recoverySending)} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
+          {body}
+          {(msg.sending || msg.recoverySending) && <span className="ask-progress" role="status">Sending answer…</span>}
+        </fieldset>
       </div>
     </div>
   );

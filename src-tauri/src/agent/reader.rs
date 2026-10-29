@@ -269,6 +269,49 @@ fn retire_reader_session(
     announce
 }
 
+fn decode_frame(
+    catalog: &Mutex<Catalog>,
+    chunks: &mut ChunkDecoder,
+    physical: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let mut decoded = context_catalog::record(catalog, chunks, physical);
+    if let Some(frame) = decoded.as_mut().filter(|frame| {
+        frame.get("type").and_then(serde_json::Value::as_str) == Some("extension_ui_request")
+    }) {
+        sanitize_frame(frame);
+    }
+    decoded
+}
+
+fn journal_frame(
+    journal: &Mutex<EventJournal>,
+    shared: &Arc<str>,
+    physical: Option<&serde_json::Value>,
+    decoded: Option<&serde_json::Value>,
+    auto_approved: bool,
+) -> u64 {
+    journal.lock().map_or(0, |mut journal| {
+        let oversized = decoded.is_some_and(|frame| {
+            frame.get("type").and_then(serde_json::Value::as_str) == Some("extension_ui_request")
+        }) && physical
+            .and_then(|frame| frame.get("byteLength"))
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|length| length > super::journal::MAX_PENDING_BYTES as u64);
+        if oversized {
+            journal.mark_pending_incomplete();
+        }
+        journal.push_frame(
+            Arc::clone(shared),
+            if auto_approved || oversized {
+                None
+            } else {
+                decoded.or(physical)
+            },
+            decoded.is_some(),
+        )
+    })
+}
+
 pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
     let StdoutReaderConfig {
         sessions,
@@ -314,6 +357,11 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
                         "[omp/{sid}] dropped a stdout line that exceeded {MAX_LINE_BYTES} bytes; \
                          frontend will not see this RPC message"
                     );
+                    // This could have been a callback or a cancel, so the
+                    // remaining pending-request set is no longer authoritative.
+                    if let Ok(mut journal) = journal.lock() {
+                        journal.mark_pending_incomplete();
+                    }
                 }
                 Ok((_, false)) => {
                     strip_trailing_crlf(&mut buf);
@@ -329,11 +377,9 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
                     // instead would let either of those silently disable
                     // the stderr fallback this flag exists to gate.
                     saw_frame |= parsed.is_some();
-                    let frame_type = parsed
-                        .as_ref()
-                        .and_then(|frame| frame.get("type"))
-                        .and_then(serde_json::Value::as_str);
-                    context_catalog::record(&context_catalog, &mut context_chunks, parsed.as_ref());
+                    let frame_type = parsed.as_ref().and_then(|frame| frame["type"].as_str());
+                    let decoded =
+                        decode_frame(&context_catalog, &mut context_chunks, parsed.as_ref());
                     // A rule-covered approval prompt is answered directly on
                     // stdin and replaced with a synthetic notice — the human
                     // never sees the original ask, but does see that it was
@@ -357,7 +403,13 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
                     // journal: a background tab activated in between cannot
                     // replay and answer a question before the tracker knows it.
                     record_tracker_frame(&sid, frame_type, parsed.as_ref(), auto_approved, &alive);
-                    let seq = journal.lock().map_or(0, |mut j| j.push(shared.clone()));
+                    let seq = journal_frame(
+                        &journal,
+                        &shared,
+                        parsed.as_ref(),
+                        decoded.as_ref(),
+                        auto_approved,
+                    );
                     // After the push, stamped with its seq: a snapshot taken
                     // in between names an older seq, so the frontend still
                     // applies this frame from the replay.
@@ -569,6 +621,64 @@ mod tests {
         );
         // Non-sensitive sibling fields survive untouched.
         assert_eq!(parsed["data"]["model"]["name"], "gpt-5");
+    }
+
+    #[test]
+    fn pending_snapshot_reuses_the_redacted_forwarded_frame() {
+        let raw = json!({
+            "type": "extension_ui_request", "id": "q", "method": "input",
+            "title": "Code", "api_key": "do-not-replay"
+        })
+        .to_string();
+        let (text, frame) = sanitize_line(raw.as_bytes());
+        let shared: Arc<str> = Arc::from(text);
+        let mut journal = EventJournal::new(1, 1 << 20);
+        journal.push_frame(Arc::clone(&shared), frame.as_ref(), false);
+        journal.push(Arc::from("a later line evicts the question"));
+        let replay = journal.since(2);
+        assert!(replay.pending_requests_complete);
+        assert_eq!(replay.pending_requests.len(), 1);
+        let held = &replay.pending_requests[0].text;
+        assert!(Arc::ptr_eq(held, &shared));
+        assert!(!held.contains("do-not-replay"));
+        assert!(held.contains(REDACTED_PLACEHOLDER));
+    }
+
+    #[test]
+    fn a_chunked_question_remains_answerable_after_the_physical_frames_are_evicted() {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        let frame = json!({"type":"extension_ui_request", "method":"ask", "id":"large",
+            "questions":[{"id":"q", "question":"Continue?", "options":[{"label":"yes", "preview":"x".repeat(1024 * 1024)}]}],
+            "api_key":"never-store-this"});
+        let bytes = serde_json::to_vec(&frame).unwrap();
+        let mut chunks = ChunkDecoder::default();
+        let catalog = Mutex::new(Catalog::default());
+        let mut journal = EventJournal::new(1, 1 << 20);
+        for (index, part) in bytes.chunks(256 * 1024).enumerate() {
+            let physical = json!({"type":"rpc_chunk", "chunkId":"large-question", "index":index,
+                "count":bytes.len().div_ceil(256 * 1024), "byteLength":bytes.len(), "data":STANDARD.encode(part)});
+            let decoded = decode_frame(&catalog, &mut chunks, Some(&physical));
+            journal.push_frame(
+                Arc::from(physical.to_string()),
+                decoded.as_ref().or(Some(&physical)),
+                decoded.is_some(),
+            );
+        }
+        journal.push(Arc::from("later"));
+        let replay = journal.since(0);
+        assert!(replay.pending_requests_complete);
+        assert_eq!(replay.pending_requests.len(), 1);
+        let held = &replay.pending_requests[0].text;
+        assert!(!held.contains("never-store-this"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(held).unwrap()["id"],
+            "large"
+        );
+        let claim = journal.begin_answer("large").unwrap();
+        assert!(claim.is_some());
+        journal.finish_answer("large", claim, true);
+        assert!(journal.since(0).pending_requests.is_empty());
     }
 
     #[test]

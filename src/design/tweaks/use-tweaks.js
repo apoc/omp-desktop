@@ -12,7 +12,12 @@ function _load(defaults) {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return defaults;
     const stored = JSON.parse(raw);
-    const migrated = window.OMP_AMBIENT_RAIL.migrate(stored);
+    let migrated = window.OMP_AMBIENT_RAIL.migrate(stored);
+    // Compaction now belongs to native profiles, never a Desktop-wide switch.
+    if (Object.hasOwn(migrated, "autoCompaction")) {
+      migrated = { ...migrated };
+      delete migrated.autoCompaction;
+    }
     if (migrated !== stored) _save(migrated);
     return { ...defaults, ...migrated };
   } catch {

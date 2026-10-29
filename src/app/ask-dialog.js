@@ -24,9 +24,9 @@
   }
 
   /** The questions of an `ask` request, or null when they do not have the
-   *  shape omp documents — live.js then cancels the request, so omp never
-   *  waits on a dialog nothing can answer. `recommended` is kept only when
-   *  it indexes an option. */
+   *  shape omp documents. live.js reports an invalid reply so the native
+   *  tool fails visibly, rather than cancelling the whole turn.
+   *  `recommended` is kept only when it indexes an option. */
   function parseQuestions(raw) {
     if (!Array.isArray(raw) || raw.length === 0) return null;
     const questions = [];

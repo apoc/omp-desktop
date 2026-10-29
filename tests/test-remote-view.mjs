@@ -330,6 +330,7 @@ function liveBridge() {
   runInNewContext(source("src/app/agent-context.js"), { window });
   runInNewContext(source("src/app/agent-context-sync.js"), { window });
   const logs = [], calls = [], listeners = new Map();
+  runInNewContext(source("src/app/background-tasks.js"), { window });
   runInNewContext(source("src/live.js"), { window, console: { log() {}, error: (...args) => logs.push(args) } });
   let fail = false, stopped = 0;
   window.__TAURI__ = {

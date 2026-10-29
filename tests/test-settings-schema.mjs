@@ -174,7 +174,6 @@ check("search matches label, desc text and keywords, grouped in page order", () 
   assert.equal(r.bySection.chat, 0);
   assert.deepEqual(r.groups.map(g => [g.sectionId, g.sectionTitle, g.groupName]), [["appearance", "Appearance", "Text"]]);
   assert.equal(S.search("POWERSHELL", vals()).groups[0].src, "terminal.json", "keywords, case-insensitive");
-  assert.equal(S.search("/compact", vals()).total, 1, "desc text with backticks stripped");
   assert.deepEqual(S.search("   ", vals()), { total: 0, bySection: Object.fromEntries(S.SECTIONS.map(s => [s.id, 0])), groups: [] });
 });
 

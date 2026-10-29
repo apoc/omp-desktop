@@ -1,0 +1,130 @@
+.bt-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.bt-title {
+  color: var(--fg-2);
+}
+.bt-count {
+  margin-left: auto;
+}
+.bt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.bt-task {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+}
+.bt-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 7px 0;
+  cursor: pointer;
+  list-style: none;
+}
+.bt-summary::-webkit-details-marker {
+  display: none;
+}
+.bt-summary:focus-visible,
+.bt-history > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.bt-indicator {
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--fg-5);
+}
+.bt-running,
+.bt-pending {
+  background: var(--cyan);
+}
+.bt-completed {
+  background: var(--accent);
+}
+.bt-failed,
+.bt-cancelled,
+.bt-aborted {
+  background: var(--rose);
+}
+.bt-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.bt-name {
+  color: var(--fg-2);
+  font-size: var(--d-text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bt-meta,
+.bt-time {
+  color: var(--fg-4);
+  font-size: var(--d-text-xs);
+}
+.bt-time {
+  flex: none;
+  white-space: nowrap;
+}
+.bt-detail {
+  padding: 0 0 8px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bt-description,
+.bt-note,
+.bt-wait {
+  color: var(--fg-3);
+  font-size: var(--d-text-xs);
+  line-height: var(--d-leading);
+  overflow-wrap: anywhere;
+}
+.bt-wait {
+  color: var(--cyan);
+}
+.bt-output {
+  margin: 0;
+  padding: 6px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg-3);
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+  font-size: var(--d-text-xs);
+}
+.bt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.bt-actions:empty {
+  display: none;
+}
+.bt-actions .btn {
+  height: 23px;
+}
+.bt-history > summary {
+  cursor: pointer;
+  color: var(--fg-3);
+  font-size: var(--d-text-xs);
+  padding: 4px 0;
+}
+.bt-history > summary span {
+  color: var(--fg-5);
+}

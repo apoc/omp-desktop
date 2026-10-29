@@ -377,11 +377,12 @@ impl AgentBridge {
             command.get("type").and_then(serde_json::Value::as_str),
             Some("get_entries" | "get_subagent_messages")
         );
-        let Some((stdin_arc, open, alive, context_catalog)) =
+        let Some((stdin_arc, open, answer_journal, alive, context_catalog)) =
             self.with_entry(session_id, |inner| {
                 (
                     inner.stdin.as_ref().map(Arc::clone),
                     answered.map(|_| Arc::clone(&inner.approvals)),
+                    answered.map(|_| Arc::clone(&inner.journal)),
                     answered.map(|_| Arc::clone(&inner.alive)),
                     context_request.then(|| Arc::clone(&inner.context_catalog)),
                 )
@@ -398,7 +399,12 @@ impl AgentBridge {
                 .map_err(|_| "catalog lock poisoned".to_owned())?
                 .request(&command);
         }
-        if let Err(error) = write_command(&stdin_arc, trimmed, answered.zip(open.as_deref())) {
+        if let Err(error) = write_command(
+            &stdin_arc,
+            trimmed,
+            answered.zip(open.as_deref()),
+            answered.zip(answer_journal.as_deref()),
+        ) {
             if let Some(catalog) = &context_catalog {
                 if let Ok(mut catalog) = catalog.lock() {
                     catalog.cancel(&command);
@@ -602,22 +608,37 @@ fn validate_command_type(trimmed: &str) -> Result<serde_json::Value, String> {
     Ok(parsed)
 }
 
-/// Write one command line to omp's `stdin`, then — only once it was written
-/// — settle the approval prompt it answers (`answered`: request id and the
-/// process's open prompts). Generic over the writer, like
-/// `reader::try_auto_approve`, so a test can pass a `Mutex<Vec<u8>>`.
+/// Write one command line to omp's `stdin`. An answer is marked in flight
+/// before writing so replay cannot resurrect it while the write is blocked.
+/// Only a successful write and flush settles the prompt; a failure restores
+/// it unless omp cancelled it in the meantime.
 fn write_command<W: Write>(
     stdin: &Mutex<W>,
     line: &str,
     answered: Option<(&str, &Mutex<PendingApprovals>)>,
+    answer_journal: Option<(&str, &Mutex<EventJournal>)>,
 ) -> Result<(), String> {
     let mut w = stdin
         .lock()
         .map_err(|_| "stdin lock poisoned".to_string())?;
-    writeln!(*w, "{line}").map_err(|e| e.to_string())?;
-    // ChildStdin is unbuffered, but flush() costs nothing and keeps the
-    // contract explicit.
-    w.flush().map_err(|e| e.to_string())?;
+    let claimed = if let Some((id, journal)) = answer_journal {
+        Some(
+            journal
+                .lock()
+                .map_err(|_| "journal lock poisoned".to_string())?
+                .begin_answer(id)
+                .map_err(str::to_owned)?,
+        )
+    } else {
+        None
+    };
+    let result = writeln!(*w, "{line}").and_then(|()| w.flush());
+    if let (Some((id, journal)), Some(seq)) = (answer_journal, claimed) {
+        if let Ok(mut journal) = journal.lock() {
+            journal.finish_answer(id, seq, result.is_ok());
+        }
+    }
+    result.map_err(|e| e.to_string())?;
     drop(w);
     if let Some((id, open)) = answered {
         approvals::settle(open, id);
@@ -747,7 +768,7 @@ mod tests {
         let stdin: Mutex<Vec<u8>> = Mutex::new(Vec::new());
         let open = open_prompt("req-1");
         let line = r#"{"type":"extension_ui_response","id":"req-1","value":"Deny"}"#;
-        write_command(&stdin, line, Some(("req-1", &open))).unwrap();
+        write_command(&stdin, line, Some(("req-1", &open)), None).unwrap();
         assert_eq!(
             stdin.lock().unwrap().as_slice(),
             format!("{line}\n").as_bytes()
@@ -764,7 +785,7 @@ mod tests {
         let line = r#"{"type":"get_state","id":"req-1"}"#;
         let command = validate_command_type(line).unwrap();
         let answered = approvals::answered_id(&command).map(|id| (id, &open));
-        write_command(&stdin, line, answered).unwrap();
+        write_command(&stdin, line, answered, None).unwrap();
         assert_eq!(open.lock().unwrap().tool("req-1"), Some("bash"));
     }
 
@@ -772,7 +793,7 @@ mod tests {
     fn an_answer_omp_never_received_leaves_the_prompt_open() {
         let open = open_prompt("req-1");
         let line = r#"{"type":"extension_ui_response","id":"req-1","value":"Approve"}"#;
-        assert!(write_command(&Mutex::new(Broken), line, Some(("req-1", &open))).is_err());
+        assert!(write_command(&Mutex::new(Broken), line, Some(("req-1", &open)), None).is_err());
         assert_eq!(open.lock().unwrap().tool("req-1"), Some("bash"));
     }
 
@@ -794,6 +815,14 @@ mod tests {
             "type": "extension_ui_request", "id": id, "method": "select",
             "title": format!("Allow tool: {tool}\nCommand: ls"), "options": ["Approve", "Deny"],
         })
+    }
+
+    pub(super) fn journal_with_frames(frames: &[serde_json::Value]) -> Arc<Mutex<EventJournal>> {
+        let mut journal = EventJournal::new(EVENT_JOURNAL_CAPACITY, EVENT_JOURNAL_MAX_BYTES);
+        for frame in frames {
+            journal.push_frame(Arc::from(frame.to_string()), Some(frame), false);
+        }
+        Arc::new(Mutex::new(journal))
     }
 
     /// A map entry with no process behind it (generation 1, empty journal and
@@ -884,6 +913,34 @@ mod tests {
         let bridge = AgentBridge::new();
         let err = bridge.replay_events("nope", 0).unwrap_err();
         assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn replay_snapshot_belongs_to_the_current_process_incarnation() {
+        let bridge = AgentBridge::new();
+        let old = BridgeInner {
+            journal: journal_with_frames(&[approval_prompt("old", "bash")]),
+            ..idle_inner(Arc::new(AtomicBool::new(true)))
+        };
+        bridge
+            .sessions
+            .lock()
+            .unwrap()
+            .insert("same-tab".into(), old);
+        let replay = bridge.replay_events("same-tab", 1).unwrap();
+        assert!(replay.events.is_empty());
+        assert_eq!(replay.pending_requests.len(), 1);
+        let wire = serde_json::to_value(replay).unwrap();
+        assert_eq!(wire["pendingRequests"][0]["seq"], 1);
+        assert_eq!(wire["pendingRequestsComplete"], true);
+
+        bridge.sessions.lock().unwrap().insert(
+            "same-tab".into(),
+            idle_inner(Arc::new(AtomicBool::new(true))),
+        );
+        let replacement = bridge.replay_events("same-tab", 0).unwrap();
+        assert!(replacement.pending_requests.is_empty());
+        assert!(replacement.pending_requests_complete);
     }
 
     #[test]
@@ -989,6 +1046,7 @@ mod tests {
             BridgeInner {
                 stdin: Some(Arc::new(Mutex::new(stdin))),
                 child: Some(child),
+                journal: journal_with_frames(&[approval_prompt("q", "bash")]),
                 ..idle_inner(Arc::new(AtomicBool::new(true)))
             },
         );
@@ -999,6 +1057,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tracker().snapshot()[sid], (false, 0));
+        let replay = bridge.replay_events(sid, 1).unwrap();
+        assert!(replay.pending_requests_complete);
+        assert!(replay.pending_requests.is_empty());
         tracker().on_exit(sid);
     }
 
@@ -1036,6 +1097,7 @@ mod tests {
             sid.into(),
             BridgeInner {
                 stdin: Some(Arc::new(Mutex::new(stdin))),
+                journal: journal_with_frames(&[approval_prompt("q", "bash")]),
                 ..idle_inner(Arc::new(AtomicBool::new(true)))
             },
         );
@@ -1046,6 +1108,9 @@ mod tests {
             )
             .is_err());
         assert_eq!(tracker().snapshot()[sid], (false, 1));
+        let replay = bridge.replay_events(sid, 1).unwrap();
+        assert!(replay.pending_requests_complete);
+        assert_eq!(replay.pending_requests.len(), 1);
         tracker().on_exit(sid);
     }
 

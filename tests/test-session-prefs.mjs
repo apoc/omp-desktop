@@ -29,15 +29,16 @@ function check(label, fn) {
   passed++;
 }
 
-const DEFAULTS = { restoreTabs: true, confirmBusyClose: false, autoName: true, autoCompaction: true, autoRetry: true, theme: "aurora" };
+const DEFAULTS = { restoreTabs: true, confirmBusyClose: false, autoName: true, autoRetry: true, theme: "aurora" };
 const ON = { ...P.fromTweaks({}, DEFAULTS), confirmBusyClose: true };
 const OFF = P.fromTweaks({}, DEFAULTS);
 const tab = (id, runState, name = id) => ({ id, name, runState });
 
 // ── fromTweaks / changedKeys ─────────────────────────────────────────────
-check("fromTweaks: defaults fill missing keys, only the pref keys are kept", () => {
-  assert.deepEqual(P.fromTweaks({}, DEFAULTS),
-    { restoreTabs: true, confirmBusyClose: false, autoName: true, autoCompaction: true, autoRetry: true });
+check("legacy Desktop compaction preferences cannot override a native profile policy", () => {
+  const prefs = P.fromTweaks({ autoCompaction: false }, { ...DEFAULTS, autoCompaction: true });
+  assert.equal(Object.hasOwn(prefs, "autoCompaction"), false);
+  assert.equal(P.changedKeys(prefs, { ...prefs, autoCompaction: true }).includes("autoCompaction"), false);
 });
 check("fromTweaks: stored booleans win", () => {
   const p = P.fromTweaks({ restoreTabs: false, autoRetry: false }, DEFAULTS);

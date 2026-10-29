@@ -22,8 +22,8 @@
   // `terminalScrollback` is xterm's scrollback in lines; `submitKey` is
   // "enter" | "ctrl+enter" for multi-line fields; `pasteCollapseLines` is
   // the line count above which a paste becomes a chip; `restoreTabs`,
-  // `confirmBusyClose`, `autoName` drive live.js; `autoCompaction` /
-  // `autoRetry` are sent to every omp process. Rows, labels and bounds:
+  // `confirmBusyClose`, `autoName` drive live.js; `autoRetry` is sent to
+  // every omp process. Compaction policy belongs to omp profiles. Rows:
   // app/settings-schema.js.
   const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
     "theme": "aurora",
@@ -32,6 +32,7 @@
     "accent": "#8AF0C8",
     "monoChat": false,
     "showContext": true,
+    "showBackgroundTasks": true,
     "showRadar": true,
     "showSubagents": true,
     "showChanges": true,
@@ -63,7 +64,6 @@
     "notifyFinished": false,
     "notifyQuestions": false,
     "autoName": true,
-    "autoCompaction": true,
     "autoRetry": true
   }/*EDITMODE-END*/;
 

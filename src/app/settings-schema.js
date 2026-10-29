@@ -111,6 +111,7 @@
       ] },
       { name: "Built-in cards", rows: [
         tweak("showContext", "toggle", "Context", "Current model window usage, grouped skills and instructions, tools, MCP calls and memory. Expand or search the read-only inspector.", "tokens compaction model skills repo global shared omp profile provenance source instructions agent context used session MCP memory"),
+        tweak("showBackgroundTasks", "toggle", "Background tasks", "Running jobs, the agent's wait, and recent outcomes. Hiding this card never stops tasks.", "activity async bash eval task jobs background waiting"),
         tweak("showRadar", "toggle", "Agent radar", "What the agent is doing right now.", "activity"),
         tweak("showSubagents", "toggle", "Subagents", "Running and finished subagents of this tab.", "tasks"),
         tweak("showChanges", "toggle", "Changes", "Show the PR for this project's current branch. Off also stops PR monitoring and turns off Auto-fix; enabling this card does not enable Auto-fix.", "github pull request pr auto fix ci checks review"),
@@ -148,7 +149,7 @@
         custom("goalContinue", "Keep working on a goal", "omp continues an active goal on its own after each turn instead of waiting for you. Costs tokens while unattended.", "goal auto continue"),
       ] },
       { name: "omp behaviour", rows: [
-        tweak("autoCompaction", "toggle", "Auto-compact context", "omp summarises older turns when the context fills up. Off: you run `/compact` yourself.", "compaction context window"),
+        custom("contextPolicy", "Context budget and compaction", "Edit omp's native context policy. Saved defaults belong to the selected profile; conversation overrides are explicit.", "compaction context window threshold budget handoff tokens profile"),
         tweak("autoRetry", "toggle", "Retry failed requests", "omp retries a request the provider refused or dropped, with a retry row you can stop.", "retry error rate limit"),
       ] },
     ] },

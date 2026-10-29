@@ -106,6 +106,7 @@
   <!-- Native context observations and activation-scoped byte-tail reads. -->
   <script src="app/agent-context.js"></script>
   <script src="app/agent-context-sync.js"></script>
+  <script src="app/context-policy.js"></script>
 
   <!-- In-app updater state (issue #19): pure reducer + selectors. IIFE;
        busyTabCount looks up window.OMP_TURN_STATUS (app/turn-status.js,
@@ -226,6 +227,9 @@
   <script src="app/extension-widgets.js"></script>
   <!-- Ambient inventory/order model shares the widget toggle identities. -->
   <script src="app/ambient-rail.js"></script>
+  <!-- Pending input and job activity are independent of transcript position. -->
+  <script src="app/pending-input.js"></script>
+  <script src="app/background-tasks.js"></script>
   <!-- Program path setting menu (Settings: terminal shell, browser
        Chromium): programName and the menu rows. Dependency-free IIFE
        (OMP_PROJECT_NAV at call time); app/terminal.js and app/browser.js
@@ -367,8 +371,11 @@
   <script type="text/babel" src="design/widgets/widget-card.jsx"></script>
   <script type="text/babel" src="design/pr-status.jsx"></script>
   <script type="text/babel" src="design/pr-automation-card.jsx"></script>
+  <script type="text/babel" src="design/background-tasks.jsx"></script>
   <script type="text/babel" src="design/context-detail.jsx"></script>
   <script type="text/babel" src="design/context-inspector.jsx"></script>
+  <script type="text/babel" src="design/context-policy-controls.jsx"></script>
+  <script type="text/babel" src="design/context-policy.jsx"></script>
   <script type="text/babel" src="design/agent-context-card.jsx"></script>
   <!-- Inline visibility/order controls reuse the pointer reorder hook;
        the rail and Settings row share the same control list. -->
@@ -395,6 +402,7 @@
   <script type="text/babel" src="design/goal-strip.jsx"></script>
   <!-- Composer's live voice status, controls and ephemeral captions. -->
   <script type="text/babel" src="design/live-voice.jsx"></script>
+  <script type="text/babel" src="design/pending-input.jsx"></script>
   <script type="text/babel" src="design/composer.jsx"></script>
   <!-- Per-tab profile selector — chrome.jsx destructures window.ProfileMenu
        at top level, so this must load before it. -->
@@ -504,6 +512,7 @@
        window.OMP_SESSION_UI, window.OMP_GOAL and window.OMP_TURN_STATUS
        at top level. -->
   <script type="text/babel" src="app/use-goal-mode.jsx"></script>
+  <script type="text/babel" src="app/use-context-policy.jsx"></script>
   <script type="text/babel" src="app/use-pr-automation.jsx"></script>
   <!-- Rail widgets hook; destructures window.OMP_WIDGETS at top level. -->
   <script type="text/babel" src="app/use-widgets.jsx"></script>

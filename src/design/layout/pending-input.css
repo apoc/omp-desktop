@@ -1,0 +1,103 @@
+/* Input attention stays attached to the composer, not the moving transcript. */
+.pending-input {
+  border: 1px solid color-mix(in oklab, var(--amber) 35%, var(--line));
+  border-left: 3px solid var(--amber);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: color-mix(in oklab, var(--amber) 5%, var(--bg-elevated));
+  font-size: var(--d-text-xs);
+}
+.pending-input-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--amber);
+}
+.pending-input-head > span {
+  flex: 1;
+  min-width: 0;
+}
+.pending-input-head .btn {
+  flex: none;
+  height: 25px;
+  padding: 0 8px;
+  color: var(--amber);
+}
+.pending-input-note {
+  margin: 5px 0 0;
+  color: var(--fg-2);
+}
+.pending-input-title,
+.pending-input-list li button {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.pending-input-title {
+  display: block;
+  width: 100%;
+  padding: 5px 0 0;
+  text-align: left;
+  color: var(--fg-2);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.pending-input-title:hover {
+  color: var(--fg);
+}
+.pending-input-list {
+  margin-top: 6px;
+  color: var(--fg-2);
+}
+.pending-input-list > summary {
+  cursor: pointer;
+}
+.pending-input-list ul {
+  max-height: 132px;
+  overflow-y: auto;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.pending-input-list li + li {
+  border-top: 1px solid var(--line);
+}
+.pending-input-list li button {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 3px;
+  text-align: left;
+}
+.pending-input-list li button:hover {
+  background: var(--bg-hover);
+}
+.pending-input-list li button > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.pending-input-kind {
+  flex: none;
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+}
+.pending-input button:focus-visible,
+.pending-input summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.composer-row .composer-answer {
+  color: var(--amber);
+  border-color: color-mix(in oklab, var(--amber) 40%, var(--line));
+}
+.composer-row .composer-abort-waiting {
+  padding: 0 8px;
+  color: var(--fg-3);
+}
+.composer-wait-note {
+  color: var(--amber);
+}

@@ -23,6 +23,8 @@
   const AMODE = window.OMP_APPROVAL_MODE;
   const TURN = window.OMP_TURN_STATUS;
   const GOAL = window.OMP_GOAL;
+  const TASKS = window.OMP_BACKGROUND_TASKS;
+  const TASK_EVENTS = new Set(["subagent_lifecycle", "subagent_progress", "tool_execution_start", "tool_execution_update", "tool_execution_end", "message_end", "session_settled"]);
   const EXT = window.OMP_EXT_WIDGETS;
   const LIVE = window.OMP_LIVE_VOICE;
   const DICTATION = LIVE.DICTATION;
@@ -81,7 +83,9 @@
     // Subagent manager (src/app/subagents.js). Terminal agents are kept here
     // for the life of the session — omp's own registry forgets them.
     subagents:           SUB.emptySubagents(),
+    backgroundTasks:     TASKS.empty(),
     agentContext:        CONTEXT.empty(),
+    contextPolicy:       null,
     // agentId → { status, messages, nextByte, error } from get_subagent_messages.
     // Ephemeral: dropped on tab switch (not snapshotted) and refetched on demand.
     subagentTranscripts: {},
@@ -145,6 +149,22 @@
       });
     }
     return sessionContext.contextSync;
+  }
+
+  function _contextPolicyController() {
+    if (!activeSessionId) throw new Error("Open a conversation to edit its profile policy.");
+    if (!sessionContext.policyController?.current()) {
+      sessionContext.policyController?.dispose();
+      const owner = sessionContext, gen = _switchGen, id = activeSessionId;
+      const current = () => sessionContext === owner && _switchGen === gen && activeSessionId === id && _switchAwayFrom == null;
+      const client = window.OMP_CONTEXT_POLICY.create({
+        request: _sendWithResponse, current,
+        profileId: sessionRegistry.get(id)?.profile || window.DEFAULT_PROFILE_ID,
+        changed: next => { state.contextPolicy = next; notify(); },
+      });
+      owner.policyController = { ...client, current };
+    }
+    return sessionContext.policyController;
   }
 
   // ── Minimap / message-history trim ───────────────────────────────────────
@@ -335,23 +355,33 @@
   // ── Subscriber system ─────────────────────────────────────────────────────
   const subscribers = new Set();
 
-  // Drop the oldest row of messages once the 13×13 grid is full and the
-  // current turn is complete. Only called from notify() so the trim is
-  // always reflected in the same snapshot that React receives.
-  // Active tool-card indices are shifted so in-flight updates stay correct;
-  // completed cards are already removed from the map and are unaffected.
-  // `state.trimmed` tells the get_messages merge that the head is gone on
-  // purpose, so it does not bring the cut history back.
+  // Keep open questions and the latest row of cancellation outcomes even
+  // when parallel work makes the transcript idle. The cap remains soft
+  // when more than a screenful of callbacks are still open.
   function _trimMessages() {
-    if (state.isStreaming) return;                  // wait for clean turn boundary
-    if (state.messages.length <= MINIMAP_MAX) return;
-    const drop = Math.ceil((state.messages.length - MINIMAP_MAX) / MINIMAP_COLS) * MINIMAP_COLS;
-    state.messages = state.messages.slice(drop);
+    if (state.isStreaming || state.messages.length <= MINIMAP_MAX) return;
+    let remaining = Math.ceil((state.messages.length - MINIMAP_MAX) / MINIMAP_COLS) * MINIMAP_COLS;
+    const kept = [];
+    const indices = new Map();
+    const recentClosures = new Set();
+    for (let i = state.messages.length - 1; i >= 0 && recentClosures.size < MINIMAP_COLS; i--) {
+      if (state.messages[i].kind === "ask" && state.messages[i].cancelled) recentClosures.add(i);
+    }
+    for (let i = 0; i < state.messages.length; i++) {
+      const m = state.messages[i];
+      if (remaining > 0 && !(m.kind === "ask" && !m.answered && !m.cancelled) && !recentClosures.has(i)) {
+        remaining--;
+      } else {
+        indices.set(i, kept.length);
+        kept.push(m);
+      }
+    }
+    if (kept.length === state.messages.length) return;
+    state.messages = kept;
     state.trimmed = true;
     for (const [id, idx] of activeToolCards) {
-      const shifted = idx - drop;
-      if (shifted < 0) activeToolCards.delete(id); // guard: possible on abort (no tool_execution_end)
-      else activeToolCards.set(id, shifted);
+      if (indices.has(idx)) activeToolCards.set(id, indices.get(idx));
+      else activeToolCards.delete(id);
     }
   }
 
@@ -393,6 +423,7 @@
     return {
       messages:        state.messages,
       isStreaming:     state.isStreaming,
+      asyncPending:    state.asyncPending,
       model:           state.model,
       thinkingLevel:   state.thinkingLevel,
       ctx:             state.ctx,
@@ -402,7 +433,9 @@
       activity:        state.activity,
       sparkline:       state.sparkline,
       subagents:           state.subagents,
+      backgroundTasks:     state.backgroundTasks,
       agentContext:        state.agentContext,
+      contextPolicy:       state.contextPolicy,
       subagentTranscripts: state.subagentTranscripts,
       queue:           state.queue,
       queueSending:    state.queueSending,
@@ -541,14 +574,6 @@
   //      against, so ASK_FLUSH_MS bounds how long a prompt may stay
   //      invisible. Cosmetic ordering is best-effort; liveness is not.
   //
-  // Proven end-to-end with an eval-kernel cell that loads this file into a
-  // stubbed-Tauri VM context and feeds real event lines (5/5 cases: two
-  // gated parallel tools both render — the single-slot version dropped the
-  // first and wedged its tool card at "running"; selects arriving after the
-  // last tool_execution_start still surface via ASK_FLUSH_MS; single-tool
-  // [tool_card, ask] order unchanged; cancel-before-flush removes only its
-  // own queue entry and the survivor still answers on the wire; a tab
-  // switch mid-buffer keeps the ask in the originating session).
   function _queueAskBubble(msg) {
     pendingAskBubbles.push(msg);
     if (pendingAskFlushTimer === null) {
@@ -576,6 +601,50 @@
     }
   }
 
+  function _rememberSettledAsk(owner, id) {
+    const settled = owner.askSettled ??= new Set();
+    settled.add(id);
+    if (settled.size > 512) settled.delete(settled.values().next().value);
+  }
+
+  // The journal can evict a request while its callback still waits. Rust's
+  // process-local snapshot carries the surviving requests at replay head.
+  // Apply it after the ring and before buffered later live frames.
+  function _reconcilePendingRequests(replay) {
+    if (sessionContext.processEnded || !Array.isArray(replay.pendingRequests)) return;
+    const requests = [];
+    for (const entry of replay.pendingRequests) {
+      try {
+        const frame = JSON.parse(entry.text);
+        if (frame?.type === "extension_ui_request" && typeof frame.id === "string" &&
+            ["ask", "select", "input", "editor", "confirm"].includes(frame.method)) requests.push(frame);
+      } catch (_) {}
+    }
+    const ids = new Set(requests.map(frame => frame.id));
+    if (replay.pendingRequestsComplete === true) {
+      const close = m => {
+        if (m.kind !== "ask" || m.recovery || m.answered || m.cancelled || ids.has(m.id)) return m;
+        if (m.sending) return { ...m, noLongerPending: true };
+        _rememberSettledAsk(sessionContext, m.id);
+        return { ...m, cancelled: true, closeReason: "no-longer-pending" };
+      };
+      state.messages = state.messages.map(close);
+      pendingAskBubbles = pendingAskBubbles.map(close);
+    }
+    for (const frame of requests) {
+      if (sessionContext.askSettled?.has(frame.id) ||
+          state.messages.some(m => m.kind === "ask" && m.id === frame.id) ||
+          pendingAskBubbles.some(m => m.kind === "ask" && m.id === frame.id)) continue;
+      _dispatchFrame(frame);
+    }
+    if (replay.dropped && replay.pendingRequestsComplete === false && !sessionContext.askReplayWarning) {
+      sessionContext.askReplayWarning = true;
+      _pushAssistantNote("**Some questions may not have been recovered:** the background event journal and pending-request snapshot were incomplete.");
+    }
+    _flushAskBubbles();
+    notify();
+  }
+
   // Settle a pending ask bubble: apply `patch` to the first unanswered,
   // uncancelled bubble with this id and publish. Returns whether one
   // matched. The re-answer guard (a bubble already answered or cancelled is
@@ -590,33 +659,62 @@
       }
       return m;
     });
-    if (settled) notify();
+    if (settled) {
+      _rememberSettledAsk(sessionContext, id);
+      notify();
+    }
     return settled;
   }
 
-  // Undo a local `_settleAsk` whose answer never reached omp: the bubble
-  // with this id that reads answered (and was not cancelled by omp since)
-  // takes input again. The caller publishes.
-  function _reopenAsk(id) {
-    state.messages = state.messages.map(m => {
-      if (m.kind === "ask" && m.id === id && m.answered && !m.cancelled) {
-        const { answered: _a, answer: _v, ...open } = m;
-        return open;
+  // Both ordinary replies and approval grants keep the callback open while
+  // their owning process's write is in flight.
+  function _beginAskSend(msg) {
+    if (msg.sending || msg.sessionId !== activeSessionId || !window.__TAURI__ ||
+        sessionContext.processEnded || _respawning.has(activeSessionId) || _switchAwayFrom === activeSessionId) return null;
+    const id = msg.id;
+    const origin = activeSessionId, owner = sessionContext, token = {};
+    state.messages = state.messages.map(m => m === msg ? { ...m, sending: token, sendError: null } : m);
+    notify();
+    const finish = (fields, failed = false) => {
+      const update = messages => messages.map(m => {
+        if (m.kind !== "ask" || m.id !== id || m.sending !== token || m.answered || m.cancelled) return m;
+        if (failed && m.noLongerPending) {
+          return { ...m, cancelled: true, closeReason: "no-longer-pending", sending: null };
+        }
+        return { ...m, ...fields, sending: null };
+      });
+      const snapshot = sessionSnapshots.get(origin);
+      if (snapshot?.sessionContext === owner) snapshot.messages = update(snapshot.messages);
+      if (activeSessionId === origin && sessionContext === owner) {
+        state.messages = update(state.messages);
+        notify();
       }
-      return m;
-    });
+    };
+    return { origin, owner, finish };
   }
 
-  // Resolve a pending ask bubble: settle it, then send `payload` back to
-  // omp — only if it was still open, so a re-answer sends nothing.
-  // Proven with an eval-kernel cell (7/7 cases: patch applied, array
-  // replaced, {value}/{confirmed}/{cancelled} payload shapes preserved
-  // per caller, and re-answer + unknown-id both send nothing).
-  function _resolveAsk(id, patch, payload) {
-    const restored = state.messages.find(m => m.kind === "ask" && m.id === id && m.recovery && !m.answered && !m.cancelled);
-    if (restored) return _resolveRecoveredAsk(restored, patch, payload);
-    if (!_settleAsk(id, patch)) return Promise.resolve(false);
-    return _send({ type: "extension_ui_response", id, ...payload });
+  // An IPC write is not an acknowledgement from omp, but a rejected write
+  // certainly did not deliver the answer. Keep the question open until the
+  // write succeeds; a token prevents duplicate sends and stale completions.
+  async function _resolveAsk(id, patch, payload) {
+    const msg = state.messages.find(m => m.kind === "ask" && m.id === id && !m.answered && !m.cancelled);
+    if (!msg) return false;
+    if (msg.recovery) return _resolveRecoveredAsk(msg, patch, payload);
+    const send = _beginAskSend(msg);
+    if (!send) return false;
+    const { origin, owner, finish } = send;
+    try {
+      await window.__TAURI__.core.invoke("send_command", {
+        sessionId: origin, json: JSON.stringify({ type: "extension_ui_response", id, ...payload }),
+      });
+      _rememberSettledAsk(owner, id);
+      finish(patch);
+      return true;
+    } catch (error) {
+      _logSendError(error);
+      finish({ sendError: String(error?.message ?? error) }, true);
+      return false;
+    }
   }
 
   // A restart ended the tool invocation: only a new user reply can continue
@@ -846,11 +944,16 @@
   // unknown) or they tick forever. Its queue died with it, no send to it
   // will be acknowledged, and its background jobs died with it too.
   function _endDeadProcessState() {
+    sessionContext.processEnded = true;
     state.subagents = SUB.mergeSnapshots(state.subagents, []);
+    state.backgroundTasks = TASKS.markDead(state.backgroundTasks);
     state.queue = QUEUE.EMPTY_QUEUE;
     state.queueSending = [];
     state.asyncPending = false;
     state.messages = TURN.retryCleared(state.messages);
+    _flushAskBubbles();
+    state.messages = state.messages.map(m => m.kind === "ask" && !m.recovery && !m.answered && !m.cancelled
+      ? { ...m, cancelled: true, closedByOmp: true, closeReason: "process-exited", sending: null } : m);
     // Its extensions died with it; the backend's copy ended with the entry.
     _cancelLiveRequests();
     state.liveVoice = LIVE.apply(state.liveVoice, { type: "process_exit", error: state.exitReason });
@@ -862,6 +965,7 @@
   // Reset all per-session volatile state (called before loading a new session)
   function _resetSessionVars(keepVoice = false) {
     sessionContext.contextSync?.dispose();
+    sessionContext.policyController?.dispose();
     Object.assign(state, {
       messages:      [],
       askRecovery:   null,
@@ -883,7 +987,9 @@
       asyncPending:  false,
       trimmed:       false,
       subagents:           SUB.emptySubagents(),
+      backgroundTasks:     TASKS.empty(),
       agentContext:        CONTEXT.empty(),
+      contextPolicy:       null,
       subagentTranscripts: {},
       queue:         QUEUE.EMPTY_QUEUE,
       queueSending:  [],
@@ -909,6 +1015,7 @@
   // ── Session snapshot helpers ──────────────────────────────────────────────
   function _saveCurrentSession() {
     if (!activeSessionId) return;
+    sessionContext.policyController?.dispose();
     // Buffered asks belong to the session being left — flush them into its
     // messages so the snapshot carries them. Leaving them in the queue would
     // either lose them or leak them into the next session's transcript.
@@ -938,7 +1045,9 @@
       // forget a failed first exchange and re-arm the one-shot.
       lastTurnOk,
       subagents:     state.subagents,
+      backgroundTasks: state.backgroundTasks,
       agentContext:  state.agentContext,
+      contextPolicy: state.contextPolicy,
       queue:         state.queue,
       queueSending:  state.queueSending,
       goal:          state.goal,
@@ -982,7 +1091,9 @@
       asyncPending:  snap.asyncPending ?? false,
       trimmed:       snap.trimmed ?? false,
       subagents:     snap.subagents ?? SUB.emptySubagents(),
+      backgroundTasks: snap.backgroundTasks ?? TASKS.empty(),
       agentContext:  snap.agentContext ?? CONTEXT.empty(),
+      contextPolicy: snap.contextPolicy ? { ...snap.contextPolicy, loading: false, saving: false } : null,
       subagentTranscripts: {},
       queue:         snap.queue ?? QUEUE.EMPTY_QUEUE,
       queueSending:  snap.queueSending ?? [],
@@ -1152,7 +1263,9 @@
           extSnapshotSeq = Number.isInteger(ext.seq) ? ext.seq : 0;
         }
       }
+      if (replay.backgroundTasks) _dispatchEnvelope(replay.backgroundTasks);
       for (const ev of replay.events) _dispatchEnvelope(ev);
+      _reconcilePendingRequests(replay);
       // A pending auto-`/rename` whose outcome note fell out of the ring
       // will never be swallowed, and nothing else would release the flag:
       // refinements would stay blocked for good. The replayed events above
@@ -2146,6 +2259,7 @@
   // Both the model-context refresh and the raw saved branch feed the same
   // identity-based merge. Never replace the transcript positionally.
   function _applyMessages(messages) {
+    state.backgroundTasks = TASKS.mergeMessages(state.backgroundTasks, messages);
     const completed = window.adaptAgentMessages(messages);
     const merged = mergeTranscript(state.messages, completed, { trimmed: state.trimmed });
     activeToolCards = new Map();
@@ -2297,13 +2411,6 @@
       // never re-arms, and leftover budget retitles the new transcript.
       _reloadConversation(_freshConversationFields);
 
-    } else if (command === "get_subagents") {
-      // Authoritative list of agents still running; reconciles anything
-      // the journal replay could not recover (see mergeSnapshots).
-      state.subagents = SUB.mergeSnapshots(state.subagents, data.subagents);
-      _agentContextSync().refreshAgents();
-      notify();
-
     } else if (command === "get_session_stats") {
       // SessionStats — no display action needed
     }
@@ -2325,7 +2432,8 @@
   // get_available_commands response and the available_commands_update
   // push — same shape, same merge.
   function _applyCommands(raw) {
-    state.commands = mergeSlashCommands(LOCAL_COMMANDS, adaptAvailableCommands(raw));
+    const visible = (Array.isArray(raw) ? raw : []).filter(command => !window.OMP_CONTEXT_POLICY?.privateCommand(command.name));
+    state.commands = mergeSlashCommands(LOCAL_COMMANDS, adaptAvailableCommands(visible));
     state.agentContext = CONTEXT.catalog(state.agentContext, raw);
     notify();
   }
@@ -2333,8 +2441,27 @@
   // ── AgentSessionEvent handler ─────────────────────────────────────────────
   function _handleEvent(ev) {
     const { type } = ev;
+    if (type === "extension_ui_request" && ev.method === "notify" && typeof ev.message === "string" && ev.message.startsWith("OMP_DESKTOP_BACKGROUND_TASKS:")) {
+      if (sessionContext.processEnded) return;
+      try {
+        state.backgroundTasks = TASKS.mergeSnapshot(state.backgroundTasks, JSON.parse(ev.message.slice("OMP_DESKTOP_BACKGROUND_TASKS:".length)));
+      } catch (error) {
+        console.warn("[live] invalid native background-task snapshot:", error.message);
+      }
+      notify();
+      return;
+    }
+    if (window.OMP_CONTEXT_POLICY?.privateFrame(ev)) {
+      sessionContext.policyController?.observe(ev);
+      return;
+    }
+    sessionContext.policyController?.observe(ev);
     const now  = Date.now();
     const time = timeNow();
+    if (TASK_EVENTS.has(type)) {
+      state.backgroundTasks = TASKS.applyFrame(state.backgroundTasks, ev, now, lastSeq);
+      notify();
+    }
     if (type === "live_phase" || type === "live_levels" || type === "live_transcript" || type === "live_end") {
       const before = state.liveVoice;
       // The new controller emits connecting before its own transcripts.
@@ -2495,6 +2622,10 @@
     }
 
     if (type === "extension_ui_request") {
+      // Neither a late replay nor a buffered frame can revive a settled
+      // callback, especially after this process has exited.
+      if (["ask", "select", "input", "editor", "confirm"].includes(ev.method) &&
+          (sessionContext.processEnded || sessionContext.askSettled?.has(ev.id))) return;
       // URL to open in the system browser (e.g. OAuth auth page).
       if (ev.method === "open_url") {
         // window.open() is a no-op here (no on_new_window handler is
@@ -2549,14 +2680,22 @@
       // answerAskDialog; rules in app/ask-dialog.js). omp writes it from
       // inside the running ask tool, yet it reaches stdout before that
       // tool's tool_execution_start (seen live), so it is buffered like a
-      // select. A shape the dialog cannot answer is cancelled, as below.
+      // select. An unsupported shape fails the tool rather than impersonating
+      // a user cancellation, which would abort the whole turn.
       if (ev.method === "ask") {
         state.askRecovery = null;
         sessionContext.askRecoveryRequest = null;
         state.messages = state.messages.filter(m => !m.recovery || m.answered || m.recoverySending);
         const questions = ASK.parseQuestions(ev.questions);
         if (!questions) {
-          _send({ type: "extension_ui_response", id: ev.id, cancelled: true });
+          _pushAssistantNote("**Unsupported ask question:** Desktop could not display this request. The ask tool will fail instead of cancelling your turn.");
+          const owner = sessionContext, origin = activeSessionId;
+          _send({ type: "extension_ui_response", id: ev.id }).then(sent => {
+            if (sent) _rememberSettledAsk(owner, ev.id);
+            if (!sent && activeSessionId === origin && sessionContext === owner) {
+              _pushAssistantNote("**Ask response not sent:** The unsupported question could not be reported to omp.");
+            }
+          });
           return;
         }
         _queueAskBubble(_askMessage("ask", ev, { questions, timeout: ev.timeout ?? null, answers: null }));
@@ -2587,16 +2726,17 @@
       }
       // Agent cancelled a pending UI request (e.g. turn aborted while waiting for input).
       if (ev.method === "cancel") {
-        // Cancelled before it was ever flushed — drop it from the queue and
-        // leave the rest of the queue (and its timer) intact.
-        const queued = pendingAskBubbles.findIndex(m => m.id === ev.targetId);
+        // Keep even a pre-flush cancellation visible; don't affect its peers.
+        const queued = pendingAskBubbles.findIndex(m => m.kind === "ask" && m.id === ev.targetId);
         if (queued !== -1) {
-          pendingAskBubbles.splice(queued, 1);
-          if (pendingAskBubbles.length === 0) _disarmAskFlush();
+          _rememberSettledAsk(sessionContext, ev.targetId);
+          pendingAskBubbles[queued] = { ...pendingAskBubbles[queued], cancelled: true, closedByOmp: true, closeReason: "omp", sending: null };
+          _flushAskBubbles();
+          notify();
           return;
         }
-        // omp settled it itself (turn stopped, or its ask timeout ran out).
-        _settleAsk(ev.targetId, { cancelled: true, closedByOmp: true });
+        // The wire does not distinguish timeout from an aborted signal.
+        _settleAsk(ev.targetId, { cancelled: true, closedByOmp: true, closeReason: "omp", sending: null });
         return;
       }
       // An extension's status line or text widget (#52): kept per tab, shown
@@ -2998,6 +3138,7 @@
     // Background work that will wake the agent (see `state.asyncPending`);
     // this is also how a tab activated mid-wait learns about it.
     state.asyncPending  = rpcState.hasPendingAsyncWork === true;
+    state.backgroundTasks = TASKS.setPending(state.backgroundTasks, state.asyncPending);
     // If the turn completed while we were away (snapshot had streamingBubble
     // with streaming:true, but omp now says isStreaming:false), retire the
     // bubble immediately. The completed text arrives with get_messages; the
@@ -3183,12 +3324,8 @@
         // process falls back to one `select` per question until told again.
         _sendWithResponse({ type: "set_ask_dialog", enabled: true })
           .catch(err => console.warn("[live] set_ask_dialog failed:", err));
-        // Settings → Agent: on (the default) leaves omp's own
-        // compaction/retry config in charge, so a fresh process is only
-        // told when the user turned one off (session-scoped, per process
-        // like the ask dialog). A live change goes to every open tab either
-        // way (`setSessionPrefs`).
-        if (!sessionPrefs.autoCompaction) _send({ type: "set_auto_compaction", enabled: false });
+        // Auto-retry retains its Desktop switch. Compaction is owned solely
+        // by the native profile policy and explicit conversation overrides.
         if (!sessionPrefs.autoRetry) _send({ type: "set_auto_retry", enabled: false });
         _send({ type: "get_state" });
         _send({ type: "get_messages" });
@@ -3212,7 +3349,15 @@
         // Subscription level is per process and survives tab switches, but a
         // respawned process starts at "off" — so (re)assert it every time.
         _send({ type: "set_subagent_subscription", level: SUB.subscriptionLevelFor({ inspecting: subagentInspecting }) });
-        _send({ type: "get_subagents" });
+        const subagentsBefore = state.subagents;
+        _sendWithResponse({ type: "get_subagents" }).then(data => {
+          if (_switchGen !== gen || sessionContext !== conversation || sessionContext.processEnded) return;
+          if (state.subagents !== subagentsBefore) return; // A newer lifecycle frame outranks this running-only snapshot.
+          state.subagents = SUB.mergeSnapshots(state.subagents, data.subagents);
+          state.backgroundTasks = TASKS.mergeSubagents(state.backgroundTasks, data.subagents);
+          _agentContextSync().refreshAgents();
+          notify();
+        }).catch(error => console.warn("[live] subagent snapshot failed:", error));
       });
   }
 
@@ -4453,18 +4598,10 @@
     },
 
     /**
-     * Respond to a pending ask bubble (extension_ui_request method=select,
-     * input or editor).
-     * Marks the message as answered in state so it survives subsequent notify() calls,
-     * then sends the extension_ui_response to omp — but only if a matching,
-     * still-open ask message actually existed. Re-answer-proof: a second
-     * call for an id that's already answered/cancelled (double-click race,
-     * a stale button clicked after the runtime's own `cancel` event already
-     * landed, or a message rehydrated post-answer from get_messages) is a
-     * silent no-op instead of forwarding a second `extension_ui_response`
-     * for a request omp has already resolved. Proven with an eval-kernel
-     * cell (7/7 cases: normal send, double-click no-resend, answering a
-     * cancelled ask, unknown id, rehydrated-already-answered message).
+     * Respond to a pending select/input/editor bubble. Only an open request
+     * from this tab's current process may be sent; duplicate clicks are
+     * suppressed while the pipe write is in flight. Success settles the
+     * bubble, while a rejected write leaves it open with an error.
      * @param {string} id     The extension_ui_request id.
      * @param {string} value  The chosen option text, or the typed text of an
      *                        input/editor prompt.
@@ -4547,55 +4684,30 @@
     // a hash of the project path — for a grant, the folder of the process
     // that asked; list and revoke use the active tab's.
 
-    /** Approve tool-approval prompt `prompt` (its ask bubble: `sessionId` +
-     *  request `id`) and grant standing approval for its tool, `scope`
-     *  `"session"` or `"project"`, in ONE call: `approval_approve_and_grant`
-     *  answers the prompt on the stdin of the process that asked and saves
-     *  the rule only once that answer was written, so no rule outlives an
-     *  unanswered prompt and no answer reaches a respawned process. Rust
-     *  takes the tool and the project from the prompt that session's
-     *  process forwarded and has not seen answered, and refuses any other,
-     *  so a grant never lands on another tab's scope. The bubble settles at
-     *  once (its buttons go inert, so a second click sends nothing), and
-     *  the call names the prompt's own session, whichever tab is active by
-     *  the time it runs. A prompt not in the active tab is left alone.
-     *  A rejection means nothing reached omp (prompt unknown to Rust: past
-     *  the 64-prompt cap, an id too long to record, no running process), so
-     *  the bubble is reopened for a plain Approve/Deny and a note says why —
-     *  never a fallback `send_command` Approve, which would answer whatever
-     *  process now holds the id. A non-null value means the prompt was
-     *  approved but the rule was not saved. Both only while this activation
-     *  of the tab is still the one shown (the bubble lives in its state). */
+    /** Answer this process's open approval and grant its tool in one call.
+     *  Keep it pending while Rust writes; a native cancel or process exit
+     *  wins over any late completion. Never fall back to a plain approval
+     *  when the grant call rejects. */
     async approveAndRemember(prompt, scope) {
       const sessionId = prompt?.sessionId;
       if (!sessionId || sessionId !== activeSessionId || !prompt.id) return;
-      if (!_settleAsk(prompt.id, { answered: true, answer: "Approve" })) return;
-      const gen = _switchGen;
+      const msg = state.messages.find(m => m.kind === "ask" && m.id === prompt.id &&
+        !m.recovery && !m.answered && !m.cancelled);
+      if (!msg) return;
+      const send = _beginAskSend(msg);
+      if (!send) return;
       const res = await _invokeResult("approval_approve_and_grant", {
-        sessionId,
-        requestId: prompt.id,
-        scope,
+        sessionId, requestId: prompt.id, scope,
       });
-      const unsaved = res.ok ? res.value : null;
-      if (res.ok && !unsaved) return;
-      if (_switchGen !== gen || activeSessionId !== sessionId) {
-        console.warn(
-          `[live] approve and remember for '${sessionId}':`,
-          res.ok ? unsaved : res.error,
-        );
+      if (!res.ok) {
+        send.finish({ sendError: `Approve and remember failed: ${res.error}` }, true);
         return;
       }
-      if (!res.ok) {
-        _reopenAsk(prompt.id);
-        _pushAssistantNote(
-          `**Approve and remember failed:** ${res.error}. The prompt is open again.`,
-        );
-      } else {
-        _pushAssistantNote(
-          `**Approved, but the rule was not saved:** ${unsaved}`,
-        );
-      }
-      notify();
+      _rememberSettledAsk(send.owner, prompt.id);
+      send.finish({
+        answered: true, answer: "Approve",
+        sendError: res.value ? `Approved, but the rule was not saved: ${res.value}` : null,
+      });
     },
 
     /** Revoke a previously granted rule. No-op if it wasn't granted. */
@@ -4671,6 +4783,12 @@
     readContextSkill(agentId, name) {
       if (!activeSessionId) return Promise.resolve({ ok: false, error: "No tab is open." });
       return _invokeResult("agent_context_read_skill", { sessionId: activeSessionId, agentId, name });
+    },
+    readContextPolicy() {
+      return _contextPolicyController().load();
+    },
+    setContextPolicy(input) {
+      return _contextPolicyController().apply(input);
     },
 
     /** Stage a file's changes (`git add`). */
@@ -5460,7 +5578,7 @@
     },
 
     /** Apply Settings → Session / Agent prefs (`restoreTabs`,
-     *  `confirmBusyClose`, `autoName`, `autoCompaction`, `autoRetry`; any
+     *  `confirmBusyClose`, `autoName`, `autoRetry`; any
      *  subset, the rest kept). Idempotent: only a changed value acts.
      *  `restoreTabs` only matters at launch (read from the stored tweaks
      *  then) and `autoName` at each auto-title check, so neither sends
@@ -5474,11 +5592,6 @@
       const changed = PREFS.changedKeys(sessionPrefs, next);
       if (changed.length === 0) return;
       sessionPrefs = next;
-      if (changed.includes("autoCompaction"))
-        _sendToAll({
-          type: "set_auto_compaction",
-          enabled: next.autoCompaction,
-        });
       if (changed.includes("autoRetry"))
         _sendToAll({ type: "set_auto_retry", enabled: next.autoRetry });
       if (changed.includes("confirmBusyClose"))

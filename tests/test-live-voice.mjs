@@ -207,7 +207,7 @@ function bridgeHarness() {
     OMP_SUBAGENTS: { emptySubagents: () => ({}), subscriptionLevelFor: () => "progress", mergeSnapshots: () => ({}) },
     OMP_QUEUE: { EMPTY_QUEUE: {} }, OMP_GOAL: { UNKNOWN: {} }, OMP_EXT_WIDGETS: { EMPTY: {} },
     OMP_TRANSCRIPT: {}, OMP_PROMPT_HISTORY: { DEFAULT_LIMIT: 100 },
-    OMP_SESSION_PREFS: { fromTweaks: () => ({ autoCompaction: true, autoRetry: true }), closeGuardArmed: () => false },
+    OMP_SESSION_PREFS: { fromTweaks: () => ({ autoRetry: true }), closeGuardArmed: () => false },
     OMP_TWEAKS_STORE: { read: () => ({}) },
     OMP_TURN_STATUS: { runStateOf: () => "idle", isBusyRunState: () => false, retryCleared: messages => messages },
     DEFAULT_PROFILE_ID: "default", INTENT_FRAMING: () => "", timeNow: () => "00:00",
@@ -221,6 +221,7 @@ function bridgeHarness() {
   // The fake is attached after bridge initialization, so no boot restore or
   // real process is started. Only timers for other bridge commands are unref'd.
   const timeout = (fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; };
+  new Function("window", readFileSync(join(root, "src/app/background-tasks.js"), "utf8"))(w);
   // eslint-disable-next-line no-new-func
   new Function("window", "setTimeout", "clearTimeout", readFileSync(join(root, "src/live.js"), "utf8"))(w, timeout, clearTimeout);
   function emit(id, frame) {

@@ -119,7 +119,7 @@ const JobRow = React.memo(function JobRow({ msg, idx, highlighted }) {
 // (app/chat-collapse.js). `followOutput` and `submitKey` are tweaks too: the
 // first lets new output move a view at the bottom, the second is the ask
 // editor's send chord.
-function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, onAskAnswer, onAskDialogAnswer, onConfirmAsk, onCancelAsk, onGrantApproval, onStopRetry, hasProjectPath, onInspectSubagent, onOpenFile, onPreviewFile, projectRoot, foldModes, collapseAfter, collapseOverrides, onToggleCollapse, followOutput = true, submitKey = "enter" }) {
+function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, onAskAnswer, onAskDialogAnswer, onConfirmAsk, onCancelAsk, onGrantApproval, onStopRetry, hasProjectPath, onInspectSubagent, onOpenFile, onPreviewFile, projectRoot, foldModes, collapseAfter, collapseOverrides, onToggleCollapse, followOutput = true, submitKey = "enter", requestJump = null }) {
   const scrollRef   = React.useRef(null);
   const pinnedRef   = React.useRef(true);   // assume start pinned to bottom
   const prevTopRef  = React.useRef(0);
@@ -199,6 +199,20 @@ function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, 
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  // An explicit reminder click must not fight follow-output while another
+  // task streams. Only this user action moves focus into the request.
+  React.useEffect(() => {
+    if (!requestJump) return;
+    const index = messages.findIndex(message => message.kind === "ask" && message.id === requestJump.id && !message.answered && !message.cancelled);
+    if (index < 0) return;
+    const row = scrollRef.current?.querySelector(`[data-msg-idx="${index}"]`);
+    if (!row) return;
+    setPinned(false);
+    row.scrollIntoView({ block: "start", behavior: "instant" });
+    prevTopRef.current = scrollRef.current.scrollTop;
+    row.querySelector("button:not(:disabled), input:not(:disabled), textarea:not(:disabled)")?.focus({ preventScroll: true });
+  }, [requestJump]);
 
   // Only the last completed assistant message is annotatable in plan mode
   let lastAsstIdx = -1;

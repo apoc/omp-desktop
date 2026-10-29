@@ -37,8 +37,9 @@ pub(super) struct PendingApprovals {
     /// The process's project folder (`None` = started without one, which
     /// only a session-scope grant accepts).
     project_root: Option<PathBuf>,
-    /// `(request id, tool)`, oldest first.
-    prompts: VecDeque<(String, String)>,
+    /// `(request id, tool, in-flight claim)`, oldest first.
+    prompts: VecDeque<(String, String, Option<u64>)>,
+    next_claim: u64,
 }
 
 impl PendingApprovals {
@@ -46,6 +47,7 @@ impl PendingApprovals {
         Self {
             project_root,
             prompts: VecDeque::new(),
+            next_claim: 0,
         }
     }
 
@@ -71,8 +73,8 @@ impl PendingApprovals {
     pub(super) fn tool(&self, id: &str) -> Option<&str> {
         self.prompts
             .iter()
-            .find(|(pending, _)| pending == id)
-            .map(|(_, tool)| tool.as_str())
+            .find(|(pending, _, claim)| pending == id && claim.is_none())
+            .map(|(_, tool, _)| tool.as_str())
     }
 
     /// Record open prompt `id` for `tool`, replacing an older one with the
@@ -82,13 +84,45 @@ impl PendingApprovals {
         if self.prompts.len() == MAX_PENDING {
             self.prompts.pop_front();
         }
-        self.prompts.push_back((id, tool));
+        self.prompts.push_back((id, tool, None));
     }
 
     fn remove(&mut self, id: &str) {
-        if let Some(at) = self.prompts.iter().position(|(pending, _)| pending == id) {
+        if let Some(at) = self
+            .prompts
+            .iter()
+            .position(|(pending, _, _)| pending == id)
+        {
             self.prompts.remove(at);
         }
+    }
+
+    fn claim(&mut self, id: &str) -> Option<u64> {
+        let (_, _, claim) = self
+            .prompts
+            .iter_mut()
+            .find(|(pending, _, claim)| pending == id && claim.is_none())?;
+        self.next_claim = self.next_claim.wrapping_add(1);
+        *claim = Some(self.next_claim);
+        Some(self.next_claim)
+    }
+
+    /// Finish only the claimed incarnation; a cancel or replacement must
+    /// never be undone by a failed write or turned into a standing grant.
+    fn finish_claim(&mut self, id: &str, claim: u64, written: bool) -> bool {
+        let Some(at) = self
+            .prompts
+            .iter()
+            .position(|(pending, _, token)| pending == id && *token == Some(claim))
+        else {
+            return false;
+        };
+        if written {
+            self.prompts.remove(at);
+        } else if let Some((_, _, token)) = self.prompts.get_mut(at) {
+            *token = None;
+        }
+        true
     }
 }
 
@@ -173,7 +207,7 @@ impl AgentBridge {
         scope: RuleScope,
         stdin_of: impl FnOnce(&BridgeInner) -> Option<Arc<Mutex<W>>>,
     ) -> Result<Option<String>, String> {
-        let (stdin, open, alive, tool, root) = self
+        let (stdin, open, journal, alive, tool, root, claim) = self
             .with_entry(session_id, |inner| {
                 let stdin = stdin_of(inner).ok_or_else(|| "agent not running".to_string())?;
                 let mut pending = inner
@@ -192,26 +226,34 @@ impl AgentBridge {
                         "project-scoped grant requires a project root".to_string()
                     })?),
                 };
-                pending.remove(request_id);
+                let claim = pending.claim(request_id).ok_or_else(|| {
+                    format!("session '{session_id}' has no open approval prompt '{request_id}'")
+                })?;
                 drop(pending);
                 Ok::<_, String>((
                     stdin,
                     Arc::clone(&inner.approvals),
+                    Arc::clone(&inner.journal),
                     Arc::clone(&inner.alive),
                     tool,
                     root,
+                    claim,
                 ))
             })?
             .ok_or_else(|| format!("session '{session_id}' not found"))??;
 
         let answer = approve_answer(request_id);
-        if let Err(err) = write_command(&stdin, &answer, None) {
-            if let Ok(mut pending) = open.lock() {
-                pending.track(request_id.to_owned(), tool);
-            }
-            return Err(err);
-        }
+        let written = write_command(&stdin, &answer, None, Some((request_id, &journal)));
+        let still_claimed = open
+            .lock()
+            .is_ok_and(|mut pending| pending.finish_claim(request_id, claim, written.is_ok()));
+        written?;
         crate::remote::tracker::tracker().on_answered(session_id, request_id, &alive);
+        if !still_claimed {
+            return Ok(Some(
+                "approval prompt ended before the grant was saved".to_string(),
+            ));
+        }
         let ended = || format!("session '{session_id}' ended before the grant was saved");
         let granted = root.map_or_else(
             || {
@@ -241,7 +283,7 @@ pub(super) fn approve_answer(request_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::tests::{approval_prompt as prompt, idle_inner, Broken};
+    use crate::agent::tests::{approval_prompt as prompt, idle_inner, journal_with_frames, Broken};
     use crate::test_support::TempDir;
     use serde_json::json;
     use std::path::Path;
@@ -333,6 +375,7 @@ mod tests {
             "sess-a".into(),
             BridgeInner {
                 approvals: Arc::new(open),
+                journal: journal_with_frames(&[prompt("req-1", "bash"), prompt("req-2", "bash")]),
                 ..idle_inner(Arc::new(AtomicBool::new(true)))
             },
         );
@@ -400,6 +443,10 @@ mod tests {
         assert!(book.is_granted("any-session", Some(&proj_a), "bash"));
         assert!(!book.is_granted("sess-b", Some(&proj_b), "bash"));
         assert_eq!(open_tool(&bridge, "sess-a", "req-1"), None, "settled");
+        let replay = bridge.replay_events("sess-a", 2).unwrap();
+        assert!(replay.pending_requests_complete);
+        assert_eq!(replay.pending_requests.len(), 1);
+        assert_eq!(replay.pending_requests[0].seq, 2);
 
         // Used up: a second click answers and grants nothing.
         let err =
@@ -470,6 +517,66 @@ mod tests {
         }
         assert!(!book.is_granted("sess-a", None, "bash"));
         assert!(!book.is_granted("sess-a", Some(dir.path()), "bash"));
+    }
+
+    #[test]
+    fn a_cancel_during_the_approval_write_never_reopens_or_grants_it() {
+        struct Cancelling<'a> {
+            bridge: &'a AgentBridge,
+            fail: bool,
+            cancelled: bool,
+        }
+        impl Write for Cancelling<'_> {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                if !self.cancelled {
+                    let frame = json!({
+                        "type": "extension_ui_request", "method": "cancel", "targetId": "req-1"
+                    });
+                    self.bridge
+                        .with_entry("sess-a", |inner| {
+                            observe(&inner.approvals, Some("extension_ui_request"), &frame);
+                            inner.journal.lock().unwrap().push_frame(
+                                Arc::from(frame.to_string()),
+                                Some(&frame),
+                                false,
+                            );
+                        })
+                        .unwrap();
+                    self.cancelled = true;
+                }
+                if self.fail {
+                    Err(std::io::ErrorKind::BrokenPipe.into())
+                } else {
+                    Ok(data.len())
+                }
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        for fail in [true, false] {
+            let dir = TempDir::new("approvals", "cancel-during-write");
+            let book = RuleBook::new(dir.path().join("rules"));
+            let bridge = bridge_with_prompts(dir.path());
+            let result =
+                bridge.approve_and_grant_via(&book, "sess-a", "req-1", RuleScope::Session, |_| {
+                    Some(Arc::new(Mutex::new(Cancelling {
+                        bridge: &bridge,
+                        fail,
+                        cancelled: false,
+                    })))
+                });
+            if fail {
+                assert!(result.is_err());
+            } else {
+                assert!(result.unwrap().is_some(), "answered but not granted");
+            }
+            assert_eq!(open_tool(&bridge, "sess-a", "req-1"), None);
+            assert!(!book.is_granted("sess-a", None, "bash"));
+            let replay = bridge.replay_events("sess-a", 0).unwrap();
+            assert_eq!(replay.pending_requests.len(), 1);
+            assert_eq!(replay.pending_requests[0].seq, 2);
+        }
     }
 
     #[test]
@@ -561,6 +668,7 @@ mod tests {
             "sess-a".into(),
             BridgeInner {
                 approvals: Arc::new(open),
+                journal: journal_with_frames(&[prompt("req-1", "bash")]),
                 ..idle_inner(Arc::new(AtomicBool::new(true)))
             },
         );
@@ -590,6 +698,7 @@ mod tests {
             sid.into(),
             BridgeInner {
                 approvals: Arc::new(open),
+                journal: journal_with_frames(std::slice::from_ref(&frame)),
                 ..idle_inner(Arc::new(AtomicBool::new(true)))
             },
         );

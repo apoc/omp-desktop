@@ -71,7 +71,7 @@ function harness() {
     },
     OMP_EXT_WIDGETS: { EMPTY: {} },
     OMP_SESSION_PREFS: {
-      fromTweaks: () => ({ autoCompaction: true, autoRetry: true }),
+      fromTweaks: () => ({ autoRetry: true }),
       closeGuardArmed: () => false,
     },
     OMP_TWEAKS_STORE: { read: () => ({}) },
@@ -99,6 +99,7 @@ function harness() {
     "adapter.js",
   ])
     new Function("window", source(path))(window);
+  new Function("window", source("app/background-tasks.js"))(window);
   new Function("window", "setTimeout", "clearTimeout", source("live.js"))(
     window,
     (fn, ms) => {

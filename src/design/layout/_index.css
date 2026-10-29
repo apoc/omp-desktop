@@ -6,11 +6,14 @@
 @import "./sidebar.css";
 @import "./chat.css";
 @import "./ask.css";
+@import "./pending-input.css";
 @import "./composer.css";
 @import "./goal.css";
 @import "./rail.css";
+@import "./background-tasks.css";
 @import "./agent-context.css";
 @import "./context-inspector.css";
+@import "./context-policy.css";
 @import "./pr-status.css";
 @import "./browser.css";
 @import "./widgets.css";

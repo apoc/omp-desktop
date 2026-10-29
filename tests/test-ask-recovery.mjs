@@ -43,11 +43,12 @@ function harness(storage = new Map()) {
   const w = {
     OMP_SUBAGENTS: {
       emptySubagents: () => ({}),
+      mergeSnapshots: (current) => current,
       subscriptionLevelFor: () => "progress",
     },
     OMP_EXT_WIDGETS: { EMPTY: {} },
     OMP_SESSION_PREFS: {
-      fromTweaks: () => ({ autoCompaction: true, autoRetry: true }),
+      fromTweaks: () => ({ autoRetry: true }),
       closeGuardArmed: () => false,
     },
     OMP_TWEAKS_STORE: { read: () => ({}) },
@@ -72,6 +73,7 @@ function harness(storage = new Map()) {
     "app/live-voice.js",
     "app/live-context.js",
     "app/ask-dialog.js",
+    "app/background-tasks.js",
     "app/agent-context.js",
     "app/agent-context-sync.js",
     "adapter.js",
@@ -92,8 +94,14 @@ function harness(storage = new Map()) {
     rawEntries = null,
     streaming = false,
     rejectPrompt = false,
-    holdState = false;
-  const heldStates = [];
+    holdState = false,
+    holdAnswer = false,
+    rejectAnswer = false;
+  const heldStates = [],
+    heldAnswers = [],
+    heldGrants = [],
+    grantCalls = [],
+    replays = new Map();
   const emit = (id, frame) =>
     listeners.get(`agent://line/${id}`)?.({
       payload: { seq: ++seq, text: JSON.stringify(frame) },
@@ -116,11 +124,25 @@ function harness(storage = new Map()) {
             path: args.args.cwd,
             workspace: null,
           };
-        if (name === "replay_events") return { dropped: false, events: [] };
+        if (name === "replay_events")
+          return replays.get(args.sessionId) ?? { dropped: false, events: [] };
         if (name === "start_git_watch") return "feature";
+        if (name === "approval_approve_and_grant") {
+          grantCalls.push(args);
+          return new Promise((resolve, reject) =>
+            heldGrants.push({ resolve, reject }),
+          );
+        }
         if (name === "send_command") {
           const cmd = { ...JSON.parse(args.json), sessionId: args.sessionId };
           commands.push(cmd);
+          if (cmd.type === "extension_ui_response") {
+            if (rejectAnswer) throw new Error("Broken answer pipe");
+            if (holdAnswer)
+              return new Promise((resolve, reject) =>
+                heldAnswers.push({ resolve, reject }),
+              );
+          }
           queueMicrotask(() => {
             if (cmd.type === "get_state") {
               if (holdState) heldStates.push(cmd);
@@ -179,7 +201,30 @@ function harness(storage = new Map()) {
     w,
     commands,
     storage,
+    grantCalls,
     emit,
+    exit(id, reason = "") {
+      listeners.get(`agent://exit/${id}`)?.({ payload: reason });
+    },
+    setReplay(id, value) {
+      replays.set(id, value);
+    },
+    setAnswerFailure(value) {
+      rejectAnswer = value;
+    },
+    setAnswerHold(value) {
+      holdAnswer = value;
+    },
+    releaseAnswer(error = null) {
+      const held = heldAnswers.shift();
+      if (error) held.reject(new Error(error));
+      else held.resolve();
+    },
+    releaseGrant(error = null, value = null) {
+      const held = heldGrants.shift();
+      if (error) held.reject(new Error(error));
+      else held.resolve(value);
+    },
     async reopen() {
       await w.OMP_BRIDGE.resumeSession({
         path: "/saved/conversation.jsonl",
@@ -222,18 +267,50 @@ function harness(storage = new Map()) {
 test("reopening rebuilds tool cards from the saved branch even when model history omitted them", async () => {
   const h = harness();
   const saved = [
-    { role: "user", timestamp: 1, content: [{ type: "text", text: "Run the check" }] },
-    { role: "assistant", timestamp: 2, stopReason: "toolUse", content: [
-      { type: "toolCall", id: "check", name: "bash", arguments: { command: "npm test" }, intent: "Checking the fix" },
-    ] },
-    { role: "toolResult", timestamp: 3, toolCallId: "check", toolName: "bash", isError: false,
-      content: [{ type: "text", text: "passed" }], details: { exitCode: 0, wallTimeMs: 80 } },
+    {
+      role: "user",
+      timestamp: 1,
+      content: [{ type: "text", text: "Run the check" }],
+    },
+    {
+      role: "assistant",
+      timestamp: 2,
+      stopReason: "toolUse",
+      content: [
+        {
+          type: "toolCall",
+          id: "check",
+          name: "bash",
+          arguments: { command: "npm test" },
+          intent: "Checking the fix",
+        },
+      ],
+    },
+    {
+      role: "toolResult",
+      timestamp: 3,
+      toolCallId: "check",
+      toolName: "bash",
+      isError: false,
+      content: [{ type: "text", text: "passed" }],
+      details: { exitCode: 0, wallTimeMs: 80 },
+    },
   ];
   h.setHistory([]);
-  h.setEntries(saved.map((message, i) => ({ type: "message", id: `saved-${i}`, parentId: i ? `saved-${i - 1}` : null, message })));
+  h.setEntries(
+    saved.map((message, i) => ({
+      type: "message",
+      id: `saved-${i}`,
+      parentId: i ? `saved-${i - 1}` : null,
+      message,
+    })),
+  );
   await h.reopen();
   const messages = h.w.OMP_BRIDGE.getState().messages;
-  assert.deepEqual(messages.map((m) => m.kind), ["user", "tool"]);
+  assert.deepEqual(
+    messages.map((m) => m.kind),
+    ["user", "tool"],
+  );
   assert.equal(messages[1].tool, "bash");
   assert.equal(messages[1].title, "Checking the fix");
   assert.equal(messages[1].target, "npm test");
@@ -244,14 +321,39 @@ test("reopening rebuilds tool cards from the saved branch even when model histor
 test("large saved tool histories are bounded immediately while retaining their newest entries", async () => {
   const h = harness();
   const messages = [
-    { role: "user", timestamp: 1, content: [{ type: "text", text: "Inspect the files" }] },
-    { role: "assistant", timestamp: 2, stopReason: "toolUse", content: Array.from({ length: 200 }, (_, i) =>
-      ({ type: "toolCall", id: `call-${i}`, name: "read", arguments: { path: `src/file-${i}.js` } })) },
-    ...Array.from({ length: 200 }, (_, i) => ({ role: "toolResult", timestamp: 3 + i,
-      toolCallId: `call-${i}`, toolName: "read", content: [{ type: "text", text: "contents" }] })),
+    {
+      role: "user",
+      timestamp: 1,
+      content: [{ type: "text", text: "Inspect the files" }],
+    },
+    {
+      role: "assistant",
+      timestamp: 2,
+      stopReason: "toolUse",
+      content: Array.from({ length: 200 }, (_, i) => ({
+        type: "toolCall",
+        id: `call-${i}`,
+        name: "read",
+        arguments: { path: `src/file-${i}.js` },
+      })),
+    },
+    ...Array.from({ length: 200 }, (_, i) => ({
+      role: "toolResult",
+      timestamp: 3 + i,
+      toolCallId: `call-${i}`,
+      toolName: "read",
+      content: [{ type: "text", text: "contents" }],
+    })),
   ];
   h.setHistory([]);
-  h.setEntries(messages.map((message, i) => ({ type: "message", id: `m${i}`, parentId: i ? `m${i - 1}` : null, message })));
+  h.setEntries(
+    messages.map((message, i) => ({
+      type: "message",
+      id: `m${i}`,
+      parentId: i ? `m${i - 1}` : null,
+      message,
+    })),
+  );
   await h.reopen();
   const restored = h.w.OMP_BRIDGE.getState().messages;
   assert.ok(restored.length <= 169 && restored.length >= 157);
@@ -480,6 +582,420 @@ test("a still-running process keeps its live question callback", async () => {
   );
 });
 
+const liveQuestion = (id) => ({
+  type: "extension_ui_request",
+  method: "ask",
+  id,
+  questions,
+});
+const liveAnswers = [{ id: "direction", selectedOptions: ["Rewrite"] }];
+
+async function liveHarness() {
+  const h = harness();
+  h.setHistory([]);
+  h.setStreaming(true);
+  await h.reopen();
+  return { h, id: h.w.OMP_BRIDGE.activeSessionId };
+}
+
+function flushQuestion(h, id, questionId) {
+  h.emit(id, liveQuestion(questionId));
+  h.emit(id, {
+    type: "tool_execution_start",
+    toolCallId: `tool-${questionId}`,
+    toolName: "ask",
+    args: { questions },
+  });
+}
+
+test("parallel prompts cancelled before flush remain visible without cancelling their peers", async () => {
+  const { h, id } = await liveHarness();
+  h.emit(id, liveQuestion("first"));
+  h.emit(id, liveQuestion("second"));
+  h.emit(id, {
+    type: "extension_ui_request",
+    method: "cancel",
+    targetId: "first",
+  });
+  assert.deepEqual(
+    h.asks().map((m) => [m.id, m.cancelled, m.closeReason]),
+    [
+      ["first", true, "omp"],
+      ["second", false, undefined],
+    ],
+  );
+  assert.equal(
+    await h.w.OMP_BRIDGE.answerAskDialog("first", liveAnswers),
+    false,
+  );
+  assert.equal(
+    await h.w.OMP_BRIDGE.answerAskDialog("second", liveAnswers),
+    true,
+  );
+  assert.deepEqual(
+    h.commands
+      .filter((c) => c.type === "extension_ui_response")
+      .map((c) => c.id),
+    ["second"],
+  );
+});
+
+test("a buffered question belongs to its original tab across a switch", async () => {
+  const { h, id } = await liveHarness();
+  h.emit(id, liveQuestion("buffered"));
+  await h.w.OMP_BRIDGE.resumeSession({
+    path: "/saved/other.jsonl",
+    cwd: "/other",
+    title: "Other",
+  });
+  assert.equal(
+    h.asks().some((m) => m.id === "buffered"),
+    false,
+  );
+  await h.w.OMP_BRIDGE.activateSession(id);
+  assert.equal(h.asks().find((m) => m.id === "buffered").cancelled, false);
+  assert.equal(
+    await h.w.OMP_BRIDGE.answerAskDialog("buffered", liveAnswers),
+    true,
+  );
+});
+
+test("an idle turn boundary and transcript trimming preserve a live question", async () => {
+  const { h, id } = await liveHarness();
+  flushQuestion(h, id, "keep");
+  for (let i = 0; i < 200; i++) h.w.OMP_BRIDGE.addAssistantMessage(`row ${i}`);
+  h.emit(id, { type: "turn_end", message: {} });
+  assert.equal(h.asks().find((m) => m.id === "keep")?.cancelled, false);
+  assert.equal(await h.w.OMP_BRIDGE.answerAskDialog("keep", liveAnswers), true);
+});
+
+test("a recently cancelled question remains visible even when open callbacks exceed scrollback", async () => {
+  const { h, id } = await liveHarness();
+  for (let i = 0; i < 175; i++) {
+    h.emit(id, {
+      type: "extension_ui_request",
+      method: "input",
+      id: `input-${i}`,
+      title: "Input",
+    });
+  }
+  h.emit(id, { type: "turn_end", message: {} });
+  h.emit(id, {
+    type: "extension_ui_request",
+    method: "cancel",
+    targetId: "input-0",
+  });
+  assert.equal(h.asks().length, 175);
+  assert.equal(h.asks().find((m) => m.id === "input-0").closeReason, "omp");
+  assert.equal(h.asks().filter((m) => !m.cancelled).length, 174);
+});
+
+test("failed live writes leave the question open and prevent concurrent duplicate sends", async () => {
+  const { h, id } = await liveHarness();
+  flushQuestion(h, id, "retry");
+  h.setAnswerHold(true);
+  const first = h.w.OMP_BRIDGE.answerAskDialog("retry", liveAnswers);
+  assert.ok(h.asks()[0].sending);
+  assert.equal(h.asks()[0].answered, false);
+  assert.equal(
+    await h.w.OMP_BRIDGE.answerAskDialog("retry", liveAnswers),
+    false,
+  );
+  h.releaseAnswer("Broken answer pipe");
+  assert.equal(await first, false);
+  assert.equal(h.asks()[0].answered, false);
+  assert.equal(h.asks()[0].cancelled, false);
+  assert.match(h.asks()[0].sendError, /Broken answer pipe/);
+  h.setAnswerHold(false);
+  assert.equal(
+    await h.w.OMP_BRIDGE.answerAskDialog("retry", liveAnswers),
+    true,
+  );
+  assert.equal(h.asks()[0].answered, true);
+  assert.equal(
+    h.commands.filter((c) => c.type === "extension_ui_response").length,
+    2,
+  );
+});
+
+test("a rejected user-cancel write does not mark the question cancelled", async () => {
+  const { h, id } = await liveHarness();
+  flushQuestion(h, id, "cancel-retry");
+  h.setAnswerFailure(true);
+  assert.equal(await h.w.OMP_BRIDGE.cancelAsk("cancel-retry"), false);
+  assert.equal(h.asks()[0].cancelled, false);
+  assert.match(h.asks()[0].sendError, /Broken answer pipe/);
+  h.setAnswerFailure(false);
+  assert.equal(await h.w.OMP_BRIDGE.cancelAsk("cancel-retry"), true);
+  assert.equal(h.asks()[0].cancelled, true);
+});
+
+test("a native cancellation or process exit wins over a late failed write", async () => {
+  for (const close of ["cancel", "exit"]) {
+    const { h, id } = await liveHarness();
+    flushQuestion(h, id, "closing");
+    h.setAnswerHold(true);
+    const send = h.w.OMP_BRIDGE.answerAskDialog("closing", liveAnswers);
+    if (close === "cancel")
+      h.emit(id, {
+        type: "extension_ui_request",
+        method: "cancel",
+        targetId: "closing",
+      });
+    else h.exit(id, "process ended");
+    h.releaseAnswer("write failed");
+    assert.equal(await send, false);
+    const ask = h.asks().find((m) => m.id === "closing");
+    assert.equal(ask.cancelled, true);
+    assert.equal(
+      ask.closeReason,
+      close === "cancel" ? "omp" : "process-exited",
+    );
+    assert.equal(
+      await h.w.OMP_BRIDGE.answerAskDialog("closing", liveAnswers),
+      false,
+    );
+    assert.equal(
+      h.commands.filter((c) => c.type === "extension_ui_response").length,
+      1,
+    );
+    if (close === "exit") {
+      h.emit(id, liveQuestion("late-frame"));
+      h.emit(id, {
+        type: "tool_execution_start",
+        toolCallId: "late-tool",
+        toolName: "ask",
+        args: { questions },
+      });
+      assert.equal(
+        h.asks().some((m) => m.id === "late-frame"),
+        false,
+      );
+    }
+  }
+});
+
+test("native cancel wins an in-flight approval grant; no dead callback is reopened", async () => {
+  const { h, id } = await liveHarness();
+  h.emit(id, {
+    type: "extension_ui_request",
+    method: "select",
+    id: "approval",
+    title: "Allow tool: bash",
+    options: ["Approve", "Deny"],
+  });
+  h.emit(id, {
+    type: "tool_execution_start",
+    toolCallId: "bash-call",
+    toolName: "bash",
+    args: {},
+  });
+  const prompt = h.asks()[0];
+  const grant = h.w.OMP_BRIDGE.approveAndRemember(prompt, "session");
+  assert.ok(h.asks()[0].sending);
+  assert.equal(h.asks()[0].answered, false);
+  await h.w.OMP_BRIDGE.approveAndRemember(prompt, "session");
+  assert.equal(h.grantCalls.length, 1);
+  h.emit(id, {
+    type: "extension_ui_request",
+    method: "cancel",
+    targetId: "approval",
+  });
+  h.releaseGrant("prompt was cancelled");
+  await grant;
+  assert.equal(h.asks()[0].cancelled, true);
+  assert.equal(h.asks()[0].closeReason, "omp");
+  assert.equal(await h.w.OMP_BRIDGE.answerAsk("approval", "Approve"), false);
+  assert.equal(
+    h.commands.filter((c) => c.type === "extension_ui_response").length,
+    0,
+  );
+});
+
+test("an approval grant failure remains on its original tab", async () => {
+  const { h, id } = await liveHarness();
+  h.emit(id, {
+    type: "extension_ui_request",
+    method: "select",
+    id: "approval",
+    title: "Allow tool: bash",
+    options: ["Approve", "Deny"],
+  });
+  h.emit(id, {
+    type: "tool_execution_start",
+    toolCallId: "bash-call",
+    toolName: "bash",
+    args: {},
+  });
+  const grant = h.w.OMP_BRIDGE.approveAndRemember(h.asks()[0], "session");
+  await h.w.OMP_BRIDGE.resumeSession({
+    path: "/saved/other.jsonl",
+    cwd: "/other",
+    title: "Other",
+  });
+  h.releaseGrant("write failed");
+  await grant;
+  await h.w.OMP_BRIDGE.activateSession(id);
+  const ask = h.asks().find((m) => m.id === "approval");
+  assert.equal(ask.answered, false);
+  assert.match(ask.sendError, /write failed/);
+});
+
+test("a rejected write after switching tabs updates only its owning question", async () => {
+  const { h, id } = await liveHarness();
+  flushQuestion(h, id, "background");
+  h.setAnswerHold(true);
+  const send = h.w.OMP_BRIDGE.answerAskDialog("background", liveAnswers);
+  const other = await h.w.OMP_BRIDGE.resumeSession({
+    path: "/saved/other.jsonl",
+    cwd: "/other",
+    title: "Other",
+  });
+  h.releaseAnswer("background pipe failed");
+  assert.equal(await send, false);
+  assert.equal(
+    h.asks().some((m) => m.id === "background"),
+    false,
+  );
+  await h.w.OMP_BRIDGE.activateSession(id);
+  const ask = h.asks().find((m) => m.id === "background");
+  assert.equal(ask.answered, false);
+  assert.match(ask.sendError, /background pipe failed/);
+  assert.notEqual(other, id);
+});
+
+test("replay restores an evicted live callback and closes only absent callbacks", async () => {
+  const { h, id } = await liveHarness();
+  flushQuestion(h, id, "gone");
+  await h.w.OMP_BRIDGE.resumeSession({
+    path: "/saved/other.jsonl",
+    cwd: "/other",
+    title: "Other",
+  });
+  h.setReplay(id, {
+    dropped: true,
+    events: [],
+    headSeq: 200,
+    pendingRequests: [
+      { seq: 100, text: JSON.stringify(liveQuestion("evicted")) },
+    ],
+    pendingRequestsComplete: true,
+  });
+  await h.w.OMP_BRIDGE.activateSession(id);
+  assert.equal(
+    h.asks().find((m) => m.id === "gone").closeReason,
+    "no-longer-pending",
+  );
+  assert.equal(h.asks().find((m) => m.id === "evicted").answered, false);
+  assert.equal(
+    await h.w.OMP_BRIDGE.answerAskDialog("evicted", liveAnswers),
+    true,
+  );
+});
+
+test("an answered request still in replay is not revived as an open callback", async () => {
+  const { h, id } = await liveHarness();
+  await h.w.OMP_BRIDGE.resumeSession({
+    path: "/saved/other.jsonl",
+    cwd: "/other",
+    title: "Other",
+  });
+  h.setReplay(id, {
+    dropped: false,
+    events: [
+      { seq: 10000, text: JSON.stringify(liveQuestion("answered-elsewhere")) },
+    ],
+    pendingRequests: [],
+    pendingRequestsComplete: true,
+  });
+  await h.w.OMP_BRIDGE.activateSession(id);
+  const ask = h.asks().find((m) => m.id === "answered-elsewhere");
+  assert.equal(ask.cancelled, true);
+  assert.equal(ask.closeReason, "no-longer-pending");
+  assert.equal(
+    await h.w.OMP_BRIDGE.answerAskDialog(ask.id, liveAnswers),
+    false,
+  );
+});
+
+test("stale replay frames and snapshots cannot resurrect a locally answered trimmed callback", async () => {
+  for (const complete of [true, false]) {
+    const { h, id } = await liveHarness();
+    flushQuestion(h, id, "settled");
+    assert.equal(
+      await h.w.OMP_BRIDGE.answerAskDialog("settled", liveAnswers),
+      true,
+    );
+    for (let i = 0; i < 200; i++)
+      h.w.OMP_BRIDGE.addAssistantMessage(`row ${i}`);
+    h.emit(id, { type: "turn_end", message: {} });
+    assert.equal(
+      h.asks().some((m) => m.id === "settled"),
+      false,
+    );
+    await h.w.OMP_BRIDGE.resumeSession({
+      path: "/saved/other.jsonl",
+      cwd: "/other",
+      title: "Other",
+    });
+    h.setReplay(id, {
+      dropped: true,
+      events: [{ seq: 10000, text: JSON.stringify(liveQuestion("settled")) }],
+      pendingRequests: [
+        { seq: 1, text: JSON.stringify(liveQuestion("settled")) },
+      ],
+      pendingRequestsComplete: complete,
+    });
+    await h.w.OMP_BRIDGE.activateSession(id);
+    assert.equal(
+      h.asks().some((m) => m.id === "settled"),
+      false,
+    );
+  }
+});
+
+test("an incomplete pending snapshot cannot close an existing question", async () => {
+  const { h, id } = await liveHarness();
+  flushQuestion(h, id, "keep");
+  await h.w.OMP_BRIDGE.resumeSession({
+    path: "/saved/other.jsonl",
+    cwd: "/other",
+    title: "Other",
+  });
+  h.setReplay(id, {
+    dropped: true,
+    events: [],
+    pendingRequests: [],
+    pendingRequestsComplete: false,
+  });
+  await h.w.OMP_BRIDGE.activateSession(id);
+  assert.equal(h.asks().find((m) => m.id === "keep").cancelled, false);
+});
+
+test("unsupported ask payload fails the tool visibly without a user-cancel response", async () => {
+  const { h, id } = await liveHarness();
+  h.emit(id, {
+    type: "extension_ui_request",
+    method: "ask",
+    id: "malformed",
+    questions: null,
+  });
+  await flush();
+  const response = h.commands.find(
+    (c) => c.type === "extension_ui_response" && c.id === "malformed",
+  );
+  assert.ok(response);
+  assert.equal(response.cancelled, undefined);
+  assert.equal(response.answers, undefined);
+  assert.ok(
+    h.w.OMP_BRIDGE.getState().messages.some(
+      (m) =>
+        m.kind === "assistant" &&
+        m.blocks?.some((b) => b.text?.includes("Unsupported ask question")),
+    ),
+  );
+});
+
 test("quoted skills in question text and custom answers remain data", async () => {
   const h = harness();
   const history = structuredClone(pending);
@@ -645,35 +1161,70 @@ test("a later user-authored native custom message supersedes the old question", 
 test("native context observations do not flood restored chat; real skill reads remain visible", async () => {
   const h = harness();
   const reasoning = {
-    role: "assistant", timestamp: 2,
+    role: "assistant",
+    timestamp: 2,
     content: [
       { type: "thinking", thinking: "Check the constraints before choosing." },
       { type: "text", text: "Here is the decision." },
-      { type: "toolCall", id: "skill-read", name: "read", arguments: { path: "skill://review" } },
+      {
+        type: "toolCall",
+        id: "skill-read",
+        name: "read",
+        arguments: { path: "skill://review" },
+      },
     ],
   };
-  const messages = [pending[0], reasoning, {
-    role: "toolResult", toolCallId: "skill-read", toolName: "read", isError: false,
-    content: [{ type: "text", text: "Review instructions" }],
-  }];
-  const entries = messages.map((message, i) => ({ type: "message", id: `m${i}`, parentId: i ? `m${i - 1}` : null, message }));
+  const messages = [
+    pending[0],
+    reasoning,
+    {
+      role: "toolResult",
+      toolCallId: "skill-read",
+      toolName: "read",
+      isError: false,
+      content: [{ type: "text", text: "Review instructions" }],
+    },
+  ];
+  const entries = messages.map((message, i) => ({
+    type: "message",
+    id: `m${i}`,
+    parentId: i ? `m${i - 1}` : null,
+    message,
+  }));
   let parentId = "m2";
   for (let i = 0; i < 200; i++) {
     entries.push({
-      type: "custom", customType: "omp-desktop:agent-context", id: `context-${i}`, parentId,
+      type: "custom",
+      customType: "omp-desktop:agent-context",
+      id: `context-${i}`,
+      parentId,
       data: { version: 1, blocks: ["OMP system prompt"] },
     });
     parentId = `context-${i}`;
   }
-  entries.push({ type: "message", id: "ask", parentId, message: { ...pending[1], timestamp: 3 } });
+  entries.push({
+    type: "message",
+    id: "ask",
+    parentId,
+    message: { ...pending[1], timestamp: 3 },
+  });
   h.setHistory(messages);
   h.setEntries(entries);
   await h.reopen();
   const state = h.w.OMP_BRIDGE.getState();
-  assert.deepEqual(state.messages.map((m) => m.kind), ["user", "assistant", "tool", "ask"]);
+  assert.deepEqual(
+    state.messages.map((m) => m.kind),
+    ["user", "assistant", "tool", "ask"],
+  );
   assert.equal(state.messages[0].text, "Plan the change.");
-  assert.equal(state.messages[1].thought, "Check the constraints before choosing.");
+  assert.equal(
+    state.messages[1].thought,
+    "Check the constraints before choosing.",
+  );
   assert.equal(state.messages[2].target, "skill://review");
   assert.equal(state.messages[3].questions[0].question, "Which approach?");
-  assert.deepEqual(state.agentContext.byId.main.skills.map((s) => s.name), ["review"]);
+  assert.deepEqual(
+    state.agentContext.byId.main.skills.map((s) => s.name),
+    ["review"],
+  );
 });

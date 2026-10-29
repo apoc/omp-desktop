@@ -1,0 +1,219 @@
+/* Compact enough for the ambient rail, without constraining a Settings host. */
+.context-policy-editor,
+.context-policy-summary {
+  min-width: 0;
+  color: var(--fg-2);
+  font-size: var(--d-text-sm);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.context-policy-editor {
+  display: grid;
+  gap: 9px;
+}
+.context-policy-summary {
+  display: grid;
+  gap: 6px;
+}
+.context-policy-summary-head,
+.context-policy-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.context-policy-toolbar {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.context-policy-kicker,
+.context-policy-status {
+  font-family: var(--font-mono);
+  font-size: var(--d-text-xs);
+}
+.context-policy-kicker {
+  color: var(--fg-2);
+  font-weight: 600;
+}
+.context-policy-status {
+  color: var(--accent);
+}
+.context-policy-metrics {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+}
+.context-policy-metrics > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.context-policy-metrics dt {
+  color: var(--fg-3);
+}
+.context-policy-metrics dd {
+  margin: 0;
+  color: var(--fg);
+  text-align: right;
+  font-family: var(--font-mono);
+}
+.context-policy-metrics dd span {
+  color: var(--fg-3);
+  font-size: var(--d-text-xs);
+}
+.context-policy-note,
+.context-policy-error,
+.context-policy-notice {
+  margin: 0;
+  font-size: var(--d-text-xs);
+}
+.context-policy-note {
+  color: var(--fg-3);
+}
+.context-policy-error {
+  color: var(--rose);
+}
+.context-policy-notice {
+  color: var(--accent);
+}
+.context-policy-scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.context-policy-scope legend {
+  padding: 0;
+  margin-bottom: 5px;
+  color: var(--fg-2);
+  font-weight: 600;
+}
+.context-policy-scope label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.context-policy-scope input,
+.context-policy-field input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.context-policy-fields {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+}
+.context-policy-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.context-policy-field.is-boolean {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+.context-policy-field-label {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.context-policy-field label {
+  color: var(--fg);
+  font-weight: 500;
+}
+.context-policy-help {
+  color: var(--fg-3);
+  font-size: var(--d-text-xs);
+}
+.context-policy-field select,
+.context-policy-field input[type="number"] {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--r-1);
+  background: var(--bg-input);
+  color: var(--fg);
+  font: inherit;
+  font-family: var(--font-mono);
+}
+.context-policy-field input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+}
+.context-policy-advanced {
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+}
+.context-policy-advanced summary {
+  color: var(--fg-2);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--d-text-xs);
+}
+.context-policy-advanced[open] summary {
+  margin-bottom: 9px;
+}
+.context-policy-stale {
+  display: grid;
+  gap: 5px;
+  padding: 7px 8px;
+  border-left: 2px solid var(--amber);
+  background: var(--bg-input);
+  color: var(--fg-2);
+  font-size: var(--d-text-xs);
+}
+.context-policy-stale .context-policy-link {
+  justify-self: start;
+}
+.context-policy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.context-policy-editor button {
+  font: inherit;
+  cursor: pointer;
+}
+.context-policy-link,
+.context-policy-reset {
+  padding: 3px 4px;
+  border: 0;
+  border-radius: var(--r-1);
+  background: transparent;
+  color: var(--fg-2);
+  font-family: var(--font-mono) !important;
+  font-size: var(--d-text-xs) !important;
+}
+.context-policy-apply {
+  padding: 6px 9px;
+  border: 1px solid color-mix(in oklab, var(--accent) 50%, transparent);
+  border-radius: var(--r-1);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.context-policy-editor button:not(:disabled):hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.context-policy-editor :disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.context-policy-editor :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.st-context-policy {
+  max-width: 620px;
+  padding: 0 16px 16px;
+}

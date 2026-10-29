@@ -3,6 +3,7 @@
 (function () {
   const BUILT_INS = [
     { id: "showContext", label: "Context" },
+    { id: "showBackgroundTasks", label: "Background tasks" },
     { id: "showRadar", label: "Agent radar" },
     { id: "showSubagents", label: "Subagents" },
     { id: "showChanges", label: "Changes" },

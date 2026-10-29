@@ -15,6 +15,7 @@ function ContextCard({
   sparklineValues,
   viewState,
   onViewStateChange,
+  policyEditor,
 }) {
   const [localView, setLocalView] = React.useState({});
   const view = viewState || localView;
@@ -153,7 +154,9 @@ function ContextCard({
             <span>{throughput}</span>
           </div>
         </div>
+        {!expanded && policyEditor && <window.ContextPolicySummary {...policyEditor} />}
         <div id={bodyId} className="context-card-expanded" hidden={!expanded}>
+          {policyEditor && <window.ContextPolicyEditor {...policyEditor} />}
           <div className="context-card-subhead">
             <span>Context breakdown</span>
             <span className="mono">tokens</span>

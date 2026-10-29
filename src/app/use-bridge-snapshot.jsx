@@ -14,6 +14,7 @@ function useBridgeSnapshot(bridge, setters) {
     const unsub = bridge.onUpdate((snap) => {
       setters.setMessages(snap.messages);
       setters.setStreaming(snap.isStreaming);
+      setters.setAsyncPending(snap.asyncPending === true);
       setters.setCtx(snap.ctx);
       setters.setKanban(snap.kanban);
       setters.setPlanMeta(snap.planMeta);
@@ -26,7 +27,9 @@ function useBridgeSnapshot(bridge, setters) {
       setters.setPromptHistory(snap.promptHistory ?? []);
       setters.setSubagents(snap.subagents);
       setters.setSubagentTranscripts(snap.subagentTranscripts ?? {});
+      setters.setBackgroundTasks(snap.backgroundTasks ?? window.OMP_BACKGROUND_TASKS.empty());
       setters.setAgentContext(snap.agentContext);
+      setters.setContextPolicy(snap.contextPolicy ?? null);
       setters.setQueue(snap.queue);
       setters.setQueueSending(snap.queueSending);
       setters.setGoal(snap.goal);

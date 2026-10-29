@@ -9,7 +9,7 @@
 // later) at call time only. Regression: test-session-prefs.mjs.
 (function () {
   /** The tweak keys live.js acts on (TWEAK_DEFAULTS, app/constants.js). */
-  const KEYS = Object.freeze(["restoreTabs", "confirmBusyClose", "autoName", "autoCompaction", "autoRetry"]);
+  const KEYS = Object.freeze(["restoreTabs", "confirmBusyClose", "autoName", "autoRetry"]);
 
   /** The prefs from a tweaks object: each key's boolean, else its default
    *  (a missing or malformed stored value never flips a behaviour). */

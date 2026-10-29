@@ -329,8 +329,12 @@ pub(super) fn read_skill(
 }
 
 /// Observe decoded responses without changing the physical frames forwarded to JS.
-pub(super) fn record(catalog: &Mutex<Catalog>, chunks: &mut ChunkDecoder, frame: Option<&Value>) {
-    let Some(frame) = frame else { return };
+pub(super) fn record(
+    catalog: &Mutex<Catalog>,
+    chunks: &mut ChunkDecoder,
+    frame: Option<&Value>,
+) -> Option<Value> {
+    let frame = frame?;
     let complete = chunks.push(frame);
     let response = complete.as_ref().or_else(|| {
         (frame.get("type").and_then(Value::as_str) == Some("response")).then_some(frame)
@@ -340,6 +344,7 @@ pub(super) fn record(catalog: &Mutex<Catalog>, chunks: &mut ChunkDecoder, frame:
             catalog.observe(response);
         }
     }
+    complete
 }
 
 struct PendingChunks {

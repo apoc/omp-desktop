@@ -62,7 +62,18 @@ function _SRA_GoalContinue({ row, ctx, query }) {
   );
 }
 
+function _SRA_ContextPolicy({ row, ctx, query }) {
+  const { SettingsRow: Row, ContextPolicyEditor: Editor } = window;
+  return (
+    <>
+      <Row label={row.label} desc={row.desc} query={query} />
+      <div className="st-context-policy"><Editor key={`${ctx.activeProject.id}:${ctx.activeProject.profile}`} {...ctx.contextPolicy} /></div>
+    </>
+  );
+}
+
 Object.assign(window.OMP_SETTINGS_ROWS = window.OMP_SETTINGS_ROWS || {}, {
   startupProfile: _SRA_StartupProfile,
   goalContinue: _SRA_GoalContinue,
+  contextPolicy: _SRA_ContextPolicy,
 });
