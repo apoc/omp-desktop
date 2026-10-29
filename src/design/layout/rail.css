@@ -113,7 +113,11 @@
 .pr-changes-repo { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .pr-changes-added { color: var(--diff-add-fg); flex: none; }
 .pr-changes-deleted { color: var(--diff-rm-fg); flex: none; }
-.pr-changes-autofix-indicator { grid-column: 2 / -1; color: var(--fg-3); font-size: var(--d-text-xs); }
+.pr-changes-autofix-inline { grid-column: 2 / -1; justify-self: start; margin-top: 4px; font-size: var(--d-text-xs); }
+.pr-changes button.pr-changes-autofix-toggle { min-height: 26px; padding: 3px 8px; border: 1px solid var(--line-bright); border-radius: 5px; background: var(--bg-elevated); color: var(--fg-2); font-size: var(--d-text-xs); }
+.pr-changes-autofix-toggle:hover:not(:disabled) { background: var(--bg-hover); color: var(--fg); }
+.pr-changes button.pr-changes-autofix-toggle[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.pr-changes-autofix-toggle:disabled { opacity: .4; cursor: default; }
 .pr-changes-local { padding: 3px 0; color: var(--fg-2); font-size: var(--d-text-xs); }
 .pr-changes-local-link { padding: 0; color: inherit; text-align: left; }
 .pr-changes-local-link:hover { color: var(--fg); text-decoration: underline; }

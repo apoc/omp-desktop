@@ -8,6 +8,7 @@ function PrAutomationCard({ automation, available = true, bridge, onOpenChanges 
   const rootRef = React.useRef(null);
   const menuId = React.useId();
   const descriptionId = React.useId();
+  const autoFixDescription = "Fix CI and review feedback. May commit, push and resolve addressed threads; tool approvals still apply.";
   const pr = automation.snapshot;
   // The menu is portaled out of the rail's scroll container.
   rootRef.current = {
@@ -82,6 +83,8 @@ function PrAutomationCard({ automation, available = true, bridge, onOpenChanges 
   if (!pr && localCount <= 0) return null;
 
   const status = pr ? window.OMP_PR_STATUS.present(automation) : null;
+  const showAutoFix = pr?.state === "OPEN" && (automation.enabled
+    || status.tone === "failure" || status.threadCount > 0);
 
   return (
     <section className="rail-card glass pr-changes" aria-label="Changes">
@@ -124,10 +127,17 @@ function PrAutomationCard({ automation, available = true, bridge, onOpenChanges 
             <span className="pr-changes-deleted">−{pr.deletions}</span>
             <window.PrStatus model={status} mode="badges" onReview={() => openUrl("#discussion_bucket", false)} />
           </div>
-          {automation.enabled && (
-            <span className="pr-changes-autofix-indicator" title={automation.status}>
-              Auto-fix on
-            </span>
+          {showAutoFix && (
+            <window.StatusDetail className="pr-changes-autofix-inline"
+              text={`${automation.status}\n${autoFixDescription}\nThis tab only. Stop also turns Auto-fix off.`}>
+              <button type="button" className="pr-changes-autofix-toggle"
+                aria-label={automation.enabled ? "Turn off Auto-fix" : "Enable Auto-fix for CI and review feedback"}
+                aria-pressed={automation.enabled}
+                disabled={!automation.enabled && (!available || !automation.canEnable)}
+                onClick={automation.toggle}>
+                Auto-fix{automation.enabled ? " on" : ""}
+              </button>
+            </window.StatusDetail>
           )}
         </div>
       )}
@@ -210,7 +220,7 @@ function PrAutomationCard({ automation, available = true, bridge, onOpenChanges 
                   Auto-fix
                 </button>
                 <p id={descriptionId} className="pr-changes-menu-note">
-                  Fix CI and review feedback. May commit, push and resolve addressed threads; tool approvals still apply.
+                  {autoFixDescription}
                 </p>
                 <p className="pr-changes-menu-status" role="status">
                   {automation.status}
