@@ -291,6 +291,10 @@
        prompt-history-modal.jsx, update-modal.jsx and confirm-close.jsx
        call window.useModalFocus at render time. -->
   <script src="design/ui/use-modal-focus.js"></script>
+  <!-- Keyboard-driven popup lists: useActiveRowIntoView (composer.jsx's
+       slash menu and mentions, history-modal.jsx, prompt-history-modal.jsx)
+       and useListKeys (the two history modals), called at render time. -->
+  <script src="design/ui/use-list-nav.js"></script>
   <!-- The column resize line (#41); destructures
        window.OMP_LAYOUT_WIDTHS at top level; browser-dock.jsx and
        app-live.jsx destructure ResizeHandle at top level. -->

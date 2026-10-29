@@ -172,19 +172,9 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   // Keep activeIdx in bounds; auto-select when single result
   const clampedIdx = showSlash ? Math.min(activeIdx, filtered.length - 1) : 0;
 
-  // Scroll active item into view
-  React.useEffect(() => {
-    if (!showSlash || !listRef.current) return;
-    const el = listRef.current.children[clampedIdx];
-    el?.scrollIntoView({ block: "nearest" });
-  }, [clampedIdx, showSlash]);
-
-  // Scroll active mention row into view
-  React.useEffect(() => {
-    if (!showMention || !mentionListRef.current) return;
-    const el = mentionListRef.current.children[mentionActiveIdx];
-    el?.scrollIntoView({ block: "nearest" });
-  }, [mentionActiveIdx, showMention]);
+  // Keep the active slash / mention row in view.
+  window.useActiveRowIntoView(listRef, clampedIdx, showSlash);
+  window.useActiveRowIntoView(mentionListRef, mentionActiveIdx, showMention);
 
   // Grow with the text up to the CSS max-height, then scroll: hidden
   // overflow past it would leave the rest of a long draft unreachable.

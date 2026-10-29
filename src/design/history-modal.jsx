@@ -76,37 +76,12 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
     ? Math.min(Math.max(0, activeIdx), filtered.length - 1)
     : 0;
 
-  // Scroll active item into view
-  React.useEffect(() => {
-    if (!listRef.current) return;
-    const el = listRef.current.children[clampedIdx];
-    el?.scrollIntoView({ block: "nearest" });
-  }, [clampedIdx]);
-
-  // Keyboard navigation
-  React.useEffect(() => {
-    if (!open) return;
-    const onKey = (e) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      } else if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setActiveIdx(i => Math.min(i + 1, filtered.length - 1));
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setActiveIdx(i => Math.max(i - 1, 0));
-      } else if (e.key === "Enter") {
-        if (filtered[clampedIdx]) {
-          e.preventDefault();
-          onResume?.(filtered[clampedIdx]);
-          onClose();
-        }
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose, onResume, filtered, clampedIdx]);
+  // precedent:ignore — calls of the shared list hooks (ui/use-list-nav.js), alike by design
+  window.useActiveRowIntoView(listRef, clampedIdx, true);
+  window.useListKeys({
+    open, count: filtered.length, index: clampedIdx, setIndex: setActiveIdx,
+    onEnter: i => { onResume?.(filtered[i]); onClose(); }, onClose,
+  });
 
   if (!open) return null;
 
