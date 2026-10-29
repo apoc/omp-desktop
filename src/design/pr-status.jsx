@@ -151,8 +151,8 @@ function PrStatus({ status, model: suppliedModel, mode = "all", onReview }) {
   if (!model) return null;
   const identity = mode !== "badges";
   const badges = mode !== "icon";
-  const ci = badges && model.glyph !== "merged" && model.glyph !== "closed" && model.checksState;
-  const failed = ci && (ci === "failure" || model.failedCount > 0);
+  const failed = badges && model.glyph !== "merged" && model.glyph !== "closed"
+    && (model.checksState === "failure" || model.failedCount > 0);
   const descriptive = mode === "badges";
   const bubble = (
     <>
@@ -177,12 +177,6 @@ function PrStatus({ status, model: suppliedModel, mode = "all", onReview }) {
         <StatusDetail className="pr-status-ci failure" text={model.checksDescription}>
           <span aria-hidden="true">×{model.failedCount || ""}</span>
           {descriptive && <span>{model.checksDescription}</span>}
-        </StatusDetail>
-      )}
-      {ci && !failed && (
-        <StatusDetail className={`pr-status-ci ${ci}`} text={model.checksDescription}>
-          <span aria-hidden="true">{ci === "pending" ? "◷" : ci === "success" ? "✓" : ci === "unknown" ? "?" : "–"}</span>
-          {descriptive && <span>{ci === "pending" ? "Checks pending" : ci === "success" ? "Checks passed" : ci === "unknown" ? "Checks unknown" : "No checks"}</span>}
         </StatusDetail>
       )}
       {badges && model.threadCount > 0 && (

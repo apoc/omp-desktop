@@ -551,13 +551,10 @@ check("identity and feedback modes render separate accessible semantic details",
   assert.equal(nodes(icon).filter((node) => node.type === h.window.StatusDetail).length, 1);
   const badges = h.render(h.window.PrStatus, { model, mode: "badges" });
   assert.doesNotMatch(text(badges), /#42/);
-  assert.match(text(badges), /Checks pending/);
   assert.match(text(badges), /×1/);
-  assert.doesNotMatch(text(badges), /…/);
   const details = nodes(badges).filter((node) => node.type === h.window.StatusDetail);
   assert.equal(details.length, 3);
   assert.ok(details.some((node) => /failed check/.test(node.props.text)));
-  assert.ok(details.some((node) => /Checks pending/.test(node.props.text)));
   assert.ok(details.some((node) => /1 unresolved review thread/.test(node.props.text)));
   assert.equal(details.filter((node) => /Network down/.test(node.props.text)).length, 1);
   for (const checksState of ["pending", "success", "none", "unknown"]) {
@@ -569,14 +566,27 @@ check("identity and feedback modes render separate accessible semantic details",
     assert.match(checks[0].props.className, /failure/);
     assert.equal(checks[0].props.text, conflicting.checksDescription);
   }
-  const pending = h.render(h.window.PrStatus, {
-    model: P.present(status({ checksState: "pending" })), mode: "badges",
-  });
-  assert.match(text(pending), /◷/);
-  assert.match(text(pending), /Checks pending/);
   const mixed = P.aggregate([status({ number: 1 }), status({ number: 2 })]);
   assert.match(text(h.render(h.window.PrStatus, { model: mixed })), /2 PRs/);
   assert.equal(h.render(h.window.PrStatus, { status: { snapshot: null, discoveryError: "Offline" } }), null);
+});
+
+check("PR identity stays visible without badges for non-failing CI and no review feedback", () => {
+  const h = uiHarness();
+  for (const checksState of ["none", "unknown", "pending", "success"]) {
+    const model = P.present(status({ checksState }));
+    const full = h.render(h.window.PrStatus, { model });
+    assert.ok(byClass(full, "pr-status-identity"));
+    assert.equal(byClass(full, "pr-status-ci"), undefined);
+    assert.equal(byClass(full, "pr-status-review"), undefined);
+    const badges = h.render(h.window.PrStatus, { model, mode: "badges" });
+    assert.equal(nodes(badges).filter(node => node.type === h.window.StatusDetail).length, 0);
+    const withReview = h.render(h.window.PrStatus, {
+      model: P.present(status({ checksState, threads: [thread("review")] })),
+    });
+    assert.equal(byClass(withReview, "pr-status-ci"), undefined);
+    assert.ok(byClass(withReview, "pr-status-review"));
+  }
 });
 
 check("review detail preserves its button action and terminal PRs hide attention", () => {

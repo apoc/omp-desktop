@@ -29,9 +29,7 @@
   border: 1px solid currentColor; border-radius: 4px; font-size: 9px; font-weight: 700;
 }
 .pr-status-ci.failure { color: var(--diff-rm-fg); }
-.pr-status-ci.pending, .pr-status-stale { color: var(--pr-pending); }
-.pr-status-ci.success { color: var(--diff-add-fg); }
-.pr-status-ci.none, .pr-status-ci.unknown, .pr-status.is-stale .pr-status-ci.success { color: var(--pr-neutral); }
+.pr-status-stale { color: var(--pr-pending); }
 .pr-status-review {
   display: inline-flex; align-items: center; gap: 2px; flex: none;
   color: var(--fg-2); font: inherit; line-height: 1;

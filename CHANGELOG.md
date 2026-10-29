@@ -30,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- PR feedback badges now appear only for failing CI or unresolved review comments. Checkless, successful, pending and unknown check states no longer add icons or labels to project navigation or the Changes card; the PR lifecycle and number stay visible.
 - A closed Ambient rail can be reopened in one click with the **Ambient** button beside the app version. It restores the current tab's rail without ending its agent, browser or terminal; the version button still checks for updates.
 - Conversations no longer remain **New conversation** indefinitely after an unsuccessful naming attempt or reopening an unnamed saved conversation. Initial naming retries only after a later successful completed turn, never on every state refresh; saved/manual titles and the automatic-naming setting remain respected.
 - Unanswered requests survive transcript trimming and background-tab replay overflow. Answer controls remain pending until the response is written; a rejected write retains the draft and displays its error. Native cancellation, process exit and requests no longer pending remain visible without inventing a cancellation reason.
