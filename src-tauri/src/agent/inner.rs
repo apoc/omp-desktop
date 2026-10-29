@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use super::approvals::PendingApprovals;
 use super::ext_ui::ExtUiState;
+use super::inflight::InFlight;
 use super::journal::EventJournal;
 use crate::supervisor::ProcessSupervisor;
 
@@ -34,6 +35,10 @@ pub(super) struct BridgeInner {
     /// reader and read by `extension_ui_state`. Dropped with the entry, so
     /// it never outlives this process — see [`crate::agent::ext_ui`].
     pub(super) ext_ui: Arc<Mutex<ExtUiState>>,
+    /// The assistant message being streamed, rebuilt from delta frames by
+    /// the stdout reader and read by `streaming_message` — see
+    /// [`crate::agent::inflight`]. Dropped with the entry, like `ext_ui`.
+    pub(super) inflight: Arc<Mutex<InFlight>>,
     /// Approval prompts this process forwarded that are still unanswered,
     /// written by the stdout reader, settled by an answer through `send`
     /// and consumed by a grant — see [`crate::agent::approvals`]. Dropped

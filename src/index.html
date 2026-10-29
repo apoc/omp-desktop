@@ -457,6 +457,10 @@
        reads window.OMP_SESSION_TITLE at its top-level init, so it must
        load before live.js. -->
   <script src="app/session-title.js"></script>
+  <!-- Streaming message rebuilt from omp's delta message_update frames.
+       Dependency-free IIFE; live.js reads window.OMP_STREAM_DELTA at its
+       top-level init, so it must load before live.js. -->
+  <script src="app/stream-delta.js"></script>
   <script src="live.js"></script>
 
   <!-- App root — wired to OMP_BRIDGE, no demo effects -->

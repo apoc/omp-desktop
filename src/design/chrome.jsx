@@ -218,7 +218,7 @@ function TabBar({
 function StatusBar({ ctx, todoDone, todoTotal, onTodo, onSettings, settingsActive = false, onChanges, onRules, approvalMode, onStats, onTree, onTerminal, terminalOpen, onBrowser, browserOpen = false }) {
   return (
     <div className="status">
-      <span className="status-cell"><span className="dot live" /> connected</span>
+      <span className="status-cell"><span className="dot on" /> connected</span>
       <span className="status-sep">·</span>
       <span className="status-cell st-ctx mono">
         <span style={{ color: "var(--fg-3)" }}>{ctx.label}</span>

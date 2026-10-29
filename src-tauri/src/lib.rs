@@ -628,6 +628,18 @@ fn extension_ui_state(
     bridge.extension_ui_state(&session_id)
 }
 
+/// The assistant message a session is streaming, as far as it got: omp sends
+/// only increments (`agent::inflight`), so a reactivated tab whose replay
+/// came back `dropped` seeds its streaming bubble from this. `None` between
+/// messages and for an unknown or ended session.
+#[tauri::command]
+fn streaming_message(
+    session_id: String,
+    bridge: State<'_, AgentBridge>,
+) -> Option<agent::inflight::Snapshot> {
+    bridge.streaming_message(&session_id)
+}
+
 /// List tool-approval rules currently in effect for a session/project pair.
 ///
 /// Runs `async` + `spawn_blocking` for the same reason as
@@ -1515,6 +1527,7 @@ pub fn run() {
             session_status,
             replay_events,
             extension_ui_state,
+            streaming_message,
             open_project,
             take_pending_open_projects,
             start_git_watch,

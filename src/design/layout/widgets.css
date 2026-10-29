@@ -18,9 +18,9 @@
 .wdg-attn { --wdg-attn: var(--accent); }
 .wdg-attn.tone-warn { --wdg-attn: var(--amber); }
 .wdg-attn.tone-error { --wdg-attn: var(--rose); }
-.rail-card.wdg-attn { animation: wdg-attn-border 1.5s ease-in-out infinite; }
-.wdg-attn > .rail-card-head .wdg-dot { background: var(--wdg-attn); animation: wdg-attn-dot 1.5s ease-in-out infinite; }
-.wdg-attn > .rail-card-head .wdg-dot.pulse-dot { animation: pulseDot 1.4s ease-in-out infinite, wdg-attn-dot 1.5s ease-in-out infinite; }
+.rail-card.wdg-attn { animation: wdg-attn-border 1.5s var(--loop-steps) infinite; }
+.wdg-attn > .rail-card-head .wdg-dot { background: var(--wdg-attn); animation: wdg-attn-dot 1.5s var(--loop-steps) infinite; }
+.wdg-attn > .rail-card-head .wdg-dot.pulse-dot { animation: pulseDot 1.4s var(--loop-steps) infinite, wdg-attn-dot 1.5s var(--loop-steps) infinite; }
 @keyframes wdg-attn-border {
   0%, 100% { border-color: color-mix(in oklab, var(--wdg-attn) 25%, var(--line)); }
   50%      { border-color: var(--wdg-attn); }

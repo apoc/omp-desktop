@@ -242,9 +242,9 @@
 .tab-run-dot {
   width: 6px; height: 6px; border-radius: 50%; flex: none;
 }
-.tab-run-dot.running { background: var(--accent); box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 30%, transparent); animation: tab-run-pulse 1.6s ease-in-out infinite; }
+.tab-run-dot.running { background: var(--accent); box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 30%, transparent); animation: tab-run-pulse 1.6s var(--loop-steps) infinite; }
 /* The agent yielded, a background job will wake it: a hollow ring, slower. */
-.tab-run-dot.background { box-shadow: inset 0 0 0 1.5px var(--accent); animation: tab-run-pulse 2.6s ease-in-out infinite; }
+.tab-run-dot.background { box-shadow: inset 0 0 0 1.5px var(--accent); animation: tab-run-pulse 2.6s var(--loop-steps) infinite; }
 .tab-run-dot.waiting-user { background: var(--amber); }
 .tab-run-dot.failed { background: var(--rose); }
 /* omp is retrying a failed request: an amber ring that spins. */

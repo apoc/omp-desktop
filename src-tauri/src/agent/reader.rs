@@ -12,6 +12,7 @@ use crate::redaction::{is_credential_key, REDACTED_PLACEHOLDER};
 
 use super::approvals::{self, PendingApprovals};
 use super::ext_ui::{self, ExtUiState};
+use super::inflight::{self, InFlight};
 use super::inner::BridgeInner;
 use super::journal::EventJournal;
 
@@ -178,6 +179,9 @@ pub(super) struct StdoutReaderConfig {
     /// This session's extension status lines and widgets, kept up to date
     /// for a tab that comes back with a `dropped` replay.
     pub(super) ext_ui: Arc<Mutex<ExtUiState>>,
+    /// This session's in-flight assistant message, kept whole for a tab
+    /// that comes back with a `dropped` replay.
+    pub(super) inflight: Arc<Mutex<InFlight>>,
     /// This process's open approval prompts, for a grant to bind to.
     pub(super) approvals: Arc<Mutex<PendingApprovals>>,
     pub(super) stdin: Arc<Mutex<ChildStdin>>,
@@ -274,6 +278,7 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
         gen,
         journal,
         ext_ui,
+        inflight,
         approvals,
         stdin,
         rule_book,
@@ -357,6 +362,7 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
                     // in between names an older seq, so the frontend still
                     // applies this frame from the replay.
                     ext_ui::record(&ext_ui, seq, frame_type, parsed.as_ref());
+                    inflight::record(&inflight, seq, frame_type, parsed.as_ref());
                     if should_emit(&alive) {
                         let _ = app.emit(&line_event, LineEvent { seq, text: &shared });
                         // Rail widgets with a `turn_end` trigger rerun after
