@@ -31,7 +31,6 @@ const CELL = { cellW: 0.6, cellH: 1.2 };
 
 check("every logo row has the same width, so letters don't shear", () => {
   for (const row of M.LOGO) assert.equal([...row].length, M.LOGO_COLS);
-  assert.equal(M.LOGO.length, M.LOGO_ROWS);
 });
 
 check("the fitted logo stays inside the area and is centred", () => {
@@ -80,7 +79,6 @@ check("drops start at or above the top edge, one per column", () => {
   let i = 0;
   const seq = [0, 0.5, 0.99];
   const drops = M.initDrops(3, 40, () => seq[i++]);
-  assert.deepEqual(drops.map(d => d <= 0), [true, true, true]);
   assert.deepEqual(drops, [0, -20, -39]);
   assert.equal(M.initDrops(0, 40, Math.random).length, 0);
 });

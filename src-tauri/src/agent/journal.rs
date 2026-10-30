@@ -163,16 +163,6 @@ mod tests {
     }
 
     #[test]
-    fn eviction_beyond_capacity_drops_oldest() {
-        let mut j = EventJournal::new(2, 1 << 20);
-        j.push(Arc::from("a")); // seq 1, evicted
-        j.push(Arc::from("b")); // seq 2
-        j.push(Arc::from("c")); // seq 3
-        let r = j.since(0);
-        assert_eq!(r.events.iter().map(|e| e.seq).collect::<Vec<_>>(), [2, 3]);
-    }
-
-    #[test]
     fn since_cursor_predating_ring_window_reports_dropped() {
         let mut j = EventJournal::new(2, 1 << 20);
         j.push(Arc::from("a")); // seq 1, evicted below

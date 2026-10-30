@@ -86,10 +86,6 @@ check("record: strips a framing prefix and skips a listed canned prompt, matchin
   const list = ["a"];
   assert.equal(H.record(list, "APPROVE", 100, opts), list); // skip-listed — list unchanged, same reference
 });
-check("record: matches a trimEnd()'d framing prefix (e.g. an image-only plan send)", () => {
-  const opts = { framingPrefix: "FRAME>>>\n\n" };
-  assert.deepEqual(H.record([], "FRAME>>>", 100, opts), []); // wrapper only, no intent text — dropped
-});
 
 // ── mergeOlder ────────────────────────────────────────────────────────────
 

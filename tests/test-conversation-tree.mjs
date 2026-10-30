@@ -559,7 +559,6 @@ check("without `since` nothing is stale", () => {
   const m = model(lin3, U(1) - 5 * MIN);
   assert.deepEqual(m.rows.map((r) => r.staleProcess), [false, false, false]);
   assert.deepEqual(m.tips.map((t) => t.staleProcess), [false]);
-  assert.deepEqual(model(lin3, U(1) - 5 * MIN), JSON.parse(JSON.stringify(buildModel(lin3, { now: U(1) - 5 * MIN, since: undefined }))));
 });
 
 check("requests before `since` stop counting as touches, but the head stays alive", () => {

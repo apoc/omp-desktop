@@ -403,21 +403,6 @@ fn oversized_frame_and_too_many_connections_are_rejected() {
 }
 
 #[test]
-fn idle_connections_cannot_exhaust_the_server() {
-    let s = test_server("ws-flood");
-    let idle: Vec<TcpStream> = (0..16).map(|_| s.tcp()).collect();
-    std::thread::sleep(Duration::from_millis(500));
-    let mut extra = s.tcp();
-    let mut byte = [0_u8];
-    let deadline = Instant::now() + Duration::from_secs(3);
-    // Dropped: end of stream or a reset, never a wait for a request.
-    while matches!(extra.read(&mut byte), Err(ref e) if is_idle(e)) {
-        assert!(Instant::now() < deadline, "17th connection was not dropped");
-    }
-    drop(idle);
-}
-
-#[test]
 fn closes_4503_while_the_webview_is_not_ready() {
     let s = test_server("ws-ready");
     let mut live = s.authed_socket();

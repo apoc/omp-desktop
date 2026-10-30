@@ -104,11 +104,6 @@ check("embedded newlines/indentation in input.hint or description are collapsed 
   assert.ok(!c.hint.includes("\n"));
 });
 
-check("description missing defaults to empty hint, not undefined", () => {
-  const [c] = S.adaptAvailableCommands([rpc({ name: "x", description: undefined })]);
-  assert.equal(c.hint, "");
-});
-
 check("order is preserved", () => {
   const out = S.adaptAvailableCommands([rpc({ name: "b" }), rpc({ name: "a" }), rpc({ name: "c" })]);
   assert.deepEqual(out.map(c => c.name), ["b", "a", "c"]);

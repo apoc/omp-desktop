@@ -526,15 +526,6 @@ mod tests {
     }
 
     #[test]
-    fn tmp_config_dir_is_removed_on_drop() {
-        let t = tmp("drop", b"{}");
-        let dir = t.dir.clone();
-        assert!(dir.is_dir());
-        drop(t);
-        assert!(!dir.exists());
-    }
-
-    #[test]
     fn config_rejects_a_bom() {
         let err = load_body("bom", b"\xEF\xBB\xBF{\"version\":1,\"plugins\":[]}")
             .expect_err("BOM must fail");

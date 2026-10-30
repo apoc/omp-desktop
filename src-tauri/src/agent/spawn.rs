@@ -627,13 +627,6 @@ mod tests {
         let base = std::env::current_dir().expect("current dir");
         let dir = "child-project";
 
-        // Sanity check on the bug itself: applying the raw relative value
-        // twice (once as an OS chdir, once as omp's own relative --cwd)
-        // nests it one level deeper than intended.
-        let buggy_double_apply = base.join(dir).join(dir);
-        assert_eq!(buggy_double_apply, base.join(dir).join(dir));
-        assert_ne!(buggy_double_apply, base.join(dir));
-
         // The fix: resolve once, and the same absolute value survives a
         // second application unchanged.
         let resolved = resolve_cwd(dir);

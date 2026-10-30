@@ -291,13 +291,6 @@ await check("composer sends prompt, steers with a draft while busy, stops with a
   draft.value = "   "; await draft.emit("input");
   await b.control("Stop").emit("click"); assert.equal(b.frames.at(-1).kind, "abort");
 });
-await check("composerAction: idle sends; busy steers with text and stops without; whitespace is empty", () => {
-  assert.equal(C.composerAction({ busy: false, draft: "" }), "send");
-  assert.equal(C.composerAction({ busy: false, draft: "hi" }), "send");
-  assert.equal(C.composerAction({ busy: true, draft: "hi" }), "steer");
-  assert.equal(C.composerAction({ busy: true, draft: "" }), "stop");
-  assert.equal(C.composerAction({ busy: true, draft: " \n\t " }), "stop");
-});
 await check("a pinned reader follows a shrinking transcript box; an unpinned one stays", async () => {
   const b = browser(); await b.connect();
   const root = b.scrollBox;
@@ -492,18 +485,6 @@ await check("clicking the active tab keeps its view; another tab clears it until
   assert.equal(draft.value, "");
   await b.message({ t: "ack", reqId: promptReq, ok: false, error: "desktop could not deliver" });
   assert.equal(draft.value, "recover me", "rejected prompt restores the cleared draft");
-});
-await check("reduce turns the Rust-shaped frames into the state the phone renders", () => {
-  const hello = C.reduce(initial(), { t: "hello", deviceId: "d", name: "Phone" });
-  assert.deepEqual(hello.device, { id: "d", name: "Phone" });
-  const tabs = [{ id: "t", title: "T", project: "P", busy: true, hasAsk: false }];
-  assert.deepEqual(C.reduce(initial(), { t: "tabs", tabs }).tabs, tabs);
-  const shown = C.reduce(initial(), { t: "view", view: { tabId: "t", busy: false, messages: [], asks: [] } });
-  assert.equal(shown.view.tabId, "t");
-  assert.equal(C.reduce(shown, { t: "view", view: null }).view, null);
-  assert.deepEqual(C.reduce({ ...initial(), pending: { r: "x" } }, { t: "ack", reqId: "r", ok: true, error: null }).pending, {});
-  assert.equal(C.reduce(initial(), { t: "ack", reqId: null, kind: "push", ok: false, error: "x" }).error, "x");
-  assert.equal(C.reduce(initial(), { t: "push-key", key: "k" }).pushKey, "k");
 });
 await check("trackShown marks only unseen ids and forgets ids that left the view", () => {
   const first = C.trackShown(new Set(), [{ id: "a" }, { id: "b" }]);

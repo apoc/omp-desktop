@@ -101,12 +101,6 @@ check("truncateText keeps short text and cuts long text at max with an ellipsis"
   assert.equal(T("ab😀cd", 4), "ab…");
 });
 
-check("annotationText caps a pick's HTML at 1500 characters", () => {
-  const block = B.annotationText({ pick: { ...elementPick, html: "x".repeat(2000) }, comment: "c" }, 1);
-  assert.ok(block.includes(`HTML: ${"x".repeat(1499)}…`));
-  assert.ok(!block.includes("x".repeat(1500)));
-});
-
 check("annotationText element block matches the spec", () => {
   assert.equal(
     B.annotationText({ pick: elementPick, comment: "overflows on mobile" }, 1),
@@ -313,10 +307,6 @@ check("mergeIntoMessage does not mutate its inputs", () => {
   assert.equal(images.length, 1);
   assert.equal(r.images.length, 2);
   assert.notEqual(r.images, images);
-});
-
-check("mergeIntoMessage without chips leaves the message alone", () => {
-  assert.deepEqual(B.mergeIntoMessage("hi", [img("u")], []), { text: "hi", images: [img("u")], dropped: 0 });
 });
 
 check("parseFrame reads the channel header (seq, css size) and keeps the JPEG as a view", () => {

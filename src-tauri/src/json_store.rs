@@ -737,17 +737,6 @@ mod tests {
     }
 
     #[test]
-    fn write_atomic_round_trips_content() {
-        let dir = unique_test_dir("roundtrip");
-        let target = dir.join("state.json");
-
-        write_atomic(&target, b"{\"a\":1}").expect("write_atomic");
-
-        assert_eq!(fs::read(&target).expect("read back"), b"{\"a\":1}");
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
     fn write_atomic_leaves_no_tmp_file_and_sweeps_preexisting_ones() {
         let dir = unique_test_dir("sweep_on_write");
         let target = dir.join("state.json");

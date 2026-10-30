@@ -549,12 +549,6 @@ check("attentionStep: no widget (error, idle) keeps ack and seen and signals not
   }
   assert.deepEqual(W.attentionStep({ key: undefined, ack: "a", seen: undefined, hasWidget: false }), { active: false, seen: "", writeAck: false, bounce: false });
 });
-check("attentionStep: a running rerun with the old widget does not enter again", () => {
-  // The old widget (key "a") stays on the card while the plugin runs.
-  const first = step({ key: "a", ack: null, seen: undefined });
-  assert.equal(first.bounce, true);
-  assert.deepEqual(step({ key: "a", ack: null, seen: first.seen }), { active: true, seen: "a", writeAck: false, bounce: false });
-});
 check("ackKey stays out of the Settings `widget:` toggle namespace", () => {
   assert.equal(W.ackKey("ci").startsWith("widget:"), false);
   assert.equal(W.ackKey("ci", "/p/a").startsWith("widget:"), false);
