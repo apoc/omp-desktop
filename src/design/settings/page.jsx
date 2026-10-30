@@ -17,7 +17,7 @@
 
 const {
   Icon: _SP_Icon, SettingsRow: _SP_Row, SettingsToggle: _SP_Toggle, SettingsSeg: _SP_Seg,
-  SettingsSlider: _SP_Slider, ThemeCards: _SP_ThemeCards, AccentSwatches: _SP_Swatches, SettingsStrip: _SP_Strip,
+  SettingsSlider: _SP_Slider, ThemeCards: _SP_ThemeCards, ScreenCards: _SP_ScreenCards, AccentSwatches: _SP_Swatches, SettingsStrip: _SP_Strip,
 } = window;
 
 const _SP_IS_MAC = window.OMP_KEYMAP?.detectMac?.() ?? false;
@@ -48,6 +48,12 @@ function _SP_TweakRow({ row, ctx, query }) {
         <_SP_Row {...frame} stack>
           <_SP_ThemeCards value={t.theme} themes={S.THEMES}
             onChange={th => { if (th !== t.theme) setTweak({ theme: th, accent: S.themeAccent(th) }); }} />
+        </_SP_Row>
+      );
+    case "screens":
+      return (
+        <_SP_Row {...frame} stack>
+          <_SP_ScreenCards value={v} screens={row.options} paused={ctx.active === false} onChange={set} />
         </_SP_Row>
       );
     case "swatches":

@@ -23,10 +23,12 @@
   // "enter" | "ctrl+enter" for multi-line fields; `pasteCollapseLines` is
   // the line count above which a paste becomes a chip; `restoreTabs`,
   // `confirmBusyClose`, `autoName` drive live.js; `autoCompaction` /
-  // `autoRetry` are sent to every omp process. Rows, labels and bounds:
-  // app/settings-schema.js.
+  // `autoRetry` are sent to every omp process; `startScreen` is the
+  // empty workspace's animated screen (OMP_BACKDROPS.SCREENS). Rows,
+  // labels and bounds: app/settings-schema.js.
   const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
     "theme": "aurora",
+    "startScreen": "matrix",
     "density": "compact",
     "layout": "rail",
     "accent": "#8AF0C8",
