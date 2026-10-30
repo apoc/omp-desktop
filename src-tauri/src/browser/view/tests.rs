@@ -180,6 +180,12 @@ pub(super) fn sent_count(sent: &Mutex<Vec<String>>, method: &str) -> usize {
 
 const SECS_3: Duration = Duration::from_secs(3);
 
+/// How long the view's state may take to follow a navigation: on a loaded
+/// runner Chromium's page events trail it by seconds (locally under a CPU
+/// burn: up to 5.5s, and the former 3s/5s waits failed 3 of 18 runs; CI's
+/// Windows runner failed the same way). The waits end once the state is there.
+const NAVIGATION_STATE: Duration = Duration::from_secs(20);
+
 /// Wait until the shown page has loaded a document where `condition` (JS)
 /// holds: `navigate` returns before the old document is gone.
 fn loaded(view: &View, condition: &str) {
@@ -450,7 +456,9 @@ fn a_slow_server_is_not_a_failed_navigation_and_a_failed_load_is_told() {
         started.elapsed() < Duration::from_secs(2),
         "returns once sent"
     );
-    let loading = eventually(SECS_3, || seen.last_state()?.loading.then_some(()));
+    let loading = eventually(NAVIGATION_STATE, || {
+        seen.last_state()?.loading.then_some(())
+    });
     assert!(loading.is_some(), "{:?}", seen.last_state());
     drop(slow);
     // Nothing listens here: the load fails.
@@ -459,14 +467,14 @@ fn a_slow_server_is_not_a_failed_navigation_and_a_failed_load_is_told() {
     drop(closed);
     view.navigate(&format!("http://127.0.0.1:{closed_port}/"))
         .unwrap();
-    let failed = eventually(Duration::from_secs(5), || {
+    let failed = eventually(NAVIGATION_STATE, || {
         seen.last_state()?
             .error
             .filter(|e| e.contains(&format!("127.0.0.1:{closed_port}")))
     });
     assert!(failed.is_some(), "{:?}", seen.last_state());
     view.navigate("data:text/html,fine").unwrap();
-    let cleared = eventually(SECS_3, || {
+    let cleared = eventually(NAVIGATION_STATE, || {
         let state = seen.last_state()?;
         (state.error.is_none() && state.url.ends_with(",fine")).then_some(())
     });
