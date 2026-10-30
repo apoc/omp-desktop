@@ -1,3 +1,5 @@
+use super::feedback::{parse_check, SelectedPr};
+use super::git::github_repo;
 use super::*;
 use serde_json::{json, Value};
 
@@ -60,7 +62,6 @@ fn none() -> impl FnMut(&str, &str) -> Result<Value, String> {
 fn chosen(id: &str) -> SelectedPr {
     SelectedPr {
         id: id.into(),
-        head: "abc".into(),
         repository: "alice/project".into(),
     }
 }
@@ -599,11 +600,11 @@ fn rejects_truncated_malformed_or_changed_data() {
     let result = feedback(vec![check("id", "COMPLETED", Value::Null, "t")], vec![]);
     assert!(parse_feedback(&result, &local(), &selected()).is_err());
     let result = feedback(vec![], vec![]);
-    let other = SelectedPr {
+    let moved = LocalBranch {
         head: "other".into(),
-        ..selected()
+        ..local()
     };
-    assert!(parse_feedback(&result, &local(), &other).is_err());
+    assert!(parse_feedback(&result, &moved, &selected()).is_err());
 }
 
 /// The webview hides the card for a missing gh and shows every other

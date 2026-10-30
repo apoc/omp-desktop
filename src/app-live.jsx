@@ -333,10 +333,12 @@ function App() {
   };
 
   // `activeProject.id`, not `activeSessionId`: the latter keeps a closed
-  // tab's id (see handleSelectProfile below). Widgets only run while the
-  // rail is on screen — not in focus layout, not under the tree or browser.
+  // tab's id (see handleSelectProfile below). Widgets only run, and the PR
+  // card only reads with Auto-fix off, while the rail is on screen — not in
+  // focus layout, not under the tree or browser.
+  const railVisible = t.layout !== "focus" && side === "rail";
   const widgets = useWidgets({
-    bridge, activeSessionId: activeProject.id, activeProjectPath: activeProject.path ?? null, railVisible: t.layout !== "focus" && side === "rail", tweaks: t, setTweak,
+    bridge, activeSessionId: activeProject.id, activeProjectPath: activeProject.path ?? null, railVisible, tweaks: t, setTweak,
   });
   // Pushed by omp, not run by the desktop: nothing to schedule, only a
   // Settings → Rail toggle per card (`widget:ext-status`, `widget:ext:<key>`).
@@ -536,12 +538,12 @@ function App() {
     branchKey: activeProject.branch ?? null,
     conversationKey: JSON.stringify([activeProject.profile, activeProject.sessionFile ?? null]),
     featureEnabled: t.showChanges ?? true,
-    // Same rail visibility as the widgets: the card is on screen only there.
-    railVisible: t.layout !== "focus" && side === "rail",
+    railVisible,
+    // Disconnected, stabilising or folder-less tabs are the hook's own
+    // `connected`/`projectKey` gates.
     connected: !!bridge?.isConnected && !stab.active,
-    blocked: !bridge?.isConnected || !activeProject.path || stab.active || plan.mode ||
-      goalUi.mode || !!goalUi.planBlocked ||
-      sessions.some(s => s.id !== planKey && s.path === activeProject.path && window.OMP_TURN_STATUS.isBusyRunState(s.runState)),
+    blocked: plan.mode || goalUi.mode || !!goalUi.planBlocked ||
+      window.OMP_TURN_STATUS.busyElsewhere(sessions, planKey, activeProject.path),
   });
 
   // Conversation tree data + actions. A successful "branch here" puts the
@@ -886,14 +888,7 @@ function App() {
             )}
             {showSidebar && <ResizeHandle className="at-sidebar" {...panes.handle("sidebar")} />}
             <div ref={stageRef} className={`stage ${side === "browser" ? `with-browser${browserFull ? " browser-full" : ""}` : sideRail ? `with-${sideRail}` : ""}`}>
-              {/* Focus entering the conversation from another element
-                  refreshes the PR card; moves inside it would each start a
-                  GitHub read, and focus coming back from <body> (no
-                  relatedTarget, e.g. after clicking transcript text) is not
-                  a return: window focus is the hook's own listener. */}
-              <main className="session" onFocusCapture={e => {
-                if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget)) prAutomation.refresh();
-              }}>
+              <main className="session" onFocusCapture={prAutomation.onConversationFocus}>
                 {noTab ? (
                   <EmptyWorkspace notes={workspaceNotes} />
                 ) : (<>

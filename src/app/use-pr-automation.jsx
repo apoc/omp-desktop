@@ -85,6 +85,15 @@ function usePrAutomation({
     toggle: automation.toggle,
     pause: automation.pause,
     refresh: automation.refresh,
+    // `onFocusCapture` of the conversation: focus entering it from another
+    // element refreshes the card. Moves inside it would each start a GitHub
+    // read, and focus coming back from <body> (no relatedTarget, e.g. after
+    // clicking transcript text) is not a return: window focus is the
+    // listener above.
+    onConversationFocus: (e) => {
+      if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget))
+        automation.refresh();
+    },
   };
 }
 

@@ -25,11 +25,14 @@ fn unsigned(v: &Value, key: &str) -> Result<u64, String> {
         .as_u64()
         .ok_or_else(|| format!("GitHub response has invalid {key}"))
 }
-fn connection<'a>(v: &'a Value, name: &str) -> Result<&'a Vec<Value>, String> {
-    if boolean(field(v, "pageInfo")?, "hasNextPage")? {
-        return Err(format!(
-            "GitHub {name} exceeds the 100-item limit; auto-fix paused"
-        ));
+fn limit_error(name: &str) -> String {
+    format!("GitHub {name} exceeds the 100-item limit; auto-fix paused")
+}
+/// A connection's nodes, rejected when `more` (`hasNextPage`, or
+/// `hasPreviousPage` for a `last:` page) says some were cut off.
+fn connection<'a>(v: &'a Value, name: &str, more: &str) -> Result<&'a Vec<Value>, String> {
+    if boolean(field(v, "pageInfo")?, more)? {
+        return Err(limit_error(name));
     }
     let nodes = field(v, "nodes")?
         .as_array()
@@ -39,11 +42,11 @@ fn connection<'a>(v: &'a Value, name: &str) -> Result<&'a Vec<Value>, String> {
     }
     Ok(nodes)
 }
-fn optional_url(v: &Value, key: &str, fallback: &str) -> Result<String, String> {
+/// A nullable string: `None` for null, never empty.
+fn optional_str<'a>(v: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
     match field(v, key)? {
-        Value::Null => Ok(fallback.to_owned()),
-        // The serialized snapshot owns this URL; the response remains borrowed.
-        Value::String(s) if !s.is_empty() => Ok(s.clone()),
+        Value::Null => Ok(None),
+        Value::String(s) if !s.is_empty() => Ok(Some(s)),
         _ => Err(format!("GitHub response has invalid {key}")),
     }
 }
@@ -60,12 +63,11 @@ fn upstream_branch(local: &LocalBranch) -> &str {
 }
 
 /// The PR [`select_pr`] found, what `FEEDBACK_QUERY` loads and is checked
-/// against.
+/// against (its head is the local HEAD, which `select_pr` requires).
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct SelectedPr {
     /// GraphQL `id` or REST `node_id`; `node(id:)` takes either.
     pub(super) id: String,
-    pub(super) head: String,
     /// The head repository's `owner/name` as GitHub resolved it, so a
     /// remote still using a renamed repository's old URL matches.
     pub(super) repository: String,
@@ -84,45 +86,68 @@ struct Candidate<'a> {
     repository: Option<&'a str>,
 }
 
-fn graphql_candidate(v: &Value) -> Result<Candidate<'_>, String> {
-    let open = match string(v, "state")? {
-        "OPEN" => true,
-        "CLOSED" | "MERGED" => false,
-        _ => return Err("GitHub returned an unknown PR state".into()),
-    };
-    let repo = field(v, "headRepository")?;
-    Ok(Candidate {
-        url: string(v, "url")?,
-        id: string(v, "id")?,
-        open,
-        branch: string(v, "headRefName")?,
-        head: string(v, "headRefOid")?,
-        repository: if repo.is_null() {
-            None
-        } else {
-            Some(string(repo, "nameWithOwner")?)
-        },
-    })
+/// Where each API keeps a PR's fields.
+struct Api {
+    open: &'static str,
+    closed: &'static [&'static str],
+    url: &'static str,
+    id: &'static str,
+    /// The object holding the branch fields; `None`: the PR itself.
+    head: Option<&'static str>,
+    branch: &'static str,
+    sha: &'static str,
+    repo: &'static str,
+    repo_name: &'static str,
 }
 
-fn rest_candidate(v: &Value) -> Result<Candidate<'_>, String> {
-    let open = match string(v, "state")? {
-        "open" => true,
-        "closed" => false,
-        _ => return Err("GitHub returned an unknown PR state".into()),
+const GRAPHQL: Api = Api {
+    open: "OPEN",
+    closed: &["CLOSED", "MERGED"],
+    url: "url",
+    id: "id",
+    head: None,
+    branch: "headRefName",
+    sha: "headRefOid",
+    repo: "headRepository",
+    repo_name: "nameWithOwner",
+};
+
+const REST: Api = Api {
+    open: "open",
+    closed: &["closed"],
+    url: "html_url",
+    id: "node_id",
+    head: Some("head"),
+    branch: "ref",
+    sha: "sha",
+    repo: "repo",
+    repo_name: "full_name",
+};
+
+fn candidate<'a>(v: &'a Value, api: &Api) -> Result<Candidate<'a>, String> {
+    let state = string(v, "state")?;
+    let open = if state == api.open {
+        true
+    } else if api.closed.contains(&state) {
+        false
+    } else {
+        return Err("GitHub returned an unknown PR state".into());
     };
-    let head = field(v, "head")?;
-    let repo = field(head, "repo")?;
+    let head = match api.head {
+        Some(key) => field(v, key)?,
+        None => v,
+    };
+    let repo = field(head, api.repo)?;
     Ok(Candidate {
-        url: string(v, "html_url")?,
-        id: string(v, "node_id")?,
+        url: string(v, api.url)?,
+        id: string(v, api.id)?,
         open,
-        branch: string(head, "ref")?,
-        head: string(head, "sha")?,
+        branch: string(head, api.branch)?,
+        head: string(head, api.sha)?,
         repository: if repo.is_null() {
             None
         } else {
-            Some(string(repo, "full_name")?)
+            Some(string(repo, api.repo_name)?)
         },
     })
 }
@@ -134,9 +159,7 @@ fn rest_list<'a>(v: &'a Value, name: &str) -> Result<&'a Vec<Value>, String> {
         .as_array()
         .ok_or_else(|| format!("GitHub response has invalid {name}"))?;
     if items.len() >= 100 {
-        return Err(format!(
-            "GitHub {name} exceeds the 100-item limit; auto-fix paused"
-        ));
+        return Err(limit_error(name));
     }
     Ok(items)
 }
@@ -174,6 +197,7 @@ pub(super) fn select_pr(
     let associated = connection(
         field(target, "associatedPullRequests")?,
         "associated pull requests",
+        "hasNextPage",
     )?;
     let is_fork = boolean(repo, "isFork")?;
     let parent = field(repo, "parent")?;
@@ -197,11 +221,11 @@ pub(super) fn select_pr(
         .as_ref()
         .map(|v| rest_list(v, "parent pull requests"))
         .transpose()?;
-    let candidates = associated.iter().map(graphql_candidate).chain(
+    let candidates = associated.iter().map(|v| candidate(v, &GRAPHQL)).chain(
         rest_list(&in_repo, "repository pull requests")?
             .iter()
             .chain(in_parent.into_iter().flatten())
-            .map(rest_candidate),
+            .map(|v| candidate(v, &REST)),
     );
     let mut selected: Option<Candidate> = None;
     let mut completed = false;
@@ -237,7 +261,6 @@ pub(super) fn select_pr(
     }
     Ok(selected.map(|pr| SelectedPr {
         id: pr.id.to_owned(),
-        head: head.to_owned(),
         repository: name.to_owned(),
     }))
 }
@@ -247,7 +270,7 @@ pub(super) fn parse_feedback(
     local: &LocalBranch,
     selected: &SelectedPr,
 ) -> Result<PrAutomationSnapshot, LookupError> {
-    let head = selected.head.as_str();
+    let head = local.head.as_str();
     let data = field(result, "data")?;
     let pr = field(data, "node")?;
     let head_repo = field(pr, "headRepository")?;
@@ -289,7 +312,7 @@ pub(super) fn parse_feedback(
     let mut failed_checks = Vec::new();
     let rollup = field(object, "statusCheckRollup")?;
     if !rollup.is_null() {
-        let contexts = connection(field(rollup, "contexts")?, "check contexts")?;
+        let contexts = connection(field(rollup, "contexts")?, "check contexts", "hasNextPage")?;
         checks.reserve_exact(contexts.len());
         for check in contexts {
             let parsed = parse_check(check, &url)?;
@@ -298,7 +321,7 @@ pub(super) fn parse_feedback(
         }
     }
     let mut threads = Vec::new();
-    for thread in connection(field(pr, "reviewThreads")?, "review threads")? {
+    for thread in connection(field(pr, "reviewThreads")?, "review threads", "hasNextPage")? {
         let resolved = boolean(thread, "isResolved")?;
         let outdated = boolean(thread, "isOutdated")?;
         if resolved || outdated {
@@ -330,17 +353,7 @@ pub(super) fn parse_feedback(
 /// the viewer (the signed-in gh user, whom Auto-fix replies as) was last
 /// updated, or its first comment's when the viewer wrote them all.
 fn thread_updated_at(comments: &Value) -> Result<&str, String> {
-    if boolean(field(comments, "pageInfo")?, "hasPreviousPage")? {
-        return Err(
-            "GitHub review thread comments exceed the 100-item limit; auto-fix paused".into(),
-        );
-    }
-    let nodes = field(comments, "nodes")?
-        .as_array()
-        .ok_or_else(|| "GitHub response has invalid thread comments".to_string())?;
-    if nodes.len() > 100 {
-        return Err("GitHub returned too many thread comments".into());
-    }
+    let nodes = connection(comments, "review thread comments", "hasPreviousPage")?;
     let mut newest_other = None;
     for comment in nodes {
         let updated = string(comment, "updatedAt")?;
@@ -363,7 +376,7 @@ pub(super) struct ParsedCheck {
 }
 
 pub(super) fn parse_check(v: &Value, pr_url: &str) -> Result<ParsedCheck, String> {
-    match string(v, "__typename")? {
+    let (name, url, state, failed) = match string(v, "__typename")? {
         "CheckRun" => {
             let status = string(v, "status")?;
             if !matches!(
@@ -391,8 +404,6 @@ pub(super) fn parse_check(v: &Value, pr_url: &str) -> Result<ParsedCheck, String
             {
                 return Err("GitHub returned an unknown check conclusion".into());
             }
-            let name = string(v, "name")?;
-            let url = optional_url(v, "detailsUrl", pr_url)?;
             let state = match status {
                 "IN_PROGRESS" => CheckState::Running,
                 "COMPLETED" => match conclusion
@@ -407,26 +418,19 @@ pub(super) fn parse_check(v: &Value, pr_url: &str) -> Result<ParsedCheck, String
                 },
                 _ => CheckState::Queued,
             };
-            let failed = if state == CheckState::Failure {
-                let id = string(v, "id")?;
-                // Both timestamps are nullable in GitHub's schema, including for
-                // runs that fail before a runner starts.
-                let started = optional_timestamp(v, "startedAt")?;
-                let completed = optional_timestamp(v, "completedAt")?;
-                Some(FailedCheck {
-                    id: format!("{id}:{started}:{completed}"),
-                })
-            } else {
-                None
-            };
-            Ok(ParsedCheck {
-                ci: CiCheck {
-                    name: name.into(),
-                    state,
-                    url,
-                },
-                failed,
-            })
+            let name = string(v, "name")?;
+            let url = optional_str(v, "detailsUrl")?;
+            // Both timestamps are nullable in GitHub's schema, including for
+            // runs that fail before a runner starts.
+            let id = failure_id(state, || {
+                Ok(format!(
+                    "{}:{}:{}",
+                    string(v, "id")?,
+                    optional_str(v, "startedAt")?.unwrap_or_default(),
+                    optional_str(v, "completedAt")?.unwrap_or_default(),
+                ))
+            })?;
+            (name, url, state, id)
         }
         "StatusContext" => {
             let state = match string(v, "state")? {
@@ -438,31 +442,33 @@ pub(super) fn parse_check(v: &Value, pr_url: &str) -> Result<ParsedCheck, String
                 _ => return Err("GitHub returned an unknown status context state".into()),
             };
             let name = string(v, "context")?;
-            let url = optional_url(v, "targetUrl", pr_url)?;
-            let failed = if state == CheckState::Failure {
-                Some(FailedCheck {
-                    id: format!("{}:{}", string(v, "id")?, string(v, "createdAt")?),
-                })
-            } else {
-                None
-            };
-            Ok(ParsedCheck {
-                ci: CiCheck {
-                    name: name.into(),
-                    state,
-                    url,
-                },
-                failed,
-            })
+            let url = optional_str(v, "targetUrl")?;
+            let id = failure_id(state, || {
+                Ok(format!("{}:{}", string(v, "id")?, string(v, "createdAt")?))
+            })?;
+            (name, url, state, id)
         }
-        _ => Err("GitHub returned an unknown check context type".into()),
-    }
+        _ => return Err("GitHub returned an unknown check context type".into()),
+    };
+    Ok(ParsedCheck {
+        ci: CiCheck {
+            name: name.into(),
+            state,
+            // Its CI page, or the PR when GitHub has none.
+            url: url.unwrap_or(pr_url).to_owned(),
+        },
+        failed: failed.map(|id| FailedCheck { id }),
+    })
 }
 
-fn optional_timestamp<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
-    match field(v, key)? {
-        Value::Null => Ok(""),
-        Value::String(s) if !s.is_empty() => Ok(s),
-        _ => Err(format!("GitHub response has invalid {key}")),
+/// A failed check's Auto-fix identity, `None` for any other state.
+fn failure_id(
+    state: CheckState,
+    id: impl FnOnce() -> Result<String, String>,
+) -> Result<Option<String>, String> {
+    if state == CheckState::Failure {
+        id().map(Some)
+    } else {
+        Ok(None)
     }
 }

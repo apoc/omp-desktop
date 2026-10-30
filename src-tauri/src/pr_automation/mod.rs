@@ -16,11 +16,7 @@ use tauri::State;
 use crate::child_path::child_path_dirs;
 use crate::terminal::TerminalManager;
 
-#[cfg(test)]
-use feedback::{parse_check, SelectedPr};
 use feedback::{parse_feedback, select_pr};
-#[cfg(test)]
-use git::github_repo;
 use git::{local_branch, LocalBranch};
 
 /// The upstream repository as GitHub resolves it (renames and transfers

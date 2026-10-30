@@ -2,12 +2,10 @@
 //! project-provided executable or API endpoint is ever used.
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::child_path::{locate_program, TrustedProgram};
-use crate::child_run::{recv_until, spawn_drain, terminate, wait_for_exit, WaitError};
+use crate::child_run::{collect, WaitError};
 use crate::supervisor::ProcessSupervisor;
 
 const OUTPUT_LIMIT: usize = 2 * 1024 * 1024;
@@ -124,40 +122,29 @@ fn run(cmd: &mut Command, timeout: Duration) -> Result<Vec<u8>, String> {
     let mut child =
         crate::spawn_gate::spawn(cmd).map_err(|e| format!("could not start gh: {e}"))?;
     let supervisor = ProcessSupervisor::attach(&child);
-    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
-        terminate(&supervisor, &mut child);
-        return Err("could not capture gh output".into());
-    };
-    let overflow = Arc::new(AtomicBool::new(false));
-    let out = spawn_drain(stdout, OUTPUT_LIMIT, Some(Arc::clone(&overflow)))
-        .inspect_err(|_| terminate(&supervisor, &mut child))?;
-    let err = spawn_drain(stderr, ERROR_LIMIT, None)
-        .inspect_err(|_| terminate(&supervisor, &mut child))?;
-    let status =
-        wait_for_exit(&mut child, &supervisor, &overflow, deadline).map_err(|e| match e {
-            WaitError::Overflow => SIZE_ERROR.to_string(),
-            WaitError::TimedOut => TIMED_OUT.to_string(),
-            WaitError::Failed(e) => format!("gh {e}"),
-        })?;
-    supervisor.kill_tree(); // Do not let descendants keep the pipes open.
-    let stdout = recv_until(&out, deadline)
-        .ok_or_else(|| TIMED_OUT.to_string())?
-        .map_err(|e| format!("could not read gh output: {e}"))?;
-    if overflow.load(Ordering::Relaxed) {
-        return Err(SIZE_ERROR.into());
+    let done = collect(
+        &mut child,
+        &supervisor,
+        OUTPUT_LIMIT,
+        ERROR_LIMIT,
+        deadline,
+        |_| Ok(()),
+    )
+    .map_err(|e| match e {
+        WaitError::Overflow => SIZE_ERROR.to_string(),
+        WaitError::TimedOut => TIMED_OUT.to_string(),
+        WaitError::Failed(e) => format!("gh: {e}"),
+    })?;
+    if !done.status.success() {
+        return Err(failure(done.status, &done.stderr));
     }
-    if !status.success() {
-        let stderr = recv_until(&err, deadline)
-            .and_then(Result::ok)
-            .unwrap_or_default();
-        return Err(failure(status, &stderr));
-    }
-    Ok(stdout)
+    Ok(done.stdout)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::shell;
 
     #[test]
     fn rejects_partial_error_and_malformed_graphql_responses() {
@@ -169,24 +156,6 @@ mod tests {
         assert!(parse_response(br#"{"data":null}"#).is_err());
         assert!(parse_response(b"not json").is_err());
         assert!(parse_response(br#"{"data":{"repository":null},"errors":[]}"#).is_ok());
-    }
-
-    /// A shell command line: `sh -c` on unix, `cmd /C` on Windows.
-    fn shell(script: &str) -> Command {
-        #[cfg(unix)]
-        {
-            let mut cmd = Command::new("/bin/sh");
-            cmd.args(["-c", script]);
-            cmd
-        }
-        #[cfg(windows)]
-        {
-            // One argument per word: `Command` quotes none of them, so `cmd`
-            // sees the line as written.
-            let mut cmd = Command::new("cmd");
-            cmd.arg("/C").args(script.split(' '));
-            cmd
-        }
     }
 
     /// A child that writes `stderr` (plain words) and exits with `code`.

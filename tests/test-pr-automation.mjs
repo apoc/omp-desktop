@@ -873,12 +873,11 @@ await checkAsync("clean and no-PR statuses follow real snapshots", async () => {
   result = snapshot();
   await h.time.advance(30000);
   assert.match(h.view().status, /No failed checks/);
-  assert.equal(h.view().number, 42);
-  assert.equal(h.view().url, result.url);
+  assert.equal(h.view().snapshot.number, 42);
   result = null;
   await h.time.advance(30000);
-  assert.equal(h.view().number, null);
-  assert.equal(h.view().url, null);
+  assert.equal(h.view().snapshot, null);
+  assert.match(h.view().status, /No open pull request/);
 });
 
 await checkAsync(

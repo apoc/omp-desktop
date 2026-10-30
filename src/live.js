@@ -3374,7 +3374,7 @@
           !state.queueSending.length && !(state.rpcState?.queuedMessageCount > 0) &&
           !state.queue.steering.length && !state.queue.followUp.length &&
           !GOAL.isOpen(state.goal) &&
-          !_sessionsView().some(s => s.id !== sessionId && s.path === entry.path && TURN.isBusyRunState(s.runState))
+          !TURN.busyElsewhere(_sessionsView(), sessionId, entry.path)
         );
       };
       if (!ready()) return false;

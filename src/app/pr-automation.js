@@ -75,10 +75,13 @@
     ]);
   }
 
+  /** The items of `snapshot` not in `handled`, and the keys that mark them
+   *  handled once sent. */
   function newFeedback(snapshot, handled) {
     const seen = new Set(handled);
     const checks = [];
     const threads = [];
+    const keys = [];
     for (const [kind, items, out] of [
       ["check", snapshot.failedChecks, checks],
       ["thread", snapshot.threads, threads],
@@ -87,10 +90,11 @@
         const key = feedbackKey(snapshot, kind, item);
         if (seen.has(key)) continue;
         seen.add(key);
+        keys.push(key);
         out.push(item);
       }
     }
-    return { checks, threads };
+    return { checks, threads, keys };
   }
 
   function validateSnapshot(snapshot) {
@@ -207,6 +211,17 @@
         timerEntry = null;
       }
     };
+    // Voids the read in flight and any pending one.
+    const invalidate = () => {
+      generation++;
+      cancelTimer();
+      if (flight) flight.entry.loading = false;
+    };
+    // The entry belongs to the tab's current project, conversation and branch.
+    const inScope = (e, c) =>
+      e.projectKey === (c.projectKey || null) &&
+      e.conversationKey === (c.conversationKey || null) &&
+      e.branchKey === (c.branchKey || null);
     const entryFor = (id) => {
       let e = tabs.get(id);
       if (!e) {
@@ -217,8 +232,6 @@
           handled: new Set(),
           phase: "pending",
           error: null,
-          number: null,
-          url: null,
           fixing: false,
           seenBusy: false,
           snapshot: null,
@@ -237,8 +250,6 @@
       e.token++;
       e.phase = "pending";
       e.error = null;
-      e.number = null;
-      e.url = null;
       e.fixing = false;
       e.loading = false;
       e.seenBusy = false;
@@ -250,10 +261,7 @@
       const c = ctx();
       const currentEntry = open(c, c.tabId) ? tabs.get(c.tabId) : null;
       const e =
-        c.featureEnabled !== false &&
-        currentEntry?.projectKey === (c.projectKey || null) &&
-        currentEntry?.conversationKey === (c.conversationKey || null) &&
-        currentEntry?.branchKey === (c.branchKey || null)
+        c.featureEnabled !== false && currentEntry && inScope(currentEntry, c)
           ? currentEntry
           : null;
       const discovery = {
@@ -274,8 +282,6 @@
           enabled: false,
           status: "Auto-fix is off.",
           error: null,
-          number: null,
-          url: null,
           ...discovery,
         };
       let status;
@@ -304,8 +310,6 @@
         enabled: true,
         status,
         error: e.error,
-        number: e.number,
-        url: e.url,
         ...discovery,
       };
     }
@@ -382,18 +386,12 @@
           old.phase = "inactive";
       }
       previous = next;
-      generation++;
-      cancelTimer();
-      if (flight) flight.entry.loading = false;
+      invalidate();
       if (c.featureEnabled === false)
         for (const entry of tabs.values()) disable(entry);
       const e = open(c, c.tabId) && entryFor(c.tabId);
       if (e) {
-        if (
-          e.projectKey !== (c.projectKey || null) ||
-          e.conversationKey !== (c.conversationKey || null) ||
-          e.branchKey !== (c.branchKey || null)
-        ) {
+        if (!inScope(e, c)) {
           disable(e);
           e.projectKey = c.projectKey || null;
           e.conversationKey = c.conversationKey || null;
@@ -418,22 +416,6 @@
       if (changed) schedule(0);
     }
 
-    function stillCurrent(id, e, token, stamp, bridge, projectKey) {
-      const c = ctx();
-      return (
-        active &&
-        generation === stamp &&
-        tabs.get(id) === e &&
-        e.token === token &&
-        c.tabId === id &&
-        c.bridge === bridge &&
-        c.projectKey === projectKey &&
-        (c.branchKey || null) === e.branchKey &&
-        (c.conversationKey || null) === e.conversationKey &&
-        discoverable(c)
-      );
-    }
-
     async function poll(forced = false) {
       if (!active || flight || !discoverable(ctx())) return;
       const c = ctx();
@@ -444,6 +426,24 @@
       const stamp = generation;
       const bridge = c.bridge;
       const projectKey = c.projectKey;
+      // The entry is still this tab's and the same Auto-fix incarnation.
+      const mine = () => tabs.get(id) === e && e.token === token;
+      // Nothing this read depends on changed since it started.
+      const current = () => {
+        const now = ctx();
+        return (
+          active &&
+          generation === stamp &&
+          mine() &&
+          now.tabId === id &&
+          now.bridge === bridge &&
+          now.projectKey === projectKey &&
+          inScope(e, now) &&
+          discoverable(now)
+        );
+      };
+      // Doubles per retryable error in a row.
+      const backoff = () => RETRY_BASE_MS * 2 ** e.retries++;
       const dispatchEligible = e.enabled && !e.error && ready(c);
       const operation = { entry: e, stamp };
       flight = operation;
@@ -456,7 +456,7 @@
       let dispatchStarted = false;
       try {
         const snapshot = await bridge.prAutomationSnapshot(id);
-        if (!stillCurrent(id, e, token, stamp, bridge, projectKey)) {
+        if (!current()) {
           stale = true;
           return;
         }
@@ -475,10 +475,6 @@
         e.retries = 0;
         ghMissing = false;
         e.loading = false;
-        if (e.enabled) {
-          e.number = snapshot?.number ?? null;
-          e.url = snapshot?.url ?? null;
-        }
         if (!dispatchEligible) {
           notify();
           return;
@@ -501,11 +497,7 @@
         }
         // The bridge independently checks active tab and strict idle at the
         // actual send, closing the gap between this guard and the RPC write.
-        if (
-          !stillCurrent(id, e, token, stamp, bridge, projectKey) ||
-          !e.enabled ||
-          !ready(ctx())
-        ) {
+        if (!current() || !e.enabled || !ready(ctx())) {
           stale = true;
           return;
         }
@@ -517,24 +509,13 @@
           id,
           makePrompt(snapshot, feedback),
           snapshot,
-          () =>
-            stillCurrent(id, e, token, stamp, bridge, projectKey) &&
-            e.enabled &&
-            ready(ctx()),
+          () => current() && e.enabled && ready(ctx()),
         );
         // A send already handed to the bridge cannot be recalled. Record a
         // successful dispatch for this enabled incarnation even if the user
         // switched tabs while its acknowledgement was in flight.
-        if (
-          sent === true &&
-          tabs.get(id) === e &&
-          e.enabled &&
-          e.token === token
-        ) {
-          for (const item of feedback.checks)
-            e.handled.add(feedbackKey(snapshot, "check", item));
-          for (const item of feedback.threads)
-            e.handled.add(feedbackKey(snapshot, "thread", item));
+        if (sent === true && mine() && e.enabled) {
+          for (const key of feedback.keys) e.handled.add(key);
           e.fixing = true;
           e.seenBusy = ctx().tabId === id && ctx().runState !== "idle";
           e.phase = "handled";
@@ -545,7 +526,7 @@
           // send: nothing was delivered and Auto-fix stays on; it checks
           // again once the tab is back.
           if (now.tabId !== id || !discoverable(now)) {
-            if (tabs.get(id) === e && e.enabled && e.token === token) {
+            if (mine() && e.enabled) {
               e.phase = "inactive";
               notify();
             }
@@ -562,8 +543,7 @@
         const retryable =
           error?.retryable === true &&
           !error?.ghMissing &&
-          tabs.get(id) === e &&
-          e.token === token &&
+          mine() &&
           e.retries < RETRY_MAX;
         // Any answer but "not installed" means gh is there (an error such
         // as "no upstream" included): the card comes back.
@@ -571,13 +551,7 @@
           ghMissing = false;
           notify();
         }
-        if (
-          error?.ghMissing &&
-          tabs.get(id) === e &&
-          e.token === token &&
-          (dispatchStarted ||
-            stillCurrent(id, e, token, stamp, bridge, projectKey))
-        ) {
+        if (error?.ghMissing && mine() && (dispatchStarted || current())) {
           // A state, not an error: nothing can run until gh is installed,
           // so an opt-in is revoked and only a refresh (focus) asks again.
           if (e.enabled) disable(e);
@@ -588,33 +562,23 @@
         } else if (retryable && dispatchStarted && e.enabled) {
           // The bridge's pre-send read failed: no prompt reached the agent.
           e.fixing = false;
-          if (stillCurrent(id, e, token, stamp, bridge, projectKey)) {
-            e.retries++;
-            retryIn = RETRY_BASE_MS * 2 ** (e.retries - 1);
+          if (current()) {
+            retryIn = backoff();
             e.phase = "pending";
           } else {
             e.phase = "inactive";
             stale = true;
           }
           notify();
-        } else if (
-          dispatchStarted &&
-          tabs.get(id) === e &&
-          e.enabled &&
-          e.token === token
-        ) {
+        } else if (dispatchStarted && mine() && e.enabled) {
           e.fixing = false;
           e.retries = 0;
           e.error = errorMessage(error);
           e.phase = "error";
           notify();
-        } else if (
-          stillCurrent(id, e, token, stamp, bridge, projectKey) &&
-          (!dispatchEligible || ready(ctx()))
-        ) {
+        } else if (current() && (!dispatchEligible || ready(ctx()))) {
           if (retryable) {
-            e.retries++;
-            retryIn = RETRY_BASE_MS * 2 ** (e.retries - 1);
+            retryIn = backoff();
             if (dispatchEligible) e.phase = "pending";
           } else {
             e.retries = 0;
@@ -654,19 +618,11 @@
             if (other !== e && other.enabled && other.projectKey === key)
               disable(other);
           }
-        e.token++;
+        disable(e); // a fresh incarnation: new token, nothing handled yet
         e.enabled = true;
         e.projectKey = key;
-        e.phase = "pending";
-        e.error = null;
-        e.handled.clear();
-        e.retries = 0;
-        e.fixing = false;
-        e.seenBusy = false;
       }
-      generation++;
-      e.loading = false;
-      cancelTimer();
+      invalidate();
       notify();
       schedule(0);
     }
@@ -677,9 +633,7 @@
       const e = open(c, c.tabId) && tabs.get(c.tabId);
       if (!e?.enabled) return;
       disable(e);
-      generation++;
-      cancelTimer();
-      e.loading = false;
+      invalidate();
       notify();
       schedule(0);
     }
@@ -695,9 +649,7 @@
         notify();
         return;
       }
-      generation++;
-      cancelTimer();
-      if (flight) flight.entry.loading = false;
+      invalidate();
       refreshRequested = true;
       notify();
       schedule(0);
@@ -710,9 +662,7 @@
     }
     function stop() {
       active = false;
-      generation++;
-      cancelTimer();
-      if (flight) flight.entry.loading = false;
+      invalidate();
       refreshRequested = false;
       previous = null;
     }
@@ -720,12 +670,8 @@
   }
 
   window.OMP_PR_AUTOMATION = Object.freeze({
-    INTERVAL_MS,
     STALE,
-    feedbackKey,
     ciSummary,
-    newFeedback,
-    makePrompt,
     createController,
   });
 })();
