@@ -62,16 +62,20 @@ function PrAutomationCard({ automation, available = true, bridge }) {
     });
     setActionError(null);
   };
-  const openUrl = async (suffix) => {
+  /** Open `url` in the system browser; a failure shows under the card. */
+  const openExternal = async (url) => {
     setActionError(null);
     try {
-      const result = await bridge.openExternalUrl(pr.url + suffix);
-      if (!result?.ok)
-        throw new Error(result?.error || "Could not open GitHub.");
-      close();
+      const result = await bridge.openExternalUrl(url);
+      if (!result?.ok) throw new Error(result?.error || "Could not open the link.");
+      return true;
     } catch (error) {
       setActionError(error?.message || String(error));
+      return false;
     }
+  };
+  const openUrl = async (suffix) => {
+    if (await openExternal(pr.url + suffix)) close();
   };
   const copyLink = async () => {
     if (await window.copyText(pr.url)) close();
@@ -163,6 +167,11 @@ function PrAutomationCard({ automation, available = true, bridge }) {
                 aria-label={error || automation.status}
                 title={`Auto-fix · ${error || automation.status}`}
               />
+            )}
+            {pr.checks.length > 0 && (
+              <div className="pr-changes-ci">
+                <window.PrChecks checks={pr.checks} onOpen={openExternal} />
+              </div>
             )}
           </div>
         ) : (

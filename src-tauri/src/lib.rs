@@ -12,6 +12,7 @@ mod approval;
 mod approval_mode;
 mod browser;
 mod child_path;
+mod child_run;
 mod config_file;
 mod conversation_tree;
 mod external_open;

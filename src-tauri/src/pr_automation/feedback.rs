@@ -1,5 +1,5 @@
 //! Fail-closed normalization of GitHub GraphQL feedback.
-use super::{FailedCheck, LocalBranch, PrAutomationSnapshot, ReviewThread};
+use super::{CheckState, CiCheck, FailedCheck, LocalBranch, PrAutomationSnapshot, ReviewThread};
 use serde_json::Value;
 
 fn field<'a>(v: &'a Value, key: &str) -> Result<&'a Value, String> {
@@ -163,13 +163,16 @@ pub(super) fn parse_feedback(
     if string(object, "oid")? != head {
         return Err("GitHub returned feedback for a different commit".into());
     }
+    let mut checks = Vec::new();
     let mut failed_checks = Vec::new();
     let rollup = field(object, "statusCheckRollup")?;
     if !rollup.is_null() {
-        for check in connection(field(rollup, "contexts")?, "check contexts")? {
-            if let Some(check) = failed_check(check, &url)? {
-                failed_checks.push(check);
-            }
+        let contexts = connection(field(rollup, "contexts")?, "check contexts")?;
+        checks.reserve_exact(contexts.len());
+        for check in contexts {
+            let parsed = parse_check(check, &url)?;
+            checks.push(parsed.ci);
+            failed_checks.extend(parsed.failed);
         }
     }
     let mut threads = Vec::new();
@@ -203,12 +206,20 @@ pub(super) fn parse_feedback(
         head: head.into(),
         // The snapshot owns its branch; local remains for the post-query race check.
         branch: local.branch.clone(),
+        checks,
         failed_checks,
         threads,
     })
 }
 
-pub(super) fn failed_check(v: &Value, pr_url: &str) -> Result<Option<FailedCheck>, String> {
+/// One check context of the head commit: what the card shows for it, and the
+/// Auto-fix feedback item when it failed.
+pub(super) struct ParsedCheck {
+    pub(super) ci: CiCheck,
+    pub(super) failed: Option<FailedCheck>,
+}
+
+pub(super) fn parse_check(v: &Value, pr_url: &str) -> Result<ParsedCheck, String> {
     match string(v, "__typename")? {
         "CheckRun" => {
             let status = string(v, "status")?;
@@ -237,45 +248,69 @@ pub(super) fn failed_check(v: &Value, pr_url: &str) -> Result<Option<FailedCheck
             {
                 return Err("GitHub returned an unknown check conclusion".into());
             }
-            if status != "COMPLETED" {
-                return Ok(None);
-            }
-            let conclusion = conclusion
-                .as_str()
-                .ok_or_else(|| "Completed GitHub check has no conclusion".to_string())?;
-            if !matches!(
-                conclusion,
-                "FAILURE" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE"
-            ) {
-                return Ok(None);
-            }
-            let id = string(v, "id")?;
-            // Both timestamps are nullable in GitHub's schema, including for
-            // runs that fail before a runner starts.
-            let started = optional_timestamp(v, "startedAt")?;
-            let completed = optional_timestamp(v, "completedAt")?;
-            Ok(Some(FailedCheck {
-                id: format!("{id}:{started}:{completed}"),
-                name: string(v, "name")?.into(),
-                url: optional_url(v, "detailsUrl", pr_url)?,
-            }))
+            let name = string(v, "name")?;
+            let url = optional_url(v, "detailsUrl", pr_url)?;
+            let state = match status {
+                "IN_PROGRESS" => CheckState::Running,
+                "COMPLETED" => match conclusion
+                    .as_str()
+                    .ok_or_else(|| "Completed GitHub check has no conclusion".to_string())?
+                {
+                    "SUCCESS" => CheckState::Success,
+                    "FAILURE" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => {
+                        CheckState::Failure
+                    }
+                    _ => CheckState::Neutral,
+                },
+                _ => CheckState::Queued,
+            };
+            let failed = if state == CheckState::Failure {
+                let id = string(v, "id")?;
+                // Both timestamps are nullable in GitHub's schema, including for
+                // runs that fail before a runner starts.
+                let started = optional_timestamp(v, "startedAt")?;
+                let completed = optional_timestamp(v, "completedAt")?;
+                Some(FailedCheck {
+                    id: format!("{id}:{started}:{completed}"),
+                })
+            } else {
+                None
+            };
+            Ok(ParsedCheck {
+                ci: CiCheck {
+                    name: name.into(),
+                    state,
+                    url,
+                },
+                failed,
+            })
         }
         "StatusContext" => {
-            let state = string(v, "state")?;
-            if !matches!(
-                state,
-                "ERROR" | "FAILURE" | "SUCCESS" | "PENDING" | "EXPECTED"
-            ) {
-                return Err("GitHub returned an unknown status context state".into());
-            }
-            if !matches!(state, "ERROR" | "FAILURE") {
-                return Ok(None);
-            }
-            Ok(Some(FailedCheck {
-                id: format!("{}:{}", string(v, "id")?, string(v, "createdAt")?),
-                name: string(v, "context")?.into(),
-                url: optional_url(v, "targetUrl", pr_url)?,
-            }))
+            let state = match string(v, "state")? {
+                "SUCCESS" => CheckState::Success,
+                "ERROR" | "FAILURE" => CheckState::Failure,
+                // A commit status reports only that it is under way.
+                "PENDING" => CheckState::Running,
+                "EXPECTED" => CheckState::Queued,
+                _ => return Err("GitHub returned an unknown status context state".into()),
+            };
+            let name = string(v, "context")?;
+            let url = optional_url(v, "targetUrl", pr_url)?;
+            let failed = if state == CheckState::Failure {
+                Some(FailedCheck {
+                    id: format!("{}:{}", string(v, "id")?, string(v, "createdAt")?),
+                })
+            } else {
+                None
+            };
+            Ok(ParsedCheck {
+                ci: CiCheck {
+                    name: name.into(),
+                    state,
+                    url,
+                },
+                failed,
+            })
         }
         _ => Err("GitHub returned an unknown check context type".into()),
     }

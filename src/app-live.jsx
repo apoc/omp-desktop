@@ -884,7 +884,11 @@ function App() {
             )}
             {showSidebar && <ResizeHandle className="at-sidebar" {...panes.handle("sidebar")} />}
             <div ref={stageRef} className={`stage ${side === "browser" ? `with-browser${browserFull ? " browser-full" : ""}` : sideRail ? `with-${sideRail}` : ""}`}>
-              <main className="session" onFocusCapture={prAutomation.refresh}>
+              {/* Focus entering the conversation from elsewhere refreshes the
+                  PR card; moves inside it would each start a GitHub read. */}
+              <main className="session" onFocusCapture={e => {
+                if (!e.currentTarget.contains(e.relatedTarget)) prAutomation.refresh();
+              }}>
                 {noTab ? (
                   <EmptyWorkspace notes={workspaceNotes} />
                 ) : (<>
@@ -1001,7 +1005,9 @@ function App() {
                   onMinimapClick={handleMinimapClick}
                   show={{ context: t.showContext ?? true, radar: t.showRadar ?? true, subagents: t.showSubagents ?? true, minimap: t.showMinimap ?? true }}
                 >
-                  {(t.showChanges ?? true) && <PrAutomationCard key={planKey} automation={prAutomation} bridge={bridge}
+                  {/* Hidden without the GitHub CLI; the hook keeps checking on
+                      focus, so installing gh brings it back. */}
+                  {(t.showChanges ?? true) && !prAutomation.ghMissing && <PrAutomationCard key={planKey} automation={prAutomation} bridge={bridge}
                     available={!!activeProject.path && !!bridge?.isConnected} />}
                   {widgets.fatal && <WidgetErrorCard title="widgets.json" error={widgets.fatal} />}
                   {widgets.configErrors.map((e, i) => <WidgetErrorCard key={i} title="widgets.json" error={e} />)}

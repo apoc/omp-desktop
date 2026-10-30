@@ -16,7 +16,7 @@ use tauri::State;
 use crate::terminal::TerminalManager;
 
 #[cfg(test)]
-use feedback::failed_check;
+use feedback::parse_check;
 use feedback::{parse_feedback, select_pr};
 #[cfg(test)]
 use git::github_repo;
@@ -73,15 +73,40 @@ pub struct PrAutomationSnapshot {
     is_draft: bool,
     head: String,
     branch: String,
+    /// Every check of the head commit, in GitHub's order, for the card.
+    checks: Vec<CiCheck>,
+    /// The failed ones' Auto-fix identities.
     failed_checks: Vec<FailedCheck>,
     threads: Vec<ReviewThread>,
 }
 
+/// Where a check is, as the card draws it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum CheckState {
+    /// Not started: queued, requested, waiting, pending; a commit status
+    /// that is expected but not reported yet.
+    Queued,
+    Running,
+    Success,
+    /// Failed, timed out, needs action or never started.
+    Failure,
+    /// Neutral, skipped, cancelled or stale.
+    Neutral,
+}
+
+#[derive(Debug, Serialize)]
+struct CiCheck {
+    name: String,
+    state: CheckState,
+    /// Its CI page, or the PR when GitHub has none.
+    url: String,
+}
+
+/// A failed check's Auto-fix identity: node id plus attempt timestamps.
 #[derive(Debug, Serialize)]
 struct FailedCheck {
     id: String,
-    name: String,
-    url: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -92,12 +117,31 @@ struct ReviewThread {
     url: String,
 }
 
+/// A failed lookup, as the webview receives it. `ghMissing` marks the one
+/// failure the Changes card shows as a disabled state instead of an error:
+/// there is no GitHub CLI to ask.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LookupError {
+    message: String,
+    gh_missing: bool,
+}
+
+impl From<String> for LookupError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            gh_missing: false,
+        }
+    }
+}
+
 /// Snapshot the project registered for this tab, never a frontend-supplied path.
 #[tauri::command]
 pub async fn pr_automation_snapshot(
     session_id: String,
     terminal: State<'_, Arc<TerminalManager>>,
-) -> Result<Option<PrAutomationSnapshot>, String> {
+) -> Result<Option<PrAutomationSnapshot>, LookupError> {
     let folder = terminal
         .folder(&session_id)
         .filter(|p| !p.as_os_str().is_empty())
@@ -105,9 +149,13 @@ pub async fn pr_automation_snapshot(
     crate::off_ipc(move || snapshot(&folder)).await?
 }
 
-fn snapshot(folder: &Path) -> Result<Option<PrAutomationSnapshot>, String> {
+fn snapshot(folder: &Path) -> Result<Option<PrAutomationSnapshot>, LookupError> {
+    // First, so a missing gh reads as such in any folder, GitHub or not.
+    let gh = gh::Gh::locate().map_err(|message| LookupError {
+        message,
+        gh_missing: true,
+    })?;
     let local = local_branch(folder)?;
-    let gh = gh::Gh::locate()?;
     let remote_branch = local
         .remote_ref
         .strip_prefix("refs/heads/")
@@ -127,7 +175,11 @@ fn snapshot(folder: &Path) -> Result<Option<PrAutomationSnapshot>, String> {
     let result = gh.query(FEEDBACK_QUERY, &[("id", &id)])?;
     let snapshot = parse_feedback(&result, &local, &head)?;
     if local_branch(folder)? != local {
-        return Err("Git branch, HEAD, or upstream changed while loading PR feedback".into());
+        return Err(
+            "Git branch, HEAD, or upstream changed while loading PR feedback"
+                .to_string()
+                .into(),
+        );
     }
     Ok(Some(snapshot))
 }

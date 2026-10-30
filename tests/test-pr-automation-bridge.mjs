@@ -58,6 +58,7 @@ function harness() {
     "app/turn-status.js",
     "app/transcript-merge.js",
     "adapter.js",
+    "app/pr-automation.js",
   ]) {
     new Function("window", source(path))(w);
   }
@@ -72,7 +73,8 @@ function harness() {
     clearTimeout,
   );
   let snapshotResult = null,
-    snapshot;
+    snapshot,
+    promptGate = null;
   function emit(id, frame) {
     const entries = journal.get(id) ?? [];
     const envelope = { seq: entries.length + 1, text: JSON.stringify(frame) };
@@ -120,8 +122,10 @@ function harness() {
         if (command === "send_command") {
           const cmd = { ...JSON.parse(args.json), sessionId: args.sessionId };
           commands.push(cmd);
-          if (cmd.type === "prompt")
+          if (cmd.type === "prompt") {
             prompts.push({ sessionId: args.sessionId, text: cmd.message });
+            if (promptGate) await promptGate;
+          }
           if (
             cmd.type === "negotiate_protocol" ||
             cmd.type === "set_ask_dialog"
@@ -156,6 +160,7 @@ function harness() {
       goal: w.OMP_GOAL.NONE,
     });
   return {
+    STALE: w.OMP_PR_AUTOMATION.STALE,
     bridge,
     emit,
     reply,
@@ -167,6 +172,14 @@ function harness() {
     snapshot: () => snapshot,
     setResult: (value) => {
       snapshotResult = value;
+    },
+    /** Holds every `prompt` write until the returned release is called. */
+    holdPrompts: () => {
+      let release;
+      promptGate = new Promise((resolve) => {
+        release = resolve;
+      });
+      return release;
     },
   };
 }
@@ -240,6 +253,25 @@ await check(
       h.bridge.getState().messages.at(-1).text,
       "Address PR feedback",
     );
+  },
+);
+
+await check(
+  "a prompt omp accepted counts as sent even after switching tabs",
+  async () => {
+    const h = harness();
+    const a = await h.bridge.openSession("/a");
+    await flush();
+    h.clean();
+    h.setResult(snapshot());
+    const release = h.holdPrompts();
+    const sending = h.bridge.prAutomationSend(a, "Fix CI", snapshot(), permit);
+    await flush();
+    assert.deepEqual(h.prompts, [{ sessionId: a, text: "Fix CI" }]);
+    await h.bridge.openSession("/b");
+    await flush();
+    release();
+    assert.equal(await sending, true);
   },
 );
 
@@ -439,7 +471,7 @@ await check(
     await h.bridge.activateSession(a);
     await flush();
     release(snapshot());
-    assert.equal(await stale, null);
+    assert.equal(await stale, h.STALE);
     assert.equal(
       await h.bridge.prAutomationSend(b, "other tab", snapshot(), permit),
       false,
@@ -458,7 +490,7 @@ await check(
     h.clean();
     h.setResult(snapshot());
     const switching = h.bridge.activateSession(b);
-    assert.equal(await h.bridge.prAutomationSnapshot(a), null);
+    assert.equal(await h.bridge.prAutomationSnapshot(a), h.STALE);
     assert.equal(
       await h.bridge.prAutomationSend(a, "must wait", snapshot(), permit),
       false,
@@ -481,7 +513,7 @@ await check("a branch change invalidates in-flight discovery", async () => {
   const stale = h.bridge.prAutomationSnapshot(id);
   h.setBranch(id, "other");
   release(snapshot());
-  assert.equal(await stale, null);
+  assert.equal(await stale, h.STALE);
 });
 
 await check(
@@ -502,7 +534,7 @@ await check(
       h.emit(id, { type: "response", command, success: true, data: {} });
       await flush();
       release(snapshot());
-      assert.equal(await stale, null);
+      assert.equal(await stale, h.STALE);
       const current = snapshot();
       h.setResult(current);
       assert.equal(await h.bridge.prAutomationSnapshot(id), current);
@@ -529,7 +561,7 @@ await check(
     await flush();
     assert.equal(switched.ok, true);
     release(snapshot());
-    assert.equal(await stale, null);
+    assert.equal(await stale, h.STALE);
     const current = snapshot();
     h.setResult(current);
     assert.equal(await h.bridge.prAutomationSnapshot(id), current);

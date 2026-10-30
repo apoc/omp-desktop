@@ -86,6 +86,7 @@ const snapshot = (over = {}) => ({
   deletions: 8,
   isDraft: true,
   failedChecks: [],
+  checks: [],
   threads: [],
   ...over,
 });
@@ -299,6 +300,151 @@ await checkAsync(
     assert.deepEqual(h.view().snapshot, result);
   },
 );
+
+await checkAsync(
+  "a missing GitHub CLI hides the card on every tab, revokes Auto-fix and recovers on refresh",
+  async () => {
+    let missing = false;
+    const result = snapshot({ failedChecks: [check("ci")] });
+    const h = harness({
+      getSnapshot: () =>
+        missing
+          ? Promise.reject({ message: "gh was not found", ghMissing: true })
+          : result,
+    });
+    await h.time.advance(0);
+    assert.equal(h.view().ghMissing, false);
+    missing = true;
+    h.toggle();
+    await h.time.advance(0);
+    const view = h.view();
+    assert.equal(view.ghMissing, true);
+    assert.equal(view.enabled, false);
+    assert.equal(view.snapshot, null);
+    assert.equal(view.error, null);
+    assert.equal(view.discoveryError, null);
+    assert.deepEqual(h.sends, []);
+    // Auto-fix cannot be turned on, and nothing polls in the background.
+    const reads = h.reads.length;
+    h.toggle();
+    await h.time.advance(120000);
+    assert.equal(h.view().enabled, false);
+    assert.equal(h.reads.length, reads);
+    // Machine-wide: another tab is hidden from the start, before its own
+    // read fails, so the card never flashes up there.
+    h.update({ tabId: "b" });
+    assert.equal(h.view().ghMissing, true);
+    await h.time.advance(0);
+    assert.equal(h.view().ghMissing, true);
+    // Installing gh shows up on the next refresh (window focus).
+    missing = false;
+    h.refresh();
+    await h.time.advance(0);
+    assert.equal(h.view().ghMissing, false);
+    assert.deepEqual(h.view().snapshot, result);
+    assert.equal(h.view().enabled, false);
+    assert.deepEqual(h.sends, []);
+  },
+);
+
+await checkAsync(
+  "any answer but 'not installed' brings the card back, a read error included",
+  async () => {
+    let answer = () => Promise.reject({ message: "gh was not found", ghMissing: true });
+    const h = harness({ getSnapshot: () => answer() });
+    await h.time.advance(0);
+    assert.equal(h.view().ghMissing, true);
+    // gh installed, but this checkout has no upstream: gh is there all the same.
+    answer = () => Promise.reject({ message: "Auto-fix requires a configured upstream branch", ghMissing: false });
+    h.refresh();
+    await h.time.advance(0);
+    assert.equal(h.view().ghMissing, false);
+    assert.equal(h.view().discoveryError, "Auto-fix requires a configured upstream branch");
+  },
+);
+
+await checkAsync(
+  "a read the tab could not take (STALE) is not 'no PR': it keeps loading and asks again",
+  async () => {
+    let STALE;
+    let busy = 2;
+    const result = snapshot({ failedChecks: [check("ci")] });
+    const h = harness({ getSnapshot: () => (busy-- > 0 ? STALE : result) });
+    STALE = h.win.OMP_PR_AUTOMATION.STALE;
+    await h.time.advance(0);
+    // Auto-fix is off, and still the card neither claims "no PR" nor stops.
+    assert.equal(h.view().snapshot, null);
+    assert.equal(h.view().loading, true);
+    assert.equal(h.view().discoveryError, null);
+    assert.equal(h.reads.length, 1);
+    await h.time.advance(1000);
+    assert.equal(h.reads.length, 3);
+    assert.deepEqual(h.view().snapshot, result);
+    assert.equal(h.view().loading, false);
+    // Settled: no more busy retries.
+    await h.time.advance(120000);
+    assert.equal(h.reads.length, 3);
+  },
+);
+
+const ci = (name, state) => ({ name, state, url: `https://ci.test/${name}` });
+
+await checkAsync("the CI line names the step in progress, then the outcome", async () => {
+  const { ciSummary } = load(clock()).OMP_PR_AUTOMATION;
+  const running = ciSummary([
+    ci("lint", "success"), ci("build", "running"), ci("test", "running"),
+    ci("e2e", "queued"), ci("docs", "failure"), ci("skip", "neutral"),
+  ]);
+  assert.equal(running.state, "running");
+  // The other running steps stay apart from the name, which may ellipsize.
+  assert.deepEqual([running.label, running.more], ["build", 1]);
+  assert.equal(ciSummary([ci("a", "running")]).more, 0);
+  assert.deepEqual([running.done, running.total], [3, 6]);
+  // The expanded list: running, failed, queued, then the rest, GitHub's order within.
+  assert.deepEqual(running.list.map((c) => c.name), ["build", "test", "docs", "e2e", "lint", "skip"]);
+  assert.equal(ciSummary([ci("a", "success"), ci("b", "queued")]).label, "1 queued");
+  // Finished: a failure outranks passes, skipped checks don't count as failed.
+  const failed = ciSummary([ci("a", "success"), ci("b", "failure"), ci("c", "failure"), ci("d", "neutral")]);
+  assert.deepEqual([failed.state, failed.label, failed.done], ["failure", "2 failed", 4]);
+  assert.deepEqual([ciSummary([ci("a", "success"), ci("b", "neutral")]).state, ciSummary([ci("a", "success")]).label], ["success", "All checks passed"]);
+  assert.equal(ciSummary([ci("a", "neutral")]).label, "Checks skipped");
+  assert.equal(ciSummary([]).state, "none");
+});
+
+await checkAsync("a big CI matrix draws a bar instead of a dot per check", async () => {
+  const { ciSummary } = load(clock()).OMP_PR_AUTOMATION;
+  const many = (n) => Array.from({ length: n }, (_, i) => ci(`job-${i}`, "success"));
+  assert.equal(ciSummary(many(24)).dots, true);
+  assert.equal(ciSummary(many(25)).dots, false);
+});
+
+await checkAsync(
+  "running CI keeps the card updating with Auto-fix off, and stops when it finishes",
+  async () => {
+    let result = snapshot({ checks: [ci("build", "running"), ci("lint", "success")] });
+    const h = harness({ getSnapshot: () => result });
+    await h.time.advance(0);
+    assert.equal(h.view().enabled, false);
+    assert.equal(h.reads.length, 1);
+    await h.time.advance(15000);
+    assert.equal(h.reads.length, 2);
+    result = snapshot({ checks: [ci("build", "failure"), ci("lint", "success")] });
+    await h.time.advance(15000);
+    assert.equal(h.reads.length, 3);
+    assert.equal(h.view().snapshot.checks[0].state, "failure");
+    // All finished: back to event-driven reads only.
+    await h.time.advance(120000);
+    assert.equal(h.reads.length, 3);
+    assert.deepEqual(h.sends, []);
+  },
+);
+
+await checkAsync("a check with an unknown state fails the snapshot closed", async () => {
+  const h = harness({ getSnapshot: () => snapshot({ checks: [ci("build", "exploded")] }) });
+  await h.time.advance(0);
+  assert.match(h.view().discoveryError, /Invalid/);
+  assert.equal(h.view().snapshot, null);
+});
 
 await checkAsync(
   "discovery exposes loading, errors, retries and the latest no-PR result without opting in",
@@ -910,6 +1056,34 @@ await checkAsync(
     await h.time.advance(0);
     assert.equal(h.sends.length, 2);
     assert.deepEqual(payload(h.sends[1].text).checkIds, ["CI"]);
+  },
+);
+
+await checkAsync(
+  "a focus refresh while a send is in flight neither cancels it nor is lost",
+  async () => {
+    const pending = deferred();
+    let canSend = null;
+    const h = harness({
+      getSnapshot: () => snapshot({ failedChecks: [check("CI")] }),
+      send: (id, text, expected, permit) => {
+        canSend = permit;
+        return pending.promise;
+      },
+    });
+    h.toggle();
+    await h.time.advance(0);
+    assert.match(h.view().status, /Sending fix prompt/);
+    const reads = h.reads.length;
+    h.refresh();
+    // The bridge rechecks this after its own GitHub read.
+    assert.equal(canSend(), true);
+    pending.resolve(true);
+    await h.time.advance(0);
+    assert.equal(h.view().error, null);
+    assert.match(h.view().status, /awaiting/);
+    assert.equal(h.sends.length, 1);
+    assert.equal(h.reads.length, reads + 1);
   },
 );
 

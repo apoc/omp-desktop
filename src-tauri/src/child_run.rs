@@ -1,7 +1,8 @@
-//! Child-process plumbing for `run.rs`: pipe drain threads, the deadline-
-//! bounded exit wait, and tree termination.
+//! Bounded child-process runs, shared by widget plugins (`widgets/run.rs`)
+//! and the PR lookup's `gh` calls (`pr_automation/gh.rs`): pipe drain
+//! threads, the deadline-bounded exit wait, and tree termination.
 //!
-//! A blocking `read` cannot observe the deadline while the plugin is idle, so
+//! A blocking `read` cannot observe the deadline while the child is idle, so
 //! the pipes are drained on dedicated threads whose results come back over
 //! channels, and the caller polls `try_wait` against the deadline every
 //! [`POLL`].
@@ -38,7 +39,7 @@ pub fn spawn_drain(
 ) -> Result<Receiver<std::io::Result<Vec<u8>>>, String> {
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
-        .name("widget-drain".to_string())
+        .name("child-drain".to_string())
         .spawn(move || {
             let mut buf: VecDeque<u8> = VecDeque::new();
             let mut chunk = [0u8; 8192];
@@ -105,7 +106,7 @@ pub fn recv_until(
         .ok()
 }
 
-/// Kill the plugin's process tree, then reap the direct child. The direct
+/// Kill the child's process tree, then reap the direct child. The direct
 /// `kill` is the fallback for a Windows run whose Job Object could not be
 /// attached (`kill_tree` is then a no-op); on a dead process it is harmless.
 pub fn terminate(supervisor: &ProcessSupervisor, child: &mut Child) {

@@ -3298,6 +3298,25 @@
     return _send({ type: "prompt", message: text, images: images ?? [], ...(streamingBehavior ? { streamingBehavior } : {}) });
   }
 
+  /** A predicate that stays true while `sessionId` is still the selected,
+   *  settled-in tab on the conversation and branch it had at this call: any
+   *  tab switch, respawn, conversation reset or branch change voids a PR
+   *  automation read or send started before it. */
+  function _prAutomationCurrent(sessionId) {
+    const context = sessionContext, switchGen = _switchGen;
+    const branch = sessionRegistry.get(sessionId)?.branch;
+    return () =>
+      !!window.__TAURI__ &&
+      sessionRegistry.has(sessionId) &&
+      sessionId === activeSessionId &&
+      !_replayBuffer &&
+      _switchAwayFrom !== sessionId &&
+      !_respawning.has(sessionId) &&
+      sessionContext === context &&
+      _switchGen === switchGen &&
+      sessionRegistry.get(sessionId)?.branch === branch;
+  }
+
   /** A `goal` command's `{goal, state}` result applied to the active tab. */
   function _applyGoalResult(data) {
     const next = GOAL.fromSnapshot(state.goal, data?.state ?? null);
@@ -3333,39 +3352,20 @@
     send(text, images) { return _sendPrompt(text, images); },
     // Monitoring is read-only. Only the selected, fully settled tab may
     // receive remediation; recheck here after the asynchronous GitHub read.
+    // A read the tab can't take now is `OMP_PR_AUTOMATION.STALE`, never
+    // `null`: that is Rust's "no PR", and the card would say so.
     async prAutomationSnapshot(sessionId) {
-      const context = sessionContext, switchGen = _switchGen;
-      const branch = sessionRegistry.get(sessionId)?.branch;
-      const current = () =>
-        !!window.__TAURI__ &&
-        sessionRegistry.has(sessionId) &&
-        sessionId === activeSessionId &&
-        !_replayBuffer &&
-        _switchAwayFrom !== sessionId &&
-        !_respawning.has(sessionId) &&
-        sessionContext === context &&
-        _switchGen === switchGen &&
-        sessionRegistry.get(sessionId)?.branch === branch;
-      if (!current()) return null;
+      const { STALE } = window.OMP_PR_AUTOMATION;
+      const current = _prAutomationCurrent(sessionId);
+      if (!current()) return STALE;
       const result = await window.__TAURI__.core.invoke(
         "pr_automation_snapshot", { sessionId },
       );
-      return current() ? result : null;
+      return current() ? result : STALE;
     },
     async prAutomationSend(sessionId, text, expected, canSend) {
       if (!expected?.url || !expected.branch || !expected.head || typeof canSend !== "function") return false;
-      const context = sessionContext, switchGen = _switchGen;
-      const branch = sessionRegistry.get(sessionId)?.branch;
-      const current = () =>
-        !!window.__TAURI__ &&
-        sessionRegistry.has(sessionId) &&
-        sessionId === activeSessionId &&
-        !_replayBuffer &&
-        _switchAwayFrom !== sessionId &&
-        !_respawning.has(sessionId) &&
-        sessionContext === context &&
-        _switchGen === switchGen &&
-        sessionRegistry.get(sessionId)?.branch === branch;
+      const current = _prAutomationCurrent(sessionId);
       const ready = () => {
         const entry = sessionRegistry.get(sessionId);
         return (
@@ -3385,7 +3385,9 @@
         "pr_automation_snapshot", { sessionId },
       );
       if (!ready() || !latest || latest.url.toLowerCase() !== expected.url.toLowerCase() || latest.branch !== expected.branch || latest.head !== expected.head) return false;
-      return _sendPrompt(text, undefined, undefined, ready).then(sent => sent && current());
+      // Once handed to omp the prompt is out, whatever happened meanwhile:
+      // the controller records it as sent even after a tab switch.
+      return _sendPrompt(text, undefined, undefined, ready);
     },
     // No id on purpose: a pending-id match returns before the command
     // switch, and the abort response is what releases a cancelled

@@ -28,7 +28,7 @@ fn feedback(contexts: Vec<Value>, threads: Vec<Value>) -> Value {
     }})
 }
 fn check(id: &str, status: &str, conclusion: Value, started: &str) -> Value {
-    json!({"__typename":"CheckRun","id":id,"name":"test","status":status,"conclusion":conclusion,"detailsUrl":null,"startedAt":started,"completedAt":"2026-01-02T00:00:00Z"})
+    json!({"__typename":"CheckRun","id":id,"name":id,"status":status,"conclusion":conclusion,"detailsUrl":null,"startedAt":started,"completedAt":"2026-01-02T00:00:00Z"})
 }
 fn thread(id: &str, resolved: bool, outdated: bool) -> Value {
     json!({"id":id,"isResolved":resolved,"isOutdated":outdated,"comments":{"nodes":[{"updatedAt":"2026-01-02T00:00:00Z","url":"https://github.com/u/r/pull/1#discussion_r1"}]}})
@@ -202,13 +202,38 @@ fn includes_only_actionable_completed_checks_and_open_current_threads() {
         snapshot.failed_checks[0].id,
         "failed:t1:2026-01-02T00:00:00Z"
     );
-    assert_eq!(snapshot.failed_checks[0].url, snapshot.url);
     assert_eq!(snapshot.failed_checks[4].id, "legacy:t3");
+    // The card gets every check, in GitHub's order, failed or not.
+    let states: Vec<_> = snapshot
+        .checks
+        .iter()
+        .map(|c| (c.name.as_str(), c.state))
+        .collect();
+    assert_eq!(
+        states,
+        [
+            ("failed", CheckState::Failure),
+            ("inflight", CheckState::Running),
+            ("TIMED_OUT", CheckState::Failure),
+            ("ACTION_REQUIRED", CheckState::Failure),
+            ("STARTUP_FAILURE", CheckState::Failure),
+            ("CANCELLED", CheckState::Neutral),
+            ("SUCCESS", CheckState::Success),
+            ("NEUTRAL", CheckState::Neutral),
+            ("SKIPPED", CheckState::Neutral),
+            ("legacy-ci", CheckState::Failure),
+            ("ok", CheckState::Success),
+        ]
+    );
+    // No details page: the PR stands in.
+    assert_eq!(snapshot.checks[0].url, snapshot.url);
+    assert_eq!(snapshot.checks[9].url, "https://example.test/ci");
     assert_eq!(snapshot.threads.len(), 1);
     assert_eq!(snapshot.threads[0].id, "open");
     assert_eq!(snapshot.threads[0].updated_at, "2026-01-02T00:00:00Z");
     let wire = serde_json::to_value(snapshot).unwrap();
     assert!(wire.get("failedChecks").is_some());
+    assert_eq!(wire["checks"][1]["state"], "running");
     assert_eq!(wire["isDraft"], true);
     assert_eq!(wire["repository"], "upstream/project");
     assert!(wire["threads"][0].get("updatedAt").is_some());
@@ -256,20 +281,35 @@ fn requires_valid_display_metadata() {
 }
 
 #[test]
+fn checks_not_started_are_queued_and_a_pending_status_is_running() {
+    for status in ["QUEUED", "REQUESTED", "WAITING", "PENDING"] {
+        let parsed = parse_check(&check("run", status, Value::Null, "t"), "fallback").unwrap();
+        assert_eq!(parsed.ci.state, CheckState::Queued, "{status}");
+        assert!(parsed.failed.is_none());
+    }
+    for (state, want) in [
+        ("PENDING", CheckState::Running),
+        ("EXPECTED", CheckState::Queued),
+    ] {
+        let status = json!({"__typename":"StatusContext","id":"s","context":"ext","state":state,"targetUrl":null,"createdAt":"t"});
+        assert_eq!(parse_check(&status, "fallback").unwrap().ci.state, want);
+    }
+    let unknown = json!({"__typename":"StatusContext","id":"s","context":"ext","state":"LATER","targetUrl":null,"createdAt":"t"});
+    assert!(parse_check(&unknown, "fallback").is_err());
+}
+
+#[test]
 fn new_attempts_produce_new_ids() {
-    let first = failed_check(
-        &check("run", "COMPLETED", json!("FAILURE"), "first"),
-        "fallback",
-    )
-    .unwrap()
-    .unwrap();
-    let second = failed_check(
-        &check("run", "COMPLETED", json!("FAILURE"), "second"),
-        "fallback",
-    )
-    .unwrap()
-    .unwrap();
-    assert_ne!(first.id, second.id);
+    let failed = |started| {
+        parse_check(
+            &check("run", "COMPLETED", json!("FAILURE"), started),
+            "fallback",
+        )
+        .unwrap()
+        .failed
+        .unwrap()
+    };
+    assert_ne!(failed("first").id, failed("second").id);
 }
 
 #[test]
@@ -277,10 +317,10 @@ fn startup_failure_with_nullable_timestamps_is_actionable() {
     let mut run = check("startup", "COMPLETED", json!("STARTUP_FAILURE"), "unused");
     run["startedAt"] = Value::Null;
     run["completedAt"] = Value::Null;
-    let result = failed_check(&run, "fallback").unwrap().unwrap();
+    let result = parse_check(&run, "fallback").unwrap().failed.unwrap();
     assert_eq!(result.id, "startup::");
     run["startedAt"] = json!(42);
-    assert!(failed_check(&run, "fallback").is_err());
+    assert!(parse_check(&run, "fallback").is_err());
 }
 
 #[test]
@@ -310,6 +350,24 @@ fn rejects_truncated_malformed_or_changed_data() {
     assert!(parse_feedback(&result, &local(), "abc").is_err());
     let result = feedback(vec![], vec![]);
     assert!(parse_feedback(&result, &local(), "other").is_err());
+}
+
+/// The webview tells a missing gh (a disabled card) from every other failure
+/// (an error) by `ghMissing` alone.
+#[test]
+fn lookup_errors_mark_only_a_missing_gh() {
+    let missing = LookupError {
+        message: "gh was not found".into(),
+        gh_missing: true,
+    };
+    assert_eq!(
+        serde_json::to_value(missing).unwrap(),
+        json!({"message": "gh was not found", "ghMissing": true})
+    );
+    assert_eq!(
+        serde_json::to_value(LookupError::from("denied".to_string())).unwrap(),
+        json!({"message": "denied", "ghMissing": false})
+    );
 }
 
 /// Run explicitly with `OMP_PR_AUTOMATION_SMOKE_PROJECT` set to a local

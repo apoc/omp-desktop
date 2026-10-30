@@ -3,6 +3,59 @@
 // are provided by the bridge. No remote feedback bodies enter the prompt.
 (function () {
   const INTERVAL_MS = 30_000;
+  /** Bridge answer for a read the tab could not take right now (mid-switch,
+   *  replay, respawn, conversation or branch change): not "no PR". */
+  const STALE = Object.freeze({ stale: true });
+  /** How soon a STALE read is asked again. */
+  const BUSY_RETRY_MS = 250;
+  /** How often the card re-reads while a check is queued or running, even
+   *  with Auto-fix off; it stops once every check has finished. */
+  const CI_INTERVAL_MS = 15_000;
+  const CHECK_STATES = ["queued", "running", "success", "failure", "neutral"];
+  /** Up to this many checks get a dot each; more get a proportional bar, so a
+   *  big matrix never overflows the card. */
+  const CHECK_DOTS_MAX = 24;
+  // Expanded list order: what needs attention first, GitHub's order within.
+  const LIST_ORDER = { running: 0, failure: 1, queued: 2, success: 3, neutral: 4 };
+
+  const ciActive = (snapshot) =>
+    !!snapshot?.checks?.some((c) => c.state === "running" || c.state === "queued");
+
+  /** The card's CI line for a snapshot's `checks` (GitHub's order). `state` is
+   *  the run's as a whole (running > queued > failure > success > neutral;
+   *  `none` without checks), `label` the step in progress or the outcome,
+   *  `more` the other running steps (shown apart, so a long step name can't
+   *  ellipsize it away), `done` of `total` finished, `dots` whether one dot
+   *  per check fits, and `list` every check, running and failed first. */
+  function ciSummary(checks) {
+    const count = { queued: 0, running: 0, success: 0, failure: 0, neutral: 0 };
+    for (const c of checks) count[c.state]++;
+    const total = checks.length;
+    const state = !total ? "none"
+      : count.running ? "running"
+      : count.queued ? "queued"
+      : count.failure ? "failure"
+      : count.success ? "success"
+      : "neutral";
+    const label =
+      state === "running" ? checks.find((c) => c.state === "running").name
+      : state === "queued" ? `${count.queued} queued`
+      : state === "failure" ? `${count.failure} failed`
+      : state === "success" ? "All checks passed"
+      : state === "neutral" ? "Checks skipped"
+      : "";
+    const list = checks
+      .map((c, i) => [c, i])
+      .sort(([a, i], [b, j]) => LIST_ORDER[a.state] - LIST_ORDER[b.state] || i - j)
+      .map(([c]) => c);
+    return {
+      state, label, count, total,
+      more: Math.max(0, count.running - 1),
+      done: count.success + count.failure + count.neutral,
+      dots: total <= CHECK_DOTS_MAX,
+      list,
+    };
+  }
 
   function feedbackKey(snapshot, kind, item) {
     // A push changes the head, not an unchanged review comment. Keeping
@@ -52,6 +105,10 @@
       snapshot.deletions < 0 ||
       typeof snapshot.isDraft !== "boolean" ||
       !Array.isArray(snapshot.failedChecks) ||
+      !Array.isArray(snapshot.checks) ||
+      !snapshot.checks.every(
+        (c) => c && nonempty(c.name) && CHECK_STATES.includes(c.state) && nonempty(c.url),
+      ) ||
       !Array.isArray(snapshot.threads) ||
       !snapshot.failedChecks.every((c) => c && nonempty(c.id)) ||
       !snapshot.threads.every(
@@ -104,6 +161,7 @@
     setTimer = setTimeout,
     clearTimer = clearTimeout,
     intervalMs = INTERVAL_MS,
+    ciIntervalMs = CI_INTERVAL_MS,
   }) {
     const tabs = new Map();
     let previous = null;
@@ -113,6 +171,10 @@
     let flight = null;
     let active = false;
     let refreshRequested = false;
+    // No GitHub CLI on this machine: the card hides itself. Machine-wide, not
+    // per tab, so a newly opened tab does not show the card until its own
+    // read fails again; any successful read clears it.
+    let ghMissing = false;
 
     const notify = () => {
       if (active) onChange?.();
@@ -191,6 +253,7 @@
         snapshot: discoverable(c) ? (e?.snapshot ?? null) : null,
         loading: discoverable(c) ? !e || e.loading || refreshRequested : false,
         discoveryError: e?.discoveryError ?? null,
+        ghMissing,
       };
       if (!e?.enabled)
         return {
@@ -233,13 +296,16 @@
       };
     }
 
-    function schedule(delay) {
+    /** `retry`: the bridge was busy (STALE); read again after `delay` even
+     *  with Auto-fix off, and keep the card on "Updating…" meanwhile. */
+    function schedule(delay, retry = false) {
       const c = ctx();
       if (!active || timer !== null || flight || !discoverable(c)) return;
       const e = tabs.get(c.tabId);
       if (!e || (e.enabled && e.error && !refreshRequested)) return;
-      const immediate = refreshRequested || delay === 0;
-      if (!immediate && !e.enabled) return;
+      const immediate = !retry && (refreshRequested || delay === 0);
+      // Periodic reads need an opt-in, or CI still running on this PR.
+      if (!immediate && !retry && !e.enabled && !ciActive(e.snapshot)) return;
       timerEntry = e;
       timer = setTimer(
         () => {
@@ -251,7 +317,7 @@
         },
         immediate ? 0 : delay,
       );
-      if (immediate && !e.loading) {
+      if ((immediate || retry) && !e.loading) {
         e.loading = true;
         notify();
       }
@@ -360,11 +426,18 @@
       if (dispatchEligible) e.phase = "checking";
       notify();
       let stale = false;
+      let busy = false;
       let dispatchStarted = false;
       try {
         const snapshot = await bridge.prAutomationSnapshot(id);
         if (!stillCurrent(id, e, token, stamp, bridge, projectKey)) {
           stale = true;
+          return;
+        }
+        if (snapshot === STALE) {
+          // The tab is mid-switch, -replay or -respawn: no answer yet, which
+          // is not "no PR". Ask again shortly.
+          busy = true;
           return;
         }
         if (snapshot !== null) validateSnapshot(snapshot);
@@ -373,6 +446,7 @@
         }
         e.snapshot = snapshot;
         e.discoveryError = null;
+        ghMissing = false;
         e.loading = false;
         if (e.enabled) {
           e.number = snapshot?.number ?? null;
@@ -444,7 +518,27 @@
           );
         }
       } catch (error) {
+        // Any answer but "not installed" means gh is there (an error such
+        // as "no upstream" included): the card comes back.
+        if (!error?.ghMissing && ghMissing) {
+          ghMissing = false;
+          notify();
+        }
         if (
+          error?.ghMissing &&
+          tabs.get(id) === e &&
+          e.token === token &&
+          (dispatchStarted ||
+            stillCurrent(id, e, token, stamp, bridge, projectKey))
+        ) {
+          // A state, not an error: nothing can run until gh is installed,
+          // so an opt-in is revoked and only a refresh (focus) asks again.
+          if (e.enabled) disable(e);
+          e.snapshot = null;
+          e.discoveryError = null;
+          ghMissing = true;
+          notify();
+        } else if (
           dispatchStarted &&
           tabs.get(id) === e &&
           e.enabled &&
@@ -471,7 +565,9 @@
         e.loading = false;
         if (flight === operation) flight = null;
         const changed = reconcile();
-        schedule(changed || stale || generation !== stamp ? 0 : intervalMs);
+        if (busy && !changed) schedule(BUSY_RETRY_MS, true);
+        else if (changed || stale || generation !== stamp) schedule(0);
+        else schedule(ciActive(e.snapshot) ? Math.min(intervalMs, ciIntervalMs) : intervalMs);
       }
     }
 
@@ -481,6 +577,7 @@
       const c = ctx();
       if (!discoverable(c)) return;
       const e = entryFor(c.tabId);
+      if (!e.enabled && ghMissing) return;
       if (e.enabled) disable(e);
       else {
         const key = c.projectKey || null;
@@ -522,6 +619,13 @@
       if (!active) return;
       reconcile();
       if (!discoverable(ctx())) return;
+      // A send already past its guards must not be voided by a focus
+      // refresh; the poll's `finally` runs the requested read afterwards.
+      if (flight?.entry.phase === "sending") {
+        refreshRequested = true;
+        notify();
+        return;
+      }
       generation++;
       cancelTimer();
       if (flight) flight.entry.loading = false;
@@ -548,7 +652,9 @@
 
   window.OMP_PR_AUTOMATION = Object.freeze({
     INTERVAL_MS,
+    STALE,
     feedbackKey,
+    ciSummary,
     newFeedback,
     makePrompt,
     createController,
