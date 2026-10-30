@@ -1,9 +1,10 @@
-//! Child-process plumbing for `run.rs`: pipe drain threads, the deadline-
-//! bounded exit wait, and tree termination.
+//! Bounded child-process runs, shared by widget plugins (`widgets/run.rs`)
+//! and the PR lookup's `gh` calls (`pr_automation/gh.rs`): [`collect`] runs
+//! a spawned child to its exit under a deadline with capped output.
 //!
-//! A blocking `read` cannot observe the deadline while the plugin is idle, so
+//! A blocking `read` cannot observe the deadline while the child is idle, so
 //! the pipes are drained on dedicated threads whose results come back over
-//! channels, and the caller polls `try_wait` against the deadline every
+//! channels, and the exit wait polls `try_wait` against the deadline every
 //! [`POLL`].
 
 use std::collections::VecDeque;
@@ -18,27 +19,89 @@ use crate::supervisor::ProcessSupervisor;
 
 const POLL: Duration = Duration::from_millis(25);
 
-/// Why [`wait_for_exit`] gave up on the child (its tree is already killed).
+/// Why [`collect`] gave up on the child (its tree is already killed).
 #[derive(Debug, PartialEq, Eq)]
 pub enum WaitError {
-    /// The stdout reader passed its cap.
+    /// Stdout passed its cap.
     Overflow,
     TimedOut,
     Failed(String),
+}
+
+/// What [`collect`] got from a child that exited in time.
+pub struct Finished {
+    pub status: ExitStatus,
+    /// At most the cap's worth, from the start.
+    pub stdout: Vec<u8>,
+    /// The last bytes of stderr, read only for a failed run (empty when it
+    /// succeeded or its reader missed the deadline).
+    pub stderr: Vec<u8>,
+}
+
+/// Run the spawned `child` to its exit by `deadline`: its stdout and stderr
+/// are drained on threads (stdout capped at `stdout_cap`, the last
+/// `stderr_keep` bytes of stderr kept), then `started` runs (feeding stdin,
+/// say). Once the child exits, whatever it left behind is killed at once
+/// rather than when the supervisor drops, so a background holder of a pipe
+/// cannot stall the readers until the deadline. Every error kills the tree.
+pub fn collect(
+    child: &mut Child,
+    supervisor: &ProcessSupervisor,
+    stdout_cap: usize,
+    stderr_keep: usize,
+    deadline: Instant,
+    started: impl FnOnce(&mut Child) -> Result<(), String>,
+) -> Result<Finished, WaitError> {
+    let (Some(out_pipe), Some(err_pipe)) = (child.stdout.take(), child.stderr.take()) else {
+        terminate(supervisor, child);
+        return Err(WaitError::Failed("stdout or stderr pipe missing".into()));
+    };
+    let overflow = Arc::new(AtomicBool::new(false));
+    let setup = (|| {
+        // The reader thread raises the flag, this thread polls it.
+        let stdout_rx = spawn_drain(out_pipe, stdout_cap, Some(Arc::clone(&overflow)))?;
+        let stderr_rx = spawn_drain(err_pipe, stderr_keep, None)?;
+        started(child)?;
+        Ok((stdout_rx, stderr_rx))
+    })();
+    let (stdout_rx, stderr_rx) = setup.map_err(|e: String| {
+        terminate(supervisor, child);
+        WaitError::Failed(e)
+    })?;
+    let status = wait_for_exit(child, supervisor, &overflow, deadline)?;
+    supervisor.kill_tree();
+    let stdout = recv_until(&stdout_rx, deadline)
+        .ok_or(WaitError::TimedOut)?
+        .map_err(|e| WaitError::Failed(format!("could not read stdout: {e}")))?;
+    if overflow.load(Ordering::Relaxed) {
+        return Err(WaitError::Overflow);
+    }
+    let stderr = if status.success() {
+        Vec::new()
+    } else {
+        recv_until(&stderr_rx, deadline)
+            .and_then(Result::ok)
+            .unwrap_or_default()
+    };
+    Ok(Finished {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 /// Drain `pipe` on a thread. With `overflow`, at most `keep` bytes are kept
 /// from the start; exceeding that raises the flag and stops reading (the
 /// caller kills the child). Without it the last `keep` bytes are kept and the
 /// rest is read and discarded so the writer never blocks on a full pipe.
-pub fn spawn_drain(
+fn spawn_drain(
     mut pipe: impl Read + Send + 'static,
     keep: usize,
     overflow: Option<Arc<AtomicBool>>,
 ) -> Result<Receiver<std::io::Result<Vec<u8>>>, String> {
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
-        .name("widget-drain".to_string())
+        .name("child-drain".to_string())
         .spawn(move || {
             let mut buf: VecDeque<u8> = VecDeque::new();
             let mut chunk = [0u8; 8192];
@@ -70,7 +133,7 @@ pub fn spawn_drain(
 
 /// Poll until the child exits. Kills the process tree and errors on deadline
 /// or when the stdout reader raises `overflow`.
-pub fn wait_for_exit(
+fn wait_for_exit(
     child: &mut Child,
     supervisor: &ProcessSupervisor,
     overflow: &AtomicBool,
@@ -97,7 +160,7 @@ pub fn wait_for_exit(
 }
 
 /// Result of a drain thread, or `None` if it has not finished by `deadline`.
-pub fn recv_until(
+fn recv_until(
     rx: &Receiver<std::io::Result<Vec<u8>>>,
     deadline: Instant,
 ) -> Option<std::io::Result<Vec<u8>>> {
@@ -105,10 +168,10 @@ pub fn recv_until(
         .ok()
 }
 
-/// Kill the plugin's process tree, then reap the direct child. The direct
+/// Kill the child's process tree, then reap the direct child. The direct
 /// `kill` is the fallback for a Windows run whose Job Object could not be
 /// attached (`kill_tree` is then a no-op); on a dead process it is harmless.
-pub fn terminate(supervisor: &ProcessSupervisor, child: &mut Child) {
+fn terminate(supervisor: &ProcessSupervisor, child: &mut Child) {
     supervisor.kill_tree();
     let _ = child.kill();
     let _ = child.wait(); // reap; nothing useful to do on failure

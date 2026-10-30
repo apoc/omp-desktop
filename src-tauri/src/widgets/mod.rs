@@ -7,7 +7,7 @@
 //!   `snapshot.rs` copies a run's scripts while checking that fingerprint.
 //! - `host.rs` owns the scheduler thread, the running processes and the
 //!   `widgets://` events (managed as `Arc<WidgetHost>`).
-//! - `run.rs` (with `child.rs`) executes one plugin; `context.rs` computes a
+//! - `run.rs` (with the crate's `child_run.rs`) executes one plugin; `context.rs` computes a
 //!   session's git context; `redact.rs` masks credentials in error text.
 //!
 //! Output validation lives in the frontend (`src/app/widgets.js`). User docs:
@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Manager as _};
 
-mod child;
 pub mod config;
 pub mod context;
 pub mod host;

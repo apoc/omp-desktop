@@ -149,6 +149,14 @@ check("resetEdits resets only changed rows; theme brings its accent", () => {
   assert.deepEqual(S.resetRow(row("accent"), vals({ theme: "daylight", accent: "#fff" })), { accent: S.themeAccent("daylight") });
 });
 
+check("Changes participates in Rail search, modified counts and reset", () => {
+  const v = vals({ showChanges: false });
+  assert.equal(S.value(row("showChanges"), v), false);
+  assert.equal(S.modifiedCount("rail", v), 1);
+  assert.deepEqual(S.resetEdits("rail", v), { showChanges: true });
+  assert.ok(S.search("pull request", v).groups.some(g => g.sectionId === "rail" && g.rows.some(r => r.id === "showChanges")));
+});
+
 check("resetRows resets only the given rows (the search matches)", () => {
   const v = vals({ fontSize: 120, monoChat: !D.monoChat, showRadar: false });
   const matched = S.search("font", v).groups.flatMap(g => g.rows);

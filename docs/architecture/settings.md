@@ -52,3 +52,4 @@ Removed tweak keys: `scanlines`, `autosave` (with the status-bar autosave toggle
 - **Updates.** The `version` row shows the version and last check, "Check now" (`updater.check`) and the skipped release with "Clear skipped" (`updater.clearSkipped`).
 - **Approvals.** The `approvalMode` row renders the same `ApprovalModeSection` as the approvals panel; `approvalRules` shows the rule count and opens the panel.
 - **Shortcuts.** `shortcuts-editor.jsx` is the rebinding editor (formerly the shortcuts modal): rebind, add a chord, clear, reset to default; rows from omp's `keybindings.yml` can be overridden too; the source chip shows where a binding comes from.
+- **Changes.** The `showChanges` rail toggle (default on) shows the Changes card; off also cancels its reads and turns Auto-fix off in every tab, and turning it back on never re-enables Auto-fix. The card, its GitHub lookup and Auto-fix: `pr-automation.md`.

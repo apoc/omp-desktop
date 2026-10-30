@@ -5,7 +5,7 @@
 //! Synchronous and blocking — the widget host calls it on a worker thread.
 //!
 //! The pipes are drained on threads and the exit wait polls against the
-//! deadline (`child.rs`). The stdout reader stops and raises a shared flag
+//! deadline (`child_run.rs`). The stdout reader stops and raises a shared flag
 //! past [`STDOUT_CAP_BYTES`]; the wait sees it and kills the tree. When the
 //! plugin itself exits, the tree is killed at once: a background child still
 //! holding stdout (`git fetch & echo '{…}'`) would otherwise hold the result
@@ -23,12 +23,11 @@ use std::ffi::OsStr;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::child_run::{collect, WaitError};
 use crate::supervisor::ProcessSupervisor;
-use crate::widgets::child::{recv_until, spawn_drain, terminate, wait_for_exit, WaitError};
 use crate::widgets::config::PluginEntry;
 use crate::widgets::context::PluginContext;
 use crate::widgets::schedule::Outcome;
@@ -72,50 +71,34 @@ fn run_inner<A: AsRef<OsStr>>(
     let supervisor = Arc::new(ProcessSupervisor::attach(&child));
     on_spawn(&supervisor);
 
-    let (Some(out_pipe), Some(err_pipe)) = (child.stdout.take(), child.stderr.take()) else {
-        terminate(&supervisor, &mut child);
-        return Err("stdout or stderr pipe missing".to_string());
-    };
-    let overflow = Arc::new(AtomicBool::new(false));
-    let stdout_rx = spawn_drain(
-        out_pipe,
+    let done = collect(
+        &mut child,
+        &supervisor,
         STDOUT_CAP_BYTES,
-        Some(Arc::clone(&overflow)), // the reader thread raises the flag, this thread polls it
+        STDERR_KEEP_BYTES,
+        deadline,
+        |child| feed_stdin(child, ctx),
     )
-    .inspect_err(|_| terminate(&supervisor, &mut child))?;
-    let stderr_rx = spawn_drain(err_pipe, STDERR_KEEP_BYTES, None)
-        .inspect_err(|_| terminate(&supervisor, &mut child))?;
-    feed_stdin(&mut child, ctx).inspect_err(|_| terminate(&supervisor, &mut child))?;
-
-    let status =
-        wait_for_exit(&mut child, &supervisor, &overflow, deadline).map_err(|e| match e {
-            WaitError::Overflow => cap_error(),
-            WaitError::TimedOut => timeout_error(entry.timeout_ms),
-            WaitError::Failed(e) => e,
-        })?;
-    // The plugin is done; whatever it left behind dies now rather than when
-    // the supervisor drops, so a background holder of a pipe cannot stall
-    // the readers until the deadline.
-    supervisor.kill_tree();
-    let out = recv_until(&stdout_rx, deadline)
-        .ok_or_else(|| timeout_error(entry.timeout_ms))?
-        .map_err(|e| format!("could not read stdout: {e}"))?;
-    if overflow.load(Ordering::Relaxed) {
-        return Err(cap_error());
-    }
-    if !status.success() {
-        let stderr = recv_until(&stderr_rx, deadline)
-            .and_then(Result::ok)
-            .unwrap_or_default();
-        let tail_src = if stderr.is_empty() { &out } else { &stderr };
+    .map_err(|e| match e {
+        WaitError::Overflow => cap_error(),
+        WaitError::TimedOut => timeout_error(entry.timeout_ms),
+        WaitError::Failed(e) => e,
+    })?;
+    if !done.status.success() {
+        let tail_src = if done.stderr.is_empty() {
+            &done.stdout
+        } else {
+            &done.stderr
+        };
         // `ExitStatus`'s own Display already says "exit status: N"; a killed
         // run has no code and keeps the signal text.
-        let how = status
+        let how = done
+            .status
             .code()
-            .map_or_else(|| status.to_string(), |code| format!("exit {code}"));
+            .map_or_else(|| done.status.to_string(), |code| format!("exit {code}"));
         return Err(format!("{how}: {}", tail(tail_src)));
     }
-    String::from_utf8(out).map_err(|_| "stdout is not UTF-8".to_string())
+    String::from_utf8(done.stdout).map_err(|_| "stdout is not UTF-8".to_string())
 }
 
 fn spawn<A: AsRef<OsStr>>(

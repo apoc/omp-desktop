@@ -95,6 +95,8 @@
     extWidgets:     EXT.EMPTY,
   };
 
+  // Cancels in-flight reads and sends when the tab's conversation is replaced.
+  let sessionContext = {};
   let streamingBubble = null;
   // The streaming message's content, rebuilt from delta frames
   // (app/stream-delta.js `accFor`): `{ mid, blocks, seed }` — omp's
@@ -791,6 +793,7 @@
       goal:          GOAL.UNKNOWN,
       extWidgets:    EXT.EMPTY,
     });
+    sessionContext = {};
     streamingBubble = null;
     streamAcc       = null;
     streamSnapshot  = null;
@@ -842,6 +845,7 @@
       goal:          state.goal,
       extWidgets:    state.extWidgets,
       // volatile vars
+      sessionContext,
       streamingBubble,
       streamAcc,
       activeToolCards: new Map(activeToolCards),
@@ -883,6 +887,7 @@
       goal:          snap.goal ?? GOAL.UNKNOWN,
       extWidgets:    snap.extWidgets ?? EXT.EMPTY,
     });
+    sessionContext = snap.sessionContext ?? {};
     streamingBubble = snap.streamingBubble;
     streamAcc       = snap.streamAcc ?? null;
     activeToolCards = snap.activeToolCards;
@@ -907,14 +912,16 @@
   // state after a newer switch already took over; guarded stale call detects
   // the generation mismatch and bails without touching shared state).
   let _switchGen = 0;
+  let _switchAwayFrom = null;
   let _switchPromise = Promise.resolve();
   async function _switchToSession(id) {
     if (!window.__TAURI__) return;
     let done;
     const p = new Promise(resolve => { done = resolve; });
     _switchPromise = p;
-    try {
     const myGen = ++_switchGen;
+    _switchAwayFrom = activeSessionId !== id ? activeSessionId : null;
+    try {
 
     // Snapshot current session so we can restore it when switching back
     _saveCurrentSession();
@@ -1092,6 +1099,7 @@
     _initFetch();
     notify();
     } finally {
+      if (_switchGen === myGen) _switchAwayFrom = null;
       done();
     }
   }
@@ -2875,10 +2883,11 @@
     // (activeSessionId moves only after the switch's awaits), and its
     // subscription line would undo the switch's downgrade of that process.
     const gen = _switchGen;
+    const conversation = sessionContext;
     _sendWithResponse({ type: "negotiate_protocol", protocolVersion: 2 })
       .catch(() => {})
       .finally(() => {
-        if (_switchGen !== gen) return;
+        if (_switchGen !== gen || sessionContext !== conversation) return;
         // omp's ask dialog is off by default and per process: a respawned
         // process falls back to one `select` per question until told again.
         _sendWithResponse({ type: "set_ask_dialog", enabled: true })
@@ -3288,6 +3297,25 @@
     return _send({ type: "prompt", message: text, images: images ?? [], ...(streamingBehavior ? { streamingBehavior } : {}) });
   }
 
+  /** A predicate that stays true while `sessionId` is still the selected,
+   *  settled-in tab on the conversation and branch it had at this call: any
+   *  tab switch, respawn, conversation reset or branch change voids a PR
+   *  automation read or send started before it. */
+  function _prAutomationCurrent(sessionId) {
+    const context = sessionContext, switchGen = _switchGen;
+    const branch = sessionRegistry.get(sessionId)?.branch;
+    return () =>
+      !!window.__TAURI__ &&
+      sessionRegistry.has(sessionId) &&
+      sessionId === activeSessionId &&
+      !_replayBuffer &&
+      _switchAwayFrom !== sessionId &&
+      !_respawning.has(sessionId) &&
+      sessionContext === context &&
+      _switchGen === switchGen &&
+      sessionRegistry.get(sessionId)?.branch === branch;
+  }
+
   /** A `goal` command's `{goal, state}` result applied to the active tab. */
   function _applyGoalResult(data) {
     const next = GOAL.fromSnapshot(state.goal, data?.state ?? null);
@@ -3321,6 +3349,47 @@
     // persisted message. A command omp runs locally sends no echo, so its
     // bubble keeps no `ts` and the get_messages merge leaves it in place.
     send(text, images) { return _sendPrompt(text, images); },
+    // Monitoring is read-only. Only the selected, fully settled tab may
+    // receive remediation; recheck here after the asynchronous GitHub read.
+    // A read the tab can't take now is `OMP_PR_AUTOMATION.STALE`, never
+    // `null`: that is Rust's "no PR", and the card would say so.
+    async prAutomationSnapshot(sessionId) {
+      const { STALE } = window.OMP_PR_AUTOMATION;
+      const current = _prAutomationCurrent(sessionId);
+      if (!current()) return STALE;
+      const result = await window.__TAURI__.core.invoke(
+        "pr_automation_snapshot", { sessionId },
+      );
+      return current() ? result : STALE;
+    },
+    async prAutomationSend(sessionId, text, expected, canSend) {
+      if (!expected?.url || !expected.branch || !expected.head || typeof canSend !== "function") return false;
+      const current = _prAutomationCurrent(sessionId);
+      const ready = () => {
+        const entry = sessionRegistry.get(sessionId);
+        return (
+          canSend() && current() && !!entry?.path &&
+          !userAbortInFlight && !entry.autoRenameInFlight &&
+          state.rpcState?.isSettled === true && runStateCached(state) === "idle" &&
+          !state.queueSending.length && !(state.rpcState?.queuedMessageCount > 0) &&
+          !state.queue.steering.length && !state.queue.followUp.length &&
+          !GOAL.isOpen(state.goal) &&
+          !TURN.busyElsewhere(_sessionsView(), sessionId, entry.path)
+        );
+      };
+      if (!ready()) return false;
+      // Re-read Rust's current branch/HEAD immediately before the handoff;
+      // a displayed snapshot is not permission to fix a different revision.
+      const latest = await window.__TAURI__.core.invoke(
+        "pr_automation_snapshot", { sessionId },
+      );
+      if (!ready() || !latest || latest.url.toLowerCase() !== expected.url.toLowerCase() || latest.branch !== expected.branch || latest.head !== expected.head) return false;
+      // `ready()` just ran in this same synchronous step, so nothing can
+      // change between it and the handoff. Once handed to omp the prompt is
+      // out, whatever happens meanwhile: the controller records it as sent
+      // even after a tab switch.
+      return _sendPrompt(text);
+    },
     // No id on purpose: a pending-id match returns before the command
     // switch, and the abort response is what releases a cancelled
     // auto-rename. See `_releaseAutoRenameAfterAbort`.
