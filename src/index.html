@@ -151,6 +151,7 @@
   <script src="app/backdrops-latent.js"></script>
   <script src="app/backdrops-orbit.js"></script>
   <script src="app/backdrops-neural.js"></script>
+  <script src="app/backdrops-attention.js"></script>
 
   <!-- Per-tab composer draft + plan-mode state (issue #28): pure map and
        transition helpers. Dependency-free IIFE; design/composer.jsx,
@@ -404,7 +405,9 @@
   <!-- Start screens: one renderer per screen (plain IIFEs registering on
        window.OMP_BACKDROP_RENDERERS, read when the canvas effect runs; the
        latent screen's logo lives in latent-logo.js, window.OMP_LATENT_LOGO,
-       which latent.js reads at call time), then the canvas host
+       which latent.js reads at call time, and the attention screen's in
+       attention-logo.js, window.OMP_ATTENTION_LOGO, read by attention.js
+       the same way), then the canvas host
        window.Backdrop, which destructures window.OMP_MATRIX at top level.
        empty-workspace.jsx destructures window.Backdrop,
        window.MarkdownContent and window.OMP_BACKDROPS at top level;
@@ -415,6 +418,8 @@
   <script src="design/backdrops/sampling.js"></script>
   <script src="design/backdrops/orbit.js"></script>
   <script src="design/backdrops/neural.js"></script>
+  <script src="design/backdrops/attention.js"></script>
+  <script src="design/backdrops/attention-logo.js"></script>
   <script type="text/babel" src="design/backdrops/backdrop.jsx"></script>
   <script type="text/babel" src="design/empty-workspace.jsx"></script>
   <script type="text/babel" src="design/panels.jsx"></script>

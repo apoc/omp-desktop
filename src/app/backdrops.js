@@ -5,11 +5,12 @@
 //
 // Exposes `window.OMP_BACKDROPS`; wrapped as an IIFE per the project rule for
 // plain <script> tags (see AGENTS.md "IIFE rule"). The rules of the other
-// screens are app/backdrops-{latent,orbit,neural}.js, which add theirs to the
-// same object (so they load after this file); canvas drawing lives in
-// design/backdrops/ (one renderer per screen, the host in backdrop.jsx); the
-// matrix rain's own geometry is app/matrix-rain.js. Everything is pure, takes
-// its randomness as `rand`, and is covered by test-backdrops.mjs.
+// screens are app/backdrops-{latent,orbit,neural,attention}.js, which add
+// theirs to the same object (so they load after this file); canvas drawing
+// lives in design/backdrops/ (one renderer per screen, the host in
+// backdrop.jsx); the matrix rain's own geometry is app/matrix-rain.js.
+// Everything is pure, takes its randomness as `rand`, and is covered by
+// test-backdrops.mjs.
 (function () {
   const SCREENS = Object.freeze([
     { id: "matrix", label: "Matrix", blurb: "digital rain" },
@@ -17,6 +18,7 @@
     { id: "sampling", label: "Next token", blurb: "top-k sampling" },
     { id: "orbit", label: "Agent loop", blurb: "tool calls in orbit" },
     { id: "neural", label: "Forward pass", blurb: "activations firing" },
+    { id: "attention", label: "Attention", blurb: "multi-head self-attention" },
   ]);
   const DEFAULT_SCREEN = "matrix";
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Regression script for src/app/backdrops.js and backdrops-{latent,orbit,
-// neural}.js — the start screens (the empty workspace's animated
+// neural,attention}.js — the start screens (the empty workspace's animated
 // backdrops): the screen list, shared math and the pure rules of the
-// latent-space, next-token, agent-loop and forward-pass screens.
+// latent-space, next-token, agent-loop, forward-pass and attention screens.
 // Run: node tests/test-backdrops.mjs
 
 import assert from "node:assert/strict";
@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const win = {};
 // Load order as in index.html: the screen files add to the base object.
-for (const f of ["backdrops.js", "backdrops-latent.js", "backdrops-orbit.js", "backdrops-neural.js"]) {
+for (const f of ["backdrops.js", "backdrops-latent.js", "backdrops-orbit.js", "backdrops-neural.js", "backdrops-attention.js"]) {
   // eslint-disable-next-line no-new-func
   new Function("window", readFileSync(join(root, "src/app", f), "utf8"))(win);
 }
@@ -44,8 +44,8 @@ function seeded(seed) {
 
 // ── screens ──
 
-check("five screens, matrix first and the default", () => {
-  assert.deepEqual(B.SCREENS.map(s => s.id), ["matrix", "latent", "sampling", "orbit", "neural"]);
+check("six screens, matrix first and the default", () => {
+  assert.deepEqual(B.SCREENS.map(s => s.id), ["matrix", "latent", "sampling", "orbit", "neural", "attention"]);
   assert.equal(B.DEFAULT_SCREEN, "matrix");
   for (const s of B.SCREENS) assert.ok(s.label && s.blurb, s.id);
 });
@@ -487,6 +487,130 @@ check("the pointer's ease makes nodes fire more readily, still within the cap", 
     return fired;
   };
   assert.ok(total(() => 1) > total(null) * 1.05);
+});
+
+// ── attention ──
+
+const toks = (src) => B.tokenize(src).filter(t => B.tokenKind(t) !== "space");
+
+check("causal mask: no head in any layer attends to a later token; weights sum to 1", () => {
+  const tokens = B.windowAt(17, 12);
+  for (let l = 0; l < B.LAYERS; l++) {
+    const maps = B.attentionMaps(tokens, l);
+    assert.equal(maps.length, B.HEADS.length);
+    for (const m of maps) {
+      m.forEach((row, q) => {
+        assert.equal(row.length, tokens.length);
+        row.forEach((w, k) => (k > q ? assert.equal(w, 0, `q${q} k${k}`) : assert.ok(w > 0)));
+        assert.ok(Math.abs(row.reduce((a, b) => a + b, 0) - 1) < 1e-9);
+      });
+    }
+  }
+  for (const h of B.HEADS) assert.ok(B.headScores(tokens, 4, h.id).slice(5).every(v => v === -Infinity));
+});
+
+const argmax = (row) => row.indexOf(Math.max(...row));
+
+check("head patterns pick what they claim", () => {
+  const t = toks("const runs = f(a, g(b, runs));");
+  // const runs = f ( a , g ( b , runs ) ) ;
+  // 0     1    2 3 4 5 6 7 8 9 10 11  12 13 14
+  assert.equal(t.length, 15);
+  for (let l = 0; l < B.LAYERS; l++) {
+    for (const q of [1, 5, 9, 13]) assert.equal(argmax(B.attend(t, q, "prev", l)), q - 1, "previous token");
+    assert.equal(argmax(B.attend(t, 9, "bracket", l)), 8, "inside g( … → its (");
+    assert.equal(argmax(B.attend(t, 12, "bracket", l)), 8, ") → its own (");
+    assert.equal(argmax(B.attend(t, 13, "bracket", l)), 4, "outer ) → f's (");
+    assert.equal(argmax(B.attend(t, 11, "ident", l)), 1, "runs → the earlier runs");
+    assert.equal(argmax(B.attend(t, 5, "ident", l)), 0, "nothing to match: the sink");
+    // The broad head spreads out: flatter than every other head.
+    const top = (id) => Math.max(...B.attend(t, 13, id, l));
+    for (const id of ["prev", "bracket", "ident"]) assert.ok(top("broad") < top(id), id);
+  }
+  assert.ok(Math.max(...B.attend(t, 13, "prev", 3)) > Math.max(...B.attend(t, 13, "prev", 0)), "deeper layers sharper");
+  assert.equal(B.enclosingOpen(t, 2), -1);
+  assert.equal(B.enclosingOpen(t, 14), -1, "all closed by the ;");
+});
+
+check("windowAt slides one token per step and wraps round the sequence", () => {
+  const n = 10, len = B.SEQUENCE.length;
+  assert.deepEqual(B.windowAt(3, n), B.SEQUENCE.slice(3, 3 + n));
+  for (const k of [0, 41, len - 4, len + 2]) {
+    const a = B.windowAt(k, n), b = B.windowAt(k + 1, n);
+    assert.deepEqual(b.slice(0, -1), a.slice(1), "drops the oldest, keeps the order");
+    assert.equal(b[n - 1], B.windowAt(k + n, 1)[0], "appends the token after the window");
+  }
+  assert.deepEqual(B.windowAt(len - 2, 4), [B.SEQUENCE[len - 2], B.SEQUENCE[len - 1], B.SEQUENCE[0], B.SEQUENCE[1]]);
+  assert.deepEqual(B.windowAt(-1, 2), B.windowAt(len - 1, 2));
+});
+
+check("phaseAt walks attention then MLP layer by layer, then output and the slide", () => {
+  const seen = [];
+  let last = -1;
+  for (let t = 0; t < B.CYCLE; t++) {
+    const p = B.phaseAt(t);
+    assert.ok(p.u >= 0 && p.u < 1);
+    assert.ok(p.layer >= last, "layers only rise");
+    last = p.layer;
+    const tag = `${p.stage}${p.stage === "attn" || p.stage === "mlp" ? p.layer : ""}`;
+    if (seen[seen.length - 1] !== tag) seen.push(tag);
+  }
+  assert.deepEqual(seen, ["attn0", "mlp0", "attn1", "mlp1", "attn2", "mlp2", "attn3", "mlp3", "out", "slide"]);
+  // The reduced-motion still frame (90 steps in) shows a layer's arcs.
+  assert.ok(["attn", "mlp"].includes(B.phaseAt(89).stage));
+});
+
+check("layout: inside the canvas, clear of the logo, slots in order, heatmaps apart", () => {
+  const boxed = (r, W, H) => r.x >= 0 && r.y >= 0 && r.x + r.size <= W && r.y + r.size <= H;
+  for (const [W, H] of [[700, 460], [1300, 1000], [1600, 1000], [2400, 1300]]) {
+    const fit = { font: 12, x: W * 0.15, y: H * 0.45, width: W * 0.7, height: H * 0.1 };
+    const L = B.attentionLayout({ width: W, height: H, fit, compact: false });
+    assert.equal(L.slots.length, L.n + 1, "a slot for the prediction");
+    assert.ok(L.n >= 5 && L.n <= 12);
+    for (let i = 1; i < L.slots.length; i++) assert.ok(L.slots[i] > L.slots[i - 1]);
+    assert.ok(L.slots[0] > 0 && L.slots[L.n] < W && L.rowY < H - 20);
+    const below = fit.y + fit.height, above = fit.y;
+    assert.equal(L.layers.length, B.LAYERS);
+    L.layers.forEach((ly, l) => {
+      assert.ok(ly.top >= below && ly.bottom < L.rowY, `layer ${l} between logo and tokens`);
+      assert.ok(ly.attnY > ly.normY && ly.normY > ly.mlpY, "attention, add & norm, then MLP, rising");
+      assert.ok(ly.attnY - ly.cap >= ly.top, "arcs stay in their layer");
+      if (l) assert.ok(ly.bottom <= L.layers[l - 1].top + 1e-9, "layer 0 at the bottom");
+    });
+    assert.equal(L.heads.length, B.HEADS.length);
+    L.heads.forEach((r, h) => {
+      assert.ok(boxed(r, W, H) && r.y + r.size < above, "heatmap above the logo");
+      if (h) assert.ok(r.x > L.heads[h - 1].x + L.heads[h - 1].size, "no overlap");
+    });
+  }
+  const tile = B.attentionLayout({ width: 230, height: 92, fit: null, compact: true });
+  assert.equal(tile.caption, null);
+  for (const r of tile.heads) assert.ok(boxed(r, 230, 92) && r.x > tile.slots[tile.n]);
+  assert.ok(tile.layers.every(ly => ly.attnY - ly.cap >= 0 && ly.attnY < tile.rowY));
+});
+
+check("slotAt picks the nearest slot, nothing past the row's ends", () => {
+  const slots = [100, 150, 200, 250];
+  assert.equal(B.slotAt(100, slots), 0);
+  assert.equal(B.slotAt(162, slots), 1);
+  assert.equal(B.slotAt(176, slots), 2);
+  assert.equal(B.slotAt(74, slots), -1);
+  assert.equal(B.slotAt(276, slots), -1);
+});
+
+check("logo: columns spread over the window and rows over the heads evenly; the mask sweep hides what's ahead", () => {
+  for (const [count, n] of [[91, 12], [91, 5], [12, 4]]) {
+    const counts = new Array(n).fill(0);
+    for (let i = 0; i < count; i++) counts[B.bandOf(i, count, n)]++;
+    assert.ok(Math.max(...counts) - Math.min(...counts) <= 1, `${count} over ${n}`);
+    assert.equal(B.bandOf(0, count, n), 0);
+    assert.equal(B.bandOf(count - 1, count, n), n - 1);
+  }
+  assert.deepEqual(B.maskSweep(30, 0, 20), { masked: true, glow: 0 });
+  assert.equal(B.maskSweep(20, 0, 20).glow, 1, "the front itself glows");
+  assert.ok(B.maskSweep(17, 0, 20).glow > 0 && B.maskSweep(17, 0, 20).glow < 1);
+  assert.equal(B.maskSweep(5, 0, 20).glow, 0, "long passed: plain");
+  assert.ok(!B.maskSweep(15, 0, 20).masked && B.maskSweep(15, 3, 20).masked, "the front leans: lower rows lag");
 });
 
 console.log(`backdrops: ${passed} checks passed`);
