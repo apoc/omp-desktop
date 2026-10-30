@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Regression script for src/app/updater.js — the in-app update state
 // machine (issue #19): which transitions are legal, what a failed
-// background check may and may not hide, when the tab-bar pill shows, and
+// background check may and may not hide, when the status-bar pill shows, and
 // which tabs a restart would interrupt.
 // Run: node tests/test-updater.mjs  (or: npm run test:updater)
 

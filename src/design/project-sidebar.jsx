@@ -12,14 +12,9 @@
 const { Icon, TabRunDot, TabLabel, RenameField } = window;
 const { groupTabs, groupRunState, groupTarget, membersNewestFirst, basename, parentName } = window.OMP_PROJECT_NAV;
 
-// Same guard as chrome.jsx's copy: the registry may not be loaded.
-function sidebarHint(actionId, fallback) {
-  return window.OMP_KEYMAP ? window.OMP_KEYMAP.hintFor(actionId) : fallback;
-}
-
 function ProjectSidebar({
   tabs, activeId, recents, profileLabel,
-  onSelectTab, onCloseTab, onRenameTab, onNewInProject, onOpenRecent, onForgetRecent, onOpenFolder, onHide, onReorder,
+  onSelectTab, onCloseTab, onRenameTab, onNewInProject, onOpenRecent, onForgetRecent, onOpenFolder, onReorder,
 }) {
   // Group keys the user folded. Not persisted: tab ids (and so pathless
   // groups' keys) don't survive a restart anyway.
@@ -43,16 +38,10 @@ function ProjectSidebar({
   // Drag to reorder (#40), the same lists as the tab bar's: projects (a
   // project's rows move as one block), and members within their project.
   const reorder = window.useDragReorder(onReorder);
-  const hideHint = sidebarHint("desktop.sidebar.toggle", "Ctrl+B");
 
   return (
     <aside className="project-sidebar" aria-label="projects">
-      <div className="psb-head">
-        <span>projects</span>
-        <button className="psb-act" title={`hide sidebar (${hideHint})`} onClick={onHide}>
-          <Icon name="sidebar" size={11} />
-        </button>
-      </div>
+      <div className="psb-head">projects</div>
 
       <div className="psb-scroll" onPointerDown={reorder.onPointerDown}>
         <div className="psb-section">open</div>

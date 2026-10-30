@@ -19,7 +19,7 @@ const _CMP_SEND_HINTS = {
 };
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` (display
-// logic lives there so chrome.jsx's ⌘K/history hints can reuse it too,
+// logic lives there so toolbar.jsx's ⌘K/history hints can reuse it too,
 // instead of each file re-deriving chord display independently). The guard
 // here is the one thing that can't move: "registry not loaded yet"
 // (`window.OMP_KEYMAP` absent — first render before keymap.js runs, should

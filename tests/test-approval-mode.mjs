@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Regression script for src/app/approval-mode.js — omp's tool approval
 // mode chosen in the desktop (#57): which mode a tab's folder resolves to,
-// the status-bar cell, which open tabs a change restarts now or once idle,
+// the toolbar's approvals button, which open tabs a change restarts now or once idle,
 // and the mode editor's project rows.
 // Run: node tests/test-approval-mode.mjs
 

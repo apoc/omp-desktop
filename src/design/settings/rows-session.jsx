@@ -2,9 +2,9 @@
    design/settings/rows-session.jsx — Settings → Session's custom `version`
    row (window.OMP_SETTINGS_ROWS): the running app version and what the
    last update check found (ctx.updater, app/use-updater.jsx), "Check now"
-   (a manual check: opens the update modal, as the tab-bar label does), and
+   (a manual check: opens the update modal, as the status-bar version label does), and
    the release skipped from that modal (`skippedUpdate`) with "Clear", so
-   the tab-bar pill offers it again.
+   the status-bar pill offers it again.
    ═════════════════════════════════════════════════════════════════════ */
 
 /** What the last check found, as a short phrase ("" before any). */

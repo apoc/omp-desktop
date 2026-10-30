@@ -1,5 +1,5 @@
 /* ═════════════════════════════════════════════════════════════════════
-   approval-rules-panel.jsx — the approvals panel (status-bar ✓, keymap
+   approval-rules-panel.jsx — the approvals panel (toolbar ✓, keymap
    `desktop.panel.rules`): the tool approval mode editor on top
    (approval-mode-section.jsx, #57, the same one Settings → Approvals
    shows), then the tool-approval rules granted for the active tab's

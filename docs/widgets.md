@@ -56,7 +56,7 @@ Widget cards sit in the ambient rail **between the Subagents card and the Minima
 
 A disabled plugin (`"enabled": false`) gets no card.
 
-Settings → Rail has one toggle per enabled plugin, under the toggles for the built-in cards (`showContext`, `showRadar`, `showSubagents`, `showMinimap`). A plugin's toggle is stored as the tweak `widget:plugin:<id>`, so the choice survives restarts (toggles saved by earlier builds under `widget:<id>` are not carried over). **A hidden card never runs.** The same goes for the whole rail: while the rail is hidden (focus layout, or the conversation tree is open), no plugin starts. Closing the rail with its × button stays available even when every card is hidden.
+Settings → Rail has one toggle per enabled plugin, under the toggles for the built-in cards (`showContext`, `showRadar`, `showSubagents`, `showMinimap`). A plugin's toggle is stored as the tweak `widget:plugin:<id>`, so the choice survives restarts (toggles saved by earlier builds under `widget:<id>` are not carried over). **A hidden card never runs.** The same goes for the whole rail: while the rail is hidden (focus layout, or the conversation tree is open), no plugin starts. The toolbar's rail button hides and shows the rail even when every card is hidden.
 
 ## Config reference
 

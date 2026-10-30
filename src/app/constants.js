@@ -28,7 +28,7 @@
   // labels and bounds: app/settings-schema.js.
   const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
     "theme": "aurora",
-    "startScreen": "matrix",
+    "startScreen": "latent",
     "density": "compact",
     "layout": "rail",
     "accent": "#8AF0C8",

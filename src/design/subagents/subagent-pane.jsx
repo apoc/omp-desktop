@@ -102,7 +102,7 @@ function SaAgentRow({ agent: a, depth, now, onSelect }) {
 
 function SubagentPane({
   state, filter, onFilter, selected, onSelect, level,
-  transcript, onLoadTranscript, onClose, onJumpToCall, onSteer, onStop, submitKey = "enter",
+  transcript, onLoadTranscript, onJumpToCall, onSteer, onStop, submitKey = "enter",
 }) {
   const all = _SAP.listAgents(state);
   const t = _SAP.totals(all);
@@ -121,7 +121,6 @@ function SubagentPane({
         <span className="mono" style={{ color: "var(--fg-4)", whiteSpace: "nowrap" }}>· {t.live}/{t.total} live</span>
         <div style={{ flex: 1 }} />
         <span className={`chip muted mono sa-level ${level}`} title="RPC subagent subscription level">{level}</span>
-        <button className="btn icon ghost" onClick={onClose} title="close manager"><_SAP_Icon name="close" size={10} /></button>
       </div>
 
       {selected ? (

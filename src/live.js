@@ -3082,12 +3082,10 @@
     // startDragging() must be called synchronously within the mousedown handler.
     document.addEventListener("mousedown", e => {
       if (!e.target.closest(".chrome")) return;
-      // Interactive chrome content (the profile popover's text inputs, and
-      // the popover itself for padding/hints/row clicks) must never start a
-      // window drag — a mousedown there is a caret placement or a
-      // drag-select, and starting an OS window move instead swallows it.
-      // Any future interactive .chrome content needs the same exclusion.
-      if (e.target.closest("button, input, textarea, .profile-pop, .chrome-lights, .win-controls")) return;
+      // Interactive chrome content (buttons, any future text field) must
+      // never start a window drag — a mousedown there is a click or a caret
+      // placement, and starting an OS window move instead swallows it.
+      if (e.target.closest("button, input, textarea, .chrome-lights, .win-controls")) return;
       win.startDragging().catch(() => {});
     });
 

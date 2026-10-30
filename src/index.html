@@ -176,7 +176,7 @@
   <script src="app/ask-dialog.js"></script>
 
   <!-- Tool approval mode (#57): omp's --approval-mode per project / default,
-       the status-bar cell and which open tabs a change restarts.
+       the toolbar's approvals button and which open tabs a change restarts.
        Dependency-free IIFE (reads window.OMP_TURN_STATUS late-bound, at
        call time); live.js reads window.OMP_APPROVAL_MODE at its top-level
        init, the approvals panel and app-live.jsx inside function bodies. -->
@@ -386,7 +386,7 @@
        window.GoalStrip at top level and hands it to composer.jsx as an element. -->
   <script type="text/babel" src="design/goal-strip.jsx"></script>
   <script type="text/babel" src="design/composer.jsx"></script>
-  <!-- Per-tab profile selector — chrome.jsx destructures window.ProfileMenu
+  <!-- Per-tab profile selector — toolbar.jsx destructures window.ProfileMenu
        at top level, so this must load before it. -->
   <script type="text/babel" src="design/profile-menu.jsx"></script>
   <!-- Inline conversation-name editor (#32) — tab-group-chip.jsx, chrome.jsx
@@ -398,6 +398,9 @@
        so this must load before it. -->
   <script type="text/babel" src="design/tab-group-chip.jsx"></script>
   <script type="text/babel" src="design/chrome.jsx"></script>
+  <!-- App toolbar between the title bar and the tabs; app-live.jsx
+       destructures window.Toolbar. -->
+  <script type="text/babel" src="design/toolbar.jsx"></script>
   <!-- Project sidebar (#27); reads window.TabRunDot / window.TabLabel
        (tab-group-chip.jsx) and window.OMP_PROJECT_NAV at top level. -->
   <script type="text/babel" src="design/project-sidebar.jsx"></script>

@@ -6,7 +6,7 @@
    - Ambient rail: TokenGauge, ActivityRadar, subagents card, Minimap
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, ProfileMenu, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot, TabLabel, RenameField } = window;
+const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot, TabLabel, RenameField } = window;
 const { groupTabs } = window.OMP_PROJECT_NAV;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` — same
@@ -22,11 +22,9 @@ const IS_WIN = typeof navigator !== "undefined" &&
   (navigator.userAgent.includes("Windows") || navigator.platform.startsWith("Win"));
 
 // ── Window chrome ─────────────────────────────────────────────────────
-function WindowChrome({
-  project, onCmd,
-  profiles, activeProfileId, startupProfileId,
-  onSelectProfile, onCreateProfile, onRenameProfile, onDeleteProfile, onSetStartupProfile,
-}) {
+// Title and window controls only: the bridge and the profile menu are on
+// the toolbar (toolbar.jsx).
+function WindowChrome({ project }) {
   return (
     <div className="chrome" data-tauri-drag-region>
       {/* macOS traffic lights — left side, hidden on Windows */}
@@ -50,24 +48,7 @@ function WindowChrome({
         )}
       </div>
 
-      {/* Per-tab omp profile — the selector acts on the active tab only. */}
-      <ProfileMenu
-        profiles={profiles}
-        activeId={activeProfileId}
-        startupId={startupProfileId}
-        onSelect={onSelectProfile}
-        onCreate={onCreateProfile}
-        onRename={onRenameProfile}
-        onDelete={onDeleteProfile}
-        onSetStartup={onSetStartupProfile}
-      />
-
       <div className="chrome-right">
-        <button className="btn ghost outlined" onClick={onCmd}>
-          <Icon name="command" size={11} /> bridge{" "}
-          <span className="kbd">{hintFor("desktop.commands.open", IS_WIN ? "^K" : "⌘K")}</span>
-        </button>
-
         {/* Windows controls — right side, hidden on macOS/Linux */}
         {IS_WIN && (
           <div className="win-controls">
@@ -103,9 +84,8 @@ function tabClickProps(onSelect, onClose) {
 }
 
 function TabBar({
-  projects, activeId, onSelect, onClose, onRename, onNew, onHistory, onNewInProject, onReorder,
-  sidebarOpen, onToggleSidebar,
-  profiles = [], appVersion, updateVersion, onUpdate, onCheckUpdate,
+  projects, activeId, onSelect, onClose, onRename, onNewInProject, onReorder,
+  profiles = [],
   settings, onSelectSettings, onCloseSettings,
 }) {
   // Tabs can run under different profiles, so a tab whose profile is not the
@@ -121,12 +101,6 @@ function TabBar({
   const reorder = window.useDragReorder(onReorder);
   return (
     <div className="tabs" onPointerDown={reorder.onPointerDown}>
-      <button className={`tab-add ${sidebarOpen ? "on" : ""}`}
-        title={`project sidebar (${hintFor("desktop.sidebar.toggle", "Ctrl+B")})`}
-        aria-pressed={!!sidebarOpen}
-        onClick={onToggleSidebar}>
-        <Icon name="sidebar" size={11} />
-      </button>
       {/* Tabs on one folder + profile share a chip (#27); a project with a
           single tab renders as a plain tab. */}
       {groupTabs(projects).map((group) => {
@@ -189,33 +163,21 @@ function TabBar({
           </button>
         </div>
       )}
-      <button className="tab-add" title="open project" onClick={onNew}>
-        <Icon name="plus" size={11} />
-      </button>
-      <button className="tab-add" title={`conversation history (${hintFor("desktop.history.open", "Ctrl+H")})`} onClick={onHistory}>
-        <Icon name="clock" size={11} />
-      </button>
-      <div style={{ flex: 1 }} />
-      <div className="tabs-right mono">
-        {updateVersion && (
-          <button className="btn outlined update-pill" onClick={onUpdate} title={`OMP Desktop v${updateVersion} is available`}>
-            <Icon name="arrowUp" size={9} />v{updateVersion}
-          </button>
-        )}
-        <button className="btn ghost app-version" onClick={onCheckUpdate} title="check for updates">
-          {appVersion ? `v${appVersion}` : "—"}
-        </button>
-      </div>
     </div>
   );
 }
 
-// ── Status bar (footer): connection, tokens, todos, panels ──────────
-// The model and thinking level are not repeated here: the composer's
-// pills below the prompt box show (and change) both. It spans the window
-// under the workspace; the st-ctx meter, st-cost and st-tps cells (each
-// with its separator) drop out when the window is narrow (layout/rail.css).
-function StatusBar({ ctx, todoDone, todoTotal, onTodo, onSettings, settingsActive = false, onChanges, onRules, approvalMode, onStats, onTree, onTerminal, terminalOpen, onBrowser, browserOpen = false }) {
+// ── Status bar (footer) ──────────────────────────────────────────────
+// Connection, tokens, cost, throughput and todo on the left, the app
+// version (and an available update) on the right; the app's other buttons
+// are on the toolbar (toolbar.jsx). The model and
+// thinking level are not repeated here: the composer's pills below the
+// prompt box show (and change) both. It spans the window under the
+// workspace; the st-ctx meter, st-cost and st-tps cells (each with its
+// separator) drop out when the window is narrow (layout/rail.css).
+// `updater`: app/use-updater.jsx's result, as UpdateModal takes it.
+function StatusBar({ ctx, todoDone, todoTotal, onTodo, updater }) {
+  const todoChord = hintFor("desktop.panel.todo", "");
   return (
     <div className="status">
       <span className="status-cell"><span className="dot live" /> connected</span>
@@ -231,62 +193,24 @@ function StatusBar({ ctx, todoDone, todoTotal, onTodo, onSettings, settingsActiv
       <span className="status-cell st-cost mono"><span style={{ color: "var(--fg-3)" }}>cost</span> {ctx.cost}</span>
       <span className="status-sep st-tps">·</span>
       <span className="status-cell st-tps mono"><span style={{ color: "var(--fg-3)" }}>{ctx.tokensPerSec}</span> t/s</span>
-      <div className="status-gap" />
-      <button className="status-cell btn ghost" onClick={onTodo} style={{ height: 20, padding: "0 6px" }}>
+      <span className="status-sep">·</span>
+      <button className="status-cell btn ghost" onClick={onTodo}
+        title={todoChord ? `plan kanban (${todoChord})` : "plan kanban"}
+        style={{ height: 20, padding: "0 6px" }}>
         <Icon name="plan" size={11} color="var(--accent)" />
         <span style={{ color: "var(--accent)" }}>todo {todoDone}/{todoTotal}</span>
       </button>
-      <span className="status-sep">·</span>
-      <button className="status-cell btn ghost" onClick={onChanges} title="git browser" style={{ height: 20, padding: "0 6px" }}>
-        <Icon name="diff2" size={11} color="var(--fg-3)" />
-      </button>
-      <span className="status-sep">·</span>
-      <button className="status-cell btn ghost" onClick={onTree} title="conversation tree (prompt-cache status)" style={{ height: 20, padding: "0 6px" }}>
-        <Icon name="branch" size={11} color="var(--fg-3)" />
-      </button>
-      <span className="status-sep">·</span>
-      <button className="status-cell btn ghost" onClick={onBrowser} aria-pressed={browserOpen}
-        title={`browser panel (${hintFor("desktop.browser.toggle", "Ctrl+Shift+B")})`}
-        style={{ height: 20, padding: "0 6px" }}>
-        <Icon name="web" size={11} color={browserOpen ? "var(--accent)" : "var(--fg-3)"} />
-      </button>
-      <span className="status-sep">·</span>
-      <ApprovalModeCell cell={approvalMode} onClick={onRules} />
-      <span className="status-sep">·</span>
-      <button className="status-cell btn ghost" onClick={onStats} title="usage statistics" style={{ height: 20, padding: "0 6px" }}>
-        <Icon name="cost" size={11} color="var(--fg-3)" />
-      </button>
-      <span className="status-sep">·</span>
-      <button className={`status-cell btn ghost ${terminalOpen ? "on" : ""}`} onClick={onTerminal}
-        title={`terminal (${hintFor("desktop.terminal.toggle", "Ctrl+`")})`}
-        aria-pressed={!!terminalOpen} style={{ height: 20, padding: "0 6px" }}>
-        <Icon name="terminal" size={11} color={terminalOpen ? "var(--accent)" : "var(--fg-3)"} />
-      </button>
-      <span className="status-sep">·</span>
-      <button className={`status-cell btn ghost ${settingsActive ? "on" : ""}`} onClick={onSettings}
-        title={`settings (${hintFor("desktop.settings.open", "Ctrl+,")})`}
-        aria-pressed={settingsActive} style={{ height: 20, padding: "0 6px" }}>
-        <Icon name="cog" size={11} color={settingsActive ? "var(--accent)" : "var(--fg-3)"} />
+      <div className="status-gap" />
+      {updater.pillVersion && (
+        <button className="btn outlined update-pill mono" onClick={updater.openModal}
+          title={`OMP Desktop v${updater.pillVersion} is available`}>
+          <Icon name="arrowUp" size={9} />v{updater.pillVersion}
+        </button>
+      )}
+      <button className="btn ghost app-version mono" onClick={updater.check} title="check for updates">
+        {updater.version ? `v${updater.version}` : "—"}
       </button>
     </div>
-  );
-}
-
-// The approvals button: names the tab's running tool approval mode
-// (`OMP_APPROVAL_MODE.statusCell`). Yolo as the target turns the glyph to
-// `warn` and amber; a change waiting for the turn to end reads
-// `running ⇢ target` muted, with the target coloured.
-function ApprovalModeCell({ cell, onClick }) {
-  const targetColor = cell?.warn ? "var(--amber)" : "var(--fg-3)";
-  return (
-    <button className="status-cell btn ghost" onClick={onClick}
-      title={cell?.pending ? `approvals — switches to ${cell.target} when the agent finishes its turn` : "approvals"}
-      style={{ height: 20, padding: "0 6px" }}>
-      <Icon name={cell?.warn ? "warn" : "check"} size={11} color={targetColor} />
-      {cell && (cell.pending
-        ? <span className="mono status-mode" style={{ color: "var(--fg-4)" }}>{cell.running} ⇢ <span style={{ color: targetColor }}>{cell.target}</span></span>
-        : <span className="mono status-mode" style={{ color: targetColor }}>{cell.label}</span>)}
-    </button>
   );
 }
 
@@ -395,8 +319,8 @@ function SessionMinimap({ messages, hoveredIdx, onHover, onClick }) {
 // (Settings → Rail, keys showContext/showRadar/showSubagents/showMinimap);
 // `children` (widget plugin cards) sit between subagents and the minimap.
 function AmbientRail({
-  ctx, activity, messages, microcopy, onClose, sparklineValues, hoveredMsgIdx, onMinimapHover, onMinimapClick,
-  subagents, subagentPaneOpen, onOpenSubagent, onToggleSubagentPane, onOpenTree,
+  ctx, activity, messages, microcopy, sparklineValues, hoveredMsgIdx, onMinimapHover, onMinimapClick,
+  subagents, subagentPaneOpen, onOpenSubagent, onToggleSubagentPane,
   show = {}, children,
 }) {
   // Use live tps samples. Before the first turn, sparklineValues is all zeros
@@ -406,18 +330,6 @@ function AmbientRail({
     : Array(30).fill(0);
   return (
     <aside className="rail">
-      <div className="rail-head">
-        <span className="mono" style={{ color: "var(--fg-3)" }}>ambient</span>
-        <span className="rail-head-actions">
-          <button className="btn icon ghost" onClick={onOpenTree} title="conversation tree (prompt-cache status)">
-            <Icon name="branch" size={10} />
-          </button>
-          <button className="btn icon ghost" onClick={onClose} title="hide rail">
-            <Icon name="close" size={10} />
-          </button>
-        </span>
-      </div>
-
       {(show.context ?? true) && (
         <div className="rail-card glass">
           <TokenGauge used={ctx.used} total={ctx.total} pct={ctx.pct}

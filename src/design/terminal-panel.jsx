@@ -1,7 +1,8 @@
 /* ═════════════════════════════════════════════════════════════════════
    design/terminal-panel.jsx — one tab's terminal panel: a head (shell,
-   folder, exit state, close), the node xterm mounts into, and a drag
-   handle on the top edge. Hidden tabs and collapsed panels stay mounted
+   folder, exit state; the toolbar's terminal button hides the panel), the
+   node xterm mounts into, and a drag handle on the top edge. Hidden tabs
+   and collapsed panels stay mounted
    (`hidden`), so the xterm keeps its output; app/use-terminal.jsx owns
    the xterm and hands over `mountRef`; `onContextMenu` is the body's
    right-click (copy the selection). A drag (left button) starts from the
@@ -15,7 +16,7 @@ const {
   clampHeight: _TP_clamp, isExited: _TP_isExited, entryOf: _TP_entryOf, shellLabel: _TP_shellLabel,
 } = window.OMP_TERMINAL;
 
-function TerminalPanel({ entry, height, hidden, onHeight, onClose, mountRef, onContextMenu, shellLabel, cwd }) {
+function TerminalPanel({ entry, height, hidden, onHeight, mountRef, onContextMenu, shellLabel, cwd }) {
   const drag = window.useEdgeDrag({
     begin: (e) => {
       const column = e.currentTarget.closest(".session");
@@ -42,9 +43,6 @@ function TerminalPanel({ entry, height, hidden, onHeight, onClose, mountRef, onC
               : `exited${entry.status.exitCode == null ? "" : ` (${entry.status.exitCode})`}`}
           </span>
         )}
-        <button type="button" className="btn icon ghost term-head-close" title="hide terminal" onClick={onClose}>
-          <_TP_Icon name="close" size={9} />
-        </button>
       </div>
       <div className="term-body" ref={mountRef} onContextMenu={onContextMenu} />
     </section>
@@ -70,7 +68,6 @@ function TerminalPanels({ sessions, activeId, terminal }) {
             height={terminal.height}
             hidden={s.id !== activeId || !entry.open}
             onHeight={terminal.setHeight}
-            onClose={() => terminal.close(s.id)}
             mountRef={terminal.mountFor(s.id)}
             onContextMenu={(e) => { if (terminal.copySelection(s.id)) e.preventDefault(); }}
             shellLabel={_TP_shellLabel(entry.status?.shell)}

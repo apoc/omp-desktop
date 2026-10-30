@@ -23,8 +23,22 @@
 .status > * { flex: none; }
 .status > .status-gap { flex: 1 1 0; min-width: 0; }
 .status-cell { display: inline-flex; align-items: center; gap: 5px; }
-.status-mode { font-family: var(--font-mono); font-size: var(--d-text-xs); }
 .status-sep { color: var(--fg-5); }
+/* An available update: a pill beside the running version. */
+.btn.update-pill {
+  height: 18px; padding: 0 8px;
+  border-radius: 9px;
+  border-color: color-mix(in oklab, var(--accent) 45%, transparent);
+  color: var(--accent);
+  font-size: var(--d-text-xs);
+}
+/* Running version; click checks for updates. xs like its neighbours —
+   `.btn` alone would bump it to sm. */
+.btn.app-version {
+  height: 18px; padding: 0 4px;
+  color: var(--fg-4);
+  font-size: var(--d-text-xs);
+}
 @container status (max-width: 58rem) { .st-tps { display: none; } }
 @container status (max-width: 54rem) { .st-cost { display: none; } }
 @container status (max-width: 50rem) { .st-ctx .status-bar-tube, .st-ctx-pct { display: none; } }
@@ -51,11 +65,6 @@
   background: linear-gradient(180deg, var(--bg-window), color-mix(in oklab, var(--bg-app) 50%, var(--bg-window)));
   border-left: 1px solid var(--line);
   overflow-y: auto;
-}
-.rail-head {
-  display: flex; align-items: center; justify-content: space-between;
-  font-size: var(--d-text-xs);
-  padding: 2px 4px;
 }
 .rail-card {
   padding: 10px 12px;

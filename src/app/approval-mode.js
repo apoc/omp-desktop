@@ -4,12 +4,12 @@
    stored in Rust (`approval_mode.rs`, `approval_mode_get` returns the
    `{ default, projects }` view). Pure decisions only:
      - which mode a tab's folder resolves to (`effectiveFor`),
-     - what the status-bar cell shows (`statusCell`),
+     - what the toolbar's approvals button shows (`statusCell`),
      - which open tabs a change restarts now / once idle (`restartPlan`),
      - the project rows of the mode editor (`projectRows`).
    live.js runs the restarts (`_applyApprovalModes`, `_respawnSession`);
    the mode editor (approvals panel and Settings → Approvals) and the
-   status bar render from these.
+   toolbar's approvals button render from these.
    Details: docs/architecture/approval-mode.md.
    ═════════════════════════════════════════════════════════════════════ */
 (function () {
@@ -43,7 +43,7 @@
     return isMode(view.default) ? view.default : DEFAULT_MODE;
   }
 
-  /** Status-bar cell for a tab: `running` is the label of the mode its omp
+  /** Toolbar approvals button for a tab: `running` is the label of the mode its omp
    *  runs (`approvalMode`, null until the first spawn resolves — then the
    *  target stands in), `target` the label of what its folder resolves to;
    *  `pending` while they differ (a change waiting for the tab to go idle).

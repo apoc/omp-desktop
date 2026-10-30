@@ -1,7 +1,7 @@
 /* git/git-browser.jsx — the git browser: a full-window view of the active
    tab's project. Files pane (git/file-tree.jsx), the selected file with its
    change inline (git/file-view.jsx), commit graph with refs
-   (git/history.jsx). Opened from the status bar's git button, the
+   (git/history.jsx). Opened from the toolbar's git button, the
    `desktop.panel.changes` chord, or a path in an edit card (initialPath).
    Every datum comes from app/use-git-browser.jsx (useGitBrowser); a history
    click browses that commit read-only, the working-tree row returns. */

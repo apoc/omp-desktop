@@ -106,10 +106,10 @@
   const canStartInstall = (state) =>
     state.phase === "available" && state.update?.canInstall === true;
 
-  // The version the tab-bar pill announces, or null for no pill: an update
+  // The version the status-bar pill announces, or null for no pill: an update
   // exists and the user hasn't skipped this exact version. A skipped
   // version stays hidden until a newer one appears. (During an install the
-  // modal can't be closed and covers the tab bar, so no in-flight variant.)
+  // modal can't be closed and covers the window, so no in-flight variant.)
   function pillVersion(state, skippedVersion) {
     const version = state.update?.version;
     return version && version !== skippedVersion ? version : null;

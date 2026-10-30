@@ -39,17 +39,12 @@
   border-radius: 4px; cursor: default;
 }
 .chrome-title { display: flex; align-items: center; gap: 6px; font-size: var(--d-text-sm); flex: 1; justify-content: center; }
-/* align-items is load-bearing. `.win-ctrl` is full-bar height (38px), so this
-   flex line's cross size is 38px even though `.chrome` centres the box
-   itself; the 24px `.btn` has a definite height, so under the default
-   `stretch` it is placed at cross-start instead. Measured in a real webview:
-   button centre 11.5px vs 18.5px for the window controls and profile chip —
-   a 7px offset, on every platform that renders the controls. */
 .chrome-right { display: flex; align-items: center; gap: 6px; }
 
 /* ── Per-tab profile selector ─────────────────────────────────────────── */
 .profile-menu { position: relative; display: flex; align-items: center; }
-.profile-trigger { display: flex; align-items: center; gap: 6px; max-width: 220px; }
+/* Toolbar height (the menu sits in toolbar.jsx's right cluster). */
+.profile-trigger { display: flex; align-items: center; gap: 6px; max-width: 220px; height: 34px; padding: 0 10px; }
 .profile-trigger-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Dropdown chrome shared by the profile, tab-group and thinking menus
    (thinking-menu.jsx, positioned in composer.css) and the browser panel's
@@ -63,9 +58,9 @@
   border-radius: var(--r-2);
   box-shadow: var(--shadow-pop);
 }
-/* Right-anchored, not centred: the trigger sits between a `flex: 1` title
-   and `.chrome-right`, near the window's right edge. Centring the pop under
-   it would push up to 170px (half of max-width) past that edge, and
+/* Right-anchored, not centred: the trigger sits at the toolbar's right
+   end, just before the settings button. Centring the pop under it would
+   push up to 170px (half of max-width) past the window's edge, and
    `.window { overflow: hidden }` clips the overflow silently - no scroll,
    no repositioning. Growing leftward from the trigger's own right edge
    never runs out of room on that side. */
@@ -268,15 +263,6 @@
 .tab > .tab-close:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: -1px; }
 .tab-close:hover { background: var(--bg-active); color: var(--fg); }
 
-.tab-add {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 32px;
-  background: transparent; border: 0; border-right: 1px solid var(--line-soft);
-  color: var(--fg-3);
-}
-.tab-add:hover { color: var(--accent); background: var(--bg-hover); }
-.tab-add.on { color: var(--accent); }
-
 /* ── Grouped tab chip (#27) ──────────────────────────────────────────── */
 .tab-count {
   font-family: var(--font-mono); font-size: var(--d-text-xs); color: var(--fg-4);
@@ -320,25 +306,4 @@
 /* Not a `.btn` either, so no global focus ring. */
 .tab-group-row .tab-close:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: -1px; }
 .tab-group-sep { height: 1px; margin: 4px 2px; background: var(--line); }
-
-.tabs-right {
-  display: flex; align-items: center; gap: 8px; padding: 0 12px;
-  font-size: var(--d-text-xs);
-}
-
-/* Tab-bar pill announcing an available update. */
-.btn.update-pill {
-  height: 18px; padding: 0 8px;
-  border-radius: 9px;
-  border-color: color-mix(in oklab, var(--accent) 45%, transparent);
-  color: var(--accent);
-  font-size: var(--d-text-xs);
-}
-/* Running version; click checks for updates. xs like its neighbours —
-   `.btn` alone would bump it to sm. */
-.btn.app-version {
-  height: 18px; padding: 0 4px;
-  color: var(--fg-4);
-  font-size: var(--d-text-xs);
-}
 

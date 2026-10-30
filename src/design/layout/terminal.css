@@ -32,9 +32,6 @@
 }
 .term-head-shell + .term-head-exited { margin-left: auto; }
 .term-head-exited { color: var(--fg-4); font-style: italic; }
-/* Fixed px like the 22px head it sits in; its size-9 icon still fits at 150%. */
-.btn.icon.term-head-close { width: 18px; height: 18px; margin-left: auto; }
-.term-head-exited ~ .btn.term-head-close { margin-left: 0; }
 
 .term-body { flex: 1; min-height: 0; overflow: hidden; }
 /* The inset sits on xterm's own element: FitAddon subtracts that padding

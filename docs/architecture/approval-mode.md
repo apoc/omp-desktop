@@ -1,6 +1,6 @@
 # Tool approval mode
 
-omp's `--approval-mode` is chosen in the desktop: a global default and an optional per-project override, under the status-bar ✓ button (**approvals** panel) and in Settings → Approvals, which render the same `design/approval-mode-section.jsx` (`ApprovalModeSection`; Settings through `design/settings/rows-approvals.jsx`, whose `approvalRules` row also shows the standing-rule count and opens the panel). The Rust side is `src-tauri/src/approval_mode.rs` (`ApprovalModeStore`, the three `approval_mode_*` commands); the webview side is `src/app/approval-mode.js` (`window.OMP_APPROVAL_MODE`, regression `test-approval-mode.mjs`), the bridge methods and `_respawnSession` in `live.js`, and `design/approval-rules-panel.jsx` / `design/chrome.jsx` (status bar). Standing rules (`approval.rs` `RuleBook`) are a separate store and are unchanged by this.
+omp's `--approval-mode` is chosen in the desktop: a global default and an optional per-project override, under the toolbar ✓ button (**approvals** panel) and in Settings → Approvals, which render the same `design/approval-mode-section.jsx` (`ApprovalModeSection`; Settings through `design/settings/rows-approvals.jsx`, whose `approvalRules` row also shows the standing-rule count and opens the panel). The Rust side is `src-tauri/src/approval_mode.rs` (`ApprovalModeStore`, the three `approval_mode_*` commands); the webview side is `src/app/approval-mode.js` (`window.OMP_APPROVAL_MODE`, regression `test-approval-mode.mjs`), the bridge methods and `_respawnSession` in `live.js`, and `design/approval-rules-panel.jsx` / `design/toolbar.jsx` (toolbar button). Standing rules (`approval.rs` `RuleBook`) are a separate store and are unchanged by this.
 
 ## Modes
 
@@ -70,9 +70,9 @@ The frontend's "what should run" is `OMP_APPROVAL_MODE.effectiveFor(view, path)`
 - In `yolo`, omp sends no tier prompts, so rules have nothing to answer. The panel's yolo blurb says so.
 - `always-ask` keeps "Allow for this session" / "Always allow in this project" on prompts that still come.
 
-## Status bar and panel
+## Toolbar button and panel
 
-- The ✓ button (`onRules`, keymap `desktop.panel.rules`, label "Approvals") carries `title="approvals"` and a `.status-mode` span with `OMP_APPROVAL_MODE.statusCell(view, entry)` for the active tab: `{ label, warn, pending }`.
+- The ✓ button (`ApprovalModeButton` in `design/toolbar.jsx`, on the toolbar's right before the bridge; `approvals.onOpen`, keymap `desktop.panel.rules`, label "Approvals") carries `title="approvals"` and a `.tb-mode` span with `OMP_APPROVAL_MODE.statusCell(view, entry)` for the active tab: `{ label, warn, pending }`. The span is a `.tb-end-label`, so it hides below a 900px window like the bridge's text; the glyph stays.
 - `label` is the running mode's label. While it differs from the effective one it reads `running ⇢ effective` (muted), e.g. `write ⇢ yolo` on a busy tab; `warn` is `effective === "yolo"`, so the glyph turns amber as soon as yolo is the target.
 - The panel's head is "approvals". Its `tool approval mode` section has a `this project` row (only when the active tab has a path; `default | always ask | write | yolo`), a `default for every project` row, the mode blurb (`.mode-note.warn` for yolo) and the apply line. `standing rules` follows with the unchanged list.
 

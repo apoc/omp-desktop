@@ -8,9 +8,8 @@
 }
 
 /* ── Tabs ──────────────────────────────────────────────────────────── */
-/* The project tab bar's `.tab` / `.tab-name` / `.tab-close` / `.tab-add`
-   (chrome.css), shorter and smaller for the panel. `+` sits right after
-   the last tab, as in the tab bar. */
+/* The project tab bar's `.tab` / `.tab-name` / `.tab-close` (chrome.css),
+   shorter and smaller for the panel. `+` sits right after the last tab. */
 .browser-tabs {
   display: flex; align-items: stretch; flex: none;
   height: 28px;
@@ -31,6 +30,13 @@
 }
 .browser-tabs .tab-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 2px; }
 .browser-tabs .tab:focus-within > .tab-close { opacity: 1; }
+.browser-tabs .tab-add {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px;
+  background: transparent; border: 0; border-right: 1px solid var(--line-soft);
+  color: var(--fg-3);
+}
+.browser-tabs .tab-add:hover { color: var(--accent); background: var(--bg-hover); }
 .browser-tabs .tab-add:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* ── Control bar ───────────────────────────────────────────────────── */
@@ -39,7 +45,6 @@
   height: 34px; padding: 0 6px;
   border-bottom: 1px solid var(--line);
 }
-.browser-bar .btn.icon.active { color: var(--accent); background: var(--accent-soft); }
 /* `.btn` has no disabled look of its own (cf. `.queue-btn:disabled`). */
 .browser-bar .btn:disabled { opacity: 0.4; cursor: default; }
 .browser-bar .btn:disabled:hover { background: transparent; color: var(--fg-3); }

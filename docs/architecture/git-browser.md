@@ -6,7 +6,7 @@ A full-window overlay (`.gitb-scrim` / `.gitb`) over the active tab's project, w
 - **file** — the whole selected file with its change inline: removed lines in place, added lines highlighted, old and new line numbers, ↑↓ between hunks, stage / discard, copy diff;
 - **history** — the commit graph of every ref (`--all`, topological), with lanes, a synthetic working-tree row on top and HEAD / branch / remote / tag badges.
 
-It opens from the status bar's git button, from `desktop.panel.changes` (label "Git browser", default `Ctrl+Shift+G`, `Shift+Cmd+G` on macOS; rebindable) and from the file paths in an edit tool card (one button per file, `onOpenFile(path)`, which opens it on that file). Esc, the close button or a click on the scrim closes it.
+It opens from the toolbar's git button, from `desktop.panel.changes` (label "Git browser", default `Ctrl+Shift+G`, `Shift+Cmd+G` on macOS; rebindable) and from the file paths in an edit tool card (one button per file, `onOpenFile(path)`, which opens it on that file). Esc, the close button or a click on the scrim closes it.
 
 All git work is in Rust (`src-tauri/src/git_browser/`, gix): listing, the status merge, tree folding, the full-file line diff, the log, refs, ahead/behind, the lane layout and the files of a commit. The webview keeps only view state — expanded dirs, selection, filter, mode — and renders what Rust returns (`src/app/git-browser.js`, `src/app/use-git-browser.jsx`, `src/design/git/`).
 

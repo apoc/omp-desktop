@@ -5,8 +5,8 @@
    preference.
 
    A background check never opens anything — a found update only surfaces
-   as the tab-bar pill, which just opens the modal on what the last check
-   found. A manual check (the tab-bar version label, `/check-updates`,
+   as the status-bar pill, which just opens the modal on what the last check
+   found. A manual check (the status-bar version label, `/check-updates`,
    keymap) opens the modal immediately so "checking…" / "up to date" / the
    error are visible. */
 

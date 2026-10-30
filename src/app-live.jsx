@@ -18,7 +18,7 @@
    ═════════════════════════════════════════════════════════════════════ */
 
 const {
-  Icon, ChatView, Composer, CommandBridge, WindowChrome, TabBar, SubagentPane, ProjectSidebar, EmptyWorkspace,
+  Icon, ChatView, Composer, CommandBridge, WindowChrome, Toolbar, TabBar, SubagentPane, ProjectSidebar, EmptyWorkspace,
   StatusBar, AmbientRail, ConversationTree, PlanKanban, HistoryModal, GitBrowser, FilePreview, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, UpdateModal, useTweaks,
   SettingsPage, ConfirmCloseDialog,
   useWidgets, WidgetCard, WidgetErrorCard, WidgetApprovalCard, WidgetBoundary,
@@ -196,11 +196,11 @@ function App() {
   // the bridge spawns the next tab into the empty workspace's pick or the
   // ticked startup profile (nothing to inherit from) — so showing the
   // built-in would tick a profile that isn't where the next tab actually
-  // goes. Shared by WindowChrome's menu, the keymap, recents and the
+  // goes. Shared by the toolbar's profile menu, the keymap, recents and the
   // usage-stats panel's header label, instead of a second copy.
   const activeProfileId    = activeProject.id ? activeProject.profile : noTabProfileId;
   const activeProfileLabel = profiles.find(p => p.id === activeProfileId)?.name ?? activeProfileId;
-  // Status-bar approvals cell: the mode the rendered tab's omp runs, or
+  // Toolbar approvals button: the mode the rendered tab's omp runs, or
   // `running ⇢ target` while a change waits for its turn to end. Read
   // late-bound: app/approval-mode.js is a plain module like the others.
   const approvalCell = window.OMP_APPROVAL_MODE.statusCell(approvalModes, activeProject.id ? activeProject : null);
@@ -337,6 +337,14 @@ function App() {
   // card only reads with Auto-fix off, while the rail is on screen — not in
   // focus layout, not under the tree or browser.
   const railVisible = t.layout !== "focus" && side === "rail";
+  // The toolbar's rail button: hiding is the focus layout (which also
+  // closes a subagent split, as the layout is one setting); showing leaves
+  // focus layout and brings the rail back in place of the tree or browser.
+  const toggleRail = () => {
+    if (railVisible) return setTweak("layout", "focus");
+    if (t.layout === "focus") setTweak("layout", "rail");
+    setSide("rail");
+  };
   const widgets = useWidgets({
     bridge, activeSessionId: activeProject.id, activeProjectPath: activeProject.path ?? null, railVisible, tweaks: t, setTweak,
   });
@@ -834,35 +842,44 @@ function App() {
         {/* `is-running`: the active tab streams; the always-visible loops
             (status/model dots, activity radar) run only then (styles.css). */}
         <div className={`window scanlines ${showSplit ? "is-split" : ""}${streaming ? " is-running" : ""}`}>
-          <WindowChrome
-            project={activeProject}
-            onCmd={() => setBridgeOpen(true)}
-            profiles={profiles}
-            activeProfileId={activeProfileId}
-            startupProfileId={startupProfileId}
-            onSelectProfile={handleSelectProfile}
-            onCreateProfile={handleCreateProfile}
-            onRenameProfile={handleRenameProfile}
-            onDeleteProfile={handleDeleteProfile}
-            onSetStartupProfile={handleSetStartupProfile}
+          <WindowChrome project={activeProject} />
+          <Toolbar
+            nav={{
+              sidebarOpen: showSidebar, onToggleSidebar: toggleSidebar,
+              onOpenProject: handleNewProject, onHistory: () => setHistoryOpen(true),
+            }}
+            rail={{ open: railVisible, onToggle: toggleRail }}
+            subagents={{ open: showSplit, onToggle: subagentUi.togglePane }}
+            tree={{
+              open: side === "tree", onToggle: () => toggleSide("tree"),
+              onRefresh: convTree.refresh, canRefresh: !convTree.loading && !!convTree.key,
+            }}
+            browser={{
+              open: side === "browser", onToggle: () => toggleSide("browser"),
+              annotate: browser.annotate, canAnnotate: browser.state.status === "running", onAnnotate: browser.setAnnotate,
+              fullView: browser.fullView, onFullView: browser.setFullView,
+            }}
+            terminal={{ open: _TERM_entryOf(terminal.state, planKey).open, onToggle: () => terminal.toggle(planKey) }}
+            onGit={() => setGitOpen({ path: null })}
+            approvals={{ cell: approvalCell, onOpen: () => setRulesOpen(true) }}
+            onStats={() => setStatsOpen(true)}
+            onCommands={() => setBridgeOpen(true)}
+            profile={{
+              profiles, activeId: activeProfileId, startupId: startupProfileId,
+              onSelect: handleSelectProfile, onCreate: handleCreateProfile, onRename: handleRenameProfile,
+              onDelete: handleDeleteProfile, onSetStartup: handleSetStartupProfile,
+            }}
+            settings={{ active: stab.active, onOpen: () => openSettings() }}
           />
           <TabBar
             profiles={profiles}
             projects={sessions}
             activeId={stab.active ? null : activeSessionId}
             onSelect={handleSelectTab}
-            onNew={handleNewProject}
             onClose={handleCloseTab}
             onRename={handleRenameTab}
             onNewInProject={handleNewInProject}
             onReorder={handleReorder}
-            sidebarOpen={showSidebar}
-            onToggleSidebar={toggleSidebar}
-            onHistory={() => setHistoryOpen(true)}
-            appVersion={updater.version}
-            updateVersion={updater.pillVersion}
-            onUpdate={updater.openModal}
-            onCheckUpdate={updater.check}
             settings={{ open: stab.open, active: stab.active, changed: settingsChanged }}
             onSelectSettings={() => openSettings()}
             onCloseSettings={closeSettings}
@@ -882,7 +899,6 @@ function App() {
                 onOpenRecent={handleOpenRecent}
                 onForgetRecent={handleForgetRecent}
                 onOpenFolder={handleNewProject}
-                onHide={toggleSidebar}
                 onReorder={handleReorder}
               />
             )}
@@ -971,7 +987,6 @@ function App() {
                   onLoadTranscript={id => bridge?.loadSubagentTranscript(id)}
                   onSteer={(id, text) => bridge?.steerSubagent(id, text)}
                   onStop={id => bridge?.cancelSubagent(id)}
-                  onClose={subagentUi.closePane}
                   onJumpToCall={subagentUi.jumpToCall}
                   submitKey={t.submitKey}
                 />
@@ -984,7 +999,6 @@ function App() {
                   model={convTree.model} currentFile={convTree.currentFile} error={convTree.error}
                   loading={convTree.loading} treeKey={convTree.key} now={convTree.now} since={convTree.since}
                   streaming={streaming}
-                  onRefresh={convTree.refresh} onClose={() => setSide("rail")}
                   onBranch={convTree.branch} onFork={convTree.fork} onOpenFile={convTree.openFile}
                 />
               ) : showRail && (
@@ -995,11 +1009,9 @@ function App() {
                   subagentPaneOpen={showSplit}
                   onOpenSubagent={subagentUi.open}
                   onToggleSubagentPane={subagentUi.togglePane}
-                  onOpenTree={() => setSide("tree")}
                   messages={messages}
                   microcopy={data.microcopy}
                   sparklineValues={sparkline}
-                  onClose={() => setTweak("layout", "focus")}
                   hoveredMsgIdx={hoveredMsgIdx}
                   onMinimapHover={setHoveredMsgIdx}
                   onMinimapClick={handleMinimapClick}
@@ -1039,23 +1051,7 @@ function App() {
           </div>
           {/* Full window width under the workspace: no side column (rail,
               tree, browser panel, subagent split) ever narrows it. */}
-          <StatusBar
-            ctx={liveCtx}
-            todoDone={todoCounts.done}
-            todoTotal={todoCounts.total}
-            onTodo={() => setPlanOpen(true)}
-            onChanges={() => setGitOpen({ path: null })}
-            onRules={() => setRulesOpen(true)}
-            approvalMode={approvalCell}
-            onStats={() => setStatsOpen(true)}
-            onTree={() => toggleSide("tree")}
-            onTerminal={() => terminal.toggle(planKey)}
-            terminalOpen={_TERM_entryOf(terminal.state, planKey).open}
-            onBrowser={() => toggleSide("browser")}
-            browserOpen={side === "browser"}
-            onSettings={() => openSettings()}
-            settingsActive={stab.active}
-          />
+          <StatusBar ctx={liveCtx} todoDone={todoCounts.done} todoTotal={todoCounts.total} onTodo={() => setPlanOpen(true)} updater={updater} />
         </div>
       </div>
 

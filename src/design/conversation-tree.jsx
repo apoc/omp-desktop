@@ -6,7 +6,7 @@
    `onBranch`/`onFork`/`onOpenFile` are its actions. */
 
 const {
-  Icon: _CT_Icon, TreeFmt: _CT_Fmt, TreeRow: _CT_Row,
+  TreeFmt: _CT_Fmt, TreeRow: _CT_Row,
   TreeCompaction: _CT_Compaction, TreeDetail: _CT_Detail,
 } = window;
 
@@ -40,7 +40,7 @@ function TreeSummary({ model }) {
 
 function ConversationTree({
   model, currentFile, error, loading, treeKey, now, since, streaming,
-  onRefresh, onClose, onBranch, onFork, onOpenFile,
+  onBranch, onFork, onOpenFile,
 }) {
   const [selectedId, setSelectedId] = React.useState(null);
   React.useEffect(() => { setSelectedId(null); }, [treeKey]);
@@ -83,13 +83,6 @@ function ConversationTree({
           </span>
         )}
         {model && <span className="chip muted mono">{treeTtlLabel(model.ttlMs)}</span>}
-        <div style={{ flex: 1 }} />
-        <button className="btn icon ghost" onClick={onRefresh} disabled={loading || !treeKey} title="refresh">
-          <_CT_Icon name="refresh" size={10} />
-        </button>
-        <button className="btn icon ghost" onClick={onClose} title="close">
-          <_CT_Icon name="close" size={10} />
-        </button>
       </div>
       {model && prompts.length > 0 && <TreeSummary model={model} />}
       <div className="tree-list" ref={listRef}>

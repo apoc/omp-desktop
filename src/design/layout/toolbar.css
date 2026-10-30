@@ -1,0 +1,62 @@
+/* App toolbar — design/toolbar.jsx, between the title bar and the tabs ─── */
+
+/* One line always, like the status bar. Two clusters: `.tb-main` (the
+   icon buttons, left) takes the free width and is its own query container
+   — it holds no pop-ups, which containment and its sideways scrolling
+   would clip — so as it narrows its buttons tighten, and past that it
+   scrolls sideways (no scrollbar drawn). `.tb-end` (right: approvals,
+   bridge, profile, settings) neither clips nor scrolls: the profile
+   menu's pop-up hangs from it, over the tabs. Its labels drop with the
+   window width. */
+.toolbar {
+  flex: none;
+  display: flex; align-items: center; gap: 8px;
+  height: 42px; min-width: 0;
+  padding: 0 8px;
+  background: var(--bg-window);
+  border-bottom: 1px solid var(--line);
+}
+.tb-main {
+  container: tb-main / inline-size;
+  flex: 1 1 0; min-width: 0;
+  display: flex; align-items: center; gap: 2px;
+  overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none;
+}
+.tb-main::-webkit-scrollbar { display: none; }
+.tb-main > *, .tb-end > * { flex: none; }
+.tb-end { flex: none; display: flex; align-items: center; gap: 2px; }
+.tb-sep { width: 1px; height: 22px; margin: 0 6px; background: var(--line); }
+
+/* `.btn ghost` (styles.css) at toolbar size, as a toggle when `.on`. */
+.tb-btn {
+  justify-content: center;
+  min-width: 34px; height: 34px; padding: 0 9px;
+  white-space: nowrap;
+}
+.tb-btn.on { color: var(--accent); background: var(--accent-soft); border-color: color-mix(in oklab, var(--accent) 30%, transparent); }
+.tb-btn:disabled { opacity: 0.4; cursor: default; }
+.tb-btn:disabled:hover { background: transparent; color: var(--fg-3); }
+/* Inset: `.tb-main` clips anything past its edges. */
+.tb-btn:focus-visible { outline-offset: -1px; }
+.tb-btn .kbd { margin-left: 2px; }
+.tb-mode { font-family: var(--font-mono); font-size: var(--d-text-xs); }
+
+/* An open panel's own actions, attached to its toggle. */
+.tb-sub {
+  display: inline-flex; align-items: center; gap: 1px;
+  margin: 0 4px 0 1px; padding: 1px;
+  border-radius: var(--r-1);
+  background: var(--bg-surface);
+  border: 1px solid var(--line-soft);
+}
+.tb-sub .tb-btn { min-width: 30px; height: 30px; padding: 0 7px; }
+
+@container tb-main (max-width: 28rem) {
+  .tb-btn { min-width: 30px; height: 30px; padding: 0 6px; }
+  .tb-sep { margin: 0 3px; }
+}
+@media (max-width: 900px) {
+  .tb-end-label { display: none; }
+  .tb-end .profile-trigger-name { max-width: 90px; }
+}

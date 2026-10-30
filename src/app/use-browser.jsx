@@ -65,10 +65,14 @@ function useBrowser({ bridge, activeSessionId, sessionIds, open: shown, setOpen,
     }
     setAnnotateState(on);
   }, []);
+  // Turning annotate on hands the focus to the panel's input sink, so Esc
+  // reaches the panel (leaves annotate, cancels a pick) even when the
+  // toolbar's button was the one clicked, never the window's interrupt.
   const setAnnotate = React.useCallback((on) => {
     if (!sid) return;
     showAnnotate(on);
     bridge?.browserAnnotate(sid, on);
+    if (on) sinkRef.current?.focus({ preventScroll: true });
   }, [bridge, sid, showAnnotate]);
 
   // The open tab's panel: open it with the handler of its channel (the
@@ -167,7 +171,6 @@ function useBrowser({ bridge, activeSessionId, sessionIds, open: shown, setOpen,
     };
   }, [bridge, sid, open, setAnnotate, showAnnotate]);
 
-  const close = React.useCallback(() => setOpen(false), [setOpen]);
   // Show `url` (already normalised) in the panel, opening it first if needed.
   // While `browserOpenPanel` is still in flight the backend has no view to
   // navigate yet, so the URL is queued (latest wins) and the open flushes it.
@@ -238,7 +241,7 @@ function useBrowser({ bridge, activeSessionId, sessionIds, open: shown, setOpen,
   }), [bridge, sid, showAnnotate]);
 
   return {
-    open, close, openUrl, onChatClick, fullView, setFullView,
+    open, openUrl, onChatClick, fullView, setFullView,
     width: tweaks?.browserWidth ?? 0, // px; 0 = default (half the stage) — see OMP_BROWSER.clampWidth
     setWidth: (px) => setTweak("browserWidth", Math.round(px)),
     state, tabs, page, annotate, setAnnotate,

@@ -1,5 +1,5 @@
 /* ═════════════════════════════════════════════════════════════════════
-   profile-menu.jsx — per-tab omp profile selector (window chrome)
+   profile-menu.jsx — per-tab omp profile selector (app toolbar)
 
    A profile is `omp --profile <id>`: an isolated tree of auth, sessions,
    settings and caches. One tab owns one omp process, so the profile is a
@@ -203,7 +203,7 @@ function ProfileMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => (open ? close() : setOpen(true))}>
-        <Icon name="layers" size={11} />
+        <Icon name="layers" size={16} />
         <span className="mono profile-trigger-name">{active.name}</span>
         <Icon name="chev" size={9} color="var(--fg-4)" />
       </button>
@@ -344,6 +344,6 @@ function ProfileMenu({
   );
 }
 
-// Memoised: WindowChrome re-renders on every streaming notify(), while the
+// Memoised: the toolbar re-renders on every streaming notify(), while the
 // menu's props (profile list, active id, stable handlers) rarely change.
 Object.assign(window, { ProfileMenu: React.memo(ProfileMenu) });
