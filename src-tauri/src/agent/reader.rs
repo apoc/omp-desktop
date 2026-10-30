@@ -12,6 +12,7 @@ use crate::redaction::{is_credential_key, REDACTED_PLACEHOLDER};
 
 use super::approvals::{self, PendingApprovals};
 use super::context_catalog::{self, Catalog, ChunkDecoder};
+use super::evidence_requests::EvidenceReader;
 use super::ext_ui::{self, ExtUiState};
 use super::inner::BridgeInner;
 use super::journal::EventJournal;
@@ -182,6 +183,8 @@ pub(super) struct StdoutReaderConfig {
     /// This process's open approval prompts, for a grant to bind to.
     pub(super) approvals: Arc<Mutex<PendingApprovals>>,
     pub(super) context_catalog: Arc<Mutex<Catalog>>,
+    pub(super) evidence: Arc<crate::evidence::EvidenceHost>,
+    pub(super) evidence_epoch: String,
     pub(super) stdin: Arc<Mutex<ChildStdin>>,
     pub(super) rule_book: Arc<RuleBook>,
     pub(super) project_root: Option<PathBuf>,
@@ -321,6 +324,8 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
         ext_ui,
         approvals,
         context_catalog,
+        evidence,
+        evidence_epoch,
         stdin,
         rule_book,
         project_root,
@@ -333,9 +338,9 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
     thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         let line_event = format!("agent://line/{sid}");
-        let exit_event = format!("agent://exit/{sid}");
         let mut buf: Vec<u8> = Vec::with_capacity(8192);
         let mut context_chunks = ChunkDecoder::default();
+        let mut evidence = EvidenceReader::new(evidence, evidence_epoch);
         let mut exit_reason = String::new();
         // omp announces itself with a `ready` frame, so "not one frame all
         // run" means it died during startup. That is the only case where
@@ -377,6 +382,11 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
                     // instead would let either of those silently disable
                     // the stderr fallback this flag exists to gate.
                     saw_frame |= parsed.is_some();
+                    // Private host inputs never become approvals, asks, remote
+                    // notifications or journal entries. The reader only enqueues.
+                    if evidence.observe(&sid, parsed.as_ref(), &stdin, &alive) {
+                        continue;
+                    }
                     let frame_type = parsed.as_ref().and_then(|frame| frame["type"].as_str());
                     let decoded =
                         decode_frame(&context_catalog, &mut context_chunks, parsed.as_ref());
@@ -430,17 +440,6 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
             }
         }
 
-        // A child that died during startup (no frame, non-error EOF) would
-        // otherwise report the empty payload the contract defines as a clean
-        // exit, leaving a blank tab with no explanation anywhere in the UI.
-        // omp's own reason is on stderr: `--mode rpc-ui` refuses to start
-        // when the profile has no usable model, which is exactly what a
-        // freshly created (credential-less) profile looks like.
-        if exit_reason.is_empty() && !saw_frame {
-            if let Some(reason) = stderr_tail.lock().ok().and_then(|t| t.to_reason()) {
-                exit_reason = reason;
-            }
-        }
         // Process exited. Decide whether to announce inside the same
         // critical section that gives up our map entry — deciding it
         // separately (as before) left a window where a self-removed entry
@@ -448,23 +447,41 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
         // incarnation that retires on its own, since `reap_and_clear_grants`
         // only runs when *something else* supersedes or reaps this entry.
         let announce = retire_reader_session(&sessions, &sid, gen, &alive);
+        evidence.forget(&sid);
         // Empty payload = clean exit; non-empty = error reason. See the
         // AgentBridge doc-comment for the full event contract.
         if announce {
-            if !exit_reason.is_empty() {
-                // Recorded before the emit so a `session_status` query that
-                // races the event still finds it. Only for the incarnation
-                // that still owned the id: a superseded reader must not
-                // stamp its reason onto its replacement. `exit_reason`
-                // is cloned (not moved) because the emit below still needs
-                // the original — `sid` has no such later use, so it moves.
-                if let Ok(mut e) = last_errors.lock() {
-                    e.insert(sid, exit_reason.clone());
-                }
-            }
-            let _ = app.emit(&exit_event, exit_reason);
+            let startup_tail = (!saw_frame).then_some(stderr_tail.as_ref());
+            emit_exit(&app, sid, exit_reason, startup_tail, &last_errors);
         }
     });
+}
+
+fn emit_exit(
+    app: &AppHandle,
+    sid: String,
+    mut reason: String,
+    startup_tail: Option<&Mutex<StderrTail>>,
+    last_errors: &Mutex<HashMap<String, String>>,
+) {
+    let event = format!("agent://exit/{sid}");
+    // A frameless startup death needs its bounded stderr diagnostic, not a
+    // clean-looking empty exit. A real read error still takes precedence.
+    if reason.is_empty() {
+        if let Some(tail) = startup_tail
+            .and_then(|tail| tail.lock().ok())
+            .and_then(|tail| tail.to_reason())
+        {
+            reason = tail;
+        }
+    }
+    if !reason.is_empty() {
+        // Cache before emitting; the cache and event need independent ownership.
+        if let Ok(mut errors) = last_errors.lock() {
+            errors.insert(sid, reason.clone());
+        }
+    }
+    let _ = app.emit(&event, reason);
 }
 
 /// Bounded ring of the child's most recent stderr lines.

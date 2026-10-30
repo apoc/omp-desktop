@@ -178,7 +178,7 @@ pub async fn pr_automation_snapshot(
     crate::off_ipc(move || snapshot(&folder)).await?
 }
 
-fn snapshot(folder: &Path) -> Result<Option<PrAutomationSnapshot>, String> {
+pub fn snapshot(folder: &Path) -> Result<Option<PrAutomationSnapshot>, String> {
     snapshot_for_local(folder, local_branch(folder)?)
 }
 

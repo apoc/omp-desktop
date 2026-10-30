@@ -640,13 +640,15 @@ fn shutdown_all_removes_only_its_own_instance_directory() {
 
 /// A fake browser (unix) at `dir/fake-chromium`: appends a line to
 /// `dir/launches` per start, records its pid in `dir/pid`, waits `delay`
-/// seconds and for the launch's first pipe command (`Browser.getVersion`,
-/// id 1), answers it, then idles with the pipe open.
+/// seconds, answers the launch's version and initial-page commands, then
+/// waits with the pipe open.
 #[cfg(unix)]
 pub(super) fn fake_chromium(dir: &Path, delay: &str) -> PathBuf {
     let bin = dir.join("fake-chromium");
     let log = dir.join("launches");
     let pid = dir.join("pid");
+    let executable = std::env::current_exe().unwrap();
+    let executable = executable.to_string_lossy().replace('\'', "'\\''");
     let script = format!(
         "#!/bin/sh\n\
          for a in \"$@\"; do case \"$a\" in --user-data-dir=*) d=\"${{a#--user-data-dir=}}\";; esac; done\n\
@@ -654,13 +656,137 @@ pub(super) fn fake_chromium(dir: &Path, delay: &str) -> PathBuf {
          echo x >> '{log}'\n\
          mkdir -p \"$d\"\n\
          sleep {delay}\n\
-         dd bs=1 count=1 <&3 >/dev/null 2>&1\n\
-         printf '{{\"id\":1,\"result\":{{}}}}\\000' >&4\n\
-         exec sleep 300\n",
+         export OMP_TEST_DEFERRED_BROWSER=suppressed\n\
+         exec '{executable}' --exact browser::tests::launch_exposes_one_initial_page_before_consumers --nocapture\n",
         log = log.display(),
         pid = pid.display()
     );
     crate::test_support::executable(&bin, &script)
+}
+
+/// CDP pipe peer in a child test process. Its automatic startup page is
+/// deliberately delayed until after the first target-list snapshot, so a
+/// consumer that creates a replacement from that snapshot races it.
+#[cfg(unix)]
+fn deferred_startup_browser(automatic: bool) {
+    use std::io::{BufRead, BufReader};
+    use std::os::fd::FromRawFd;
+
+    // SAFETY: the launcher's CDP pipe hands this child exclusive ownership
+    // of descriptors 3 and 4; no other code in this child uses them.
+    let input = unsafe { std::fs::File::from_raw_fd(3) };
+    let mut output = unsafe { std::fs::File::from_raw_fd(4) };
+    let mut input = BufReader::new(input);
+    let mut pending_startup = automatic;
+    let mut pages = Vec::<Value>::new();
+    let mut message = Vec::new();
+    loop {
+        message.clear();
+        if input.read_until(0, &mut message).unwrap() == 0 {
+            break;
+        }
+        assert_eq!(message.pop(), Some(0));
+        let request: Value = serde_json::from_slice(&message).unwrap();
+        let method = request["method"].as_str().unwrap();
+        let result = match method {
+            "Browser.getVersion" => json!({ "product": "fake" }),
+            "Target.getTargets" => json!({ "targetInfos": pages }),
+            "Target.createTarget" => {
+                let id = format!("created-{}", pages.len());
+                pages.push(json!({
+                    "targetId": id,
+                    "type": "page",
+                    "url": request["params"]["url"],
+                    "title": ""
+                }));
+                json!({ "targetId": id })
+            }
+            _ => panic!("unexpected CDP command: {request}"),
+        };
+        serde_json::to_writer(
+            &mut output,
+            &json!({ "id": request["id"], "result": result }),
+        )
+        .unwrap();
+        output.write_all(&[0]).unwrap();
+        output.flush().unwrap();
+        if method == "Target.getTargets" && pending_startup {
+            pages.push(json!({
+                "targetId": "automatic-startup",
+                "type": "page",
+                "url": "about:blank",
+                "title": ""
+            }));
+            pending_startup = false;
+        }
+    }
+}
+
+/// The process is ready for both an agent's discovery and a panel's
+/// fallback: a late automatic startup target must not add another page.
+#[cfg(unix)]
+#[test]
+fn launch_exposes_one_initial_page_before_consumers() {
+    if let Some(mode) = std::env::var_os("OMP_TEST_DEFERRED_BROWSER") {
+        deferred_startup_browser(mode == "automatic");
+        return;
+    }
+
+    let dir = tempdir("launch-initial-page");
+    let executable = std::env::current_exe().unwrap();
+    let executable = executable.to_string_lossy().replace('\'', "'\\''");
+    let bin = crate::test_support::executable(
+        &dir.join("deferred-browser"),
+        &format!(
+            "#!/bin/sh\n\
+             OMP_TEST_DEFERRED_BROWSER=automatic\n\
+             for a in \"$@\"; do case \"$a\" in\n\
+               --user-data-dir=*) d=\"${{a#--user-data-dir=}}\";;\n\
+               --no-startup-window) OMP_TEST_DEFERRED_BROWSER=suppressed;;\n\
+             esac; done\n\
+             export OMP_TEST_DEFERRED_BROWSER\n\
+             mkdir -p \"$d\"\n\
+             exec '{executable}' --exact browser::tests::launch_exposes_one_initial_page_before_consumers --nocapture"
+        ),
+    );
+    let m = manager_using(&dir.join("root"), &bin);
+    m.allocate("s1").unwrap();
+    let broker = m.chromium("s1").expect("start");
+    let profile = m.profile_dir_for_test("s1").unwrap();
+    let pid: u32 = std::fs::read_to_string(profile.with_extension("pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let initial = broker
+        .call("Target.getTargets", json!({}), Duration::from_secs(10))
+        .unwrap();
+    let initial_pages = initial["targetInfos"].as_array().unwrap();
+    if initial_pages.is_empty() {
+        broker
+            .call(
+                "Target.createTarget",
+                json!({ "url": "about:blank" }),
+                Duration::from_secs(10),
+            )
+            .unwrap();
+    }
+    let settled = broker
+        .call("Target.getTargets", json!({}), Duration::from_secs(10))
+        .unwrap();
+    m.release("s1");
+    assert!(
+        !crate::supervisor::pid_is_alive(pid),
+        "browser process reaped"
+    );
+    assert!(!profile.exists(), "browser profile removed");
+    assert!(!profile.with_extension("pid").exists(), "PID file removed");
+    let settled_pages = settled["targetInfos"].as_array().unwrap();
+    assert_eq!(settled_pages.len(), 1, "late startup: {settled}");
+    assert_eq!(initial_pages.len(), 1, "ready for discovery: {initial}");
+    assert_eq!(initial_pages[0]["type"], "page");
+    assert_eq!(initial_pages[0]["url"], "about:blank");
+    assert_eq!(settled_pages[0]["targetId"], initial_pages[0]["targetId"]);
 }
 
 #[cfg(unix)]

@@ -7,6 +7,7 @@
     { id: "showRadar", label: "Agent radar" },
     { id: "showSubagents", label: "Subagents" },
     { id: "showChanges", label: "Changes" },
+    { id: "showEvidence", label: "Evidence" },
   ];
   const MINIMAP = { id: "showMinimap", label: "Minimap" };
 

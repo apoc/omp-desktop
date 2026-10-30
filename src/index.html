@@ -108,6 +108,9 @@
   <script src="app/agent-context-sync.js"></script>
   <script src="app/context-policy.js"></script>
   <script src="app/context-target.js"></script>
+  <!-- Outcome-owned Evidence ledger/model and local native command client. -->
+  <script src="app/evidence-model.js"></script>
+  <script src="app/evidence-client.js"></script>
 
   <!-- In-app updater state (issue #19): pure reducer + selectors. IIFE;
        busyTabCount looks up window.OMP_TURN_STATUS (app/turn-status.js,
@@ -381,6 +384,17 @@
   <script type="text/babel" src="design/context-policy-surface.jsx"></script>
   <script type="text/babel" src="design/context-policy.jsx"></script>
   <script type="text/babel" src="design/agent-context-card.jsx"></script>
+  <!-- Evidence panels share one modal and inspect only authorized artifacts. -->
+  <script type="text/babel" src="design/evidence/shared.jsx"></script>
+  <script type="text/babel" src="design/evidence/outcomes.jsx"></script>
+  <script type="text/babel" src="design/evidence/media.jsx"></script>
+  <script type="text/babel" src="design/evidence/record-form.jsx"></script>
+  <script type="text/babel" src="design/evidence/records.jsx"></script>
+  <script type="text/babel" src="design/evidence/requests.jsx"></script>
+  <script type="text/babel" src="design/evidence/presets.jsx"></script>
+  <script type="text/babel" src="design/evidence/history.jsx"></script>
+  <script type="text/babel" src="design/evidence/inspector.jsx"></script>
+  <script type="text/babel" src="design/evidence/card.jsx"></script>
   <!-- Inline visibility/order controls reuse the pointer reorder hook;
        the rail and Settings row share the same control list. -->
   <script type="text/babel" src="design/ambient-controls.jsx"></script>
@@ -517,6 +531,7 @@
        at top level. -->
   <script type="text/babel" src="app/use-goal-mode.jsx"></script>
   <script type="text/babel" src="app/use-context-policy.jsx"></script>
+  <script type="text/babel" src="app/use-evidence.jsx"></script>
   <script type="text/babel" src="app/use-pr-automation.jsx"></script>
   <!-- Rail widgets hook; destructures window.OMP_WIDGETS at top level. -->
   <script type="text/babel" src="app/use-widgets.jsx"></script>

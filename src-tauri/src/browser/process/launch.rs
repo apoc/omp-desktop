@@ -6,7 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::instance::{create_private_file, remove_dir_retrying};
 use super::pipe::attach;
@@ -210,6 +210,8 @@ fn command(binary: &Path, profile: &Path, width: u32, height: u32) -> Command {
     user_data_dir.push(profile);
     let mut cmd = Command::new(binary);
     cmd.arg("--headless=new")
+        // Own the first page instead of racing Chromium's automatic startup page.
+        .arg("--no-startup-window")
         // The CDP pipe itself (`pipe.rs`) is added by `attach`: no port.
         .arg(user_data_dir)
         .arg("--no-first-run")
@@ -227,7 +229,6 @@ fn command(binary: &Path, profile: &Path, width: u32, height: u32) -> Command {
         // (macOS would prompt for "Chromium Safe Storage" on every launch).
         .arg("--use-mock-keychain")
         .arg("--password-store=basic")
-        .arg("about:blank")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -252,18 +253,35 @@ fn is_script(path: &Path) -> bool {
         .is_ok_and(|()| head == *b"#!")
 }
 
-/// Ask the browser for its version over the pipe until it answers, `child`
-/// exits or the timeout hits.
+/// Wait for CDP and create the initial page before exposing the broker.
 fn wait_for_browser(child: &mut Child, broker: &Broker) -> Result<(), Failure> {
     let deadline = Instant::now() + LAUNCH_TIMEOUT;
-    let version = broker
-        .request("Browser.getVersion", json!({}))
+    wait_for_reply(child, broker, "Browser.getVersion", json!({}), deadline)?;
+    wait_for_reply(
+        child,
+        broker,
+        "Target.createTarget",
+        json!({ "url": "about:blank" }),
+        deadline,
+    )
+}
+
+/// Both startup requests share the same deadline and failure cleanup.
+fn wait_for_reply(
+    child: &mut Child,
+    broker: &Broker,
+    method: &str,
+    params: Value,
+    deadline: Instant,
+) -> Result<(), Failure> {
+    let reply = broker
+        .request(method, params)
         .map_err(|e| pipe_failed(child, &e))?;
     loop {
-        match version.wait(POLL_INTERVAL) {
+        match reply.wait(POLL_INTERVAL) {
             Some(Ok(_)) => return Ok(()),
             Some(Err(e)) if broker.is_alive() => {
-                return Err(Failure::Binary(format!("Browser.getVersion: {e}")));
+                return Err(Failure::Binary(format!("{method}: {e}")));
             }
             // The connection ended: every later wait would return at once.
             Some(Err(_)) => return Err(pipe_failed(child, "closed its debugging pipe")),
@@ -554,16 +572,14 @@ mod tests {
     fn a_launched_launcher_gets_the_private_config_home() {
         let dir = tempdir("launch-env");
         let seen = dir.join("seen");
+        let browser = crate::browser::tests::fake_chromium(&dir, "0");
         let bin = script(
             &dir,
             "records",
             &format!(
-                "for a in \"$@\"; do case \"$a\" in --user-data-dir=*) d=\"${{a#--user-data-dir=}}\";; esac; done\n\
-                 printf '%s\\n' \"$XDG_CONFIG_HOME\" > '{seen}'\n\
-                 mkdir -p \"$d\"\n\
-                 dd bs=1 count=1 <&3 >/dev/null 2>&1\n\
-                 printf '{{\"id\":1,\"result\":{{}}}}\\000' >&4\n\
-                 exec sleep 300",
+                "printf '%s\\n' \"$XDG_CONFIG_HOME\" > '{seen}'\n\
+                 exec '{}' \"$@\"",
+                browser.display(),
                 seen = seen.display()
             ),
         );

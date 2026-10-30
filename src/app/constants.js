@@ -36,6 +36,7 @@
     "showRadar": true,
     "showSubagents": true,
     "showChanges": true,
+    "showEvidence": true,
     "showMinimap": true,
     "railOrder": null,
     "fontSize":  100,

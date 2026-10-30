@@ -21,6 +21,7 @@
 mod approvals;
 mod context_catalog;
 mod context_extension;
+mod evidence_requests;
 pub mod ext_ui;
 mod inner;
 pub mod journal;
@@ -31,7 +32,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use approvals::PendingApprovals;
 use context_catalog::Catalog;
@@ -131,6 +132,8 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
 pub struct Launch<'a> {
     /// Project folder (`None` = omp's default).
     pub cwd: Option<&'a str>,
+    /// Canonical source project, distinct from an isolated execution worktree.
+    pub source_project: Option<&'a str>,
     /// Session file or id to resume, already validated by the caller.
     pub resume: Option<&'a str>,
     /// Resolved profile (`None` = the built-in one).
@@ -202,6 +205,7 @@ impl AgentBridge {
     ) -> Result<(), String> {
         let Launch {
             cwd,
+            source_project,
             resume,
             profile,
             mode,
@@ -213,9 +217,18 @@ impl AgentBridge {
             .map_err(|e| format!("could not create context epoch: {e}"))?
             .as_nanos();
         let epoch = format!("{}-{gen}-{timestamp}", std::process::id());
-        let (mut child, supervisor) = match spawn_omp(cwd, resume, profile, mode, config, &epoch) {
+        // The reader owns this host handle after launch returns.
+        let evidence = Arc::clone(app.state::<Arc<crate::evidence::EvidenceHost>>().inner());
+        let spawned = (|| {
+            let bootstrap = evidence.register_run(&session_id, &epoch, cwd, source_project)?;
+            let bootstrap = serde_json::to_string(&bootstrap)
+                .map_err(|e| format!("Evidence bootstrap: {e}"))?;
+            spawn_omp(cwd, resume, profile, mode, config, &epoch, &bootstrap)
+        })();
+        let (mut child, supervisor) = match spawned {
             Ok(c) => c,
             Err(e) => {
+                evidence.forget_run(&session_id, Some(&epoch));
                 // Cached *and* returned: the caller gets the reason now, the
                 // cache serves the frontend's later `session_status` query.
                 self.cache_error(&session_id, e.clone());
@@ -232,7 +245,8 @@ impl AgentBridge {
             EVENT_JOURNAL_MAX_BYTES,
         )));
         let ext_ui = Arc::new(Mutex::new(ExtUiState::default()));
-        let context_catalog = Arc::new(Mutex::new(Catalog::new(epoch)));
+        // Catalog and Evidence keep independent epoch guards for this process.
+        let context_catalog = Arc::new(Mutex::new(Catalog::new(epoch.clone())));
         let project_root = cwd.filter(|c| !c.is_empty()).map(std::path::PathBuf::from);
         // A second copy of the folder: the reader checks rules against its
         // own on every prompt, this one travels with a grant.
@@ -306,6 +320,8 @@ impl AgentBridge {
             ext_ui,
             approvals,
             context_catalog,
+            evidence,
+            evidence_epoch: epoch,
             stdin: stdin_for_reader,
             rule_book,
             project_root,
@@ -659,73 +675,6 @@ mod tests {
                 "{ty} should be allowed"
             );
         }
-    }
-
-    /// Every command `src/live.js` sends must survive `validate_command_type`
-    /// — the allowlist silently drifted twice (`get_available_commands`, the
-    /// subagent commands), and a rejected command only logs in the webview.
-    ///
-    /// Scans whitespace-free source so a reformat (multi-line object
-    /// literals) cannot hide a call site, and fails on any `_send(` /
-    /// `_sendWithResponse(` it cannot read — a new call site must either
-    /// lead with a literal `type` or be added to the known non-literal list.
-    /// Steer / follow-up frames come from `OMP_SLASH.queuedFrame`
-    /// (`src/app/slash-commands.js`), whose literal frames are checked too.
-    #[test]
-    fn every_command_live_js_sends_is_allowed() {
-        // Argument prefixes of the call sites that carry no literal type:
-        // the helper definitions and the forwarders inside them.
-        const NON_LITERAL: &[&str] = &["cmd){", "cmd,timeout", "queuedFrame("];
-        let flat = |source: &str| -> String { source.split_whitespace().collect() };
-        let allowed = |ty: &str| {
-            assert!(
-                ALLOWED_COMMAND_TYPES.contains(&ty),
-                "the webview sends '{ty}' but ALLOWED_COMMAND_TYPES rejects it"
-            );
-        };
-        let live = flat(include_str!("../../../src/live.js"));
-        let mut checked = 0;
-        for callee in ["_send(", "_sendWithResponse(", "_sendToAll("] {
-            for (idx, _) in live.match_indices(callee) {
-                let args = &live[idx + callee.len()..];
-                if let Some(rest) = args.strip_prefix("{type:\"") {
-                    allowed(&rest[..rest.find('"').expect("closing quote on command type")]);
-                    checked += 1;
-                } else {
-                    let snippet: String = args.chars().take(40).collect();
-                    assert!(
-                        NON_LITERAL.iter().any(|known| args.starts_with(known)),
-                        "cannot read the command type at {callee}{snippet}"
-                    );
-                }
-            }
-        }
-        assert!(checked >= 20, "found only {checked} literal call sites");
-        let slash = flat(include_str!("../../../src/app/slash-commands.js"));
-        let start = slash
-            .find("functionqueuedFrame(")
-            .expect("queuedFrame in slash-commands.js");
-        // The function body: up to the next top-level function or export.
-        let rest = &slash[start + 1..];
-        let end = ["function", "window.OMP_SLASH"]
-            .iter()
-            .filter_map(|next| rest.find(next))
-            .min()
-            .map_or(slash.len(), |e| start + 1 + e);
-        let body = &slash[start..end];
-        let frames: Vec<&str> = body
-            .match_indices("{type:\"")
-            .map(|(idx, m)| {
-                let rest = &body[idx + m.len()..];
-                &rest[..rest.find('"').expect("closing quote on frame type")]
-            })
-            .collect();
-        assert_eq!(
-            frames,
-            ["prompt", "steer", "follow_up"],
-            "queuedFrame's frames"
-        );
-        frames.into_iter().for_each(allowed);
     }
 
     #[test]

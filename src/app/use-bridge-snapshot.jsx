@@ -30,6 +30,7 @@ function useBridgeSnapshot(bridge, setters) {
       setters.setBackgroundTasks(snap.backgroundTasks ?? window.OMP_BACKGROUND_TASKS.empty());
       setters.setAgentContext(snap.agentContext);
       setters.setContextPolicy(snap.contextPolicy ?? null);
+      setters.setEvidence(snap.evidence ?? null);
       setters.setQueue(snap.queue);
       setters.setQueueSending(snap.queueSending);
       setters.setGoal(snap.goal);

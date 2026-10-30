@@ -6,7 +6,7 @@
   },
   "app": {
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost; frame-src 'none'; object-src 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: evidence: http://evidence.localhost; media-src 'self' evidence: http://evidence.localhost; connect-src 'self' ipc: http://ipc.localhost; frame-src 'none'; object-src 'none'"
     }
   }
 }

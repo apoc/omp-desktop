@@ -106,6 +106,8 @@ The private bundled extension registers an epoch-specific local command, discove
 
 The native process binds the selected profile, validates scope/model/revision and native retained-tail/prompt-headroom bounds, flushes saved writes, and reports the actual effective result/source. A profile save never silently removes a conversation override or claims a shadowed value took effect. Conversation writes materialize and flush even a new empty native session before success, with rollback on persistence failure. Native effective-setting listeners and lifecycle events publish changes. Inherited previews exclude only runtime overrides still owned by this extension; other extensions' writes are retained. Ownership/generation guards cover asynchronous reads, model changes and stale writes. Dirty drafts cannot be saved onto a new conversation/model or over external changes; Use latest explicitly discards them. Unsupported capabilities disable editing. Editing and reset never restart a process or send a manual compact command, although an enabled/lowered target can affect the next eligible native maintenance check.
 
+Post-save confirmation uses the bounded same-conversation/model snapshot retry used for refreshes. A native reload may cause the read to retry, but persistence and appends are never replayed. Changed ownership/model and ordinary read failures still reject.
+
 
 ## Ambient rail: Changes and Auto-fix
 

@@ -338,7 +338,7 @@ export default function desktopContextPolicy(api) {
         );
       if (!same(session, identity(ctx)) || !same(model, modelOf(ctx)))
         throw new Error("The conversation or model changed during the update");
-      return await checkedSnapshot(ctx);
+      return await readCurrent(ctx, session, model);
     } finally {
       suppress--;
       scheduleBroadcast();

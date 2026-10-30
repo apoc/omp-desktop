@@ -345,6 +345,7 @@ pub(super) fn spawn_omp(
     mode: ApprovalMode,
     config: Option<&Path>,
     context_epoch: &str,
+    evidence_bootstrap: &str,
 ) -> Result<(Child, crate::supervisor::ProcessSupervisor), String> {
     let omp = Omp::locate()?;
     // Refused here rather than left to fail later: an omp too old for the
@@ -363,6 +364,7 @@ pub(super) fn spawn_omp(
     // Load only embedded desktop extensions. Keep the browser-only config last.
     super::context_extension::apply(&mut cmd, profile)?;
     cmd.env("OMP_DESKTOP_CONTEXT_EPOCH", context_epoch);
+    cmd.env("OMP_DESKTOP_EVIDENCE_BOOTSTRAP", evidence_bootstrap);
     cmd.args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

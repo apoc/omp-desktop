@@ -86,6 +86,7 @@
     backgroundTasks:     TASKS.empty(),
     agentContext:        CONTEXT.empty(),
     contextPolicy:       null,
+    evidence:            null,
     // agentId → { status, messages, nextByte, error } from get_subagent_messages.
     // Ephemeral: dropped on tab switch (not snapshotted) and refetched on demand.
     subagentTranscripts: {},
@@ -165,6 +166,27 @@
       owner.policyController = { ...client, current };
     }
     return sessionContext.policyController;
+  }
+
+  function _evidenceController() {
+    if (!activeSessionId) throw new Error("Open a conversation to inspect its Evidence.");
+    if (!sessionContext.evidenceController?.current()) {
+      sessionContext.evidenceController?.dispose();
+      const owner = sessionContext, gen = _switchGen, id = activeSessionId;
+      const current = () => sessionContext === owner && _switchGen === gen && activeSessionId === id && _switchAwayFrom == null && !owner.processEnded;
+      const client = window.OMP_EVIDENCE_CLIENT.create({
+        request: _sendWithResponse, current,
+        profileId: sessionRegistry.get(id)?.profile || window.DEFAULT_PROFILE_ID,
+        changed: next => { state.evidence = next; notify(); },
+      });
+      owner.evidenceController = { ...client, current };
+    }
+    return sessionContext.evidenceController;
+  }
+
+  function _evidenceInvoke(command, fields = {}) {
+    if (!window.__TAURI__) return Promise.reject(new Error("Evidence storage is available in the Desktop app."));
+    return window.__TAURI__.core.invoke(command, fields);
   }
 
   // ── Minimap / message-history trim ───────────────────────────────────────
@@ -436,6 +458,7 @@
       backgroundTasks:     state.backgroundTasks,
       agentContext:        state.agentContext,
       contextPolicy:       state.contextPolicy,
+      evidence:            state.evidence,
       subagentTranscripts: state.subagentTranscripts,
       queue:           state.queue,
       queueSending:    state.queueSending,
@@ -966,6 +989,7 @@
   function _resetSessionVars(keepVoice = false) {
     sessionContext.contextSync?.dispose();
     sessionContext.policyController?.dispose();
+    sessionContext.evidenceController?.dispose();
     Object.assign(state, {
       messages:      [],
       askRecovery:   null,
@@ -990,6 +1014,7 @@
       backgroundTasks:     TASKS.empty(),
       agentContext:        CONTEXT.empty(),
       contextPolicy:       null,
+      evidence:            null,
       subagentTranscripts: {},
       queue:         QUEUE.EMPTY_QUEUE,
       queueSending:  [],
@@ -1016,6 +1041,7 @@
   function _saveCurrentSession() {
     if (!activeSessionId) return;
     sessionContext.policyController?.dispose();
+    sessionContext.evidenceController?.dispose();
     // Buffered asks belong to the session being left — flush them into its
     // messages so the snapshot carries them. Leaving them in the queue would
     // either lose them or leak them into the next session's transcript.
@@ -1048,6 +1074,7 @@
       backgroundTasks: state.backgroundTasks,
       agentContext:  state.agentContext,
       contextPolicy: state.contextPolicy,
+      evidence:      state.evidence,
       queue:         state.queue,
       queueSending:  state.queueSending,
       goal:          state.goal,
@@ -1094,6 +1121,7 @@
       backgroundTasks: snap.backgroundTasks ?? TASKS.empty(),
       agentContext:  snap.agentContext ?? CONTEXT.empty(),
       contextPolicy: snap.contextPolicy ? { ...snap.contextPolicy, loading: false, saving: false } : null,
+      evidence:      snap.evidence ? { ...snap.evidence, loading: false, saving: false } : null,
       subagentTranscripts: {},
       queue:         snap.queue ?? QUEUE.EMPTY_QUEUE,
       queueSending:  snap.queueSending ?? [],
@@ -1262,6 +1290,9 @@
           state.extWidgets = EXT.fromSnapshot(ext);
           extSnapshotSeq = Number.isInteger(ext.seq) ? ext.seq : 0;
         }
+        const evidence = await _invokeSafe("evidence_snapshot", { sessionId: id }, null);
+        if (!current()) return;
+        if (evidence) _evidenceController().restore(evidence);
       }
       if (replay.backgroundTasks) _dispatchEnvelope(replay.backgroundTasks);
       for (const ev of replay.events) _dispatchEnvelope(ev);
@@ -2448,7 +2479,7 @@
   // get_available_commands response and the available_commands_update
   // push — same shape, same merge.
   function _applyCommands(raw) {
-    const visible = (Array.isArray(raw) ? raw : []).filter(command => !window.OMP_CONTEXT_POLICY?.privateCommand(command.name));
+    const visible = (Array.isArray(raw) ? raw : []).filter(command => !window.OMP_CONTEXT_POLICY?.privateCommand(command.name) && !window.OMP_EVIDENCE_CLIENT?.privateCommand(command.name));
     state.commands = mergeSlashCommands(LOCAL_COMMANDS, adaptAvailableCommands(visible));
     state.agentContext = CONTEXT.catalog(state.agentContext, raw);
     notify();
@@ -2457,6 +2488,10 @@
   // ── AgentSessionEvent handler ─────────────────────────────────────────────
   function _handleEvent(ev) {
     const { type } = ev;
+    if (window.OMP_EVIDENCE_CLIENT?.privateFrame(ev)) {
+      if (!sessionContext.processEnded) _evidenceController().observe(ev);
+      return;
+    }
     if (type === "extension_ui_request" && ev.method === "notify" && typeof ev.message === "string" && ev.message.startsWith("OMP_DESKTOP_BACKGROUND_TASKS:")) {
       if (sessionContext.processEnded) return;
       try {
@@ -3770,13 +3805,14 @@
   /** `OMP_BRIDGE.send`: the user bubble at once, then `prompt`. A
    *  `streamingBehavior` tells omp what to do if a turn is running by the
    *  time the prompt arrives; idle, omp ignores it and runs the prompt. */
-  function _sendPrompt(text, images, streamingBehavior, canSend) {
+  function _sendPrompt(text, images, streamingBehavior, canSend, confirmAdmission = false) {
     state.messages = [...state.messages, { kind: "user", time: timeNow(), text, images: images ?? [] }];
     _disarmAutoRename(text);
     _recordPrompt(text);
     notify();
     if (canSend && !canSend()) return Promise.resolve(false);
-    return _send({ type: "prompt", message: text, images: images ?? [], ...(streamingBehavior ? { streamingBehavior } : {}) });
+    const frame = { type: "prompt", message: text, images: images ?? [], ...(streamingBehavior ? { streamingBehavior } : {}) };
+    return confirmAdmission ? _sendWithResponse(frame).then(() => true) : _send(frame);
   }
 
   /** A `goal` command's `{goal, state}` result applied to the active tab. */
@@ -4795,6 +4831,61 @@
     },
     setContextPolicy(input) {
       return _contextPolicyController().apply(input);
+    },
+    readEvidence() {
+      return _evidenceController().load();
+    },
+    changeEvidence(input) {
+      return _evidenceController().mutate(input);
+    },
+    async requestEvidence(input) {
+      const client = _evidenceController();
+      const requestId = input.requestId || input.newRequestId;
+      if (!requestId) throw new Error("An Evidence request needs a saved or newly allocated identity.");
+      // A saved request whose prompt failed is updated, not duplicated on retry.
+      let mutation = { ...input, op: "request" };
+      if (input.newRequestId && client.snapshot().view?.requests?.some(request => request.id === requestId)) {
+        const { newRequestId, ...existing } = mutation;
+        mutation = { ...existing, requestId: newRequestId };
+      }
+      const view = await client.mutate(mutation);
+      const failed = message => Object.assign(new Error(`Evidence request was saved, but ${message}. Check the original conversation before resending it.`), { requestId });
+      const current = () => client.current() && client.snapshot().view?.sessionId === view.sessionId && client.snapshot().view?.file === view.file && client.snapshot().view?.branchToken === view.branchToken;
+      if (!current()) throw failed("the conversation changed before it could be sent");
+      const message = `Collect or revise evidence for saved Evidence request ${requestId}, outcome ${input.outcomeId}${input.requirementId ? `, requirement ${input.requirementId}` : ""}. Read the request and current acceptance criteria with the evidence tool. Report failed, blocked, stale and unverified evidence honestly; do not waive user requirements.`;
+      let sent;
+      try {
+        sent = await _sendPrompt(message, [], "followUp", current, true);
+      } catch (error) {
+        throw failed(error?.timedOut ? "native prompt admission was not confirmed; the prompt may already be queued" : `the agent refused the prompt: ${error?.message || error}`);
+      }
+      if (!sent || !current()) throw failed("the conversation changed before prompt admission was confirmed");
+      return view;
+    },
+    evidenceLibrary(projectPath) {
+      return _evidenceInvoke("evidence_library", { projectPath: projectPath || null });
+    },
+    saveEvidencePreset(preset, expectedRevision) {
+      return _evidenceInvoke("evidence_save_preset", { preset, expectedRevision });
+    },
+    assignEvidencePreset(scope, presetId, projectPath, expectedRevision) {
+      return _evidenceInvoke("evidence_assign_preset", { scope, presetId, projectPath: projectPath || null, expectedRevision });
+    },
+    deleteEvidencePreset(id, expectedRevision) {
+      return _evidenceInvoke("evidence_delete_preset", { id, expectedRevision });
+    },
+    async evidenceAssetSource(artifactId) {
+      if (!activeSessionId) throw new Error("Open the conversation that owns this evidence artifact.");
+      const asset = await _evidenceInvoke("evidence_asset_source", { sessionId: activeSessionId, artifactId });
+      return { ...asset, url: window.__TAURI__.core.convertFileSrc(asset.token, "evidence") };
+    },
+    evidenceAssetText(artifactId) {
+      if (!activeSessionId) return Promise.reject(new Error("Open the conversation that owns this evidence artifact."));
+      return _evidenceInvoke("evidence_asset_text", { sessionId: activeSessionId, artifactId });
+    },
+    pickEvidenceArtifact() {
+      if (!activeSessionId) return Promise.reject(new Error("Open a conversation before importing evidence."));
+      return _evidenceInvoke("evidence_pick_artifact", { sessionId: activeSessionId });
     },
 
     /** Stage a file's changes (`git add`). */

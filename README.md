@@ -40,6 +40,16 @@ Built on Tauri 2 (Rust + the system webview). It doesn't bundle Electron or load
 
 ![Subagent manager: four parallel scouts, their timeline and per-agent cost](screenshots/subagents.webp)
 
+### Conversation evidence
+
+The **Evidence** card in the Ambient rail keeps observations beside the conversation. If it is hidden, enable it in **Ambient controls** or **Settings → Rail → Evidence**; reopen a closed rail with **Ambient** beside the app version. Hiding the card does not stop collection. Use the card's **Collection** switch to turn it on or off for this conversation.
+
+Click **Review evidence** to open the inspector. Under **Outcomes**, add an outcome and its acceptance criteria, or edit existing ones; optional todo links are text references. Under **Records**, inspect observations, artifacts, captured tool receipts and gaps, add a record, and accept or reject individual records yourself. **History & report** provides a copyable or downloadable report. A captured command or an agent's passed claim is an observation, not automatic acceptance: inspect its output, source, limitations and freshness. Failed, blocked, stale and unreviewed evidence remains visible; only you can review evidence or waive a criterion.
+
+Use **Request** on the card or **Requests** in the inspector to select an outcome and optional criterion. **Save request** records it without prompting the agent; **Send request** explicitly asks the agent for evidence.
+
+Under **Presets**, duplicate the read-only **Standard** preset or create and edit your own, then save it before using **Use for this conversation**, **Set project default** or **Set global default**. Project defaults take precedence over global defaults for future conversations. Existing conversations keep their pinned preset revision: select **Apply update to conversation** when offered, or explicitly apply a saved preset or inherited default. Changing a default or library preset does not silently update them. For implementation and persistence details, see [Conversation evidence](docs/architecture/session-model.md#conversation-evidence).
+
 ### Browser panel
 
 Open the globe button in the status bar, `Ctrl+Shift+B` or `/browser [url]` to see and use the same browser the tab's agent drives. The panel follows the page the agent works in, has page tabs, back/forward/reload and an address field, and can be resized or switched to full view. Mouse, scroll, keyboard, paste and IME input reach the page; the toggle-browser, toggle-terminal and next/previous-tab shortcuts, `⌘` shortcuts and, outside macOS, `Ctrl+Shift` shortcuts still reach the app. **Annotate** picks an element or a dragged area: add a comment, and the chip goes out with your next message, goal included, as text plus a screenshot of the area. Localhost links in chat open in the panel by default (`⌘`/`Ctrl`+click opens your normal browser). The ambient rail hides while the panel is open.

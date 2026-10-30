@@ -1,0 +1,425 @@
+/* Evidence: compact rail ledger and focused, theme-aware inspector. */
+.ev-card {
+  gap: 7px;
+  padding: 9px;
+  min-width: 0;
+}
+.ev-card-head {
+  color: var(--fg);
+  font-size: var(--d-text-sm);
+}
+.ev-card-mark {
+  color: var(--accent);
+  font-size: 15px;
+  line-height: 1;
+}
+.ev-card-toggle {
+  font-size: var(--d-text-xs);
+  color: var(--fg-2);
+}
+.ev-card-empty,
+.ev-card .ev-note {
+  margin: 0;
+  font-size: var(--d-text-xs);
+  line-height: 1.45;
+  color: var(--fg-3);
+}
+.ev-card-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  color: var(--fg-3);
+  font-size: var(--d-text-xs);
+}
+.ev-card-counts b {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.ev-card-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ev-card-list button {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 5px;
+  width: 100%;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: var(--d-text-xs);
+  text-align: left;
+  cursor: pointer;
+}
+.ev-card-list button span {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ev-card-list small {
+  flex: none;
+  color: var(--fg-3);
+  font-size: inherit;
+}
+.ev-card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ev-card-actions button {
+  width: 100%;
+  justify-content: center;
+  white-space: normal;
+}
+.ev-card :focus-visible,
+.ev-dialog :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ev-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.56);
+}
+.ev-dialog {
+  width: min(940px, 100%);
+  height: min(820px, 100%);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--r-2);
+  background: var(--bg-app);
+  color: var(--fg);
+  box-shadow: var(--shadow-pop);
+}
+.ev-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-window);
+}
+.ev-dialog h1,
+.ev-dialog h2,
+.ev-dialog h3 {
+  margin: 0;
+  color: var(--fg);
+}
+.ev-dialog h1 {
+  font-size: 19px;
+  line-height: 1.2;
+}
+.ev-dialog h2 {
+  font-size: 16px;
+}
+.ev-dialog h3 {
+  font-size: var(--d-text-sm);
+}
+.ev-eyebrow {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--accent);
+  font: 600 var(--d-text-xs) var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.ev-nav {
+  display: flex;
+  flex: none;
+  gap: 3px;
+  padding: 7px 16px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-window);
+}
+.ev-nav button {
+  flex: none;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-1);
+  background: transparent;
+  color: var(--fg-3);
+  font: inherit;
+  font-size: var(--d-text-sm);
+  cursor: pointer;
+}
+.ev-nav button:hover {
+  color: var(--fg);
+  background: var(--bg-hover);
+}
+.ev-nav button[aria-current] {
+  color: var(--fg);
+  border-color: var(--line-bright);
+  background: var(--bg-elevated);
+}
+.ev-dialog-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 22px 28px;
+  font-size: var(--d-text-sm);
+  line-height: 1.5;
+}
+.ev-dialog-body [hidden] {
+  display: none;
+}
+.ev-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 820px;
+  margin: 0 auto;
+}
+.ev-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 2px;
+}
+.ev-section-head p {
+  margin: 4px 0 0;
+  color: var(--fg-3);
+}
+.ev-empty {
+  margin: 0;
+  padding: 18px;
+  border: 1px dashed var(--line-bright);
+  border-radius: var(--r-2);
+  color: var(--fg-3);
+}
+.ev-outcome,
+.ev-record,
+.ev-policy,
+.ev-audit {
+  padding: 13px 15px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  background: var(--bg-surface);
+}
+.ev-outcome p,
+.ev-record p,
+.ev-audit p {
+  margin: 6px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ev-policy {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+  border-left: 3px solid var(--accent);
+}
+.ev-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+.ev-row > :first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ev-meta {
+  color: var(--fg-3);
+  font-size: var(--d-text-xs);
+}
+.ev-break {
+  overflow-wrap: anywhere;
+}
+.ev-note {
+  margin: 5px 0;
+  color: var(--fg-3);
+  font-size: var(--d-text-xs);
+  line-height: 1.5;
+}
+.ev-error {
+  margin: 5px 0;
+  color: var(--rose);
+  font-size: var(--d-text-xs);
+  overflow-wrap: anywhere;
+}
+.ev-status {
+  flex: none;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--r-pill);
+  padding: 1px 7px;
+  color: var(--fg-2);
+  font: 600 var(--d-text-xs) var(--font-mono);
+}
+.ev-status.ev-failed,
+.ev-status.ev-rejected {
+  color: var(--rose);
+}
+.ev-status.ev-blocked,
+.ev-status.ev-stale,
+.ev-status.ev-missing {
+  color: var(--amber);
+}
+.ev-criterion {
+  margin-top: 10px;
+  padding: 10px 0 0 12px;
+  border-top: 1px solid var(--line);
+  border-left: 2px solid var(--line-bright);
+}
+.ev-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 7px;
+}
+.ev-actions .btn {
+  white-space: normal;
+}
+.ev-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  margin: 9px 0;
+  padding: 13px;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--r-2);
+  background: var(--bg-elevated);
+}
+.ev-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  color: var(--fg-2);
+  font-size: var(--d-text-xs);
+  font-weight: 600;
+}
+.ev-field input,
+.ev-field textarea,
+.ev-field select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--r-1);
+  background: var(--bg-app);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--d-text-sm);
+  font-weight: 400;
+}
+.ev-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.ev-field textarea {
+  resize: vertical;
+  line-height: 1.45;
+}
+.ev-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.ev-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.ev-check input {
+  flex: none;
+  accent-color: var(--accent);
+}
+.ev-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  color: var(--fg-2);
+  font-size: var(--d-text-xs);
+}
+.ev-options > span {
+  flex-basis: 100%;
+  font-weight: 600;
+}
+.ev-receipt,
+.ev-artifact {
+  margin: 8px 0;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+  background: var(--bg-app);
+}
+.ev-receipt summary {
+  cursor: pointer;
+  color: var(--fg-2);
+  overflow-wrap: anywhere;
+}
+.ev-receipt summary time {
+  color: var(--fg-3);
+  font-size: var(--d-text-xs);
+}
+.ev-preview img,
+.ev-preview video {
+  display: block;
+  max-width: 100%;
+  max-height: 55vh;
+  margin-top: 8px;
+  object-fit: contain;
+}
+.ev-dialog pre {
+  max-height: 320px;
+  overflow: auto;
+  padding: 9px;
+  border-radius: var(--r-1);
+  background: var(--bg-window);
+  color: var(--fg-2);
+  font: var(--d-text-xs) / 1.5 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ev-review {
+  margin-top: 8px;
+  color: var(--fg-2);
+  font-size: var(--d-text-xs);
+}
+@media (max-width: 600px) {
+  .ev-scrim {
+    padding: 8px;
+  }
+  .ev-dialog-head {
+    padding: 13px 14px;
+  }
+  .ev-dialog-body {
+    padding: 14px;
+  }
+  .ev-section-head {
+    flex-wrap: wrap;
+  }
+  .ev-form-grid {
+    grid-template-columns: 1fr;
+  }
+}

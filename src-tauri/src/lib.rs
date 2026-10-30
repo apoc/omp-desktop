@@ -15,6 +15,7 @@ mod child_path;
 mod config_file;
 mod conversation_tree;
 mod conversation_workspace;
+mod evidence;
 mod external_open;
 mod files;
 mod git;
@@ -192,6 +193,10 @@ fn start_session_blocking(
             args.session_id.clone(),
             agent::Launch {
                 cwd,
+                source_project: prepared
+                    .workspace
+                    .as_ref()
+                    .map(|binding| binding.project_path.as_str()),
                 resume: args.resume.as_deref(),
                 profile,
                 mode,
@@ -445,6 +450,8 @@ async fn stop_session(session_id: String, app: AppHandle) -> Result<(), String> 
         let manager = app.state::<conversation_workspace::WorkspaceManager>();
         let _registry = manager.lock();
         let rule_book = app.state::<Arc<RuleBook>>();
+        app.state::<Arc<evidence::EvidenceHost>>()
+            .forget_run(&session_id, None);
         app.state::<AgentBridge>()
             .stop_session(&session_id, &rule_book);
         app.state::<Arc<widgets::WidgetHost>>()
@@ -474,8 +481,10 @@ fn end_tabs_locked<S: AsRef<str> + Sync>(
     let bridge = app.state::<AgentBridge>();
     let widgets = app.state::<Arc<widgets::WidgetHost>>();
     let watchers = app.state::<GitWatcherState>();
+    let evidence = app.state::<Arc<evidence::EvidenceHost>>();
     for id in ids {
         let id = id.as_ref();
+        evidence.forget_run(id, None);
         bridge.stop_session(id, &rule_book);
         widgets.session_closed(id);
         watchers.stop(id);
@@ -1379,7 +1388,15 @@ pub(crate) fn kill_child_processes(app: &AppHandle) {
     let _registry = manager.as_ref().map(|manager| manager.lock());
     remote::bridge::stop(app);
     notifications::stop(app);
+    let evidence = app.try_state::<Arc<evidence::EvidenceHost>>();
+    if let Some(evidence) = &evidence {
+        evidence.begin_shutdown();
+    }
     app.state::<AgentBridge>().shutdown_all();
+    // Close child pipes before joining a host worker blocked on its reply.
+    if let Some(evidence) = &evidence {
+        evidence.shutdown();
+    }
     if let Some(browser) = app.try_state::<browser::BrowserManager>() {
         browser.shutdown_all();
     }
@@ -1452,6 +1469,15 @@ fn setup(app: &tauri::App) {
     // Every store below is memory-only without it (see `config_dir`).
     let resolved_config_dir = config_dir(app.path().app_config_dir());
     let config_file = |name: &str| resolved_config_dir.as_deref().map(|dir| dir.join(name));
+    let evidence_data = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .filter(|path| path.is_absolute());
+    app.manage(Arc::new(evidence::EvidenceHost::new(
+        config_file("evidence-presets.json"),
+        evidence_data,
+    )));
     // Rail widget plugins: <app_config_dir>/widgets.json and the approvals in
     // <app_config_dir>/widget-approvals.json. No temp-dir fallback: a
     // `widgets.json` in a shared temp dir could be planted by another user,
@@ -1619,6 +1645,18 @@ fn with_plugins_and_state(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder
         .plugin(navigation_guard::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .register_asynchronous_uri_scheme_protocol("evidence", |context, request, responder| {
+            // Media reads and hashing never block the webview thread.
+            let host = Arc::clone(
+                context
+                    .app_handle()
+                    .state::<Arc<evidence::EvidenceHost>>()
+                    .inner(),
+            );
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(host.media_response(&request));
+            });
+        })
         .on_page_load(|webview, payload| {
             remote::bridge::on_page_load(
                 webview,
@@ -1702,6 +1740,14 @@ pub fn run() {
             replay_events,
             extension_ui_state,
             agent_context_read_skill,
+            evidence::commands::evidence_library,
+            evidence::commands::evidence_save_preset,
+            evidence::commands::evidence_assign_preset,
+            evidence::commands::evidence_delete_preset,
+            evidence::commands::evidence_snapshot,
+            evidence::commands::evidence_asset_source,
+            evidence::commands::evidence_asset_text,
+            evidence::commands::evidence_pick_artifact,
             open_project,
             take_pending_open_projects,
             start_git_watch,

@@ -118,6 +118,7 @@ function App() {
   const [agentContext, setAgentContext] = React.useState(() => window.OMP_AGENT_CONTEXT.empty());
   const agentContextView = React.useMemo(() => window.OMP_AGENT_CONTEXT.view(agentContext), [agentContext]);
   const [contextPolicy, setContextPolicy] = React.useState(null);
+  const [evidenceState, setEvidence] = React.useState(null);
   // omp's steer / follow-up queue + this tab's unacknowledged sends
   // (app/message-queue.js), rendered by the composer's queue strip.
   const [queue,        setQueue]        = React.useState(() => window.OMP_QUEUE.EMPTY_QUEUE);
@@ -183,7 +184,7 @@ function App() {
     setModelState, setThinkingLevel,
     setSessions, setActiveSessionId, setProfiles, setStartupProfileId, setRecentProjects,
     setNoTabProfileId, setWorkspaceNotes, setApprovalModes, setCloseConfirm, setConversationSetup,
-    setPromptHistory, setSubagents, setSubagentTranscripts, setBackgroundTasks, setAgentContext, setContextPolicy, setQueue, setQueueSending, setGoal, setExtWidgets, setLiveVoice, setDictation, setDictationCompleted,
+    setPromptHistory, setSubagents, setSubagentTranscripts, setBackgroundTasks, setAgentContext, setContextPolicy, setEvidence, setQueue, setQueueSending, setGoal, setExtWidgets, setLiveVoice, setDictation, setDictationCompleted,
   });
   useRemote({ bridge });
   useNotifications({ sessions, viewedSession: stab.active ? null : activeSessionId, tweaks: t });
@@ -241,6 +242,12 @@ function App() {
     bridge, tabId: activeProject.id, profileId: activeProfileId, profileName: activeProfileLabel,
     processStartedAt: activeProject.processStartedAt,
     model, ctx, active: t.showContext || (stab.active && stab.section === "agent"), snapshot: contextPolicy,
+  });
+  const evidenceUi = window.useEvidence({
+    bridge, tabId: activeProject.id, profileId: activeProfileId,
+    projectPath: activeProject.workspace?.projectPath || activeProject.path,
+    processStartedAt: activeProject.processStartedAt,
+    conversationVersion: activeProject.conversationVersion, snapshot: evidenceState,
   });
   // Status-bar approvals cell: the mode the rendered tab's omp runs, or
   // `running ⇢ target` while a change waits for its turn to end. Read
@@ -1188,6 +1195,7 @@ function App() {
                     showChanges: <PrAutomationCard key={planKey} automation={prAutomation} bridge={bridge}
                       available={!!activeProject.path && !!bridge?.isConnected}
                       onOpenChanges={() => setGitOpen({ path: null, project: gitProject })} />,
+                    showEvidence: <window.EvidenceCard key={evidenceUi.ownerKey} evidence={evidenceUi} />,
                     ...Object.fromEntries(widgets.approvals.map(a => [_widgetTweakKey(a.id),
                       <WidgetBoundary key={`approve:${a.id}`} title={a.title}>
                         <WidgetApprovalCard title={a.title} command={a.command} changed={a.changed}

@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const SOURCE: &[u8] = include_bytes!("context-extension.mjs");
 const POLICY_SOURCE: &[u8] = include_bytes!("context-policy-extension.mjs");
-const HELPERS: [(&str, &[u8]); 3] = [
+const HELPERS: [(&str, &[u8]); 8] = [
     (
         "context-policy-native.mjs",
         include_bytes!("context-policy-native.mjs"),
@@ -19,6 +19,20 @@ const HELPERS: [(&str, &[u8]); 3] = [
         "background-tasks-extension.mjs",
         include_bytes!("background-tasks-extension.mjs"),
     ),
+    (
+        "evidence-model.js",
+        include_bytes!("../../../src/app/evidence-model.js"),
+    ),
+    (
+        "evidence-extension.mjs",
+        include_bytes!("evidence-extension.mjs"),
+    ),
+    (
+        "evidence-runtime.mjs",
+        include_bytes!("evidence-runtime.mjs"),
+    ),
+    ("evidence-ledger.mjs", include_bytes!("evidence-ledger.mjs")),
+    ("evidence-host.mjs", include_bytes!("evidence-host.mjs")),
 ];
 static ASSET: Mutex<Option<Asset>> = Mutex::new(None);
 
@@ -85,6 +99,9 @@ pub(super) fn apply(command: &mut Command, profile: Option<&str>) -> Result<(), 
         command.arg("--extension").arg(&asset.file);
         command.arg("--extension").arg(&asset.policy_file);
         command.arg("--extension").arg(&asset.background_file);
+        command
+            .arg("--extension")
+            .arg(asset.dir.join("evidence-extension.mjs"));
         command.env(
             "OMP_DESKTOP_PROFILE_ID",
             profile.filter(|id| !id.is_empty()).unwrap_or("default"),

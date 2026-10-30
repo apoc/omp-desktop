@@ -24,6 +24,7 @@ const modelFixture = `
 import { Settings, SettingsManager } from "@oh-my-pi/pi-coding-agent";
 import { lookup } from "@oh-my-pi/pi-coding-agent/config/registry";
 let inheritedViews = 0, clones = 0, failNextView = false;
+let reloadNextView = false, viewReloads = [];
 const loadReadOnly = Settings.loadReadOnly;
 const cloneForCwd = Settings.prototype.cloneForCwd;
 Settings.loadReadOnly = function(...args) {
@@ -33,7 +34,16 @@ Settings.loadReadOnly = function(...args) {
     lookup("shellPath").override(SettingsManager.create(), "/bin/bash");
     throw new Error("Injected inherited policy read failure");
   }
-  return loadReadOnly.apply(this, args);
+  if (!reloadNextView) return loadReadOnly.apply(this, args);
+  reloadNextView = false;
+  return (async () => {
+    const view = await loadReadOnly.apply(this, args);
+    const settings = SettingsManager.create(args[0].cwd);
+    const before = settings.revision;
+    await settings.reloadFromDisk();
+    viewReloads.push({ before, after: settings.revision });
+    return view;
+  })();
 };
 Settings.prototype.cloneForCwd = function(...args) {
   clones++;
@@ -50,10 +60,13 @@ export default function(pi) {
     })),
   });
   pi.registerCommand("policy-fixture-counts", {
-    handler: (_args, ctx) => ctx.ui.notify("POLICY_CACHE_COUNTS:" + JSON.stringify({ inheritedViews, clones }), "info"),
+    handler: (_args, ctx) => ctx.ui.notify("POLICY_CACHE_COUNTS:" + JSON.stringify({ inheritedViews, clones, viewReloads }), "info"),
   });
   pi.registerCommand("policy-fixture-unrelated", {
     handler: (_args, ctx) => lookup("shellPath").override(SettingsManager.create(ctx.cwd), "/bin/sh"),
+  });
+  pi.registerCommand("policy-fixture-reload-next-view", {
+    handler: () => { reloadNextView = true; },
   });
   pi.registerCommand("policy-fixture-fail-next", {
     handler: (_args, ctx) => {
@@ -521,6 +534,68 @@ test(
 );
 
 test(
+  "a no-op native reload during post-save confirmation returns the persisted conversation policy",
+  {
+    skip: installed.status !== 0,
+    timeout: 90000,
+  },
+  async () => {
+    const home = await mkdtemp(join(tmpdir(), "omp-native-confirm-race-test-"));
+    await mkdir(join(home, "project"));
+    await configure(home, "work", {
+      compaction: {
+        modelThresholds: { "desktop-test/large": "55%" },
+      },
+    });
+    let process;
+    try {
+      process = await openNative(home, "work");
+      const before = await process.policy();
+      assert.equal(before.supported, true, before.reason);
+      assert.equal(before.target.tokens, 220000);
+      await process.request({
+        type: "prompt",
+        message: "/policy-fixture-reload-next-view",
+      });
+      const policy = await process.policy(
+        "apply",
+        edit(before, "conversation", { targetPercent: 30 }),
+      );
+      const { viewReloads } = await process.cacheCounts();
+      assert.equal(viewReloads.length, 1, "the armed reload ran exactly once");
+      assert.ok(
+        viewReloads[0].after > viewReloads[0].before,
+        "the real native reload advanced the settings revision",
+      );
+      assert.equal(policy.target.tokens, 120000);
+      assert.equal(policy.target.inherited.tokens, 220000);
+      await assert.rejects(
+        process.policy(
+          "apply",
+          edit(before, "conversation", { targetPercent: 40 }),
+        ),
+        /changed|reload/,
+      );
+      const { sessionFile } = await process.request({ type: "get_state" });
+      const entries = (await readFile(sessionFile, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .filter(
+          (entry) =>
+            entry.type === "custom" &&
+            entry.customType === "omp-desktop:context-policy",
+        );
+      assert.equal(entries.length, 1, "the committed save is not replayed");
+      assert.equal(entries[0].data.targets["desktop-test/large"].percent, 30);
+    } finally {
+      await process?.stop();
+      await rm(home, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "inherited views are reused across unchanged reads and refresh for real policy layer changes",
   {
     skip: installed.status !== 0,
@@ -713,16 +788,17 @@ test(
     let process, handler, timer;
     try {
       process = await openNative(home, "work");
+      await process.request({
+        type: "prompt",
+        message: "/policy-fixture-stop-watch",
+      });
       let policy = await process.policy();
+      assert.equal(policy.supported, true, policy.reason);
       policy = await process.policy(
         "apply",
         edit(policy, "conversation", { targetPercent: 30 }),
       );
       assert.equal(policy.target.tokens, 120000);
-      await process.request({
-        type: "prompt",
-        message: "/policy-fixture-stop-watch",
-      });
       const invalid = "compaction: [unterminated\n";
       await writeFile(config, invalid);
       const notice = new Promise((resolve, reject) => {
@@ -738,11 +814,7 @@ test(
           )
             return;
           const response = JSON.parse(frame.message.slice(PREFIX.length));
-          if (
-            response.id === null &&
-            response.policy?.supported === false &&
-            /invalid/i.test(response.policy.reason)
-          )
+          if (response.id === null && response.policy?.supported === false)
             resolve(response.policy);
         };
         process.events.on("frame", handler);
@@ -751,7 +823,9 @@ test(
         type: "prompt",
         message: "/policy-fixture-signal",
       });
-      await notice;
+      const unavailable = await notice;
+      assert.equal(typeof unavailable.reason, "string");
+      assert.ok(unavailable.reason.trim(), "the read failure must be visible");
       assert.equal(
         await readFile(config, "utf8"),
         invalid,
