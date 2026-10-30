@@ -5,7 +5,7 @@
 // `window.OMP_BACKDROPS` (app/backdrops.js, which must load first). Drawing:
 // design/backdrops/latent.js. Pure, covered by test-backdrops.mjs.
 (function () {
-  const { gauss, easeInOut } = window.OMP_BACKDROPS;
+  const { gauss, easeInOut, clamp } = window.OMP_BACKDROPS;
 
   // One semantic neighbourhood per cluster; a query lands near the cluster
   // whose index it names.
@@ -26,6 +26,9 @@
     ["make it a one-liner", 5],
   ]);
   const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+  const RADIUS = 0.62;   // the cluster centres' distance from the origin
+  const SPREAD = 0.16;   // a cluster's gaussian spread
+  const CAMERA = 3;      // the camera's distance in front of the origin
 
   /** Cluster centres spread over a sphere of `radius` (golden spiral), so
    *  no two neighbourhoods collapse onto each other. */
@@ -42,13 +45,13 @@
   /** A gaussian blob of `perCluster` points around each centre; the first
    *  points of a blob carry its words as labels. `link`: the index of the
    *  nearest other point of the same cluster, for the constellation lines. */
-  function makeCloud(perCluster, rand, { radius = 0.62, spread = 0.17 } = {}) {
-    const centres = clusterCentres(CLUSTERS.length, radius);
+  function makeCloud(perCluster, rand) {
+    const centres = clusterCentres(CLUSTERS.length, RADIUS);
     const points = [];
     centres.forEach((o, c) => {
       for (let i = 0; i < perCluster; i++) {
         points.push({
-          x: o.x + gauss(rand) * spread, y: o.y + gauss(rand) * spread, z: o.z + gauss(rand) * spread,
+          x: o.x + gauss(rand) * SPREAD, y: o.y + gauss(rand) * SPREAD, z: o.z + gauss(rand) * SPREAD,
           cluster: c, label: CLUSTERS[c][i] ?? null, link: -1,
         });
       }
@@ -75,12 +78,13 @@
     return { x, y: p.y * cp - z * sp, z: p.y * sp + z * cp };
   }
 
-  /** Perspective projection, camera `dist` in front of the origin looking
+  /** Perspective projection, the camera in front of the origin looking
    *  along +z: a farther point (larger z) lands closer to the centre and
-   *  gets a smaller `k` (its size/brightness factor). */
-  function project(p, cx, cy, scale, dist = 3) {
-    const k = dist / (dist + p.z);
-    return { x: cx + p.x * scale * k, y: cy + p.y * scale * k, k };
+   *  gets a smaller `k` (its size/brightness factor). `stretch` widens x
+   *  about `cx` (an ellipsoid cloud on a wide canvas). */
+  function project(p, cx, cy, scale, stretch = 1) {
+    const k = CAMERA / (CAMERA + p.z);
+    return { x: cx + p.x * scale * k * stretch, y: cy + p.y * scale * k, k };
   }
 
   /** Indices of the `k` points nearest to `q`, nearest first. */
@@ -90,7 +94,7 @@
 
   /** rotate + project every point into `out` ({x, y, z, k} typed arrays of
    *  the cloud's length), inlined so a frame allocates nothing. */
-  function projectCloud(points, yaw, pitch, cx, cy, scale, out, dist = 3) {
+  function projectCloud(points, yaw, pitch, cx, cy, scale, stretch, out) {
     const cyw = Math.cos(yaw), syw = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
     for (let i = 0; i < points.length; i++) {
       const p = points[i];
@@ -98,8 +102,8 @@
       const z0 = -p.x * syw + p.z * cyw;
       const y = p.y * cp - z0 * sp;
       const z = p.y * sp + z0 * cp;
-      const k = dist / (dist + z);
-      out.x[i] = cx + x * scale * k; out.y[i] = cy + y * scale * k; out.z[i] = z; out.k[i] = k;
+      const k = CAMERA / (CAMERA + z);
+      out.x[i] = cx + x * scale * k * stretch; out.y[i] = cy + y * scale * k; out.z[i] = z; out.k[i] = k;
     }
   }
 
@@ -136,16 +140,15 @@
    *  ray's growth (all 0..1), and the overall opacity. */
   function retrievalAt(t, chars, k) {
     const R = RETRIEVAL;
-    const clamp01 = (v) => Math.min(1, Math.max(0, v));
     const flyStart = chars * R.perChar + R.pause;
     const landed = flyStart + R.fly;
     const rays = [];
-    for (let i = 0; i < k; i++) rays.push(clamp01((t - landed - i * R.stagger) / R.ray));
+    for (let i = 0; i < k; i++) rays.push(clamp((t - landed - i * R.stagger) / R.ray, 0, 1));
     return {
       typed: Math.min(chars, Math.floor(t / R.perChar)),
-      fly: clamp01((t - flyStart) / R.fly),
+      fly: clamp((t - flyStart) / R.fly, 0, 1),
       rays,
-      alpha: 1 - clamp01((t - R.hold) / R.fade),
+      alpha: 1 - clamp((t - R.hold) / R.fade, 0, 1),
     };
   }
 
@@ -166,20 +169,23 @@
    *  centre (left, right, up, down): drawn as hairline links. */
   const EDGE_ARMS = Object.freeze({ "═": "lr", "║": "ud", "╗": "ld", "╝": "lu", "╚": "ru", "╔": "rd" });
 
+  const DOT_JITTER = 0.14;   // a logo dot's in-plane jitter, in cell sizes
+  const DOT_TINTED = 0.07;   // the share of logo dots tinted by a cluster
+
   /** The logo's letters as embedded points: `perCell` dots stacked down
    *  each solid cell (logoCells, `solid` only), jittered a little in the
    *  plane, each with a depth `z` in [-1, 1] and a `tint`: a cluster index
-   *  for about a `tinted` share of them, else -1 (the accent). */
-  function logoDots(cells, rand, { perCell = 2, jitter = 0.14, tinted = 0.07 } = {}) {
+   *  for about a DOT_TINTED share of them, else -1 (the accent). */
+  function logoDots(cells, rand, perCell) {
     const dots = [];
     for (const c of cells) {
       const h = c.h / perCell;
       for (let k = 0; k < perCell; k++) {
         dots.push({
-          x: c.x + c.w / 2 + gauss(rand) * jitter * c.w,
-          y: c.y + h * (k + 0.5) + gauss(rand) * jitter * h,
-          z: Math.max(-1, Math.min(1, gauss(rand) * 0.45)),
-          tint: rand() < tinted ? Math.floor(rand() * CLUSTERS.length) : -1,
+          x: c.x + c.w / 2 + gauss(rand) * DOT_JITTER * c.w,
+          y: c.y + h * (k + 0.5) + gauss(rand) * DOT_JITTER * h,
+          z: clamp(gauss(rand) * 0.45, -1, 1),
+          tint: rand() < DOT_TINTED ? Math.floor(rand() * CLUSTERS.length) : -1,
         });
       }
     }
@@ -189,7 +195,7 @@
   /** Distance from (px, py) to the segment a–b. */
   function segmentDist(px, py, ax, ay, bx, by) {
     const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
-    const t = len2 > 0 ? Math.min(1, Math.max(0, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0;
+    const t = len2 > 0 ? clamp(((px - ax) * dx + (py - ay) * dy) / len2, 0, 1) : 0;
     return Math.hypot(px - ax - dx * t, py - ay - dy * t);
   }
 
@@ -207,7 +213,7 @@
   }
 
   Object.assign(window.OMP_BACKDROPS, {
-    CLUSTERS, QUERIES, clusterCentres, makeCloud, rotate, project, nearest,
+    CLUSTERS, QUERIES, makeCloud, rotate, project, nearest,
     projectCloud, depthOrder, retrieve, RETRIEVAL, retrievalAt, pickCluster,
     EDGE_ARMS, logoDots, segmentDist, DRIFT, driftAt,
   });

@@ -31,20 +31,20 @@
 
   /** The next tool call: a tool index, one of its call labels, its outcome
    *  and claimed wall time (tenths of a second). */
-  function nextCall(rand, tools = TOOLS, tool = Math.floor(rand() * tools.length)) {
-    const { calls, secs: [lo, hi], fail } = tools[tool];
+  function nextCall(rand, tool = Math.floor(rand() * TOOLS.length)) {
+    const { calls, secs: [lo, hi], fail } = TOOLS[tool];
     const label = calls[Math.floor(rand() * calls.length)];
     const ok = rand() >= fail;
     return { tool, label, ok, secs: Math.round((lo + rand() * (hi - lo)) * 10) / 10 };
   }
 
   /** One model turn: 1–3 parallel calls (mostly one), to distinct tools. */
-  function nextTurn(rand, tools = TOOLS) {
+  function nextTurn(rand) {
     const r = rand();
-    const n = Math.min(tools.length, r < 0.45 ? 1 : r < 0.8 ? 2 : 3);
-    const free = tools.map((_, i) => i);
+    const n = Math.min(TOOLS.length, r < 0.45 ? 1 : r < 0.8 ? 2 : 3);
+    const free = TOOLS.map((_, i) => i);
     const turn = [];
-    for (let i = 0; i < n; i++) turn.push(nextCall(rand, tools, free.splice(Math.floor(rand() * free.length), 1)[0]));
+    for (let i = 0; i < n; i++) turn.push(nextCall(rand, free.splice(Math.floor(rand() * free.length), 1)[0]));
     return turn;
   }
 
@@ -64,12 +64,18 @@
     return { phase: "done", t: 1 };
   }
 
-  /** How many call-log lines fit bottom-left without touching the orbit
-   *  (`pad` keeps clear of nodes and their labels): the most of `max` whose
+  /** The call log, bottom-left: its first line's left edge `x`, the newest
+   *  line's centre `bottom` px above the canvas edge, `lineH` apart, at most
+   *  `lines` of them in a `boxW` wide box. `padX`/`padY` keep it clear of the
+   *  nodes and their labels. */
+  const CALL_LOG = Object.freeze({ x: 24, bottom: 24, lineH: 17, boxW: 200, lines: 5, padX: 56, padY: 26 });
+
+  /** How many call-log lines fit without touching the orbit: the most whose
    *  box's inner corner lies outside the padded ellipse, 0 when under 2 fit
    *  (a lone line reads as noise). */
-  function logRoom(height, { cx, cy, rx, ry }, { x = 24, bottom = 24, lineH = 17, boxW = 200, max = 5, padX = 56, padY = 26 } = {}) {
-    for (let n = max; n >= 2; n--) {
+  function logRoom(height, { cx, cy, rx, ry }) {
+    const { x, bottom, lineH, boxW, lines, padX, padY } = CALL_LOG;
+    for (let n = lines; n >= 2; n--) {
       const right = x + boxW, top = height - bottom - (n - 0.5) * lineH;
       if (right >= cx || top <= cy) continue;
       if (((right - cx) / (rx + padX)) ** 2 + ((top - cy) / (ry + padY)) ** 2 >= 1) return n;
@@ -79,8 +85,8 @@
 
   /** The call-log line: `bash  cargo test  ✓ 1.4s`, a pending marker while
    *  the call runs. */
-  function logLine(call, done, tools = TOOLS) {
-    const head = `${tools[call.tool].name.padEnd(5)} ${call.label}`;
+  function logLine(call, done) {
+    const head = `${TOOLS[call.tool].name.padEnd(5)} ${call.label}`;
     if (!done) return `${head}  …`;
     return call.ok ? `${head}  ✓ ${call.secs.toFixed(1)}s` : `${head}  ✗ exit 1`;
   }
@@ -89,14 +95,15 @@
    *  light at progress `k` (0..1) crossing the letters left to right, leaning
    *  like a scanline. Weight (0..1) of the cell at `col`, `row` of a
    *  `cols` × `rows` logo; 0 outside the band and outside 0 < k < 1. */
-  function logoSweep(col, row, k, { cols = 91, rows = 6, band = 5, slant = 1.6 } = {}) {
+  function logoSweep(col, row, k, cols, rows) {
     if (!(k > 0 && k < 1)) return 0;
+    const band = 5, slant = 1.6;
     const pos = -band * 3 + k * (cols + (rows - 1) * slant + band * 6);
     const d = (col + (rows - 1 - row) * slant - pos) / band;
     return d > -2.5 && d < 2.5 ? Math.exp(-d * d) : 0;
   }
 
   Object.assign(window.OMP_BACKDROPS, {
-    TOOLS, orbitRadii, ellipsePoint, nextCall, nextTurn, callSpans, callPhase, logLine, logRoom, logoSweep,
+    TOOLS, orbitRadii, ellipsePoint, nextCall, nextTurn, callSpans, callPhase, logLine, CALL_LOG, logRoom, logoSweep,
   });
 })();

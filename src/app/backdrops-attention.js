@@ -6,7 +6,7 @@
 // `window.OMP_BACKDROPS` (app/backdrops.js, which must load first). Drawing:
 // design/backdrops/attention.js. Pure, covered by test-backdrops.mjs.
 (function () {
-  const { softmax, tokenKind, SEQUENCE } = window.OMP_BACKDROPS;
+  const { softmax, tokenKind, tokenAt, clamp } = window.OMP_BACKDROPS;
 
   /** The heads, each with its own pattern (see `headScores`). */
   const HEADS = Object.freeze([
@@ -83,8 +83,7 @@
   /** The `n` tokens of SEQUENCE from `k` on, wrapping round: the context
    *  window; the next one, `windowAt(k + 1)`'s last, is the prediction. */
   function windowAt(k, n) {
-    const len = SEQUENCE.length, at = ((k % len) + len) % len;
-    return Array.from({ length: n }, (_, i) => SEQUENCE[(at + i) % len]);
+    return Array.from({ length: n }, (_, i) => tokenAt(k + i));
   }
 
   /** One token's generation, in steps: per layer the attention (arcs grow
@@ -109,8 +108,6 @@
       ? { stage: "out", layer: LAYERS - 1, u: r / TIMELINE.out }
       : { stage: "slide", layer: LAYERS - 1, u: (r - TIMELINE.out) / TIMELINE.slide };
   }
-
-  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
   /** Geometry for a `width`×`height` canvas with the logo at `fit` (or
    *  null). Full size: the heads' heatmaps above the logo, the layer stack

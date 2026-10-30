@@ -16,10 +16,7 @@
   const HEAD_FLASH = 0.5;         // chance a drop head inside the logo lights its block
   const LENS_FLASH = 0.06;        // per-step chance of a block right under the pointer
   // The flash lightens: toward fg on a dark theme, toward bg on a light one
-  // (a darkening flash on daylight reads as a dead pixel). Theme colours
-  // are #rrggbb tokens; anything else counts as dark.
-  const isLight = (hex) => /^#[0-9a-f]{6}$/i.test(hex)
-    && (0.299 * parseInt(hex.slice(1, 3), 16) + 0.587 * parseInt(hex.slice(3, 5), 16) + 0.114 * parseInt(hex.slice(5, 7), 16)) > 140;
+  // (a darkening flash on daylight reads as a dead pixel).
   (window.OMP_BACKDROP_RENDERERS ??= {}).matrix = {
     stepMs: 55,                  // ~18 steps/s: reads as rain, costs little
     plate: false,
@@ -85,10 +82,10 @@
         const { proximity } = window.OMP_BACKDROPS;
         const radius = fit.font * 8;
         cells.forEach((c, i) => {
-          if (rand() < LENS_FLASH * pointer.strength * proximity(pointer.x, pointer.y, c.x + w / 2, c.y + h / 2, radius)) light(i);
+          if (rand() < LENS_FLASH * proximity(pointer, c.x + w / 2, c.y + h / 2, radius)) light(i);
         });
       }
-      ctx.fillStyle = isLight(theme.bg) ? theme.bg : theme.fg;
+      ctx.fillStyle = theme.light ? theme.bg : theme.fg;
       for (const [i, left] of s.flash) {
         const c = cells[i];
         ctx.globalAlpha = FLASH_ALPHA * (left / FLASH_STEPS);

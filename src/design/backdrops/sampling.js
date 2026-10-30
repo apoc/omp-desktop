@@ -18,7 +18,7 @@
   const SWEEP_RATE = 3.2;  // columns per step of the snippet-start sweep
   const GHOST = 0.22;      // alpha of the not-yet-typed logo
 
-  const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+  const { clamp, proximity } = window.OMP_BACKDROPS;
   const easeOut = (t) => 1 - (1 - t) ** 3;
   // A peaked distribution commits fast, a flat one makes the model "hesitate".
   const cycleLen = (p) => Math.round(8 + (1 - p) * 18);
@@ -39,7 +39,7 @@
     s.t = 0;
     if (s.idx >= s.toks.length) { s.phase = "hold"; s.cand = null; return; }
     // A moving mouse warms the sampler: flatter bars, a more hesitant model.
-    s.temp = TEMPERATURE + 0.5 * (env.pointer?.strength ?? 0);
+    s.temp = TEMPERATURE + 0.5 * env.pointer.strength;
     s.cand = window.OMP_BACKDROPS.candidates(s.toks[s.idx].tok, K, env.rand, { temperature: s.temp });
     s.len = cycleLen(s.cand[0].p);
   }
@@ -52,6 +52,10 @@
       next(s, env);
     } else if (s.phase === "hold" && s.t > HOLD) { s.phase = "fade"; s.t = 0; }
     else if (s.phase === "fade" && s.t > FADE) { load(s, s.snip + 1); next(s, env); }
+    // Per-step values shared by the editor, the popup and the logo.
+    s.fade = s.phase === "fade" ? 1 - s.t / FADE : 1;
+    s.hl = s.cand ? clamp((s.t - GROW) / 4, 0, 1) : 0;  // the winner highlighted
+    s.caret = s.phase === "gen" || Math.floor(s.n / 15) % 2 === 0;
   }
 
   /** Where the next token goes (after its indentation), or the end of the code. */
@@ -87,15 +91,14 @@
       codeTop: Math.round(y) + head + 6, rows: Math.max(1, Math.floor((h - chrome) / lh)) };
   }
 
-  /** 0..1 weight of the pointer lens at (x, y): hovering code reveals
-   *  its token boundaries, the way a tokenizer viewer does. */
-  function lensAt(p, x, y, r) {
-    if (!p || p.strength <= 0.01) return 0;
-    return p.strength * window.OMP_BACKDROPS.proximity(p.x, p.y, x, y, r);
-  }
-
   function charWidth(ctx, s, font) {
     return (s.cw[font] ??= ctx.measureText("0").width);
+  }
+
+  /** Ease the candidates popup towards (px, py); it jumps there on first show. */
+  function follow(s, px, py) {
+    if (s.px == null) { s.px = px; s.py = py; }
+    s.px += (px - s.px) * 0.35; s.py += (py - s.py) * 0.35;
   }
 
   function panel(ctx, g, theme, r) {
@@ -106,7 +109,7 @@
   }
 
   function drawFull(ctx, s, env, theme) {
-    const g = s.geo, cur = cursorOf(s), { lh, font } = g;
+    const g = s.geo, cur = cursorOf(s), { lh, font } = g, { fade, hl } = s;
     const mono = `${font}px ${theme.mono}`, small = `${font - 2}px ${theme.mono}`;
     panel(ctx, g, theme, 8);
     ctx.textBaseline = "middle";
@@ -137,7 +140,6 @@
     const lineY = (line) => g.codeTop + (line - s.scroll) * lh;
     ctx.save();
     ctx.beginPath(); ctx.rect(g.x + 1, g.y + g.head + 1, g.w - 2, g.h - g.head - g.foot - 1); ctx.clip();
-    const fade = s.phase === "fade" ? 1 - s.t / FADE : 1;
     ctx.globalAlpha = 0.07 * fade; ctx.fillStyle = theme.accent;
     ctx.fillRect(g.x + 1, lineY(cur.line), g.w - 2, lh);
     for (let line = Math.max(0, Math.floor(s.scroll)); line <= cur.line; line++) {
@@ -151,7 +153,8 @@
       const ty = lineY(t.line);
       if (ty < g.y || ty > g.y + g.h) continue;
       const tx = codeX + t.col * cw, age = s.n - s.born[i], tw = t.tok.length * cw;
-      const lens = lensAt(env.pointer, tx + tw / 2, ty + lh / 2, font * 9);
+      // Hovering code reveals its token boundaries, as a tokenizer viewer does.
+      const lens = proximity(env.pointer, tx + tw / 2, ty + lh / 2, font * 9);
       if (lens > 0) {
         ctx.globalAlpha = 0.2 * lens * fade; ctx.fillStyle = i % 2 ? theme.cyan : theme.accent;
         ctx.fillRect(tx - 1, ty + 3, tw + 2, lh - 6);
@@ -164,12 +167,11 @@
       ctx.fillText(t.tok, tx, ty + lh / 2);
     }
     const cx = codeX + cur.col * cw, cy = lineY(cur.line);
-    const hl = s.cand ? clamp((s.t - GROW) / 4, 0, 1) : 0;
     if (hl > 0) {  // the winner as inline ghost text before it commits
       ctx.globalAlpha = 0.4 * hl; ctx.fillStyle = theme.accent;
       ctx.fillText(s.cand[0].tok, cx, cy + lh / 2);
     }
-    if (s.phase === "gen" || Math.floor(s.n / 15) % 2 === 0) {
+    if (s.caret) {
       ctx.globalAlpha = fade; ctx.fillStyle = theme.accent;
       ctx.fillRect(cx - 1, cy + lh * 0.18, 2, lh * 0.64);
     }
@@ -178,7 +180,7 @@
   }
 
   function drawPopup(ctx, s, theme, cx, cy, ghostW) {
-    const g = s.geo, fs = g.font - 1, font = `${fs}px ${theme.mono}`;
+    const g = s.geo, fs = g.font - 1, font = `${fs}px ${theme.mono}`, { hl } = s;
     ctx.font = font;
     const cws = charWidth(ctx, s, font), rh = Math.round(fs * 1.6);
     const labW = cws * 11, barW = fs * 7, pctW = cws * 4;
@@ -190,13 +192,12 @@
       px = cx + ghostW + 12; py = clamp(cy - 4, top, bottom - ph);
       if (px + pw > g.x + g.w - 6) { px = clamp(cx - 16, g.x + 6, g.x + g.w - pw - 6); py = Math.max(top, cy - ph - 2); }
     }
-    if (s.px == null) { s.px = px; s.py = py; }
-    s.px += (px - s.px) * 0.35; s.py += (py - s.py) * 0.35;
+    follow(s, px, py);
     const x = Math.round(s.px), y = Math.round(s.py);
     ctx.beginPath(); ctx.roundRect(x + 0.5, y + 0.5, pw, ph, 6);
     ctx.globalAlpha = 0.97; ctx.fillStyle = theme.bg; ctx.fill();
     ctx.globalAlpha = 0.9; ctx.strokeStyle = theme.line; ctx.stroke();
-    const hl = clamp((s.t - GROW) / 4, 0, 1), { tokenKind } = window.OMP_BACKDROPS;
+    const { tokenKind } = window.OMP_BACKDROPS;
     const bx = x + 22 + labW + 10;
     ctx.textBaseline = "middle";
     s.cand.forEach((c, i) => {
@@ -226,14 +227,13 @@
   // Preview tile: text would turn to mush, so tokens are coloured blocks
   // (a minimap of the code) and the popup keeps only its bars.
   function drawCompact(ctx, s, env, theme) {
-    const g = s.geo, cur = cursorOf(s), { lh, cw } = g;
+    const g = s.geo, cur = cursorOf(s), { lh, cw } = g, { fade, hl } = s;
     panel(ctx, g, theme, 5);
     ctx.globalAlpha = 0.5; ctx.fillStyle = theme.line;
     ctx.fillRect(g.x + 1, g.y + g.head, g.w - 2, 1);
     ctx.globalAlpha = 0.8; ctx.fillStyle = theme.accent;
     ctx.fillRect(g.x + 6, g.y + g.head / 2 - 1, 18, 2);
     const codeX = g.x + g.gutter, lineY = (line) => g.codeTop + (line - s.scroll) * lh;
-    const fade = s.phase === "fade" ? 1 - s.t / FADE : 1;
     ctx.save();
     ctx.beginPath(); ctx.rect(g.x + 1, g.y + g.head + 1, g.w - 2, g.h - g.head - 2); ctx.clip();
     for (let line = 0; line <= cur.line; line++) {
@@ -245,18 +245,17 @@
       if (t.kind === "space") continue;
       const lit = clamp(1 - (s.n - s.born[i]) / FLASH, 0, 1);
       const tx = codeX + t.col * cw, ty = lineY(t.line), tw = Math.max(1, t.tok.length * cw - 0.8);
-      const lens = lensAt(env.pointer, tx + tw / 2, ty + lh / 2, 28);
+      const lens = proximity(env.pointer, tx + tw / 2, ty + lh / 2, 28);
       ctx.globalAlpha = Math.min(1, 0.75 + 0.25 * lit + 0.25 * lens) * fade;
       ctx.fillStyle = lit > 0.3 ? theme.accent : theme[KIND_COLOUR[t.kind]];
       ctx.fillRect(tx, ty + lh * (0.22 - 0.12 * lens), tw, lh * (0.56 + 0.24 * lens));
     }
     const cx = codeX + cur.col * cw, cy = lineY(cur.line);
-    const hl = s.cand ? clamp((s.t - GROW) / 4, 0, 1) : 0;
     if (hl > 0) {
       ctx.globalAlpha = 0.4 * hl; ctx.fillStyle = theme.accent;
       ctx.fillRect(cx, cy + lh * 0.22, s.cand[0].tok.length * cw, lh * 0.56);
     }
-    if (s.phase === "gen" || Math.floor(s.n / 15) % 2 === 0) {
+    if (s.caret) {
       ctx.globalAlpha = fade; ctx.fillStyle = theme.accent;
       ctx.fillRect(cx - 0.5, cy, 1.2, lh);
     }
@@ -265,9 +264,7 @@
     const pw = 46, ph = K * 4 + 6;
     let py = cy + lh + 1;
     if (py + ph > g.y + g.h - 2) py = cy - ph - 1;
-    const px = clamp(cx - 6, g.x + 4, g.x + g.w - pw - 4);
-    if (s.px == null) { s.px = px; s.py = py; }
-    s.px += (px - s.px) * 0.35; s.py += (py - s.py) * 0.35;
+    follow(s, clamp(cx - 6, g.x + 4, g.x + g.w - pw - 4), py);
     ctx.beginPath(); ctx.roundRect(s.px + 0.5, s.py + 0.5, pw, ph, 3);
     ctx.globalAlpha = 0.97; ctx.fillStyle = theme.bg; ctx.fill();
     ctx.globalAlpha = 0.9; ctx.strokeStyle = theme.line; ctx.lineWidth = 1; ctx.stroke();
@@ -279,33 +276,24 @@
     });
   }
 
-  /** The logo as editor text, pre-rendered per size/dpr/theme: solid █
-   *  cells in the accent (with its glow), box-drawing edges as punctuation
-   *  in a syntax colour. */
+  /** The logo as editor text, baked per theme: solid █ cells in the accent
+   *  (with its glow), box-drawing edges as punctuation in a syntax colour. */
   function logoImage(s, env, theme) {
-    const dpr = window.devicePixelRatio || 1, key = `${dpr}|${Object.values(theme).join("|")}`;
-    if (s.logoImg?.key === key) return s.logoImg;
-    const { fit, logo } = env, pad = Math.ceil(fit.font);
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.ceil((fit.width + pad * 2) * dpr);
-    canvas.height = Math.ceil((fit.height + pad * 2) * dpr);
-    const c = canvas.getContext("2d");
-    c.scale(dpr, dpr);
-    c.font = `${fit.font}px ${theme.mono}`;
-    c.textBaseline = "top";
-    const at = (cell) => [pad + cell.x - fit.x, pad + cell.y - fit.y];
-    c.fillStyle = theme.lilac; c.globalAlpha = 0.9;
-    for (const cell of logo.cells) if (!cell.solid) c.fillText(cell.ch, ...at(cell));
-    c.fillStyle = theme.accent; c.globalAlpha = 1;
-    c.shadowColor = theme.glow; c.shadowBlur = fit.font * 0.8;
-    for (const cell of logo.cells) if (cell.solid) c.fillText(cell.ch, ...at(cell));
-    return (s.logoImg = { key, canvas, pad, dpr });
+    if (s.art?.theme === theme) return s.art.img;
+    const { fit, logo } = env;
+    const img = logo.bake(Math.ceil(fit.font), g => {
+      logo.glyphs(g, logo.edges, theme.lilac, { alpha: 0.9 });
+      logo.glyphs(g, logo.solid, theme.accent, { glow: theme.glow, blur: 0.8 });
+    });
+    s.art = { theme, img };
+    return img;
   }
 
-  /** Columns [from, to) of the pre-rendered logo, `from`'s left and `to`'s
-   *  right side extended into the glow padding at the logo's ends. */
-  function drawColumns(ctx, img, fit, cellW, from, to) {
-    const { canvas, pad, dpr } = img;
+  /** Columns [from, to) of the baked logo, `from`'s left and `to`'s right
+   *  side extended into the glow padding at the logo's ends. (A slice, so
+   *  not env.logo.draw, which blits the whole image.) */
+  function drawColumns(ctx, img, env, cellW, from, to) {
+    const { canvas, pad } = img, { fit, dpr } = env;
     const x0 = from <= 0 ? 0 : pad + from * cellW;
     const x1 = to >= window.OMP_MATRIX.LOGO_COLS ? canvas.width / dpr : pad + to * cellW;
     if (x1 <= x0) return;
@@ -314,7 +302,7 @@
   }
 
   function drawLogo(ctx, s, env, theme) {
-    const { fit } = env, cols = window.OMP_MATRIX.LOGO_COLS, img = logoImage(s, env, theme);
+    const { fit, dpr } = env, cols = window.OMP_MATRIX.LOGO_COLS, img = logoImage(s, env, theme);
     const cellW = fit.width / cols, m = fit.font * 1.5;
     // Typed so far (create), and the sweep's position (snippet start).
     const typed = clamp(Math.floor((s.n - TYPE_DELAY) * TYPE_RATE), 0, cols);
@@ -325,16 +313,16 @@
     ctx.globalAlpha = 0.06; ctx.fillStyle = theme.accent;
     ctx.fillRect(fit.x - m, fit.y - fit.font * 0.5, fit.width + m * 2, fit.height + fit.font);
     // Cell edges on device pixels, so neighbouring translucent cells don't seam.
-    const dpr = img.dpr, px = (v) => Math.round(v * dpr) / dpr, rows = window.OMP_MATRIX.LOGO_ROWS;
+    const px = (v) => Math.round(v * dpr) / dpr, rows = window.OMP_MATRIX.LOGO_ROWS;
     const cellH = fit.height / rows, colX = (col) => px(fit.x + col * cellW), rowY = (row) => px(fit.y + row * cellH);
     // Pointer: a soft selection around the hovered letters, seen in the gaps.
     const p = env.pointer;
-    if (p?.strength > 0.01) {
+    if (p.strength > 0.01) {
       const r = fit.font * 7, c0 = Math.floor((p.x - r - fit.x) / cellW), c1 = Math.ceil((p.x + r - fit.x) / cellW);
       ctx.fillStyle = theme.accent;
       for (let col = Math.max(0, c0); col < Math.min(cols, c1); col++) {
         for (let row = 0; row < rows; row++) {
-          const lens = lensAt(p, fit.x + (col + 0.5) * cellW, fit.y + (row + 0.5) * cellH, r);
+          const lens = proximity(p, fit.x + (col + 0.5) * cellW, fit.y + (row + 0.5) * cellH, r);
           if (lens < 0.01) continue;
           ctx.globalAlpha = 0.2 * lens;
           ctx.fillRect(colX(col), rowY(row), colX(col + 1) - colX(col), rowY(row + 1) - rowY(row));
@@ -355,15 +343,15 @@
     }
     // Text: typed columns in full, the rest as inline ghost text.
     ctx.globalAlpha = 1;
-    drawColumns(ctx, img, fit, cellW, 0, typed);
-    if (typed < cols) { ctx.globalAlpha = GHOST; drawColumns(ctx, img, fit, cellW, typed, cols); }
+    drawColumns(ctx, img, env, cellW, 0, typed);
+    if (typed < cols) { ctx.globalAlpha = GHOST; drawColumns(ctx, img, env, cellW, typed, cols); }
     // Cursor: a block riding the edge while writing, then a caret parked
     // after the logo that follows the editor's (steady while generating).
     ctx.fillStyle = theme.accent;
     if (edge < cols) {
       ctx.globalAlpha = 0.6;
       ctx.fillRect(fit.x + edge * cellW, fit.y - fit.font * 0.25, cellW, fit.height + fit.font * 0.5);
-    } else if (s.phase === "gen" || Math.floor(s.n / 15) % 2 === 0) {
+    } else if (s.caret) {
       ctx.globalAlpha = 0.75;
       ctx.fillRect(fit.x + fit.width + cellW * 0.6, fit.y - fit.font * 0.25, Math.max(2, cellW * 0.45),
         fit.height + fit.font * 0.5);
@@ -398,8 +386,6 @@
       if (g.compact) drawCompact(ctx, s, env, theme);
       else drawFull(ctx, s, env, theme);
     },
-    logo(ctx, s, env, theme) {
-      if (env.logo) drawLogo(ctx, s, env, theme);
-    },
+    logo: drawLogo,
   };
 })();

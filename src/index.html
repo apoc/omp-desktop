@@ -143,10 +143,9 @@
   <script src="app/matrix-rain.js"></script>
   <!-- Start screens: the screen list, shared math and the next-token rules,
        then each other screen's rules, added to the same object (so after
-       it). Dependency-free IIFEs; design/empty-workspace.jsx destructures
-       window.OMP_BACKDROPS at top level, the renderers in
-       design/backdrops/ read it at run time, and app/settings-schema.js
-       reads it late (start screen tiles). -->
+       it). Dependency-free IIFEs; the renderers in design/backdrops/ read
+       window.OMP_BACKDROPS at run time and app/settings-schema.js reads it
+       late (start screen tiles). -->
   <script src="app/backdrops.js"></script>
   <script src="app/backdrops-latent.js"></script>
   <script src="app/backdrops-orbit.js"></script>
@@ -402,16 +401,19 @@
   <!-- Project sidebar (#27); reads window.TabRunDot / window.TabLabel
        (tab-group-chip.jsx) and window.OMP_PROJECT_NAV at top level. -->
   <script type="text/babel" src="design/project-sidebar.jsx"></script>
-  <!-- Start screens: one renderer per screen (plain IIFEs registering on
-       window.OMP_BACKDROP_RENDERERS, read when the canvas effect runs; the
-       latent screen's logo lives in latent-logo.js, window.OMP_LATENT_LOGO,
-       which latent.js reads at call time, and the attention screen's in
-       attention-logo.js, window.OMP_ATTENTION_LOGO, read by attention.js
-       the same way), then the canvas host
-       window.Backdrop, which destructures window.OMP_MATRIX at top level.
-       empty-workspace.jsx destructures window.Backdrop,
-       window.MarkdownContent and window.OMP_BACKDROPS at top level;
+  <!-- Start screens: art.js (plain IIFE, window.OMP_BACKDROP_ART: the
+       offscreen canvases, halo and env.logo helpers), which the canvas host
+       destructures at top level; one renderer per screen (plain IIFEs
+       registering on window.OMP_BACKDROP_RENDERERS, read when the canvas
+       effect runs; the latent screen's logo lives in latent-logo.js,
+       window.OMP_LATENT_LOGO, which latent.js reads at call time, and the
+       attention screen's in attention-logo.js, window.OMP_ATTENTION_LOGO,
+       read by attention.js the same way), then the canvas host
+       window.Backdrop, which destructures window.OMP_MATRIX and
+       window.OMP_BACKDROP_ART at top level. empty-workspace.jsx
+       destructures window.Backdrop and window.MarkdownContent at top level;
        settings/controls.jsx reads window.Backdrop at render. -->
+  <script src="design/backdrops/art.js"></script>
   <script src="design/backdrops/matrix.js"></script>
   <script src="design/backdrops/latent.js"></script>
   <script src="design/backdrops/latent-logo.js"></script>

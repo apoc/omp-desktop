@@ -53,7 +53,7 @@ function _SP_TweakRow({ row, ctx, query }) {
     case "screens":
       return (
         <_SP_Row {...frame} stack>
-          <_SP_ScreenCards value={v} screens={row.options} onChange={set} />
+          <_SP_ScreenCards value={v} screens={row.options} paused={ctx.active === false} onChange={set} />
         </_SP_Row>
       );
     case "swatches":

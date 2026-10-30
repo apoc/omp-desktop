@@ -1,9 +1,9 @@
-// Empty-workspace backdrop: pure "digital rain" + ASCII logo geometry.
+// Start screens: pure "digital rain" + ASCII logo geometry.
 //
 // Exposes `window.OMP_MATRIX`; wrapped as an IIFE per the project rule for
 // plain <script> tags (see AGENTS.md "IIFE rule"). The canvas, timing and
-// colours live in design/empty-workspace.jsx; everything here is pure so
-// the fit/step rules are testable (test-matrix-rain.mjs).
+// colours live in design/backdrops/ (backdrop.jsx, matrix.js); everything
+// here is pure so the fit/step rules are testable (test-matrix-rain.mjs).
 (function () {
   // "OMP-DESKTOP" in the ANSI Shadow figlet style. Every row is padded to
   // the same width: the logo is drawn cell by cell, so a short row would

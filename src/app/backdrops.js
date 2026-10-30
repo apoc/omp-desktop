@@ -1,7 +1,7 @@
 // Start screens: the empty workspace's animated backdrops (the `startScreen`
 // tweak): the screen list, the math and pointer helpers the screens share,
-// and the code corpus the next-token and forward-pass screens write from,
-// with the next-token rules.
+// and the code corpus the next-token, forward-pass and attention screens
+// write from, with the next-token rules.
 //
 // Exposes `window.OMP_BACKDROPS`; wrapped as an IIFE per the project rule for
 // plain <script> tags (see AGENTS.md "IIFE rule"). The rules of the other
@@ -20,10 +20,6 @@
     { id: "neural", label: "Forward pass", blurb: "activations firing" },
     { id: "attention", label: "Attention", blurb: "multi-head self-attention" },
   ]);
-  const DEFAULT_SCREEN = "matrix";
-
-  /** `id` when it names a screen, else the default (a stale stored value). */
-  const screenOf = (id) => (SCREENS.some(s => s.id === id) ? id : DEFAULT_SCREEN);
 
   // ── shared math ──────────────────────────────────────────────────────
 
@@ -33,6 +29,8 @@
   }
 
   const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2);
+
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
   /** Point at `t` on the quadratic Bézier p0 → p2 bent towards `c`. */
   function bezier(p0, c, p2, t) {
@@ -51,11 +49,13 @@
 
   // ── pointer: the subtle reaction to the mouse (env.pointer) ──
 
-  /** How strongly the pointer at (px, py) reaches a point at (x, y): 1 on
-   *  it, easing smoothly to 0 at `radius` and beyond. */
-  function proximity(px, py, x, y, radius) {
-    const f = 1 - ((x - px) ** 2 + (y - py) ** 2) / (radius * radius);
-    return f > 0 ? f * f : 0;
+  /** How strongly the pointer (env.pointer: { x, y, strength }) reaches a
+   *  point at (x, y): its strength on it, easing smoothly to 0 at `radius`
+   *  and beyond. */
+  function proximity(pointer, x, y, radius) {
+    if (pointer.strength <= 0) return 0;
+    const f = 1 - ((x - pointer.x) ** 2 + (y - pointer.y) ** 2) / (radius * radius);
+    return f > 0 ? pointer.strength * f * f : 0;
   }
 
   /** `p` pulled towards the gravity well `well` ({ x, y, strength }): by
@@ -119,8 +119,15 @@
     return "punct";
   }
 
+  /** The non-space tokens of the snippets, in order: the forward pass and
+   *  attention screens slide a window over it. */
+  const SEQUENCE = Object.freeze(SNIPPETS.flatMap(tokenize).filter(t => tokenKind(t) !== "space"));
+
+  /** SEQUENCE[k], wrapping round both ends. */
+  const tokenAt = (k) => SEQUENCE[((k % SEQUENCE.length) + SEQUENCE.length) % SEQUENCE.length];
+
   /** Every distinct non-space token of the snippets: the distractor pool. */
-  const VOCAB = Object.freeze([...new Set(SNIPPETS.flatMap(tokenize).filter(t => tokenKind(t) !== "space"))]);
+  const VOCAB = Object.freeze([...new Set(SEQUENCE)]);
 
   /** The `k` candidates shown for one step, most probable first. The true
    *  next token always wins (the code stays the snippet), by a random
@@ -151,13 +158,9 @@
     });
   }
 
-  /** The non-space tokens of the snippets, in order: the forward pass slides
-   *  a window over it and predicts the token after the window. */
-  const SEQUENCE = Object.freeze(SNIPPETS.flatMap(tokenize).filter(t => tokenKind(t) !== "space"));
-
   window.OMP_BACKDROPS = {
-    SCREENS, DEFAULT_SCREEN, screenOf,
-    gauss, easeInOut, bezier, softmax, proximity, pullToward,
-    SNIPPETS, SNIPPET_FILES, VOCAB, tokenize, tokenKind, candidates, layoutTokens, SEQUENCE,
+    SCREENS,
+    gauss, easeInOut, clamp, bezier, softmax, proximity, pullToward,
+    SNIPPETS, SNIPPET_FILES, VOCAB, tokenize, tokenKind, candidates, layoutTokens, SEQUENCE, tokenAt,
   };
 })();

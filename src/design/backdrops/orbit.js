@@ -10,7 +10,6 @@
   const TAIL_GAP = 0.014;        // path progress between tail dots
   const FLASH_STEPS = 26;        // node burst on a call's arrival / departure
   const RIPPLE_STEPS = 52;       // the model "reading" a result
-  const LOG_LINES = 5;
   const LOG_FADE = [0.85, 0.55, 0.36, 0.22, 0.12];
   const TAU = Math.PI * 2;
   // Context dust: motes in a band around the track, inner ones faster
@@ -24,23 +23,6 @@
   const GLINT_STEPS = 40;
   const ECHO_STEPS = 34;
   const SWEEP_ALPHA = 0.7;
-
-  /** Offscreen copy of the logo in one colour (light glow, baked once per
-   *  size/dpr/theme): the source for the per-cell highlights and the echo. */
-  function logoLayer(fit, cells, font, colour, glow, dpr, pad) {
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.ceil((fit.width + pad * 2) * dpr);
-    canvas.height = Math.ceil((fit.height + pad * 2) * dpr);
-    const ctx = canvas.getContext("2d");
-    ctx.scale(dpr, dpr);
-    ctx.font = font;
-    ctx.textBaseline = "top";
-    ctx.fillStyle = colour;
-    ctx.shadowColor = colour;
-    ctx.shadowBlur = glow;
-    for (const c of cells) ctx.fillText(c.ch, c.x - fit.x + pad, c.y - fit.y + pad);
-    return canvas;
-  }
 
   /** Control point bending C → P to one side (`dir` ±1): the out and back
    *  legs bend opposite ways, so every call draws a closed loop. */
@@ -94,21 +76,21 @@
 
   /** Issue the next turn: its calls launch staggered, and go to the log. */
   function startTurn(s, env) {
-    const { nextTurn, callSpans } = window.OMP_BACKDROPS;
+    const { nextTurn, callSpans, CALL_LOG } = window.OMP_BACKDROPS;
     s.turnAt = s.n;
     nextTurn(env.rand).forEach((call, i) => {
       Object.assign(call, { start: s.n + i * STAGGER, spans: callSpans(call), dir: env.rand() < 0.5 ? 1 : -1, arrived: false });
       s.calls.push(call);
       s.log.push({ call, done: false });
     });
-    while (s.log.length > LOG_LINES) s.log.shift();
+    while (s.log.length > CALL_LOG.lines) s.log.shift();
   }
 
   (window.OMP_BACKDROP_RENDERERS ??= {}).orbit = {
     stepMs: 33,
     plate: true,                 // packets leave from behind the logo
     create(env) {
-      const { orbitRadii, nextCall } = window.OMP_BACKDROPS;
+      const { orbitRadii, nextCall, logRoom } = window.OMP_BACKDROPS;
       const { width, height, fit, compact, rand } = env;
       const cx = fit ? fit.x + fit.width / 2 : width / 2;
       const cy = fit ? fit.y + fit.height / 2 : height / 2;
@@ -129,14 +111,14 @@
       }
       return {
         cx, cy, rx, ry, core, log, dust, n: 0, spin: rand() * TAU, calls: [], ripples: [], nextTurnAt: 4,
-        turnAt: -1e9, glints: [], layers: null,
-        logLines: compact ? 0 : window.OMP_BACKDROPS.logRoom(height, { cx, cy, rx, ry }, { max: LOG_LINES }),
+        turnAt: -1e9, glints: [], art: null,
+        logLines: compact ? 0 : logRoom(height, { cx, cy, rx, ry }),
         nodes: [], flash: new Float64Array(8).fill(-1e9),
         from: { x: cx, y: cy }, ctrl: { x: 0, y: 0 },
       };
     },
     step(ctx, s, env, theme) {
-      const { TOOLS, ellipsePoint, callPhase, easeInOut, logLine, proximity } = window.OMP_BACKDROPS;
+      const { TOOLS, ellipsePoint, callPhase, easeInOut, logLine, CALL_LOG, proximity } = window.OMP_BACKDROPS;
       const { width, height, fit, compact, pointer } = env;
       const { cx, cy, rx, ry, ctrl } = s;
       s.n++;
@@ -276,7 +258,7 @@
       for (let i = 0; i < s.nodes.length; i++) {
         const p = s.nodes[i];
         // Nodes near a moving cursor swell and brighten a little.
-        const hover = pointer.strength * proximity(pointer.x, pointer.y, p.x, p.y, compact ? 60 : 180);
+        const hover = proximity(pointer, p.x, p.y, compact ? 60 : 180);
         const near = Math.min(1, 0.55 + 0.45 * p.depth + 0.4 * hover);
         const r = (compact ? 2.4 : 4.2) * (0.8 + 0.3 * p.depth) * (1 + 0.55 * hover);
         const f = Math.max(0, 1 - (s.n - s.flash[i]) / FLASH_STEPS);
@@ -326,12 +308,12 @@
       ctx.textAlign = "left";
       ctx.textBaseline = "middle";
       ctx.font = `11px ${theme.mono}`;
-      const x = 24, y0 = height - 24;
+      const { x, lineH } = CALL_LOG, y0 = height - CALL_LOG.bottom;
       for (let j = 0; j < s.log.length; j++) {
         const age = s.log.length - 1 - j;
         if (age >= s.logLines) continue;
         const { call, done } = s.log[j];
-        const y = y0 - age * 17;
+        const y = y0 - age * lineH;
         const fade = LOG_FADE[age] ?? 0;
         const blink = done ? 1 : 0.35 + 0.65 * ((Math.sin(s.n * 0.25) + 1) / 2);
         ctx.globalAlpha = fade * blink;
@@ -347,21 +329,21 @@
 
     logo(ctx, s, env, theme) {
       const { logoSweep, proximity, easeInOut } = window.OMP_BACKDROPS;
-      const { fit, logo, pointer } = env;
+      const { LOGO_COLS, LOGO_ROWS } = window.OMP_MATRIX;
+      const { fit, logo, pointer, dpr } = env;
       const { cells } = logo;
-      const dpr = ctx.getTransform().a || 1;
-      const key = `${fit.x}|${fit.y}|${fit.width}|${fit.height}|${dpr}|${theme.fg}|${theme.cyan}|${theme.rose}|${theme.mono}`;
-      if (s.layers?.key !== key) {
-        const pad = Math.ceil(fit.font);
-        const font = `${fit.font}px ${theme.mono}`;
-        const glow = fit.font * 0.35;
-        s.layers = {
-          key, pad,
-          tones: [theme.fg, theme.cyan, theme.rose].map(c => logoLayer(fit, cells, font, c, glow, dpr, pad)),
+      // The logo in one colour each (light glow): the source for the
+      // per-cell highlights and the echo.
+      if (s.art?.theme !== theme) {
+        const tone = (colour) => logo.bake(Math.ceil(fit.font), g => logo.glyphs(g, cells, colour, { glow: colour, blur: 0.35 }));
+        s.art = {
+          theme,
+          tones: [theme.fg, theme.cyan, theme.rose].map(tone),
           weights: [0, 1, 2].map(() => new Float32Array(cells.length)),
         };
       }
-      const { pad, tones, weights } = s.layers;
+      const { tones, weights } = s.art;
+      const { pad } = tones[0];
       const lx = fit.x - pad, ly = fit.y - pad;
       const lw = fit.width + pad * 2, lh = fit.height + pad * 2;
       const mx = fit.x + fit.width / 2, my = fit.y + fit.height / 2;
@@ -373,7 +355,7 @@
         if (k >= 1) continue;
         const grow = 1 + 0.1 * easeInOut(k);
         ctx.globalAlpha = 0.24 * (1 - k) * (1 - k);
-        ctx.drawImage(tones[r.ok ? 1 : 2], mx - (mx - lx) * grow, my - (my - ly) * grow, lw * grow, lh * grow);
+        ctx.drawImage(tones[r.ok ? 1 : 2].canvas, mx - (mx - lx) * grow, my - (my - ly) * grow, lw * grow, lh * grow);
       }
       ctx.globalAlpha = 1;
       logo.paintDefault(ctx);
@@ -386,9 +368,7 @@
       for (let i = 0; i < cells.length; i++) {
         const c = cells[i];
         const ccx = c.x + c.w / 2, ccy = c.y + c.h / 2;
-        let hot = SWEEP_ALPHA * logoSweep(c.col, c.row, sweepK);
-        if (pointer.strength) hot += 0.3 * pointer.strength * proximity(pointer.x, pointer.y, ccx, ccy, reach);
-        weights[0][i] = hot;
+        weights[0][i] = SWEEP_ALPHA * logoSweep(c.col, c.row, sweepK, LOGO_COLS, LOGO_ROWS) + 0.3 * proximity(pointer, ccx, ccy, reach);
         for (const g of s.glints) {
           const k = (s.n - g.born) / GLINT_STEPS;
           const fade = k < 0.15 ? k / 0.15 : ((1 - k) / 0.85) ** 2;
@@ -397,7 +377,7 @@
         }
       }
       for (let t = 0; t < tones.length; t++) {
-        const src = tones[t], w = weights[t];
+        const src = tones[t].canvas, w = weights[t];
         for (let i = 0; i < cells.length; i++) {
           if (w[i] < 0.03) continue;
           const c = cells[i];

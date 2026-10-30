@@ -65,21 +65,21 @@
   const PASS_RULES = Object.freeze({ threshold: 1.2, maxFire: 0.6, minFire: 2, fanout: 0.3, jitter: 0.25 });
 
   function fireNode(pass, l, i, rand) {
-    const { sizes, rules } = pass;
+    const { sizes } = pass;
     pass.fired[l][i] = true;
     pass.count[l]++;
     pass.events.push({ l, i, fire: true, w: 1 });
     if (l + 1 >= sizes.length) return;
-    const pulses = firePulses(sizes, l, i, Math.max(1, Math.ceil(sizes[l + 1] * rules.fanout)), rand);
-    for (const p of pulses) p.t = -rand() * rules.jitter;
+    const pulses = firePulses(sizes, l, i, Math.max(1, Math.ceil(sizes[l + 1] * PASS_RULES.fanout)), rand);
+    for (const p of pulses) p.t = -rand() * PASS_RULES.jitter;
     pass.inflight[l + 1] += pulses.length;
     pass.pulses.push(...pulses);
   }
 
   /** A new forward pass with every input node fired (the token window). */
-  function startPass(sizes, rand, rules = PASS_RULES) {
+  function startPass(sizes, rand) {
     const pass = {
-      sizes, rules, pulses: [], events: [], done: false,
+      sizes, pulses: [], events: [], done: false,
       acc: sizes.map(n => new Array(n).fill(0)),
       fired: sizes.map(n => new Array(n).fill(false)),
       count: sizes.map(() => 0),
@@ -96,7 +96,8 @@
    *  (0..1, optional) lowers a node's threshold by up to half: the pointer
    *  makes nearby nodes fire more readily. */
   function advancePass(pass, speed, rand, ease = null) {
-    const { sizes, rules, acc, fired, count, inflight, settled } = pass;
+    const { sizes, acc, fired, count, inflight, settled } = pass;
+    const { threshold, maxFire, minFire } = PASS_RULES;
     pass.events = [];
     const landed = [];
     pass.pulses = pass.pulses.filter(p => {
@@ -110,15 +111,15 @@
       inflight[l]--;
       acc[l][p.to] += p.w;
       pass.events.push({ l, i: p.to, fire: false, w: p.w });
-      const threshold = rules.threshold * (ease ? 1 - 0.5 * ease(l, p.to) : 1);
-      if (!fired[l][p.to] && acc[l][p.to] >= threshold && count[l] < Math.ceil(sizes[l] * rules.maxFire)) {
+      const need = threshold * (ease ? 1 - 0.5 * ease(l, p.to) : 1);
+      if (!fired[l][p.to] && acc[l][p.to] >= need && count[l] < Math.ceil(sizes[l] * maxFire)) {
         fireNode(pass, l, p.to, rand);
       }
     }
     for (let l = 1; l < sizes.length; l++) {
       if (settled[l] || !settled[l - 1] || inflight[l] > 0) continue;
       const silent = acc[l].map((_, i) => i).filter(i => !fired[l][i]).sort((a, b) => acc[l][b] - acc[l][a]);
-      while (count[l] < Math.min(rules.minFire, sizes[l]) && silent.length) fireNode(pass, l, silent.shift(), rand);
+      while (count[l] < Math.min(minFire, sizes[l]) && silent.length) fireNode(pass, l, silent.shift(), rand);
       settled[l] = true;
     }
     pass.done = settled[sizes.length - 1];

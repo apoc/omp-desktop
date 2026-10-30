@@ -890,7 +890,7 @@ function App() {
             <div ref={stageRef} className={`stage ${side === "browser" ? `with-browser${browserFull ? " browser-full" : ""}` : sideRail ? `with-${sideRail}` : ""}`}>
               <main className="session" onFocusCapture={prAutomation.onConversationFocus}>
                 {noTab ? (
-                  <EmptyWorkspace notes={workspaceNotes} screen={t.startScreen} />
+                  <EmptyWorkspace notes={workspaceNotes} screen={t.startScreen} paused={stab.active} />
                 ) : (<>
                   <ChatView key={activeSessionId} messages={messages}
                     planMode={plan.mode}

@@ -134,15 +134,16 @@ function ThemeCards({ value, themes, onChange }) {
 }
 
 /** Start screen picker: one tile per screen, each a live preview of it
- *  (design/backdrops/backdrop.jsx, logo off) in the current theme. */
-function ScreenCards({ value, screens, onChange }) {
+ *  (design/backdrops/backdrop.jsx, logo off) in the current theme, paused
+ *  while the page is hidden behind a project tab. */
+function ScreenCards({ value, screens, paused, onChange }) {
   const { Backdrop } = window;
   return (
     <div className="st-themes" role="radiogroup" aria-label="Start screen">
       {screens.map(s => (
         <button type="button" key={s.value} className="st-th" role="radio"
           aria-checked={value === s.value} onClick={() => onChange(s.value)}>
-          <div className="st-pv st-pv-live"><Backdrop screen={s.value} logo={false} /></div>
+          <div className="st-pv st-pv-live"><Backdrop screen={s.value} logo={false} paused={paused} /></div>
           <div className="st-nm"><span className="st-radio" />{s.label}<small>{s.blurb}</small></div>
         </button>
       ))}

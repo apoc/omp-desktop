@@ -36,7 +36,7 @@
 
   const buffers = (n) => ({ x: new Float32Array(n), y: new Float32Array(n), z: new Float32Array(n), k: new Float32Array(n) });
   // Near points read bright, far ones recede into the background.
-  const depthAlpha = (z) => Math.min(1, Math.max(0.12, 0.62 - z * 0.55));
+  const depthAlpha = (z) => window.OMP_BACKDROPS.clamp(0.62 - z * 0.55, 0.12, 1);
 
   function diamond(ctx, x, y, r) {
     ctx.beginPath();
@@ -49,10 +49,7 @@
   function newQuery(s, rand, pitch) {
     const B = window.OMP_BACKDROPS;
     const yaw = s.yaw + s.tiltYaw + YAW_STEP * LOOKAHEAD;
-    const at = s.cloud.centres.map(o => {
-      const p = B.project(B.rotate(o, yaw, pitch), s.cx, s.cy, s.scale);
-      return { x: s.cx + (p.x - s.cx) * s.stretch, y: p.y };
-    });
+    const at = s.cloud.centres.map(o => B.project(B.rotate(o, yaw, pitch), s.cx, s.cy, s.scale, s.stretch));
     const cluster = B.pickCluster(at, s.avoid, s.query ? s.query.cluster : -1, rand);
     const asks = B.QUERIES.filter(([, c]) => c === cluster);
     const [text] = asks[Math.floor(rand() * asks.length)];
@@ -106,7 +103,7 @@
     create(env) {
       const B = window.OMP_BACKDROPS;
       const { width: w, height: h, fit, compact, rand } = env;
-      const cloud = B.makeCloud(compact ? 11 : 22, rand, { spread: 0.16 });
+      const cloud = B.makeCloud(compact ? 11 : 22, rand);
       const dust = [];
       while (dust.length < (compact ? 24 : 80)) {
         const p = { x: rand() * 2 - 1, y: rand() * 2 - 1, z: rand() * 2 - 1 };
@@ -123,8 +120,7 @@
         // clusters orbit around the logo instead of hiding behind it.
         stretch: Math.min(2.1, Math.max(1, (w * 0.36) / (scale * 0.62))),
         yaw: rand() * Math.PI * 2, steps: 0,
-        t: START_T, query: null,
-        spritesKey: "", sprites: null,
+        t: START_T, query: null, art: null,
       };
       // The search box sits low under the logo (clear of it and of the
       // densest part of the cloud), or above the logo when there's no room.
@@ -144,23 +140,23 @@
       // The logo (design/backdrops/latent-logo.js) and its view of the
       // frame: the lean, the query point and where its retrieval stands
       // (set by `step`).
-      s.mark = window.OMP_LATENT_LOGO.makeMark(env, rand, CLUSTER_COLOURS);
+      s.mark = env.logo ? window.OMP_LATENT_LOGO.makeMark(env, rand, CLUSTER_COLOURS) : null;
       s.sway = 0; s.pitch = PITCH; s.qx = 0; s.qy = 0; s.at = null; s.hits = null; s.landAge = -1;
       return s;
     },
     step(ctx, s, env, theme) {
       const B = window.OMP_BACKDROPS;
       const { width: w, height: h, compact } = env;
-      const key = CLUSTER_COLOURS.map(c => theme[c]).join("|") + theme.accent;
-      if (key !== s.spritesKey) { s.spritesKey = key; s.sprites = glowSprites(theme); }
+      if (s.art?.theme !== theme) s.art = { theme, sprites: glowSprites(theme) };
+      const { sprites } = s.art;
 
       s.steps++;
       s.yaw += YAW_STEP;
       // The pointer: the cloud leans a little towards it (eased, so it never
       // snaps) and points under it light up; a resting cursor fades out.
-      const ptr = env.pointer, ps = ptr ? ptr.strength : 0;
-      const leanYaw = ps > 0 ? ((ptr.x - s.cx) / w) * 0.45 * ps : 0;
-      const leanPitch = ps > 0 ? ((ptr.y - s.cy) / h) * 0.3 * ps : 0;
+      const ptr = env.pointer, ps = ptr.strength;
+      const leanYaw = ((ptr.x - s.cx) / w) * 0.45 * ps;
+      const leanPitch = ((ptr.y - s.cy) / h) * 0.3 * ps;
       s.tiltYaw += (leanYaw - s.tiltYaw) * 0.06;
       s.tiltPitch += (leanPitch - s.tiltPitch) * 0.06;
       const yaw = s.yaw + s.tiltYaw;
@@ -168,14 +164,10 @@
       s.pitch = pitch; s.sway = pitch - PITCH;
       const { points } = s.cloud;
       const P = s.proj, D = s.dustProj, lens = s.lens;
-      B.projectCloud(points, yaw, pitch, s.cx, s.cy, s.scale, P);
-      B.projectCloud(s.dust, yaw, pitch, s.cx, s.cy, s.scale, D);
+      B.projectCloud(points, yaw, pitch, s.cx, s.cy, s.scale, s.stretch, P);
+      B.projectCloud(s.dust, yaw, pitch, s.cx, s.cy, s.scale, s.stretch, D);
       const reach = compact ? 45 : 130;
-      for (let i = 0; i < P.x.length; i++) {
-        P.x[i] = s.cx + (P.x[i] - s.cx) * s.stretch;
-        lens[i] = ps > 0 ? B.proximity(ptr.x, ptr.y, P.x[i], P.y[i], reach) * ps : 0;
-      }
-      for (let i = 0; i < D.x.length; i++) D.x[i] = s.cx + (D.x[i] - s.cx) * s.stretch;
+      for (let i = 0; i < P.x.length; i++) lens[i] = B.proximity(ptr, P.x[i], P.y[i], reach);
       B.depthOrder(s.order, P.z);
 
       ctx.fillStyle = theme.bg;
@@ -211,7 +203,7 @@
         if (P.z[i] < -0.2 || lens[i] > 0.15) {
           const g = r * 9;
           ctx.globalAlpha = Math.max(a * 0.22, lens[i] * 0.3);
-          ctx.drawImage(s.sprites[colour], P.x[i] - g / 2, P.y[i] - g / 2, g, g);
+          ctx.drawImage(sprites[colour], P.x[i] - g / 2, P.y[i] - g / 2, g, g);
         }
         ctx.globalAlpha = a;
         ctx.fillStyle = theme[colour];
@@ -244,8 +236,7 @@
 
       // The query: typed into the box, embedded (flies into the cloud),
       // then rays to its nearest neighbours.
-      const qr = B.project(B.rotate(query.q, yaw, pitch), s.cx, s.cy, s.scale);
-      const qx = s.cx + (qr.x - s.cx) * s.stretch, qy = qr.y;
+      const { x: qx, y: qy } = B.project(B.rotate(query.q, yaw, pitch), s.cx, s.cy, s.scale, s.stretch);
       let origin;
       if (s.box) {
         ctx.font = `12px ${theme.mono}`;
@@ -286,7 +277,7 @@
           const age = s.t - (landedAt + n * R.stagger + R.ray);
           const halo = (compact ? 12 : 22) * P.k[i];
           ctx.globalAlpha = at.alpha * 0.5;
-          ctx.drawImage(s.sprites.accent, P.x[i] - halo / 2, P.y[i] - halo / 2, halo, halo);
+          ctx.drawImage(sprites.accent, P.x[i] - halo / 2, P.y[i] - halo / 2, halo, halo);
           if (age < 24) {
             ctx.globalAlpha = at.alpha * (1 - age / 24) * 0.8;
             ctx.beginPath();
@@ -320,7 +311,7 @@
         const r = (compact ? 2.6 : 4.2) * (1 + Math.sin(s.t * 0.15) * 0.12);
         const sinceLanding = s.t - landedAt;
         ctx.globalAlpha = at.alpha * 0.5;
-        ctx.drawImage(s.sprites.accent, qx - r * 4, qy - r * 4, r * 8, r * 8);
+        ctx.drawImage(sprites.accent, qx - r * 4, qy - r * 4, r * 8, r * 8);
         ctx.globalAlpha = at.alpha;
         diamond(ctx, qx, qy, r);
         ctx.fill();

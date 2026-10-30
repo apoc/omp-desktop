@@ -18,7 +18,8 @@
   const SWEEP = 3;          // logo columns per step of the causal-mask sweep
   const STREAM_GAP = 18;    // px between a token and the foot of its stream
 
-  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const { clamp } = window.OMP_BACKDROPS;
+  const { LOGO_COLS } = window.OMP_MATRIX;
 
   /** A fresh context window at `k`: its tokens, every layer's attention
    *  maps, and the prediction (the token after the window). */
@@ -31,30 +32,10 @@
     s.pred = { tok: truth, p: B.candidates(truth, 4, rand)[0].p };
   }
 
-  /** A soft round halo in `colour`, built from stacked translucent discs. */
-  function haloSprite(colour, dpr) {
-    const size = 48, c = document.createElement("canvas");
-    c.width = c.height = size * dpr;
-    const g = c.getContext("2d");
-    g.scale(dpr, dpr);
-    g.fillStyle = colour;
-    g.globalAlpha = 0.08;
-    for (let i = 0; i < 14; i++) {
-      g.beginPath();
-      g.arc(size / 2, size / 2, (size / 2) * (1 - i / 14), 0, Math.PI * 2);
-      g.fill();
-    }
-    return c;
-  }
-
-  /** The static layers, once per size/theme: background, the stack's
-   *  bands, streams, nodes and labels, the heatmap frames with their
-   *  masked upper triangles, and the head labels. */
-  function renderStatic(s, env, theme, dpr) {
-    const c = document.createElement("canvas");
-    c.width = Math.ceil(env.width * dpr); c.height = Math.ceil(env.height * dpr);
-    const g = c.getContext("2d");
-    g.scale(dpr, dpr);
+  /** Paint the static layer (once per layout/theme): background, the
+   *  stack's bands, streams, nodes and labels, the heatmap frames with
+   *  their masked upper triangles, and the head labels. */
+  function paintStatic(g, s, env, theme) {
     g.fillStyle = theme.bg;
     g.fillRect(0, 0, env.width, env.height);
     const { slots, layers, heads, rowY } = s.L, n = s.n;
@@ -155,10 +136,7 @@
         g.fillText(`h${h + 1} ${window.OMP_BACKDROPS.HEADS[h].label}`, hm.x, hm.y + hm.size + 6);
       }
     });
-    return { base: c, halo: haloSprite(theme.accent, dpr) };
   }
-
-  const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 
   /** Arcs from query slot `q` back to its keys at row `y`, one family per
    *  head: grown `grow` (0..1) of the way, `alpha` overall. Each arc is a
@@ -177,17 +155,20 @@
         // the farthest key at the layer's cap.
         const reach = (xs[q] - xs[k]) / (xs[s.n - 1] - xs[0]);
         const lift = ly.cap * (0.22 + 0.78 * reach) * HEAD_LIFT[h] * (4 / 3);
-        const p0 = { x: xs[q], y }, p1 = { x: xs[q], y: y - lift }, p2 = { x: xs[k], y: y - lift }, p3 = { x: xs[k], y };
-        const a = lerp(p0, p1, grow), m = lerp(p1, p2, grow), b = lerp(a, m, grow);
-        const end = lerp(b, lerp(m, lerp(p2, p3, grow), grow), grow);
+        // The de Casteljau prefix of (X0, y) → (X0, y − lift) →
+        // (X0 + dX, y − lift) → (X0 + dX, y), as scalars: control points
+        // (X0, ay) and (bx, by), end (ex, ey).
+        const X0 = xs[q], dX = xs[k] - X0, g = grow, lg = lift * g;
+        const ay = y - lg, bx = X0 + dX * g * g, by = y - lg * (2 - g);
+        const ex = X0 + dX * g * g * (3 - 2 * g), ey = y - 3 * lg * (1 - g);
         ctx.globalAlpha = alpha * (0.1 + 0.9 * w ** 0.7);
         ctx.lineWidth = (thin ? 0.5 : 0.8) + w * (thin ? 1.6 : 3.4);
         ctx.beginPath();
-        ctx.moveTo(p0.x, y);
-        ctx.bezierCurveTo(a.x, a.y, b.x, b.y, end.x, end.y);
+        ctx.moveTo(X0, y);
+        ctx.bezierCurveTo(X0, ay, bx, by, ex, ey);
         ctx.stroke();
         if (grow > 0.97 && !thin) {
-          ctx.beginPath(); ctx.arc(p3.x, y, 1.4 + w * 3.2, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(xs[k], y, 1.4 + w * 3.2, 0, Math.PI * 2); ctx.fill();
         }
       }
     });
@@ -198,7 +179,7 @@
    *  (a hovered row, or -1) and cells near the pointer brighten. */
   function drawHeatmaps(ctx, s, env, theme, maps, grow, focus) {
     const { proximity } = window.OMP_BACKDROPS;
-    const n = s.n, pt = env.pointer, hover = pt && pt.strength > 0.01;
+    const n = s.n, pt = env.pointer;
     s.L.heads.forEach((hm, h) => {
       const cell = hm.size / n, inset = cell > 6 ? 1 : 0.5;
       ctx.fillStyle = theme[HEAD_COLOUR[h]];
@@ -207,7 +188,7 @@
         for (let k = 0; k <= q; k++) {
           const x = hm.x + k * cell, y = hm.y + q * cell;
           let a = rowA * (0.06 + 0.94 * maps[h][q][k] ** 0.6);
-          if (hover) a += proximity(pt.x, pt.y, x + cell / 2, y + cell / 2, hm.size * 0.4) * pt.strength * 0.35;
+          a += proximity(pt, x + cell / 2, y + cell / 2, hm.size * 0.4) * 0.35;
           if (a < 0.02) continue;
           ctx.globalAlpha = Math.min(1, a);
           ctx.fillRect(x + inset, y + inset, cell - inset * 2, cell - inset * 2);
@@ -228,7 +209,7 @@
    *  hovered heatmap; -1 when neither. */
   function hoverQuery(s, env) {
     const pt = env.pointer;
-    if (!pt || pt.strength < 0.01) return -1;
+    if (pt.strength < 0.01) return -1;
     for (const hm of s.L.heads) {
       if (pt.x >= hm.x && pt.x < hm.x + hm.size && pt.y >= hm.y && pt.y < hm.y + hm.size) {
         return Math.floor(((pt.y - hm.y) / hm.size) * s.n);
@@ -295,15 +276,13 @@
     create(env) {
       const B = window.OMP_BACKDROPS;
       const L = B.attentionLayout(env);
-      const s = { L, n: L.n, t: 0, cache: null, cacheKey: "", logoW: new Float32Array(L.n * B.HEADS.length), front: -6 };
+      const s = { L, n: L.n, t: 0, art: null, logoW: new Float32Array(L.n * B.HEADS.length), front: -6 };
       load(s, Math.floor(env.rand() * B.SEQUENCE.length), env.rand);
       return s;
     },
     step(ctx, s, env, theme) {
       const B = window.OMP_BACKDROPS;
-      const dpr = window.devicePixelRatio || 1;
-      const key = `${env.width}|${env.height}|${dpr}|${Object.values(theme).join("|")}`;
-      if (key !== s.cacheKey) { s.cacheKey = key; s.cache = renderStatic(s, env, theme, dpr); }
+      if (s.art?.theme !== theme) s.art = { theme, base: env.layer(g => paintStatic(g, s, env, theme)) };
 
       // ── simulate ──
       if (++s.t >= B.CYCLE) {
@@ -312,7 +291,7 @@
         s.front = -6;
       }
       const ph = B.phaseAt(s.t);
-      if (s.front != null && (s.front += SWEEP) > window.OMP_MATRIX.LOGO[0].length + 24) s.front = null;
+      if (s.front != null && (s.front += SWEEP) > LOGO_COLS + 24) s.front = null;
       const grow = ph.stage === "attn" ? B.easeInOut(Math.min(1, ph.u / 0.55)) : 1;
       const fade = ph.stage === "out" ? 1 - ph.u * 0.4 : ph.stage === "slide" ? 0.6 * (1 - ph.u) : 1;
       // The logo follows the query's attention, a band of rows per head.
@@ -325,8 +304,7 @@
       });
 
       // ── paint ──
-      const { base, halo } = s.cache;
-      ctx.drawImage(base, 0, 0, env.width, env.height);
+      ctx.drawImage(s.art.base, 0, 0, env.width, env.height);
       const { layers, slots } = s.L;
       // Heatmaps cross-fade from the previous layer as a new one starts.
       const prev = ph.layer > 0 && ph.stage === "attn" ? s.maps[ph.layer - 1] : null;
@@ -361,7 +339,7 @@
           ctx.fillRect(x - s.box.w / 2, ly.mlpY - s.box.h / 2, s.box.w, s.box.h);
         });
         ctx.globalAlpha = fade;
-        ctx.drawImage(halo, x - 12, fy - 12, 24, 24);
+        ctx.drawImage(env.halo(theme.accent), x - 12, fy - 12, 24, 24);
         ctx.beginPath(); ctx.arc(x, fy, 2.6, 0, Math.PI * 2); ctx.fill();
         // Out of the top: unembed, and the prediction drops into its slot.
         if (ph.stage === "out") {
@@ -391,7 +369,7 @@
       drawTokens(ctx, s, env, theme, ph, focus);
     },
     logo(ctx, s, env, theme) {
-      if (env.logo) window.OMP_ATTENTION_LOGO.paint(ctx, s, env, theme);
+      window.OMP_ATTENTION_LOGO.paint(ctx, s, env, theme);
     },
   };
 })();

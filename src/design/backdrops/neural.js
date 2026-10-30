@@ -17,9 +17,9 @@
   const MAX_TOK = 13;         // longer tokens (string literals) are clipped
   const FADE = 12;            // steps for the window slide and label cross-fade
   const KIND_COLOUR = { keyword: "lilac", string: "amber", number: "cyan", ident: "fg2", punct: "fg3" };
-  const LOGO_COLS = window.OMP_MATRIX.LOGO[0].length;
+  const { LOGO_COLS } = window.OMP_MATRIX;
+  const { clamp } = window.OMP_BACKDROPS;
 
-  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   const clip = tok => (tok.length > MAX_TOK ? `${tok.slice(0, MAX_TOK - 1)}…` : tok);
 
   /** Node positions: margins leave room for the token labels either side;
@@ -43,34 +43,10 @@
     return layerLayout(sizes, { x, y: (H - height) / 2, width, height });
   }
 
-  /** A soft round halo in `colour`, built from stacked translucent discs:
-   *  a gradient to "transparent" would tint towards black in canvas. */
-  function haloSprite(colour, dpr) {
-    const size = 64, c = document.createElement("canvas");
-    c.width = c.height = size * dpr;
-    const g = c.getContext("2d");
-    g.scale(dpr, dpr);
-    g.fillStyle = colour;
-    g.globalAlpha = 0.075;
-    for (let i = 0; i < 16; i++) {
-      g.beginPath();
-      g.arc(size / 2, size / 2, (size / 2) * (1 - i / 16), 0, Math.PI * 2);
-      g.fill();
-    }
-    return c;
-  }
-
-  /** The static layers, once per size/theme: background, faint wiring,
+  /** The static layers, once per layout/theme: background, faint wiring,
    *  idle node rings and captions; plus the same wiring in the accent,
    *  revealed around the pointer. */
-  function renderStatic(s, env, theme, dpr) {
-    const make = () => {
-      const c = document.createElement("canvas");
-      c.width = Math.ceil(env.width * dpr); c.height = Math.ceil(env.height * dpr);
-      const g = c.getContext("2d");
-      g.scale(dpr, dpr);
-      return [c, g];
-    };
+  function renderStatic(s, env, theme) {
     const wires = (g) => {
       g.beginPath();
       for (let l = 0; l + 1 < s.nodes.length; l++) {
@@ -78,41 +54,44 @@
       }
       g.stroke();
     };
-    const [base, g] = make();
-    g.fillStyle = theme.bg;
-    g.fillRect(0, 0, env.width, env.height);
-    // One path: crossings don't stack, so the wiring stays an even haze.
-    g.strokeStyle = theme.fg4;
-    g.lineWidth = 0.7;
-    g.globalAlpha = env.compact ? 0.3 : 0.22;
-    wires(g);
-    g.globalAlpha = 1;
-    g.fillStyle = theme.bg;
-    g.strokeStyle = theme.fg4;
-    g.lineWidth = 1;
-    for (const layer of s.nodes) {
-      for (const n of layer) { g.beginPath(); g.arc(n.x, n.y, s.r, 0, Math.PI * 2); g.fill(); g.stroke(); }
-    }
-    if (!env.compact) {
-      g.font = `10px ${theme.mono}`;
-      g.textAlign = "center";
-      g.textBaseline = "top";
-      g.fillStyle = theme.fg4;
-      const y = Math.max(...s.nodes.flat().map(n => n.y)) + s.gap * 0.9;
-      s.nodes.forEach((layer, l) => g.fillText(CAPTIONS[l] ?? "", layer[0].x, y));
-    }
-    const [lit, h] = make();
-    h.strokeStyle = theme.accent;
-    h.lineWidth = 0.9;
-    wires(h);
-    return { base, lit, halo: haloSprite(theme.accent, dpr) };
+    const base = env.layer((g) => {
+      g.fillStyle = theme.bg;
+      g.fillRect(0, 0, env.width, env.height);
+      // One path: crossings don't stack, so the wiring stays an even haze.
+      g.strokeStyle = theme.fg4;
+      g.lineWidth = 0.7;
+      g.globalAlpha = env.compact ? 0.3 : 0.22;
+      wires(g);
+      g.globalAlpha = 1;
+      g.fillStyle = theme.bg;
+      g.strokeStyle = theme.fg4;
+      g.lineWidth = 1;
+      for (const layer of s.nodes) {
+        for (const n of layer) { g.beginPath(); g.arc(n.x, n.y, s.r, 0, Math.PI * 2); g.fill(); g.stroke(); }
+      }
+      if (!env.compact) {
+        g.font = `10px ${theme.mono}`;
+        g.textAlign = "center";
+        g.textBaseline = "top";
+        g.fillStyle = theme.fg4;
+        const y = Math.max(...s.nodes.flat().map(n => n.y)) + s.gap * 0.9;
+        s.nodes.forEach((layer, l) => g.fillText(CAPTIONS[l] ?? "", layer[0].x, y));
+      }
+    });
+    const lit = env.layer((g) => {
+      g.strokeStyle = theme.accent;
+      g.lineWidth = 0.9;
+      wires(g);
+    });
+    return { base, lit };
   }
 
-  /** The prediction for window `k` (tokens k..k+4 → SEQUENCE[k+5]): the
-   *  ranked output nodes paired with candidates, the true token first. */
+  /** The prediction for window `k` (its first token SEQUENCE[k], the
+   *  truth the token after the input layer): the ranked output nodes
+   *  paired with candidates, the true token first. */
   function predict(s, k, order, rand) {
-    const { SEQUENCE, candidates } = window.OMP_BACKDROPS;
-    const truth = SEQUENCE[(k + 5) % SEQUENCE.length];
+    const { tokenAt, candidates } = window.OMP_BACKDROPS;
+    const truth = tokenAt(k + s.sizes[0]);
     const cands = candidates(truth, order.length, rand);
     return { labels: order.map((node, r) => ({ node, ...cands[r] })), age: 0 };
   }
@@ -129,31 +108,28 @@
         sizes, nodes, gap, r: clamp(gap * 0.16, 2.2, 6.5),
         glow: sizes.map(n => new Float32Array(n)), heat: sizes.map(n => new Float32Array(n)),
         k: Math.floor(env.rand() * SEQUENCE.length), slide: FADE, passes: [], wait: -1,
-        pred: null, prev: null, cache: null, cacheKey: "", front: null,
+        pred: null, prev: null, art: null, front: null,
         colGlow: new Float32Array(LOGO_COLS), colSeed: new Float32Array(LOGO_COLS),
       };
       // Open on the previous window's prediction (now the last input token),
       // so the outputs are labelled from the first frame.
       const order = sizes[sizes.length - 1];
-      s.pred = predict(s, s.k - 1 + SEQUENCE.length, Array.from({ length: order }, (_, i) => i).sort(() => env.rand() - 0.5), env.rand);
+      s.pred = predict(s, s.k - 1, Array.from({ length: order }, (_, i) => i).sort(() => env.rand() - 0.5), env.rand);
       s.pred.age = FADE * 2;
       s.passes.push(startPass(sizes, env.rand));
       absorb(s, s.passes[0].events);
       return s;
     },
     step(ctx, s, env, theme) {
-      const { advancePass, startPass, rankOutputs, proximity, SEQUENCE, tokenKind } = window.OMP_BACKDROPS;
-      const dpr = window.devicePixelRatio || 1;
-      const key = `${env.width}|${env.height}|${dpr}|${theme.bg}|${theme.line}|${theme.fg4}|${theme.accent}|${theme.mono}`;
-      if (key !== s.cacheKey) { s.cacheKey = key; s.cache = renderStatic(s, env, theme, dpr); }
-      const { base, lit, halo } = s.cache;
+      const { advancePass, startPass, rankOutputs, proximity, SEQUENCE, tokenAt, tokenKind } = window.OMP_BACKDROPS;
+      if (s.art?.theme !== theme) s.art = { theme, ...renderStatic(s, env, theme) };
+      const { base, lit } = s.art, halo = env.halo(theme.accent), dpr = env.dpr;
       const last = s.sizes.length - 1;
-      const pt = env.pointer ?? { x: 0, y: 0, strength: 0 };
+      const pt = env.pointer;
       const reach = env.compact ? 46 : 170;
-      const near = (n) => (pt.strength > 0.01 ? proximity(pt.x, pt.y, n.x, n.y, reach) * pt.strength : 0);
 
       // ── simulate ──
-      const ease = pt.strength > 0.01 ? (l, i) => near(s.nodes[l][i]) : null;
+      const ease = (l, i) => proximity(pt, s.nodes[l][i].x, s.nodes[l][i].y, reach);
       for (const pass of s.passes) {
         absorb(s, advancePass(pass, SPEED, env.rand, ease));
         if (pass.done && !pass.reported) {
@@ -240,7 +216,7 @@
       ctx.lineWidth = 1.2;
       for (let l = 0; l <= last; l++) {
         for (let i = 0; i < s.sizes[l]; i++) {
-          const n = s.nodes[l][i], g = s.glow[l][i], h = s.heat[l][i], hover = near(n);
+          const n = s.nodes[l][i], g = s.glow[l][i], h = s.heat[l][i], hover = proximity(pt, n.x, n.y, reach);
           s.glow[l][i] = g * DECAY;
           s.heat[l][i] = h * 0.96;
           const ring = Math.max(g, h, hover * 0.8);
@@ -266,7 +242,7 @@
       const e = window.OMP_BACKDROPS.easeInOut(s.slide / FADE);
       const slot = j => (j < 0 ? ins[0].y - gap : j >= ins.length ? ins[ins.length - 1].y + gap : ins[j].y);
       for (let j = -1; j < ins.length; j++) {
-        const tok = SEQUENCE[(s.k + j + SEQUENCE.length) % SEQUENCE.length];
+        const tok = tokenAt(s.k + j);
         // Each token rises from the slot below it as the window slides.
         const y = slot(j + 1) + (slot(j) - slot(j + 1)) * e;
         const x = ins[0].x - s.r * 2 - 12;
@@ -289,23 +265,19 @@
     // stacked per cell, so the lattice is square), the box-drawing shadow
     // a faint wiring layer; columns fire as the forward pass sweeps by.
     logo(ctx, s, env, theme) {
-      const { cells } = env.logo, fit = env.fit;
-      const dpr = window.devicePixelRatio || 1;
-      const key = `${fit.x}|${fit.y}|${fit.width}|${fit.height}|${dpr}|${theme.accent}|${theme.glow}|${theme.mono}`;
-      if (key !== s.logoKey) { s.logoKey = key; s.logoArt = renderLogo(cells, fit, theme, dpr, env.rand); }
-      const art = s.logoArt;
-      ctx.drawImage(art.canvas, fit.x - art.pad, fit.y - art.pad, art.canvas.width / dpr, art.canvas.height / dpr);
-      const { solid, sub, rad } = art;
-      const pt = env.pointer, hovering = pt && pt.strength > 0.01;
+      const { solid, sub } = env.logo, fit = env.fit;
+      if (s.logoArt?.theme !== theme) s.logoArt = { theme, ...renderLogo(env.logo, fit, theme, env.rand) };
+      const art = s.logoArt, rad = art.rad;
+      env.logo.draw(ctx, art.img);
       const reach = fit.font * 9, proximity = window.OMP_BACKDROPS.proximity;
-      const halo = s.cache.halo, hs = rad * 7;
+      const halo = env.halo(theme.accent), hs = rad * 7;
       ctx.fillStyle = theme.accent;
       for (let k = 0; k < solid.length; k++) {
         const c = solid[k];
         // Each sweep lights a fresh random half of a column's neurons, so
         // it sparkles instead of moving as a solid bar.
         const g = s.colGlow[c.col] * ((art.noise[k] + s.colSeed[c.col]) % 1 < 0.55 ? 1 : 0.2);
-        const lit = Math.max(g, hovering ? proximity(pt.x, pt.y, c.x, c.y, reach) * pt.strength * 0.6 : 0);
+        const lit = Math.max(g, proximity(env.pointer, c.x, c.y, reach) * 0.6);
         if (lit < 0.04) continue;
         for (let j = 0; j < sub; j++) {
           const x = c.x + c.w / 2, y = c.y + (c.h * (j + 0.5)) / sub;
@@ -326,43 +298,33 @@
     }
   }
 
-  /** The resting logo, once per size/theme: shadow wiring, a soft glow
+  /** The resting logo, once per layout/theme: shadow wiring, a soft glow
    *  (shadowBlur here only, never per frame) and the neuron dots. */
-  function renderLogo(cells, fit, theme, dpr, rand) {
-    const pad = Math.ceil(fit.font * 1.5);
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.ceil((fit.width + pad * 2) * dpr);
-    canvas.height = Math.ceil((fit.height + pad * 2) * dpr);
-    const g = canvas.getContext("2d");
-    g.scale(dpr, dpr);
-    g.translate(pad - fit.x, pad - fit.y);
-    const solid = cells.filter(c => c.solid);
+  function renderLogo(logo, fit, theme, rand) {
+    const { solid, sub } = logo;
     const { w, h } = solid[0];
-    const sub = Math.max(1, Math.round(h / w));
     const rad = Math.min(w, h / sub) * 0.4;
-    g.font = `${fit.font}px ${theme.mono}`;
-    g.textBaseline = "top";
-    g.fillStyle = theme.accent;
-    g.globalAlpha = 0.32;
-    for (const c of cells) if (!c.solid) g.fillText(c.ch, c.x, c.y);
-    const dots = () => {
-      g.beginPath();
-      for (const c of solid) {
-        for (let j = 0; j < sub; j++) {
-          const y = c.y + (c.h * (j + 0.5)) / sub;
-          g.moveTo(c.x + c.w / 2 + rad, y);
-          g.arc(c.x + c.w / 2, y, rad, 0, Math.PI * 2);
+    const img = logo.bake(Math.ceil(fit.font * 1.5), (g) => {
+      logo.glyphs(g, logo.edges, theme.accent, { alpha: 0.32 });
+      const dots = () => {
+        g.beginPath();
+        for (const c of solid) {
+          for (let j = 0; j < sub; j++) {
+            const y = c.y + (c.h * (j + 0.5)) / sub;
+            g.moveTo(c.x + c.w / 2 + rad, y);
+            g.arc(c.x + c.w / 2, y, rad, 0, Math.PI * 2);
+          }
         }
-      }
-      g.fill();
-    };
-    g.globalAlpha = 0.85;
-    g.shadowColor = theme.glow;
-    g.shadowBlur = fit.font * 0.8;
-    dots();
-    g.shadowBlur = 0;
-    dots();
-    return { canvas, pad, solid, sub, rad, noise: solid.map(() => rand()) };
+        g.fill();
+      };
+      g.globalAlpha = 0.85;
+      g.shadowColor = theme.glow;
+      g.shadowBlur = fit.font * 0.8;
+      dots();
+      g.shadowBlur = 0;
+      dots();
+    });
+    return { img, rad, noise: solid.map(() => rand()) };
   }
 
   function drawPrediction(ctx, s, theme, pred, alpha) {

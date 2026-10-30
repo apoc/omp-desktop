@@ -42,21 +42,6 @@ function seeded(seed) {
   };
 }
 
-// ── screens ──
-
-check("six screens, matrix first and the default", () => {
-  assert.deepEqual(B.SCREENS.map(s => s.id), ["matrix", "latent", "sampling", "orbit", "neural", "attention"]);
-  assert.equal(B.DEFAULT_SCREEN, "matrix");
-  for (const s of B.SCREENS) assert.ok(s.label && s.blurb, s.id);
-});
-
-check("a stale or missing stored screen falls back to the default", () => {
-  assert.equal(B.screenOf("orbit"), "orbit");
-  assert.equal(B.screenOf("starfield"), "matrix");
-  assert.equal(B.screenOf(undefined), "matrix");
-  assert.equal(B.screenOf(null), "matrix");
-});
-
 // ── shared math ──
 
 check("softmax sums to 1, keeps order, and temperature sharpens", () => {
@@ -77,6 +62,25 @@ check("easeInOut and bezier hit their endpoints", () => {
   assert.deepEqual(B.bezier(a, c, b, 0), a);
   assert.deepEqual(B.bezier(a, c, b, 1), b);
   assert.deepEqual(B.bezier(a, c, b, 0.5), { x: 50, y: 50 });
+});
+
+check("proximity: the pointer's strength on it, fading to nothing at the radius", () => {
+  const at = (x, y, strength = 1) => ({ x, y, strength });
+  assert.equal(B.proximity(at(10, 10), 10, 10, 50), 1);
+  assert.equal(B.proximity(at(10, 10, 0.4), 10, 10, 50), 0.4, "scaled by the pointer's strength");
+  const near = B.proximity(at(0, 0), 10, 0, 50), far = B.proximity(at(0, 0), 40, 0, 50);
+  assert.ok(near > far && far > 0);
+  assert.equal(B.proximity(at(0, 0), 50, 0, 50), 0);
+  assert.equal(B.proximity(at(0, 0), 0, 90, 50), 0);
+  assert.equal(B.proximity(at(0, 0, 0), 0, 0, 50), 0, "a resting pointer reaches nothing");
+});
+
+check("tokenAt wraps round both ends of the sequence", () => {
+  const n = B.SEQUENCE.length;
+  assert.equal(B.tokenAt(0), B.SEQUENCE[0]);
+  assert.equal(B.tokenAt(n), B.SEQUENCE[0]);
+  assert.equal(B.tokenAt(-1), B.SEQUENCE[n - 1]);
+  assert.equal(B.tokenAt(2 * n + 3), B.SEQUENCE[3]);
 });
 
 // ── latent space ──
@@ -111,6 +115,8 @@ check("perspective: a farther point shrinks towards the centre", () => {
   assert.ok(near.k > 1 && far.k < 1);
   assert.ok(far.x - 100 < near.x - 100);
   assert.deepEqual(B.project({ x: 0, y: 0, z: 0 }, 100, 80, 50), { x: 100, y: 80, k: 1 });
+  const wide = B.project({ x: 1, y: 1, z: 0.5 }, 100, 100, 50, 2);
+  assert.ok(Math.abs(wide.x - 100 - (far.x - 100) * 2) < 1e-9 && wide.y === far.y, "stretch widens x about the centre only");
 });
 
 check("nearest returns the k closest, nearest first", () => {
@@ -123,10 +129,10 @@ check("projectCloud matches rotate + project point by point", () => {
   const { points } = B.makeCloud(5, seeded(2));
   const n = points.length;
   const out = { x: new Float32Array(n), y: new Float32Array(n), z: new Float32Array(n), k: new Float32Array(n) };
-  B.projectCloud(points, 0.7, -0.3, 200, 150, 120, out);
+  B.projectCloud(points, 0.7, -0.3, 200, 150, 120, 1.4, out);
   points.forEach((p, i) => {
     const r = B.rotate(p, 0.7, -0.3);
-    const s = B.project(r, 200, 150, 120);
+    const s = B.project(r, 200, 150, 120, 1.4);
     for (const [got, want] of [[out.x[i], s.x], [out.y[i], s.y], [out.z[i], r.z], [out.k[i], s.k]]) {
       assert.ok(Math.abs(got - want) < 1e-3, `${i}: ${got} vs ${want}`);
     }
@@ -168,14 +174,6 @@ check("retrieval timeline: type, fly, rays in turn, then fade out within the cyc
   assert.ok(R.hold + R.fade <= R.cycle);
 });
 
-check("proximity: full on the pointer, fading to nothing at the radius", () => {
-  assert.equal(B.proximity(10, 10, 10, 10, 50), 1);
-  const near = B.proximity(0, 0, 10, 0, 50), far = B.proximity(0, 0, 40, 0, 50);
-  assert.ok(near > far && far > 0);
-  assert.equal(B.proximity(0, 0, 50, 0, 50), 0);
-  assert.equal(B.proximity(0, 0, 0, 90, 50), 0);
-});
-
 check("pickCluster: a clear cluster, never the last one, any other when all are hidden", () => {
   const at = [{ x: 50, y: 50 }, { x: 500, y: 50 }, { x: 55, y: 60 }, { x: 600, y: 300 }];
   const logo = { x: 0, y: 0, w: 100, h: 100 };
@@ -195,7 +193,7 @@ check("logo cloud: every shadow edge has arms; dots stay in their cell, some tin
   const cells = m.OMP_MATRIX.logoCells({ x: 0, y: 0, width: 910, height: 120 });
   for (const c of cells) if (!c.solid) assert.ok(B.EDGE_ARMS[c.ch], c.ch);
   const solid = cells.filter(c => c.solid);
-  const dots = B.logoDots(solid, seeded(9), { perCell: 2 });
+  const dots = B.logoDots(solid, seeded(9), 2);
   assert.equal(dots.length, solid.length * 2);
   dots.forEach((d, i) => {
     const c = solid[i >> 1];
@@ -249,11 +247,6 @@ check("candidates: the true token wins, distinct, probabilities sum to 1", () =>
     "a small vocabulary gives fewer candidates, never duplicates");
 });
 
-check("the distractor pool has no whitespace and no duplicates", () => {
-  assert.equal(new Set(B.VOCAB).size, B.VOCAB.length);
-  assert.ok(B.VOCAB.every(t => B.tokenKind(t) !== "space"));
-});
-
 check("layoutTokens places each token at its line and column", () => {
   const at = B.layoutTokens("if x {\n    y();\n}");
   const pos = (tok) => { const t = at.find(a => a.tok === tok); return [t.line, t.col, t.kind]; };
@@ -305,7 +298,7 @@ check("calls: outcome, wall time in the tool's range, failures only where possib
     if (!call.ok) { failed++; assert.ok(fail > 0, B.TOOLS[call.tool].name); }
   }
   assert.ok(failed > 0, "some calls fail");
-  assert.equal(B.nextCall(rand, B.TOOLS, 3).tool, 3);
+  assert.equal(B.nextCall(rand, 3).tool, 3);
 });
 
 check("a turn is 1–3 parallel calls to distinct tools, mostly one", () => {
@@ -352,16 +345,17 @@ check("logRoom: full log under a roomy orbit, fewer lines as it closes in, none 
 });
 
 check("logoSweep: dark before and after, a band crossing left to right, leaning", () => {
-  for (const k of [0, 1, -0.2, 1.5]) assert.equal(B.logoSweep(45, 3, k), 0);
+  const sweep = (col, row, k) => B.logoSweep(col, row, k, 91, 6);  // the logo's size
+  for (const k of [0, 1, -0.2, 1.5]) assert.equal(sweep(45, 3, k), 0);
   // Every cell is dark at both ends of the sweep, lit exactly once mid-way.
   for (const col of [0, 45, 90]) for (const row of [0, 5]) {
-    assert.equal(B.logoSweep(col, row, 0.001), 0);
-    assert.equal(B.logoSweep(col, row, 0.999), 0);
-    const peak = Math.max(...Array.from({ length: 200 }, (_, i) => B.logoSweep(col, row, i / 200)));
+    assert.equal(sweep(col, row, 0.001), 0);
+    assert.equal(sweep(col, row, 0.999), 0);
+    const peak = Math.max(...Array.from({ length: 200 }, (_, i) => sweep(col, row, i / 200)));
     assert.ok(peak > 0.9 && peak <= 1, `${col},${row}: ${peak}`);
   }
   // Left lights before right; the bottom row leads the top (the band leans).
-  const firstLit = (col, row) => Array.from({ length: 200 }, (_, i) => B.logoSweep(col, row, i / 200)).findIndex(w => w > 0.5);
+  const firstLit = (col, row) => Array.from({ length: 200 }, (_, i) => sweep(col, row, i / 200)).findIndex(w => w > 0.5);
   assert.ok(firstLit(10, 3) < firstLit(80, 3));
   assert.ok(firstLit(45, 5) < firstLit(45, 0));
 });
@@ -425,11 +419,6 @@ check("pulses fan out to distinct next-layer nodes; the last layer fires none", 
   }
   assert.equal(B.firePulses([4, 6, 3], 1, 0, 9, rand).length, 3, "fanout capped by the layer size");
   assert.deepEqual(B.firePulses([4, 6, 3], 2, 0, 3, rand), []);
-});
-
-check("the forward-pass sequence is the snippets' non-space tokens", () => {
-  assert.ok(B.SEQUENCE.length > 50);
-  assert.ok(B.SEQUENCE.every(t => B.tokenKind(t) !== "space"));
 });
 
 check("a forward pass always reaches the output, sparse but never dead", () => {

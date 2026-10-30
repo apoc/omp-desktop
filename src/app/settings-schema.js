@@ -218,7 +218,7 @@
       const stepped = row.min + Math.round((n - row.min) / row.step) * row.step;
       return Math.min(row.max, Math.max(row.min, stepped));
     }
-    if (row.type === "seg" || row.type === "screens") return row.options.some(o => o.value === v) ? v : fallback;
+    if (row.options) return row.options.some(o => o.value === v) ? v : fallback;
     if (row.type === "toggle") return typeof v === "boolean" ? v : fallback;
     return v ?? fallback;
   }

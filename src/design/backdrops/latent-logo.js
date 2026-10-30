@@ -3,22 +3,19 @@
 // glint as retrievals land (pure rules: app/backdrops-latent.js). Used by
 // design/backdrops/latent.js, which owns the renderer state `s` this reads:
 // tiltYaw, sway, pitch, yaw, cx, cy, scale, stretch, steps, cloud, proj,
-// sprites, and the frame's query view qx, qy, at, hits, landAge.
+// art.sprites, and the frame's query view qx, qy, at, hits, landAge.
 // Plain-script IIFE.
 (function () {
   const DRIFTERS = 16;           // logo dots that drift off and settle back
   const LOGO_DEPTH = 2.6;        // logo parallax: px per unit of depth per rad of lean, in font sizes
   const LAYER_Z = [0.95, 0.6, 0, -0.6];  // edges, far, mid and near dots
 
-  /** The logo's points and their per-dot state; null without a logo.
+  /** The logo's points and their per-dot state (only with a logo).
    *  `colours`: the theme key of each cloud cluster, by cluster index. */
   function makeMark(env, rand, colours) {
-    if (!env.logo) return null;
     const B = window.OMP_BACKDROPS;
-    const { cells } = env.logo, font = env.fit.font;
-    const solid = cells.filter(c => c.solid);
-    const cw = solid[0].w, perCell = Math.max(1, Math.round(solid[0].h / cw));
-    const dots = B.logoDots(solid, rand, { perCell });
+    const { cells, solid, sub } = env.logo, font = env.fit.font;
+    const dots = B.logoDots(solid, rand, sub);
     const n = dots.length;
     const layer = new Uint8Array(n), phase = new Float32Array(n), speed = new Float32Array(n);
     for (let i = 0; i < n; i++) {
@@ -40,8 +37,8 @@
     return {
       dots, layer, phase, speed, live, drifters, font, colours,
       edges: cells.filter(c => !c.solid),
-      r: Math.min(cw, solid[0].h / perCell) * 0.29,
-      pad: Math.ceil(font * 2), layers: null, key: "", nextIdle: 30,
+      r: Math.min(solid[0].w, solid[0].h / sub) * 0.29,
+      theme: null, layers: null, spark: "", nextIdle: 30,
     };
   }
 
@@ -49,32 +46,13 @@
   const dotAlpha = (z) => 0.92 - (z + 1) * 0.17;
   const dotRadius = (m, z) => m.r * (1 - z * 0.3);
 
-  /** Relative lightness (0..1) of a CSS colour, read back through a 1px
-   *  canvas so any colour syntax works; once per theme change. */
-  function lightness(colour) {
-    const g = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
-    g.fillStyle = colour;
-    g.fillRect(0, 0, 1, 1);
-    const [r, gr, b] = g.getImageData(0, 0, 1, 1).data;
-    return (0.2126 * r + 0.7152 * gr + 0.0722 * b) / 255;
-  }
-
-  /** The static logo, pre-rendered per size/dpr/theme: the shadow edges
+  /** The static logo, pre-rendered per layout/theme: the shadow edges
    *  as hairline links, then the dots in three depth layers that lean
    *  apart with the cloud (glow baked in: no per-frame shadowBlur). */
-  function renderLayers(m, fit, theme, dpr) {
+  function renderLayers(m, logo, theme) {
     const B = window.OMP_BACKDROPS;
-    const { pad, font } = m;
-    const layer = (paint) => {
-      const c = document.createElement("canvas");
-      c.width = Math.ceil((fit.width + pad * 2) * dpr);
-      c.height = Math.ceil((fit.height + pad * 2) * dpr);
-      const g = c.getContext("2d");
-      g.setTransform(dpr, 0, 0, dpr, (pad - fit.x) * dpr, (pad - fit.y) * dpr);
-      paint(g);
-      return c;
-    };
-    const edges = layer(g => {
+    const { font } = m, pad = Math.ceil(font * 2);
+    const edges = logo.bake(pad, g => {
       g.strokeStyle = theme.fg3;
       g.fillStyle = theme.fg3;
       g.lineWidth = Math.max(0.7, font * 0.07);
@@ -102,7 +80,7 @@
       }
       g.fill();
     });
-    const dots = [1, 2, 3].map(l => layer(g => {
+    const dots = [1, 2, 3].map(l => logo.bake(pad, g => {
       g.shadowBlur = font * 0.6;
       m.dots.forEach((d, i) => {
         if (m.layer[i] !== l || m.live[i]) return;
@@ -130,26 +108,20 @@
   /** Paint the logo for this step (the renderer's `logo` hook). */
   function paint(ctx, s, env, theme) {
     const m = s.mark;
-    if (!m) return;
     const B = window.OMP_BACKDROPS;
-    const { fit, width: w, height: h } = env;
-    const dpr = window.devicePixelRatio || 1;
-    const key = `${dpr}|${theme.bg}|${theme.fg}|${theme.accent}|${theme.glow}|${theme.fg3}|${m.colours.map(c => theme[c]).join("|")}`;
-    if (key !== m.key) {
-      m.key = key;
-      m.layers = renderLayers(m, fit, theme, dpr);
+    const { width: w, height: h } = env;
+    if (m.theme !== theme) {
+      m.theme = theme;
+      m.layers = renderLayers(m, env.logo, theme);
       // A glint lights up: the foreground on a dark theme, but that is
       // ink on a light one, where the accent itself sparkles instead.
-      m.spark = lightness(theme.bg) > 0.5 ? theme.accent : theme.fg;
+      m.spark = theme.light ? theme.accent : theme.fg;
     }
 
     // The logo sits in the cloud's space: its depth layers lean apart
     // with the pointer and sway with the cloud's slow nod.
     const D = LOGO_DEPTH * m.font, lx = s.tiltYaw * D, ly = -s.sway * D;
-    const lw = fit.width + m.pad * 2, lh = fit.height + m.pad * 2;
-    m.layers.forEach((img, l) => {
-      ctx.drawImage(img, fit.x - m.pad + LAYER_Z[l] * lx, fit.y - m.pad + LAYER_Z[l] * ly, lw, lh);
-    });
+    m.layers.forEach((img, l) => env.logo.draw(ctx, img, LAYER_Z[l] * lx, LAYER_Z[l] * ly));
 
     // Drifters: a token pulled off its letter (towards its cluster, or
     // towards a query as it lands), still linked home, settling back.
@@ -164,8 +136,8 @@
       const idle = m.drifters.filter(d => B.driftAt(steps - d.start) === 0);
       if (idle.length) {
         const d = idle[Math.floor(rand() * idle.length)];
-        const o = B.project(B.rotate(s.cloud.centres[m.dots[d.i].tint], s.yaw + s.tiltYaw, s.pitch), s.cx, s.cy, s.scale);
-        launch(d, m, steps, s.cx + (o.x - s.cx) * s.stretch, o.y, m.font * (1.2 + rand() * 0.8), rand);
+        const o = B.project(B.rotate(s.cloud.centres[m.dots[d.i].tint], s.yaw + s.tiltYaw, s.pitch), s.cx, s.cy, s.scale, s.stretch);
+        launch(d, m, steps, o.x, o.y, m.font * (1.2 + rand() * 0.8), rand);
       }
     }
     ctx.lineWidth = Math.max(0.6, m.font * 0.05);
@@ -191,10 +163,10 @@
 
     // Glints: a twinkle now and then; a wave through the letters as a
     // query lands; letters near a growing retrieval ray; the pointer.
-    const R = B.RETRIEVAL, reach = m.font * 5, ptr = env.pointer, ps = ptr ? ptr.strength : 0;
+    const R = B.RETRIEVAL, reach = m.font * 5;
     const waveV = Math.max(w, h) / 45, band = m.font * 3;
     const wave = at && s.landAge >= 0 && s.landAge < 60 ? at.alpha : 0;
-    const glow = s.sprites.accent, gr = m.r * 9;
+    const glow = s.art.sprites.accent, gr = m.r * 9;
     ctx.fillStyle = m.spark;
     for (let i = 0; i < m.dots.length; i++) {
       if (m.live[i]) continue;
@@ -218,7 +190,7 @@
           if (dist < reach) g += amp * (1 - dist / reach) ** 2 * 0.9;
         }
       }
-      if (ps > 0) g += B.proximity(ptr.x, ptr.y, x, y, m.font * 7) * ps * 0.5;
+      g += B.proximity(env.pointer, x, y, m.font * 7) * 0.5;
       if (g < 0.03) continue;
       g = Math.min(1, g);
       ctx.globalAlpha = g * 0.5;

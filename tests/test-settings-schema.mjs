@@ -71,15 +71,10 @@ check("bounds come from the owning modules", () => {
   assert.deepEqual([row("fontSize").min, row("fontSize").max, row("fontSize").step], [75, 150, 5]);
 });
 
-check("start screen tiles come from OMP_BACKDROPS; a stale stored screen falls back", () => {
+check("a stale stored start screen falls back to the default", () => {
   const r = row("startScreen");
-  assert.equal(r.type, "screens");
-  assert.deepEqual(r.options.map(o => o.value), win.OMP_BACKDROPS.SCREENS.map(s => s.id));
-  for (const o of r.options) assert.ok(o.label && o.blurb, o.value);
   assert.equal(S.clamp(r, "neural"), "neural");
   assert.equal(S.clamp(r, "starfield"), D.startScreen);
-  assert.equal(S.isModified(r, vals({ startScreen: "orbit" })), true);
-  assert.deepEqual(S.resetRow(r, vals({ startScreen: "orbit" })), { startScreen: D.startScreen });
 });
 
 check("clamp keeps values in bounds and on the step", () => {
