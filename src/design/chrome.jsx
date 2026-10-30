@@ -251,11 +251,11 @@ function TabBar({
 // pills below the prompt box show (and change) both. It spans the window
 // under the workspace; the st-ctx meter, st-cost and st-tps cells (each
 // with its separator) drop out when the window is narrow (layout/rail.css).
-function StatusBar({ ctx, todoDone, todoTotal, onTodo, onSettings, settingsActive = false, onChanges, onRules, approvalMode, onStats, onTree, onTerminal, terminalOpen, onBrowser, browserOpen = false }) {
+function StatusBar({ ctx, todoDone, todoTotal, onTodo, onSettings, settingsActive = false, onChanges, onRules, approvalMode, onStats, onTree, onTerminal, terminalOpen, onBrowser, browserOpen = false, keepAwake, keepAwakeSessionId, onKeepAwakeSettings }) {
   return (
     <div className="status">
       <span className="status-cell"><span className="dot live" /> connected</span>
-      <span className="status-sep">·</span>
+      <span className="status-sep st-ctx">·</span>
       <span className="status-cell st-ctx mono">
         <span style={{ color: "var(--fg-3)" }}>{ctx.label}</span>
         <span className="status-bar-tube">
@@ -298,6 +298,9 @@ function StatusBar({ ctx, todoDone, todoTotal, onTodo, onSettings, settingsActiv
         aria-pressed={!!terminalOpen} style={{ height: 20, padding: "0 6px" }}>
         <Icon name="terminal" size={11} color={terminalOpen ? "var(--accent)" : "var(--fg-3)"} />
       </button>
+      <span className="status-sep">·</span>
+      <window.KeepAwakeCell key={keepAwakeSessionId || "none"} awake={keepAwake}
+        sessionId={keepAwakeSessionId} onSettings={onKeepAwakeSettings} />
       <span className="status-sep">·</span>
       <button className={`status-cell btn ghost ${settingsActive ? "on" : ""}`} onClick={onSettings}
         title={`settings (${hintFor("desktop.settings.open", "Ctrl+,")})`}

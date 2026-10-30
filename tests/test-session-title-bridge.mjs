@@ -152,6 +152,7 @@ function harness(t, { title, autoName = true } = {}) {
     async reopen() {
       await bridge.resumeSession({
         path: "/saved/conversation.jsonl",
+        profile_id: "default",
         cwd: "/project",
         title: title || "project",
       });

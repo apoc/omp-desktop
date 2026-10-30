@@ -21,6 +21,15 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
+/// A History row bound to the configured profile whose directory it came from.
+#[derive(Debug, serde::Serialize)]
+pub struct SavedSession {
+    pub profile_id: String,
+    pub profile_name: String,
+    #[serde(flatten)]
+    metadata: SessionMetadata,
+}
+
 /// Information about a persisted session on disk.
 ///
 /// The durable identity of a session is `path` (and the uuid embedded in
@@ -28,8 +37,8 @@ use tauri::{AppHandle, Manager};
 /// merely a copy of the `session` event's `id` field from the JSONL body
 /// and, for sessions resumed over RPC, must never be conflated with a
 /// live `get_state().sessionId` from a different `get_state` call.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct SavedSession {
+#[derive(Debug, serde::Serialize)]
+struct SessionMetadata {
     pub id: String,
     pub title: String,
     pub timestamp: String,
@@ -44,7 +53,7 @@ pub struct SavedSession {
     /// so resuming a dormant session and closing the tab without sending a
     /// new message must not bump it back to the top of the history list.
     /// `None` only for a file with no `message` or `title` event at all,
-    /// in which case callers fall back to `timestamp` (see `scan_dir`'s
+    /// in which case callers fall back to `timestamp` (see `scan_profiles`'s
     /// sort and the frontend history modal's display, both of which do
     /// `updated_at.unwrap_or(timestamp)`).
     pub updated_at: Option<String>,
@@ -174,7 +183,7 @@ fn update_last_activity(current: &mut Option<String>, candidate: &str) {
 }
 
 /// Parse a single `.jsonl` session file and extract metadata.
-fn parse_session_file(path: &Path) -> Option<SavedSession> {
+fn parse_session_file(path: &Path) -> Option<SessionMetadata> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
 
@@ -202,7 +211,7 @@ fn parse_session_file(path: &Path) -> Option<SavedSession> {
         // Last activity is tracked only from `message` (a real turn) and
         // `title` (the latest retitle, explicit `/rename` or omp's own
         // automatic one) events — see the `updated_at` doc
-        // comment on `SavedSession` for why every other event type,
+        // comment on `SessionMetadata` for why every other event type,
         // including the exit lifecycle event omp appends when an RPC
         // child for this session terminates, is deliberately excluded.
         match event_type {
@@ -265,7 +274,7 @@ fn parse_session_file(path: &Path) -> Option<SavedSession> {
             .to_string()
     };
 
-    Some(SavedSession {
+    Some(SessionMetadata {
         // Prefer the filename-derived uuid — the durable identity (see the
         // module doc comment) — over the JSONL body's `session.id` field.
         // They agree in the common case; falling back to the body's id
@@ -312,23 +321,22 @@ pub fn canonical_id_from_stem(path: &Path) -> Option<&str> {
     looks_like_uuid.then_some(uuid)
 }
 
-/// Walk `root` for `.jsonl` session files, optionally filtered by `cwd_filter`.
-/// Sessions are sorted newest-first by `updated_at` (falling back to `timestamp`).
-///
-/// Split out from `scan_saved_sessions` (which resolves `root` from the
-/// `AppHandle`) so the walk/filter/sort logic can be unit-tested against a
-/// tempdir without a Tauri app instance.
-fn scan_dir(root: &Path, cwd_filter: Option<&str>) -> Result<Vec<SavedSession>, String> {
+/// Append `root`'s session files, optionally filtered by `cwd_filter`, with
+/// the owning profile attached. The caller sorts once across all profiles.
+fn scan_dir(
+    root: &Path,
+    cwd_filter: Option<&str>,
+    profile: &crate::profiles::Profile,
+    sessions: &mut Vec<SavedSession>,
+) -> Result<(), String> {
     if !root.exists() {
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     let entries =
         fs::read_dir(root).map_err(|e| format!("failed to read {}: {e}", root.display()))?;
 
     let norm_filter = cwd_filter.filter(|f| !f.is_empty()).map(normalize_cwd);
-
-    let mut sessions = Vec::new();
 
     for entry_res in entries {
         let Ok(entry) = entry_res else { continue };
@@ -361,34 +369,64 @@ fn scan_dir(root: &Path, cwd_filter: Option<&str>) -> Result<Vec<SavedSession>, 
                     continue;
                 }
             }
-            sessions.push(session);
+            sessions.push(SavedSession {
+                // Each returned row must outlive the borrowed profile snapshot.
+                profile_id: profile.id.clone(),
+                profile_name: profile.name.clone(),
+                metadata: session,
+            });
         }
     }
 
-    // Sort descending by timestamp / updated_at (newest first)
+    Ok(())
+}
+
+fn scan_profiles(
+    home: &Path,
+    env_dir: Option<&OsStr>,
+    cwd_filter: Option<&str>,
+    profiles: &[crate::profiles::Profile],
+) -> Result<Vec<SavedSession>, String> {
+    let mut sessions = Vec::new();
+    for profile in profiles {
+        let resolved = (!crate::profiles::is_default(&profile.id)).then_some(profile.id.as_str());
+        let root = sessions_root_for(home, resolved, env_dir);
+        scan_dir(&root, cwd_filter, profile, &mut sessions)
+            .map_err(|error| format!("profile {:?}: {error}", profile.name))?;
+    }
     sessions.sort_by(|a, b| {
-        let key_b = b.updated_at.as_ref().unwrap_or(&b.timestamp);
-        let key_a = a.updated_at.as_ref().unwrap_or(&a.timestamp);
+        let key_b = b
+            .metadata
+            .updated_at
+            .as_ref()
+            .unwrap_or(&b.metadata.timestamp);
+        let key_a = a
+            .metadata
+            .updated_at
+            .as_ref()
+            .unwrap_or(&a.metadata.timestamp);
         key_b.cmp(key_a)
     });
-
     Ok(sessions)
 }
 
-/// Scan `profile`'s sessions directory for saved `.jsonl` session files.
+/// Scan every configured profile's sessions, newest activity first globally.
 /// If `cwd_filter` is provided, only sessions whose `cwd` matches are returned.
 ///
 /// # Errors
-/// Returns an error when the home directory can't be resolved or the
+/// Returns an error when the home directory can't be resolved or a profile's
 /// sessions directory can't be read.
 pub fn scan_saved_sessions(
     app: &AppHandle,
     cwd_filter: Option<&str>,
-    profile: Option<&str>,
+    profiles: &[crate::profiles::Profile],
 ) -> Result<Vec<SavedSession>, String> {
-    let root = sessions_root_dir(app, profile)
-        .ok_or_else(|| "could not resolve home directory".to_string())?;
-    scan_dir(&root, cwd_filter)
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|_| "could not resolve home directory".to_string())?;
+    let env_dir = std::env::var_os("PI_CODING_AGENT_DIR");
+    scan_profiles(&home, env_dir.as_deref(), cwd_filter, profiles)
 }
 
 /// Validate a `resume` value supplied over the Tauri IPC boundary against

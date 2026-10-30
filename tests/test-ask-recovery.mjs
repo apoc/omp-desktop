@@ -228,6 +228,7 @@ function harness(storage = new Map()) {
     async reopen() {
       await w.OMP_BRIDGE.resumeSession({
         path: "/saved/conversation.jsonl",
+        profile_id: "default",
         cwd: "/project",
         title: "Saved",
       });
@@ -645,6 +646,7 @@ test("a buffered question belongs to its original tab across a switch", async ()
   h.emit(id, liveQuestion("buffered"));
   await h.w.OMP_BRIDGE.resumeSession({
     path: "/saved/other.jsonl",
+    profile_id: "default",
     cwd: "/other",
     title: "Other",
   });
@@ -830,6 +832,7 @@ test("an approval grant failure remains on its original tab", async () => {
   const grant = h.w.OMP_BRIDGE.approveAndRemember(h.asks()[0], "session");
   await h.w.OMP_BRIDGE.resumeSession({
     path: "/saved/other.jsonl",
+    profile_id: "default",
     cwd: "/other",
     title: "Other",
   });
@@ -848,6 +851,7 @@ test("a rejected write after switching tabs updates only its owning question", a
   const send = h.w.OMP_BRIDGE.answerAskDialog("background", liveAnswers);
   const other = await h.w.OMP_BRIDGE.resumeSession({
     path: "/saved/other.jsonl",
+    profile_id: "default",
     cwd: "/other",
     title: "Other",
   });
@@ -869,6 +873,7 @@ test("replay restores an evicted live callback and closes only absent callbacks"
   flushQuestion(h, id, "gone");
   await h.w.OMP_BRIDGE.resumeSession({
     path: "/saved/other.jsonl",
+    profile_id: "default",
     cwd: "/other",
     title: "Other",
   });
@@ -897,6 +902,7 @@ test("an answered request still in replay is not revived as an open callback", a
   const { h, id } = await liveHarness();
   await h.w.OMP_BRIDGE.resumeSession({
     path: "/saved/other.jsonl",
+    profile_id: "default",
     cwd: "/other",
     title: "Other",
   });
@@ -935,6 +941,7 @@ test("stale replay frames and snapshots cannot resurrect a locally answered trim
     );
     await h.w.OMP_BRIDGE.resumeSession({
       path: "/saved/other.jsonl",
+      profile_id: "default",
       cwd: "/other",
       title: "Other",
     });
@@ -959,6 +966,7 @@ test("an incomplete pending snapshot cannot close an existing question", async (
   flushQuestion(h, id, "keep");
   await h.w.OMP_BRIDGE.resumeSession({
     path: "/saved/other.jsonl",
+    profile_id: "default",
     cwd: "/other",
     title: "Other",
   });

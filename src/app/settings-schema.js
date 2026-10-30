@@ -160,6 +160,9 @@
         tweak("confirmBusyClose", "toggle", "Ask before closing a working tab", "Closing a tab whose agent is mid-turn stops it. Ask first, also when quitting.", "confirm quit close"),
         tweak("autoName", "toggle", "Name tabs automatically", "omp titles a new conversation from its first turns (one small model call). `/rename` always wins.", "rename title"),
       ] },
+      { name: "Power", src: "keep-awake.json", rows: [
+        custom("keepAwake", "Keep computer awake by default", "Applies while agents work; individual chats can override this default. Manual locks and security policies still apply.", "sleep display idle power prevent awake working agent"),
+      ] },
       { name: "Desktop notifications", rows: [
         custom("desktopNotifications", "Desktop notifications", "Local alerts for conversations in another tab or while the app is unfocused. Both off by default. Separate from phone Web Push.", "desktop notification alert completion done finished turn user input ask question permission approval waiting attention", { keys: ["notifyFinished", "notifyQuestions"] }),
       ] },

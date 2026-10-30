@@ -19,7 +19,7 @@ const flush = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
 };
 
-function harness() {
+function harness({ savedSessions = [] } = {}) {
   const window = { OMP_TWEAKS_STORE: { read: () => ({}) } };
   const timers = new Set();
   const scope = {
@@ -67,6 +67,11 @@ function harness() {
     runInNewContext(source(`src/${file}`), scope, { filename: file });
   const listeners = new Map(),
     bindings = new Map();
+  const profileList = [
+    { id: "default", name: "Local" },
+    { id: "work", name: "Work account" },
+    { id: "personal", name: "Personal" },
+  ];
   let snapshot,
     starts = 0,
     failure = null,
@@ -85,10 +90,25 @@ function harness() {
     core: {
       async invoke(command, args) {
         switch (command) {
+          case "list_profiles":
+            return { profiles: profileList, startupId: "default" };
+          case "rename_profile": {
+            const profile = profileList.find((p) => p.id === args.id);
+            profile.name = args.name;
+            return profile;
+          }
+          case "list_saved_sessions":
+            return savedSessions.filter(
+              (session) =>
+                (!args.profile || session.profile_id === args.profile) &&
+                (!args.cwd || session.cwd === args.cwd),
+            );
           case "start_session": {
             starts++;
             if (hold) await hold;
             if (failure) throw new Error(failure);
+            if (!profileList.some((p) => p.id === (args.args.profile || "default")))
+              throw new Error(`unknown profile: ${args.args.profile}`);
             const id = args.args.sessionId;
             const path = args.args.workspace?.worktree
               ? `/isolated/${id}`
@@ -304,6 +324,7 @@ test("resuming a saved worktree conversation reuses its folder without another s
   try {
     const id = await h.bridge.resumeSession({
       path: "/saved/conversation.jsonl",
+      profile_id: "default",
       cwd: "/isolated/existing",
       title: "Existing task",
     });
@@ -329,11 +350,139 @@ test("resuming a saved worktree conversation reuses its folder without another s
   }
 });
 
+test("History lists all profiles while preserving the active conversation and project scope", async () => {
+  const savedSessions = [
+    {
+      path: "/saved/local.jsonl",
+      cwd: "/shared",
+      title: "Local task",
+      profile_id: "default",
+      profile_name: "Local",
+    },
+    {
+      path: "/saved/work.jsonl",
+      cwd: "/shared",
+      title: "Work task",
+      profile_id: "work",
+      profile_name: "Work account",
+    },
+    {
+      path: "/saved/personal.jsonl",
+      cwd: "/personal",
+      title: "Personal task",
+      profile_id: "personal",
+      profile_name: "Personal",
+    },
+  ];
+  const h = harness({ savedSessions });
+  try {
+    await h.bridge.renameProfile("work", "Work account");
+    const opened = h.bridge.openSession("/shared", "work");
+    await h.bridge.startConversationSetup(
+      h.snapshot.conversationSetup.id,
+      options,
+    );
+    const active = await opened;
+    const listed = own(await h.bridge.listSavedSessions());
+    assert.deepEqual(listed, savedSessions);
+    assert.equal(h.snapshot.activeSessionId, active);
+    assert.equal(
+      h.snapshot.sessions.find((tab) => tab.id === active).profile,
+      "work",
+    );
+    assert.deepEqual(
+      own(await h.bridge.listSavedSessions("/shared")),
+      savedSessions.filter((session) => session.cwd === "/shared"),
+    );
+    assert.equal(h.starts, 1);
+  } finally {
+    h.close();
+  }
+});
+
+test("History restores the row's profile and worktree, then focuses the same conversation", async () => {
+  const h = harness();
+  try {
+    await h.bridge.renameProfile("work", "Work account");
+    const opened = h.bridge.openSession("/source", "work");
+    await h.bridge.startConversationSetup(
+      h.snapshot.conversationSetup.id,
+      options,
+    );
+    const work = await opened;
+    const saved = {
+      path: "/saved/personal.jsonl",
+      cwd: "/isolated/personal",
+      title: "Personal task",
+      profile_id: "personal",
+    };
+    const personal = await h.bridge.resumeSession(saved);
+    const tab = h.snapshot.sessions.find((session) => session.id === personal);
+    assert.equal(tab.profile, "personal");
+    assert.equal(tab.path, "/isolated/personal");
+    assert.equal(tab.workspace.projectPath, "/source");
+    assert.equal(h.snapshot.conversationSetup, null);
+    assert.equal(h.snapshot.activeSessionId, personal);
+    assert.equal(
+      h.snapshot.sessions.find((session) => session.id === work).profile,
+      "work",
+    );
+    await h.bridge.activateSession(work);
+    assert.equal(await h.bridge.resumeSession(saved), personal);
+    assert.equal(h.snapshot.activeSessionId, personal);
+    assert.equal(h.starts, 2);
+    await h.bridge.activateSession(work);
+    const local = await h.bridge.resumeSession({
+      path: "/saved/local.jsonl",
+      cwd: "/source",
+      title: "Local task",
+      profile_id: "default",
+    });
+    assert.equal(
+      h.snapshot.sessions.find((session) => session.id === local).profile,
+      "default",
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("History rejects missing or deleted profiles without replacing the active conversation", async () => {
+  const h = harness();
+  try {
+    const active = await h.bridge.resumeSession({
+      path: "/saved/local.jsonl",
+      cwd: "/source",
+      title: "Local task",
+      profile_id: "default",
+    });
+    for (const profile of [undefined, "removed"]) {
+      await assert.rejects(
+        h.bridge.resumeSession({
+          path: "/saved/stale.jsonl",
+          cwd: "/other",
+          profile_id: profile,
+        }),
+        /originating profile|unknown profile/,
+      );
+      assert.equal(h.snapshot.activeSessionId, active);
+      assert.deepEqual(
+        h.snapshot.sessions.map((session) => session.id),
+        [active],
+      );
+      assert.equal(h.snapshot.sessions[0].profile, "default");
+    }
+  } finally {
+    h.close();
+  }
+});
+
 test("concurrent history resumes share one tab and agent", async () => {
   const h = harness();
   try {
     const session = {
       path: "/saved/conversation.jsonl",
+      profile_id: "default",
       cwd: "/isolated/existing",
       title: "Existing task",
     };

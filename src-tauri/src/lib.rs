@@ -23,6 +23,7 @@ mod git_browser;
 mod git_watcher;
 mod goal_config;
 mod json_store;
+mod keep_awake;
 mod keybindings;
 mod model_usage;
 mod navigation_guard;
@@ -107,16 +108,18 @@ async fn start_session(
     args: StartSessionArgs,
     app: AppHandle,
 ) -> Result<conversation_workspace::StartResponse, String> {
+    let keep_awake_epoch = app.state::<Arc<keep_awake::KeepAwake>>().epoch();
     let ticket = app
         .state::<conversation_workspace::WorkspaceManager>()
         .ticket(&args.session_id)?;
-    off_ipc(move || start_session_blocking(args, &app, ticket)).await?
+    off_ipc(move || start_session_blocking(args, &app, ticket, keep_awake_epoch)).await?
 }
 
 fn start_session_blocking(
     args: StartSessionArgs,
     app: &AppHandle,
     ticket: conversation_workspace::Admission,
+    keep_awake_epoch: u64,
 ) -> Result<conversation_workspace::StartResponse, String> {
     let manager = app.state::<conversation_workspace::WorkspaceManager>();
     let mut registry = manager.lock();
@@ -186,6 +189,9 @@ fn start_session_blocking(
         .state::<browser::BrowserManager>()
         .allocate_if_available(&args.session_id)
         .map_err(|e| retained(format!("browser: {e}")))?;
+    app.state::<Arc<keep_awake::KeepAwake>>()
+        .register(&args.session_id, keep_awake_epoch)
+        .map_err(retained)?;
     let rule_book = app.state::<Arc<RuleBook>>();
     app.state::<AgentBridge>()
         .start_session(
@@ -403,8 +409,8 @@ async fn delete_profile(
     with_blocking(&store, move |s| s.remove(&id)).await
 }
 
-/// List saved sessions from disk for `profile` (`~/.omp/agent/sessions`, or
-/// `~/.omp/profiles/<id>/agent/sessions` for a named profile).
+/// List saved sessions across every configured profile, preserving each
+/// session's owning profile for recovery.
 ///
 /// Runs `async` + `spawn_blocking`: `scan_saved_sessions` opens and parses
 /// every persisted `.jsonl` file, which for large histories can take long
@@ -412,13 +418,11 @@ async fn delete_profile(
 #[tauri::command]
 async fn list_saved_sessions(
     cwd: Option<String>,
-    profile: Option<String>,
     store: State<'_, Arc<profiles::ProfileStore>>,
     app: tauri::AppHandle,
 ) -> Result<Vec<saved_sessions::SavedSession>, String> {
-    let profile = store.resolve_owned(profile)?;
-    off_ipc(move || saved_sessions::scan_saved_sessions(&app, cwd.as_deref(), profile.as_deref()))
-        .await?
+    let (profiles, _) = store.snapshot();
+    off_ipc(move || saved_sessions::scan_saved_sessions(&app, cwd.as_deref(), &profiles)).await?
 }
 
 /// The conversation family of one saved session file (`session_file`, under
@@ -482,8 +486,10 @@ fn end_tabs_locked<S: AsRef<str> + Sync>(
     let widgets = app.state::<Arc<widgets::WidgetHost>>();
     let watchers = app.state::<GitWatcherState>();
     let evidence = app.state::<Arc<evidence::EvidenceHost>>();
+    let keep_awake = app.state::<Arc<keep_awake::KeepAwake>>();
     for id in ids {
         let id = id.as_ref();
+        keep_awake.close(id);
         evidence.forget_run(id, None);
         bridge.stop_session(id, &rule_book);
         widgets.session_closed(id);
@@ -1128,7 +1134,7 @@ fn widgets_refresh(plugin_id: String, host: State<'_, Arc<widgets::WidgetHost>>)
 
 /// Usage statistics for the "Usage" panel — see `stats::fetch`. Scoped to
 /// `profile` (the active tab's profile — resolved the same way as
-/// `list_saved_sessions`), *not* every profile at once: `omp stats`
+/// `conversation_tree`), *not* every profile at once: `omp stats`
 /// itself resolves its session directory and SQLite warehouse against
 /// one profile per invocation, the same as every other per-tab omp
 /// spawn in this app. Also not all-time — the installed omp CLI's
@@ -1388,6 +1394,7 @@ pub(crate) fn kill_child_processes(app: &AppHandle) {
     let _registry = manager.as_ref().map(|manager| manager.lock());
     remote::bridge::stop(app);
     notifications::stop(app);
+    keep_awake::stop(app);
     let evidence = app.try_state::<Arc<evidence::EvidenceHost>>();
     if let Some(evidence) = &evidence {
         evidence.begin_shutdown();
@@ -1583,7 +1590,8 @@ fn setup(app: &tauri::App) {
     // Phone remote access: settings in <app_config_dir>/remote.json, devices
     // in remote-devices.json; started once from the saved settings.
     let remote_sink = remote::bridge::install(app, resolved_config_dir.clone()); // `config_file` still borrows it
-    notifications::install(app, remote_sink);
+    let keep_awake_sink = keep_awake::install(app, config_file("keep-awake.json"), remote_sink);
+    notifications::install(app, Some(keep_awake_sink));
 
     // A cold start *is* how Windows and Linux file managers open a
     // folder, so the launch argv is the third delivery path into the
@@ -1665,6 +1673,7 @@ fn with_plugins_and_state(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder
             if webview.label() == "main"
                 && matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
             {
+                keep_awake::reset(webview.app_handle());
                 notifications::reset(webview.app_handle());
             }
         })
@@ -1704,6 +1713,9 @@ pub fn run() {
             send_command,
             notifications::desktop_notifications_configure,
             notifications::desktop_notifications_permission,
+            keep_awake::keep_awake_snapshot,
+            keep_awake::keep_awake_set_default,
+            keep_awake::keep_awake_set_session,
             start_session,
             conversation_workspace_inspect,
             conversation_workspace_status,

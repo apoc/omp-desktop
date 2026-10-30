@@ -513,8 +513,7 @@ impl ProfileStore {
     /// The list and the startup default together, read under **one**
     /// `cache` lock — see the field's doc comment for why two separate
     /// locks cannot guarantee the id names a member of the list. This is
-    /// the store's only read accessor for the list: `list_profiles` is its
-    /// only IPC-facing read, so this is its single source of truth.
+    /// the list snapshot used by both the profile menu and History.
     pub fn snapshot(&self) -> (Vec<Profile>, String) {
         self.cache.lock().map_or_else(
             |_| (vec![builtin()], DEFAULT_PROFILE_ID.to_string()),
@@ -553,14 +552,7 @@ impl ProfileStore {
     /// into a `spawn_blocking` closure — the borrow-then-move dance
     /// `resolve` alone would force at every such call site (validate
     /// through the borrow, then move the original instead of allocating a
-    /// second `String` via `.map(str::to_owned)`). Four call sites
-    /// (`list_saved_sessions`, `kb_resolve`, `usage_stats`,
-    /// `clear_profile_bootstrap`) each carried their own copy of this
-    /// pattern before this existed — the first three as
-    /// `if store.resolve(...).is_some() { profile } else { None }`, the
-    /// fourth as `store.resolve(Some(&id))?.map(ToString::to_string)`,
-    /// which reallocated a fresh `String` from the already-owned `id`
-    /// purely to get past the borrow.
+    /// second `String` via `.map(str::to_owned)`).
     ///
     /// # Errors
     /// Same as [`Self::resolve`]: an `Err` when `profile` names no listed profile.

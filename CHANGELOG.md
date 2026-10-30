@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Keep computer awake** adds a per-chat status-bar control and a persisted **Settings → Session → Power** default. Native idle/display-sleep prevention lasts only while an opted-in agent is working, including background chats, and releases when the last eligible agent settles. Per-chat overrides stay independent; native failures remain visible. Manual locking, forced sleep and security policies are unchanged.
 - **Conversation Evidence** adds an Ambient card and inspector for outcomes, user-owned criteria, attributed observations, tool receipts, artifacts, requests and explicit gaps. Review and waivers remain yours; collected evidence is not automatic acceptance. A shared preset library supplies project/global defaults for new conversations, while existing conversations keep their pinned revision until explicitly updated. Hiding the card does not disable collection.
 - The **Changes** card shows an inline **Auto-fix** button when an open PR has failing CI or unresolved review comments, without opening **PR actions**. It uses the same explicit per-tab opt-in and fresh-PR safety checks. While enabled, **Auto-fix on** remains directly available to turn off even after feedback clears; ordinary clean PRs gain no extra control.
 - **Ambient controls** at the top of the rail let you show or hide built-in cards, widget plugins, and extension widgets, and reorder them by dragging or using keyboard-accessible move buttons. Visibility and order survive restarts; hidden cards keep their place. **Settings → Rail → Card order** exposes the same ordering controls.
@@ -32,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Conversation History now lists saved sessions across all configured profiles, with visible, searchable profile labels. Resume uses the conversation's original profile and working folder, or focuses its existing tab, without requiring a top-bar profile switch.
 - Saving a conversation compaction target no longer reports failure when a native settings reload races its post-save confirmation. Only the read is retried; the saved write is not replayed.
 - Browser launch now creates its own initial blank page before exposing CDP, avoiding duplicate pages when Chromium's automatic startup races panel discovery.
 - Evidence video imports reject audio-only WebM containers instead of recording them as visual evidence. WebM with a declared video track, including mixed audio/video, remains supported.

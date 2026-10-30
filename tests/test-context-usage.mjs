@@ -167,6 +167,7 @@ function harness() {
     async open() {
       await window.OMP_BRIDGE.resumeSession({
         path: "/saved/conversation.jsonl",
+        profile_id: "default",
         cwd: "/project",
         title: "Saved",
       });

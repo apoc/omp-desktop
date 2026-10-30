@@ -77,8 +77,8 @@ function useConversationTree({ bridge, open, sessionId, sessionFile, profileId, 
   // A row that lives only in another file of the family: resume that file.
   const openFile = React.useCallback(path => {
     const file = shown.tree?.files.find(f => f.path === path);
-    return bridge.resumeSession({ path, cwd: file?.cwd ?? "", title: file?.title ?? undefined });
-  }, [bridge, shown.tree]);
+    return bridge.resumeSession({ path, cwd: file?.cwd ?? "", title: file?.title ?? undefined, profile_id: profileId });
+  }, [bridge, shown.tree, profileId]);
 
   return {
     key, model, error: shown.error, loading, now, since: processStartedAt ?? null,

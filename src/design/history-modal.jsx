@@ -1,6 +1,6 @@
 /* ═════════════════════════════════════════════════════════════════════
    history-modal.jsx — Conversation history modal & session resume
-   Allows browsing and restoring sessions from ~/.omp/agent/sessions/
+   Browses saved sessions across configured omp profiles.
    ═════════════════════════════════════════════════════════════════════ */
 
 const { Icon } = window;
@@ -67,7 +67,9 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
       (s.title && s.title.toLowerCase().includes(q)) ||
       (s.project_name && s.project_name.toLowerCase().includes(q)) ||
       (s.cwd && s.cwd.toLowerCase().includes(q)) ||
-      (s.preview && s.preview.toLowerCase().includes(q))
+      (s.preview && s.preview.toLowerCase().includes(q)) ||
+      (s.profile_name && s.profile_name.toLowerCase().includes(q)) ||
+      (s.profile_id && s.profile_id.toLowerCase().includes(q))
     );
   }, [sessions, activeProject, query]);
 
@@ -120,7 +122,7 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
           <input
             ref={inputRef}
             className="bridge-input mono"
-            placeholder="Search saved conversations by title, query, project…"
+            placeholder="Search saved conversations by title, project, profile…"
             value={query}
             onChange={e => { setQuery(e.target.value); setActiveIdx(0); }}
           />
@@ -181,7 +183,7 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
             const timeStr = formatRelativeTime(s.updated_at || s.timestamp);
             return (
               <div
-                key={s.path || s.id || idx}
+                key={`${s.profile_id}:${s.path}`}
                 className={`bridge-row ${isSelected ? "active" : ""}`}
                 style={{
                   display: "flex", flexDirection: "column", alignItems: "stretch", gap: 5,
@@ -213,7 +215,7 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
                   </span>
                 </div>
 
-                {/* Second line: project chip, message count, and cwd */}
+                {/* Second line: project, profile, message count, and cwd */}
                 <div style={{ display: "flex", alignItems: "center", gap: 6, width: "100%" }}>
                   <span className="chip" style={{
                     padding: "1px 6px",
@@ -224,6 +226,17 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
                   }}>
                     <Icon name="folder" size={9} color="var(--cyan)" />
                     <span className="mono">{s.project_name}</span>
+                  </span>
+
+                  <span
+                    className="chip muted mono"
+                    title={`Profile: ${s.profile_name} (${s.profile_id})`}
+                    style={{
+                      fontSize: "var(--d-text-xs)", padding: "1px 6px",
+                      maxWidth: 160, minWidth: 0, display: "block",
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}>
+                    {s.profile_name}
                   </span>
 
                   {s.message_count > 0 && (
@@ -275,7 +288,7 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
           <span className="kbd">↵</span> resume
           <span className="kbd">esc</span> close
           <div style={{ flex: 1 }} />
-          <span style={{ color: "var(--fg-4)" }}>~/.omp/agent/sessions</span>
+          <span style={{ color: "var(--fg-4)" }}>All profiles</span>
         </div>
       </div>
     </div>

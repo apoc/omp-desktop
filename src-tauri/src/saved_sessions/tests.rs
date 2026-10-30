@@ -19,6 +19,23 @@ fn write_jsonl(path: &Path, lines: &[&str]) {
     }
 }
 
+fn history_profiles() -> [crate::profiles::Profile; 3] {
+    [
+        crate::profiles::Profile {
+            id: "default".into(),
+            name: "Local".into(),
+        },
+        crate::profiles::Profile {
+            id: "work".into(),
+            name: "Work account".into(),
+        },
+        crate::profiles::Profile {
+            id: "personal".into(),
+            name: "Personal".into(),
+        },
+    ]
+}
+
 #[test]
 fn parses_session_file_with_fallback_title() {
     let dir = make_test_dir("fallback");
@@ -274,16 +291,17 @@ fn extract_text_from_content_handles_array_and_string_blocks() {
 }
 
 #[test]
-fn scan_dir_missing_root_returns_empty() {
+fn scan_profiles_missing_roots_returns_empty() {
     let root = std::env::temp_dir().join("omp_test_does_not_exist_ever");
-    assert!(scan_dir(&root, None)
+    assert!(scan_profiles(&root, None, None, &history_profiles())
         .expect("ok for missing root")
         .is_empty());
 }
 
 #[test]
-fn scan_dir_filters_by_cwd_and_sorts_newest_first() {
-    let root = make_test_dir("scan_root");
+fn scan_profiles_filters_by_cwd_and_sorts_newest_first() {
+    let home = make_test_dir("scan_root");
+    let root = sessions_root_for(&home, None, None);
 
     let sess_a = root.join("sess-a");
     fs::create_dir_all(&sess_a).unwrap();
@@ -312,30 +330,33 @@ fn scan_dir_filters_by_cwd_and_sorts_newest_first() {
         ],
     );
 
-    let all = scan_dir(&root, None).expect("scan ok");
+    let all = scan_profiles(&home, None, None, &history_profiles()).expect("scan ok");
     assert_eq!(all.len(), 3);
     // Newest first.
-    assert_eq!(all[0].id, "b");
-    assert_eq!(all[1].id, "c");
-    assert_eq!(all[2].id, "a");
+    assert_eq!(all[0].metadata.id, "b");
+    assert_eq!(all[1].metadata.id, "c");
+    assert_eq!(all[2].metadata.id, "a");
 
-    let filtered = scan_dir(&root, Some("/proj/one")).expect("scan ok");
+    let filtered =
+        scan_profiles(&home, None, Some("/proj/one"), &history_profiles()).expect("scan ok");
     assert_eq!(filtered.len(), 2);
-    assert!(filtered.iter().all(|s| s.cwd == "/proj/one"));
+    assert!(filtered.iter().all(|s| s.metadata.cwd == "/proj/one"));
 
     // Filter is case- and slash-insensitive.
-    let filtered_win = scan_dir(&root, Some(r"\PROJ\ONE\")).expect("scan ok");
+    let filtered_win =
+        scan_profiles(&home, None, Some(r"\PROJ\ONE\"), &history_profiles()).expect("scan ok");
     assert_eq!(filtered_win.len(), 2);
 
-    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&home);
 }
 
 #[test]
-fn scan_dir_sorts_by_last_activity_not_creation_date() {
+fn scan_profiles_sorts_by_last_activity_not_creation_date() {
     // Direct regression for issue #23: session "old" was created first but
     // has a much later last message than session "new", which was created
     // after it but never touched again. "old" must sort above "new".
-    let root = make_test_dir("scan_activity_root");
+    let home = make_test_dir("scan_activity_root");
+    let root = sessions_root_for(&home, None, None);
 
     let sess_old = root.join("sess-old");
     fs::create_dir_all(&sess_old).unwrap();
@@ -356,12 +377,12 @@ fn scan_dir_sorts_by_last_activity_not_creation_date() {
         ],
     );
 
-    let all = scan_dir(&root, None).expect("scan ok");
+    let all = scan_profiles(&home, None, None, &history_profiles()).expect("scan ok");
     assert_eq!(all.len(), 2);
-    assert_eq!(all[0].id, "old");
-    assert_eq!(all[1].id, "new");
+    assert_eq!(all[0].metadata.id, "old");
+    assert_eq!(all[1].metadata.id, "new");
 
-    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&home);
 }
 
 #[test]
@@ -485,4 +506,95 @@ fn an_empty_profile_id_reads_the_builtin_tree_like_omp_args_writes_it() {
         sessions_root_for(home, Some(""), Some(OsStr::new("/custom/agent"))),
         Path::new("/custom/agent/sessions")
     );
+}
+
+#[test]
+fn history_lists_configured_profiles_by_global_last_activity() {
+    let home = make_test_dir("history_profiles");
+    for (profile, id, cwd, created, updated) in [
+        (
+            None,
+            "shared",
+            "/proj/shared",
+            "2026-09-01T00:00:00.000Z",
+            Some("2026-09-09T00:00:00.000Z"),
+        ),
+        (
+            Some("work"),
+            "shared",
+            "/proj/shared",
+            "2026-09-03T00:00:00.000Z",
+            Some("2026-09-05T00:00:00.000Z"),
+        ),
+        (
+            Some("personal"),
+            "personal",
+            "/proj/other",
+            "2026-09-08T00:00:00.000Z",
+            None,
+        ),
+        (
+            Some("unlisted"),
+            "hidden",
+            "/proj/shared",
+            "2026-09-10T00:00:00.000Z",
+            None,
+        ),
+    ] {
+        let root = sessions_root_for(&home, profile, None).join("project");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("conversation.jsonl");
+        let session = serde_json::json!({
+            "type": "session", "id": id, "timestamp": created, "cwd": cwd,
+            "profile_id": "not-the-owning-profile",
+        })
+        .to_string();
+        let message = updated.map(|timestamp| {
+            serde_json::json!({
+                "type": "message", "timestamp": timestamp,
+                "message": {"role": "user", "content": "Continue the task"},
+            })
+            .to_string()
+        });
+        write_jsonl(&path, &[&session]);
+        if let Some(message) = message {
+            let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
+            writeln!(file, "{message}").unwrap();
+        }
+    }
+    let profiles = history_profiles();
+
+    let listed = scan_profiles(&home, None, None, &profiles).unwrap();
+    let rows = serde_json::to_value(&listed).unwrap();
+    let owners: Vec<_> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["profile_id"].as_str().unwrap(),
+                row["profile_name"].as_str().unwrap(),
+                row["id"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        owners,
+        [
+            ("default", "Local", "shared"),
+            ("personal", "Personal", "personal"),
+            ("work", "Work account", "shared"),
+        ]
+    );
+    for row in rows.as_array().unwrap() {
+        let id = row["profile_id"].as_str().unwrap();
+        let profile = (!crate::profiles::is_default(id)).then_some(id);
+        assert!(Path::new(row["path"].as_str().unwrap())
+            .starts_with(sessions_root_for(&home, profile, None)));
+    }
+
+    let filtered = scan_profiles(&home, None, Some(r"\PROJ\SHARED\"), &profiles).unwrap();
+    let owners: Vec<_> = filtered.iter().map(|row| row.profile_id.as_str()).collect();
+    assert_eq!(owners, ["default", "work"]);
+    fs::remove_dir_all(home).unwrap();
 }

@@ -1,7 +1,7 @@
 /* ═════════════════════════════════════════════════════════════════════
-   design/settings/rows-session.jsx — Settings → Session's custom `version`
-   row (window.OMP_SETTINGS_ROWS): the running app version and what the
-   last update check found (ctx.updater, app/use-updater.jsx), "Check now"
+   design/settings/rows-session.jsx — Settings → Session's native keep-awake
+   default and `version` rows (window.OMP_SETTINGS_ROWS). The version row
+   shows the running app and last update check (ctx.updater), "Check now"
    (a manual check: opens the update modal, as the tab-bar label does), and
    the release skipped from that modal (`skippedUpdate`) with "Clear", so
    the tab-bar pill offers it again.
@@ -45,4 +45,24 @@ function _SRS_Version({ row, ctx, query }) {
   );
 }
 
-Object.assign(window.OMP_SETTINGS_ROWS = window.OMP_SETTINGS_ROWS || {}, { version: _SRS_Version });
+function _SRS_KeepAwake({ row, ctx, query }) {
+  const { SettingsRow: Row, SettingsToggle: Toggle } = window;
+  const awake = ctx.keepAwake;
+  const snapshot = awake.snapshot;
+  return (
+    <Row stack label={row.label} desc={row.desc} query={query}
+      resettable={!!snapshot?.defaultEnabled && !awake.defaultPending}
+      onReset={() => awake.setDefault(false)}>
+      <div className="keep-awake-settings">
+        <Toggle label={row.label} value={snapshot?.defaultEnabled}
+          disabled={!snapshot || awake.defaultPending} onChange={awake.setDefault} />
+        <span>{snapshot ? (snapshot.defaultEnabled ? "On" : "Off") : awake.defaultError ? "Unavailable" : "Loading…"}</span>
+      </div>
+      {awake.defaultError && <div className="keep-awake-error" role="alert">{awake.defaultError}</div>}
+    </Row>
+  );
+}
+
+Object.assign(window.OMP_SETTINGS_ROWS = window.OMP_SETTINGS_ROWS || {}, {
+  version: _SRS_Version, keepAwake: _SRS_KeepAwake,
+});

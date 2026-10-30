@@ -22,7 +22,8 @@ Built on Tauri 2 (Rust + the system webview). It doesn't bundle Electron or load
 - **One tab = one agent.** Each tab is its own `omp` process, with its own working folder and profile. Switching tabs keeps in-flight turns streaming in the background.
 - **Project sidebar** (`Ctrl+B`): open tabs grouped by project, plus recently opened folders. Tabs on the same folder collapse into one tab-bar chip with a dropdown. Drag a project or a conversation in the tab bar, the dropdown or the sidebar to reorder it; the order is kept across restarts.
 - **Named conversations.** A new tab starts under its folder name and renames itself to the conversation's generated title once the first exchange ends. A `/rename` you type always wins.
-- **Conversation history** (`Ctrl+H`): search and resume saved sessions. If the conversation is already open in a tab, that tab is focused instead of opening it twice.
+- **Conversation history** (`Ctrl+H`): search and resume saved sessions across all configured profiles, without switching the top-bar profile first. Each row identifies its profile, and Resume opens that profile's conversation or focuses its existing tab.
+- **Keep computer awake.** The chat's status-bar control prevents idle sleep while its agent works, including in the background. **Settings → Session → Power** sets the default for all chats; each chat can opt in, opt out, or use that default. Idle chats hold no request. Manual locks, lid-close sleep and security policies still apply.
 - **Open with OMP Desktop.** Open a folder from Finder, Explorer or your Linux file manager, or run `omp-desktop /path/to/project`. If the app is already running, the folder opens as a new tab in the existing window.
 - **Welcome screen.** With no tab open, the app shows a welcome screen and doesn't run any agent until you open a project.
 
@@ -103,7 +104,7 @@ Toggle plan mode (`Shift+Alt+P`, `/plan` or the composer pill) and the agent dra
 
 | | |
 |---|---|
-| **Usage**: requests, cost, tokens and throughput for the last 24 h, by model, folder and agent type (from `omp stats`) | **History**: saved conversations for the tab's profile, searchable and resumable |
+| **Usage**: requests, cost, tokens and throughput for the last 24 h, by model, folder and agent type (from `omp stats`) | **History**: saved conversations across all configured profiles, searchable by project or profile and resumable in their original profile |
 | ![Usage statistics](screenshots/usage.webp) | ![Conversation history](screenshots/history.webp) |
 
 ### Terminal

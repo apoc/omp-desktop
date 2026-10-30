@@ -726,7 +726,7 @@ await checkAsync("profile replacement clears the previous conversation's voice",
 
 await checkAsync("same-conversation process replacement preserves paused voice history", async () => {
   const h = bridgeHarness();
-  const a = await h.bridge.resumeSession({ path: "/saved/session.jsonl" });
+  const a = await h.bridge.resumeSession({ path: "/saved/session.jsonl", profile_id: "default" });
   const start = h.bridge.liveStart(); h.reply(await h.waitCommand("live_start")); await start;
   h.emit(a, caption("user", 1, "retain across restart", true));
   const result = await h.bridge.setApprovalModeDefault("yolo");

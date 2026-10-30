@@ -298,6 +298,8 @@
        app-live.jsx read window.OMP_SETTINGS / OMP_SETTINGS_TAB. -->
   <script src="app/settings-schema.js"></script>
   <script src="app/settings-tab.js"></script>
+  <!-- Native keep-awake snapshot/action controller, shared by the hook and UI. -->
+  <script src="app/keep-awake.js"></script>
 
   <!-- Tweak storage (localStorage `omp-desktop:tweaks`): useTweaks and the
        OMP_TWEAKS_STORE reader live.js uses at its top-level init. IIFE. -->
@@ -433,6 +435,7 @@
        window.TabGroupChip / window.TabRunDot / window.TabLabel at top level,
        so this must load before it. -->
   <script type="text/babel" src="design/tab-group-chip.jsx"></script>
+  <script type="text/babel" src="design/keep-awake.jsx"></script>
   <script type="text/babel" src="design/chrome.jsx"></script>
   <!-- Project sidebar (#27); reads window.TabRunDot / window.TabLabel
        (tab-group-chip.jsx) and window.OMP_PROJECT_NAV at top level. -->
@@ -523,6 +526,7 @@
   <!-- App root — wired to OMP_BRIDGE, no demo effects -->
   <!-- Cross-cutting hooks (must load before app-live.jsx) -->
   <script type="text/babel" src="app/use-bridge-snapshot.jsx"></script>
+  <script type="text/babel" src="app/use-keep-awake.jsx"></script>
   <script type="text/babel" src="app/use-keymap.jsx"></script>
   <script type="text/babel" src="app/use-subagent-manager.jsx"></script>
   <script type="text/babel" src="app/use-updater.jsx"></script>

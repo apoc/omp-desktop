@@ -26,7 +26,7 @@ const {
   INTENT_FRAMING, APPROVAL_PROMPT,
   useBridgeSnapshot, useThemeEffect, useSubagentManager, useUpdater, useConversationTree, useGoalMode, useTerminal, TerminalPanels, timeNow,
   useKeymap, useKeymapDispatch, useBrowser, BrowserDock, MarkdownLinkContext: _AL_MdLinkCtx,
-  usePaneWidths, ResizeHandle, useRemote, useNotifications, usePrAutomation, PrAutomationCard, ContextCard,
+  usePaneWidths, ResizeHandle, useRemote, useNotifications, usePrAutomation, useKeepAwake, PrAutomationCard, ContextCard,
 } = window;
 const { routeSubmit: _routeSubmit } = window.OMP_SLASH;
 const { mergeIntoMessage: _mergeBrowserChips, browserCommand: _browserCommand, MIN_WIDTH: _AL_BROWSER_MIN } = window.OMP_BROWSER;
@@ -188,6 +188,10 @@ function App() {
   });
   useRemote({ bridge });
   useNotifications({ sessions, viewedSession: stab.active ? null : activeSessionId, tweaks: t });
+  // Do not use activeProject's fallback: a closed or unselected chat owns no control.
+  const keepAwakeSessionId = !stab.active && bridge?.activeSessionId === activeSessionId &&
+    sessions.some(s => s.id === activeSessionId) ? activeSessionId : null;
+  const keepAwake = useKeepAwake(bridge, keepAwakeSessionId);
   useThemeEffect(t);
   React.useEffect(() => {
     bridge?.setPromptHistoryLimit(t.promptHistoryLimit ?? window.OMP_PROMPT_HISTORY.DEFAULT_LIMIT);
@@ -966,6 +970,7 @@ function App() {
     panes, terminalHeight: terminal.height, updater,
     goal: { profileId: activeProfileId },
     contextPolicy: policyUi,
+    keepAwake,
     openApprovals: () => setRulesOpen(true),
     section: stab.section,
     setSection: id => setStab(s => window.OMP_SETTINGS_TAB.setSection(s, id)),
@@ -1245,6 +1250,9 @@ function App() {
             browserOpen={side === "browser"}
             onSettings={() => openSettings()}
             settingsActive={stab.active}
+            keepAwake={keepAwake}
+            keepAwakeSessionId={keepAwakeSessionId}
+            onKeepAwakeSettings={() => openSettings("session")}
           />
         </div>
       </div>

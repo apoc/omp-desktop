@@ -224,6 +224,7 @@ await check(
       const id = resume
         ? await h.bridge.resumeSession({
             path: "/saved/session.jsonl",
+            profile_id: "default",
             cwd: "/project",
             title: "Saved",
           })

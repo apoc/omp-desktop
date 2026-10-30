@@ -3460,15 +3460,9 @@
     return startupId;
   }
 
-  /** The active tab's omp profile id. Profile-scoped reads *and* new-tab
-   *  spawns both use this, so they can never disagree: a new tab inherits the
-   *  active tab's profile ("work" stays "work" when you open a second
-   *  folder), and with no tab open there is nothing to inherit, so the
-   *  empty workspace's pick, else the user's ticked default, applies to
-   *  both. Two helpers with different fallbacks
-   *  meant that after closing the last tab the history panel listed the
-   *  built-in tree while the next `openSession` spawned into the ticked
-   *  profile - and `resumeSession` must match whatever was listed. */
+  /** Profile-scoped reads and fresh tabs inherit the active tab's profile.
+   *  With no tab open, use the empty workspace's pick or startup default.
+   *  History is cross-profile; each saved row supplies its own profile. */
   function _activeProfileId() {
     return _resolveProfile(sessionRegistry.get(activeSessionId), _noTabProfile(), profiles);
   }
@@ -4954,6 +4948,21 @@
       };
     },
 
+    // Rust owns the persisted default, per-tab overrides and native inhibitor.
+    keepAwakeSnapshot() {
+      return _invokeResult("keep_awake_snapshot", {});
+    },
+    setKeepAwakeDefault(enabled) {
+      return _invokeResult("keep_awake_set_default", { enabled });
+    },
+    setKeepAwakeSession(sessionId, enabled) {
+      return _invokeResult("keep_awake_set_session", { sessionId, enabled });
+    },
+    onKeepAwakeChanged(handler) {
+      if (!window.__TAURI__) return Promise.reject(new Error("not connected"));
+      return window.__TAURI__.event.listen("keep-awake://changed", ev => handler(ev.payload));
+    },
+
     // ── Phone remote access ──────────────────────────────────────────────
     // Quiet IPC: missing optional remote commands must not log per publish.
     // Reads return data/null; mutations return {ok, value | error}.
@@ -5372,19 +5381,12 @@
       await _switchToSession(id);
     },
 
-    /** List saved sessions on disk for the active tab's profile
-     *  (`~/.omp/agent/sessions`, or `~/.omp/profiles/<id>/agent/sessions`).
-     *  Scoping to the tab's own profile is required, not cosmetic: a resume
-     *  path is validated server-side against that profile's sessions root,
-     *  so listing another profile's history here would offer entries this
-     *  tab cannot resume. */
+    /** List saved sessions across configured profiles. Each row carries its
+     *  owning profile for recovery; browsing never changes the active tab. */
     async listSavedSessions(cwd = null) {
       const sessions = await _invokeSafe(
         "list_saved_sessions",
-        {
-          cwd: cwd || null,
-          profile: _activeProfileId(),
-        },
+        { cwd: cwd || null },
         [],
       );
       return sessions || [];
@@ -5420,17 +5422,16 @@
       });
     },
 
-    /** Resume a saved session under the active tab's profile (the profile
-     *  whose sessions directory the entry was listed from). A tab already
-     *  running that conversation in this profile is focused instead of
-     *  spawning a second process onto the same `.jsonl`. Returns the tab id,
-     *  null if `session` doesn't reference a valid saved-session path, or
-     *  rejects if the resolved profile no longer exists on the backend (see
-     *  `openSession`). The lookup is `findConversationTab`, proven by
-     *  `test-project-nav.mjs`. */
+    /** Resume in the saved row's originating profile, never the active tab's.
+     *  Focus an existing conversation tab instead of duplicating its process.
+     *  Missing paths return null; missing/unlisted profiles reject rather than
+     *  falling back to another profile. Native resume-path validation remains
+     *  scoped to that profile's sessions root. */
     async resumeSession(session) {
       if (!session || !session.path) return null;
-      const profile = _activeProfileId();
+      const profile = session.profile_id;
+      if (typeof profile !== "string" || !profile)
+        throw new Error("Saved session has no originating profile");
       const open = window.OMP_PROJECT_NAV.findConversationTab(
         [...sessionRegistry.values()],
         session.path,

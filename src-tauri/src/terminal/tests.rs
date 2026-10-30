@@ -30,7 +30,7 @@ static PLAIN_SHELL: LazyLock<String> = LazyLock::new(|| {
 });
 const SLOW: Duration = Duration::from_secs(20);
 /// Held by the tests that start dozens of shells and process-table scans
-/// (the lifecycle races) or time a grace period, so they never overlap.
+/// (the lifecycle races) or observe a grace period, so they never overlap.
 static LOAD_SENSITIVE: Mutex<()> = Mutex::new(());
 
 /// Remove the [`PLAIN_SHELL`] directories of test runs that have ended.
@@ -338,6 +338,10 @@ fn close_tab_kills_background_jobs() {
 /// leader runs (a real shell saves its history there).
 #[test]
 fn close_tab_hangs_up_the_shell_before_killing_it() {
+    // The trap must run within the real 200 ms grace, not under fixture stress.
+    let _quiet = LOAD_SENSITIVE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let dir = TempDir::new("terminal", "hup");
     let marker = dir.path().join("hung");
     let (manager, out) = open("hup");

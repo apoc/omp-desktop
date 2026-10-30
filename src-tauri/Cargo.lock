@@ -3889,8 +3889,10 @@ dependencies = [
 name = "omp-desktop"
 version = "0.12.1"
 dependencies = [
+ "async-io",
  "base64 0.22.1",
  "block2",
+ "futures-lite",
  "gix",
  "libc",
  "notify",

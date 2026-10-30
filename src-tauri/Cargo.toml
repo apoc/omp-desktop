@@ -16,7 +16,8 @@ tauri-plugin-dialog = "2"
 # 2.13: `check()` no longer sets SSL_CERT_FILE/SSL_CERT_DIR process-wide on
 # Linux, which every omp child would have inherited.
 tauri-plugin-updater = "2.13"
-serde = { version = "1", features = ["derive"] }
+# `rc`: IPC and events share immutable keep-awake snapshots without deep copies.
+serde = { version = "1", features = ["derive", "rc"] }
 # `raw_value`: the conversation tree skips message bodies it does not read.
 serde_json = { version = "1", features = ["raw_value"] }
 notify = "8"
@@ -54,6 +55,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_JobObjects",
     # WTS session flags: the screen-lock probe (`remote/lock.rs`).
     "Win32_System_RemoteDesktop",
+    "Win32_System_Power",
     "Win32_System_Threading",
 ] }
 # Machine/user PATH for omp and git children (`child_path.rs`, #34). Already
@@ -83,6 +85,10 @@ objc2-user-notifications = { version = "0.3", default-features = false, features
 # Linux: logind's `LockedHint` over the system bus.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+# Bound idle-inhibition connection, handshake and D-Bus calls. Both are
+# already in the lockfile through zbus.
+async-io = "2"
+futures-lite = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
