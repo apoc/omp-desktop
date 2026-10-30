@@ -8,13 +8,27 @@
   // spark there, left to the trail fade like the rain itself.
   const LENS_RADIUS = 120;
   const LENS_SPARKS = 5;
+  // Logo: the default glow; a letter block the rain passes through flashes
+  // brighter and fades back over a few steps, more readily under the
+  // pointer. Nothing is drawn over the letters but the flash itself.
+  const FLASH_STEPS = 4;
+  const FLASH_ALPHA = 0.32;
+  const HEAD_FLASH = 0.5;         // chance a drop head inside the logo lights its block
+  const LENS_FLASH = 0.06;        // per-step chance of a block right under the pointer
+  // The flash lightens: toward fg on a dark theme, toward bg on a light one
+  // (a darkening flash on daylight reads as a dead pixel). Theme colours
+  // are #rrggbb tokens; anything else counts as dark.
+  const isLight = (hex) => /^#[0-9a-f]{6}$/i.test(hex)
+    && (0.299 * parseInt(hex.slice(1, 3), 16) + 0.587 * parseInt(hex.slice(3, 5), 16) + 0.114 * parseInt(hex.slice(5, 7), 16)) > 140;
   (window.OMP_BACKDROP_RENDERERS ??= {}).matrix = {
     stepMs: 55,                  // ~18 steps/s: reads as rain, costs little
     plate: false,
     create(env) {
-      const { initDrops } = window.OMP_MATRIX;
+      const { initDrops, LOGO_COLS } = window.OMP_MATRIX;
       const rows = Math.ceil(env.height / RAIN_FONT);
-      return { rows, drops: initDrops(Math.ceil(env.width / RAIN_FONT), rows, env.rand), fresh: true };
+      const cellAt = new Map();
+      env.logo?.cells.forEach((c, i) => cellAt.set(c.row * LOGO_COLS + c.col, i));
+      return { rows, drops: initDrops(Math.ceil(env.width / RAIN_FONT), rows, env.rand), fresh: true, cellAt, flash: new Map() };
     },
     step(ctx, s, env, theme) {
       const { stepDrops, randomGlyph } = window.OMP_MATRIX;
@@ -51,6 +65,37 @@
         }
       }
       stepDrops(s.drops, s.rows, env.rand);
+    },
+    logo(ctx, s, env, theme) {
+      const { LOGO_COLS } = window.OMP_MATRIX;
+      const { cells, paintDefault } = env.logo;
+      const { fit, pointer, rand } = env;
+      paintDefault(ctx);
+      const { w, h } = cells[0];
+      const light = (i) => { if (cells[i].solid) s.flash.set(i, FLASH_STEPS); };
+      // Drop heads (half a row above their stepped position) inside the logo.
+      for (let i = 0; i < s.drops.length; i++) {
+        const y = (s.drops[i] - 0.5) * RAIN_FONT;
+        if (y < fit.y || y >= fit.y + fit.height || rand() > HEAD_FLASH) continue;
+        const col = Math.floor(((i + 0.5) * RAIN_FONT - fit.x) / w);
+        const at = s.cellAt.get(Math.floor((y - fit.y) / h) * LOGO_COLS + col);
+        if (at !== undefined) light(at);
+      }
+      if (pointer.strength > 0) {
+        const { proximity } = window.OMP_BACKDROPS;
+        const radius = fit.font * 8;
+        cells.forEach((c, i) => {
+          if (rand() < LENS_FLASH * pointer.strength * proximity(pointer.x, pointer.y, c.x + w / 2, c.y + h / 2, radius)) light(i);
+        });
+      }
+      ctx.fillStyle = isLight(theme.bg) ? theme.bg : theme.fg;
+      for (const [i, left] of s.flash) {
+        const c = cells[i];
+        ctx.globalAlpha = FLASH_ALPHA * (left / FLASH_STEPS);
+        ctx.fillRect(c.x, c.y, w, h);
+        if (left <= 1) s.flash.delete(i);
+        else s.flash.set(i, left - 1);
+      }
     },
   };
 })();

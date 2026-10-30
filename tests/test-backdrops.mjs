@@ -188,6 +188,35 @@ check("pickCluster: a clear cluster, never the last one, any other when all are 
   for (let n = 0; n < 50; n++) assert.notEqual(B.pickCluster(hidden, logo, 0, rand), 0);
 });
 
+check("logo cloud: every shadow edge has arms; dots stay in their cell, some tinted", () => {
+  const m = {};
+  // eslint-disable-next-line no-new-func
+  new Function("window", readFileSync(join(root, "src/app/matrix-rain.js"), "utf8"))(m);
+  const cells = m.OMP_MATRIX.logoCells({ x: 0, y: 0, width: 910, height: 120 });
+  for (const c of cells) if (!c.solid) assert.ok(B.EDGE_ARMS[c.ch], c.ch);
+  const solid = cells.filter(c => c.solid);
+  const dots = B.logoDots(solid, seeded(9), { perCell: 2 });
+  assert.equal(dots.length, solid.length * 2);
+  dots.forEach((d, i) => {
+    const c = solid[i >> 1];
+    assert.ok(Math.abs(d.x - (c.x + c.w / 2)) < c.w && d.y > c.y - c.h / 2 && d.y < c.y + c.h * 1.5);
+    assert.ok(d.z >= -1 && d.z <= 1 && d.tint >= -1 && d.tint < B.CLUSTERS.length);
+  });
+  const tinted = dots.filter(d => d.tint >= 0).length / dots.length;
+  assert.ok(tinted > 0.03 && tinted < 0.15, String(tinted));
+});
+
+check("segmentDist and driftAt", () => {
+  assert.equal(B.segmentDist(5, 3, 0, 0, 10, 0), 3);
+  assert.equal(B.segmentDist(-4, 3, 0, 0, 10, 0), 5);
+  assert.equal(B.segmentDist(3, 4, 0, 0, 0, 0), 5);
+  const { out, hold, back } = B.DRIFT;
+  assert.equal(B.driftAt(0), 0);
+  assert.equal(B.driftAt(out + 1), 1);
+  assert.equal(B.driftAt(out + hold + back), 0);
+  assert.ok(B.driftAt(out / 2) > 0 && B.driftAt(out + hold + back / 2) < 1);
+});
+
 // ── next token ──
 
 check("tokenize is lossless and splits code into tokens", () => {
@@ -320,6 +349,21 @@ check("logRoom: full log under a roomy orbit, fewer lines as it closes in, none 
   assert.ok(tight >= 2 && tight < 5, String(tight));
   assert.equal(B.logRoom(300, { cx: 300, cy: 150, rx: 280, ry: 140 }), 0);
   assert.equal(B.logRoom(720, { cx: 150, cy: 360, rx: 100, ry: 100 }), 0);  // log would reach past the centre
+});
+
+check("logoSweep: dark before and after, a band crossing left to right, leaning", () => {
+  for (const k of [0, 1, -0.2, 1.5]) assert.equal(B.logoSweep(45, 3, k), 0);
+  // Every cell is dark at both ends of the sweep, lit exactly once mid-way.
+  for (const col of [0, 45, 90]) for (const row of [0, 5]) {
+    assert.equal(B.logoSweep(col, row, 0.001), 0);
+    assert.equal(B.logoSweep(col, row, 0.999), 0);
+    const peak = Math.max(...Array.from({ length: 200 }, (_, i) => B.logoSweep(col, row, i / 200)));
+    assert.ok(peak > 0.9 && peak <= 1, `${col},${row}: ${peak}`);
+  }
+  // Left lights before right; the bottom row leads the top (the band leans).
+  const firstLit = (col, row) => Array.from({ length: 200 }, (_, i) => B.logoSweep(col, row, i / 200)).findIndex(w => w > 0.5);
+  assert.ok(firstLit(10, 3) < firstLit(80, 3));
+  assert.ok(firstLit(45, 5) < firstLit(45, 0));
 });
 
 check("pullToward: no pull at rest, towards the well, weaker farther, never past it", () => {

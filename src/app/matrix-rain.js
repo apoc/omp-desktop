@@ -44,6 +44,20 @@
     return { font, x: (width - w) / 2, y: (height - h) / 2, width: w, height: h };
   }
 
+  /** Every drawn cell of the fitted logo, in canvas px: `solid` for the
+   *  letters' █ blocks, else a box-drawing edge of their shadow. Lets a
+   *  start screen draw the logo in its own style (design/backdrops/). */
+  function logoCells(fit) {
+    const w = fit.width / LOGO_COLS, h = fit.height / LOGO_ROWS;
+    const cells = [];
+    LOGO.forEach((line, row) => {
+      [...line].forEach((ch, col) => {
+        if (ch !== " ") cells.push({ ch, solid: ch === "█", col, row, x: fit.x + col * w, y: fit.y + row * h, w, h });
+      });
+    });
+    return cells;
+  }
+
   /** One drop per rain column, each at a random row above the top edge so
    *  the columns don't start in lockstep. */
   function initDrops(columns, rows, rand) {
@@ -66,5 +80,5 @@
     return GLYPHS[Math.floor(rand() * GLYPHS.length)];
   }
 
-  window.OMP_MATRIX = { LOGO, LOGO_COLS, LOGO_ROWS, GLYPHS, fitLogo, initDrops, stepDrops, randomGlyph };
+  window.OMP_MATRIX = { LOGO, LOGO_COLS, LOGO_ROWS, GLYPHS, fitLogo, logoCells, initDrops, stepDrops, randomGlyph };
 })();

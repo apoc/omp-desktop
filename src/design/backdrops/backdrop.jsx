@@ -8,16 +8,25 @@
    screen tiles (logo off, live previews).
 
    Renderer contract (plain-script IIFEs, looked up when the effect runs):
-     { stepMs, plate, create(env) → state, step(ctx, state, env, theme) }
+     { stepMs, plate, create(env) → state, step(ctx, state, env, theme),
+       logo?(ctx, state, env, theme) }
    - `create` runs on every layout (resize, scale-factor change, screen or
      logo switch) and returns the renderer's own state.
    - `step` advances one step and paints the whole canvas in CSS px (the
      host has set the dpr transform); it owns the background.
    - `plate`: the host lays a soft background plate under the logo, for
      screens busy enough to fight with it.
-   - env: { width, height, fit (logo rect or null), compact (a small
+   - env: { width, height, fit (logo rect or null), logo, compact (a small
      preview tile), rand, pointer }; theme: readTheme below, re-read every
      step so a theme switch applies live.
+   - `logo` (optional): paints the OMP-DESKTOP logo in the screen's own
+     style, every step after `step` (and after the plate). Without it the
+     host paints the default: the accent glyphs with their glow.
+     env.logo (null when there is no logo): { cells, paintDefault(ctx) }.
+     `cells` (OMP_MATRIX.logoCells): every drawn cell in canvas px, `solid`
+     for the letters' █ blocks, else a box-drawing shadow edge.
+     `paintDefault(ctx)` draws the default logo (cached; honours
+     ctx.globalAlpha), for a style that builds on it.
    - env.pointer: { x, y, strength } in CSS px of the canvas. `strength`
      (0..1) eases up while the mouse moves over the canvas and back down
      once it rests (~1.2 s) or leaves; renderers scale a subtle reaction
@@ -27,7 +36,7 @@
    change.
    ═════════════════════════════════════════════════════════════════════ */
 
-const { LOGO: _BD_LOGO, fitLogo: _BD_fitLogo } = window.OMP_MATRIX;
+const { LOGO: _BD_LOGO, fitLogo: _BD_fitLogo, logoCells: _BD_logoCells } = window.OMP_MATRIX;
 
 const _BD_STILL_STEPS = 90;
 const _BD_POINTER_REST_MS = 1200;
@@ -46,38 +55,49 @@ function _BD_readTheme(el) {
 
 const _BD_themeKey = (theme) => Object.values(theme).join("|");
 
-/** Pre-render the logo (with its glow, and the plate under it) once per
- *  size/theme: shadowBlur on ~400 glyphs every frame would dominate the
- *  frame budget. */
-function _BD_renderLogo(fit, theme, dpr, plate) {
-  const pad = Math.ceil(fit.font * (plate ? 4 : 1));
+/** Offscreen canvas around the logo rect, `pad` px of room for blur. */
+function _BD_logoCanvas(fit, dpr, pad, paint) {
   const canvas = document.createElement("canvas");
   canvas.width = Math.ceil((fit.width + pad * 2) * dpr);
   canvas.height = Math.ceil((fit.height + pad * 2) * dpr);
   const ctx = canvas.getContext("2d");
   ctx.scale(dpr, dpr);
-  if (plate) {
+  paint(ctx);
+  return { canvas, pad };
+}
+
+/** The soft background plate under the logo, pre-rendered per size/theme. */
+function _BD_renderPlate(fit, theme, dpr) {
+  const pad = Math.ceil(fit.font * 4);
+  return _BD_logoCanvas(fit, dpr, pad, ctx => {
     const m = fit.font * 1.5;
     ctx.fillStyle = theme.bg;
     ctx.shadowColor = theme.bg;
     ctx.shadowBlur = fit.font * 2.5;
     ctx.globalAlpha = 0.86;
     ctx.fillRect(pad - m, pad - m, fit.width + m * 2, fit.height + m * 2);
-    ctx.globalAlpha = 1;
-  }
-  ctx.font = `${fit.font}px ${theme.mono}`;
-  ctx.textBaseline = "top";
-  ctx.fillStyle = theme.accent;
-  ctx.shadowColor = theme.glow;
-  ctx.shadowBlur = fit.font * 0.8;
-  const cellW = fit.width / _BD_LOGO[0].length;
-  const cellH = fit.height / _BD_LOGO.length;
-  _BD_LOGO.forEach((row, r) => {
-    for (let c = 0; c < row.length; c++) {
-      if (row[c] !== " ") ctx.fillText(row[c], pad + c * cellW, pad + r * cellH);
-    }
   });
-  return { canvas, pad };
+}
+
+/** The default logo (accent glyphs with their glow), pre-rendered once per
+ *  size/theme: shadowBlur on ~400 glyphs every frame would dominate the
+ *  frame budget. */
+function _BD_renderGlyphs(fit, theme, dpr) {
+  const pad = Math.ceil(fit.font);
+  return _BD_logoCanvas(fit, dpr, pad, ctx => {
+    ctx.font = `${fit.font}px ${theme.mono}`;
+    ctx.textBaseline = "top";
+    ctx.fillStyle = theme.accent;
+    ctx.shadowColor = theme.glow;
+    ctx.shadowBlur = fit.font * 0.8;
+    const cellW = fit.width / _BD_LOGO[0].length;
+    const cellH = fit.height / _BD_LOGO.length;
+    _BD_LOGO.forEach((row, r) => {
+      for (let c = 0; c < row.length; c++) {
+        if (row[c] !== " ") ctx.fillText(row[c], pad + c * cellW, pad + r * cellH);
+      }
+    });
+  });
 }
 
 function Backdrop({ screen, logo = true, className }) {
@@ -91,8 +111,17 @@ function Backdrop({ screen, logo = true, className }) {
     if (!ctx || !renderer) return undefined;
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     const pointer = { x: 0, y: 0, strength: 0 };
-    const env = { width: 0, height: 0, fit: null, compact: false, rand: Math.random, pointer };
-    let dpr = 1, state = null, logoImg = null, themeKey = "", raf = 0, last = 0;
+    const env = { width: 0, height: 0, fit: null, logo: null, compact: false, rand: Math.random, pointer };
+    let dpr = 1, state = null, themeKey = "", raf = 0, last = 0;
+    let theme = null, plateImg = null, glyphImg = null;
+    const drawLogoImg = (target, img) => {
+      const { fit } = env;
+      target.drawImage(img.canvas, fit.x - img.pad, fit.y - img.pad, img.canvas.width / dpr, img.canvas.height / dpr);
+    };
+    const paintDefault = (target) => {
+      glyphImg ??= _BD_renderGlyphs(env.fit, theme, dpr);
+      drawLogoImg(target, glyphImg);
+    };
     let inside = false, movedAt = -Infinity, easedAt = 0;
 
     const layout = () => {
@@ -103,6 +132,7 @@ function Backdrop({ screen, logo = true, className }) {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       env.compact = env.height < 160 || env.width < 260;
       env.fit = null;
+      env.logo = null;
       if (logo) {
         // Monospace: one measurement per 1px of font size covers every cell.
         ctx.font = `100px ${_BD_readTheme(canvas).mono}`;
@@ -110,6 +140,7 @@ function Backdrop({ screen, logo = true, className }) {
         const cellW = m.width / 100;
         const cellH = ((m.actualBoundingBoxAscent ?? 80) + (m.actualBoundingBoxDescent ?? 20)) / 100;
         env.fit = _BD_fitLogo(env.width, env.height, { cellW, cellH });
+        if (env.fit) env.logo = { cells: _BD_logoCells(env.fit), paintDefault };
       }
       state = renderer.create(env);
       themeKey = "";  // force a logo re-render on the next step
@@ -138,18 +169,24 @@ function Backdrop({ screen, logo = true, className }) {
       // not the CSS size, so the ResizeObserver never fires for it.
       if ((window.devicePixelRatio || 1) !== dpr) layout();
       easePointer(performance.now());
-      const theme = _BD_readTheme(canvas);
+      theme = _BD_readTheme(canvas);
       const key = _BD_themeKey(theme);
       if (key !== themeKey) {
         themeKey = key;
-        logoImg = env.fit ? _BD_renderLogo(env.fit, theme, dpr, renderer.plate) : null;
+        plateImg = env.fit && renderer.plate ? _BD_renderPlate(env.fit, theme, dpr) : null;
+        glyphImg = null;  // re-rendered on first use
       }
       ctx.save();
       renderer.step(ctx, state, env, theme);
       ctx.restore();
-      if (logoImg) {
-        const { fit } = env;
-        ctx.drawImage(logoImg.canvas, fit.x - logoImg.pad, fit.y - logoImg.pad, logoImg.canvas.width / dpr, logoImg.canvas.height / dpr);
+      if (!env.fit) return;
+      if (plateImg) drawLogoImg(ctx, plateImg);
+      if (renderer.logo) {
+        ctx.save();
+        renderer.logo(ctx, state, env, theme);
+        ctx.restore();
+      } else {
+        paintDefault(ctx);
       }
     };
 

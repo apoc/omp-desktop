@@ -85,7 +85,18 @@
     return call.ok ? `${head}  ✓ ${call.secs.toFixed(1)}s` : `${head}  ✗ exit 1`;
   }
 
+  /** The "thinking" sweep across the logo at turn start: a soft band of
+   *  light at progress `k` (0..1) crossing the letters left to right, leaning
+   *  like a scanline. Weight (0..1) of the cell at `col`, `row` of a
+   *  `cols` × `rows` logo; 0 outside the band and outside 0 < k < 1. */
+  function logoSweep(col, row, k, { cols = 91, rows = 6, band = 5, slant = 1.6 } = {}) {
+    if (!(k > 0 && k < 1)) return 0;
+    const pos = -band * 3 + k * (cols + (rows - 1) * slant + band * 6);
+    const d = (col + (rows - 1 - row) * slant - pos) / band;
+    return d > -2.5 && d < 2.5 ? Math.exp(-d * d) : 0;
+  }
+
   Object.assign(window.OMP_BACKDROPS, {
-    TOOLS, orbitRadii, ellipsePoint, nextCall, nextTurn, callSpans, callPhase, logLine, logRoom,
+    TOOLS, orbitRadii, ellipsePoint, nextCall, nextTurn, callSpans, callPhase, logLine, logRoom, logoSweep,
   });
 })();

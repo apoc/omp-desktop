@@ -5,7 +5,7 @@
 // `window.OMP_BACKDROPS` (app/backdrops.js, which must load first). Drawing:
 // design/backdrops/latent.js. Pure, covered by test-backdrops.mjs.
 (function () {
-  const { gauss } = window.OMP_BACKDROPS;
+  const { gauss, easeInOut } = window.OMP_BACKDROPS;
 
   // One semantic neighbourhood per cluster; a query lands near the cluster
   // whose index it names.
@@ -160,8 +160,55 @@
     return pool[Math.floor(rand() * pool.length)];
   }
 
+  // ── the logo as a point cloud ──
+
+  /** Each box-drawing shadow edge as the arms it sends out of its cell's
+   *  centre (left, right, up, down): drawn as hairline links. */
+  const EDGE_ARMS = Object.freeze({ "═": "lr", "║": "ud", "╗": "ld", "╝": "lu", "╚": "ru", "╔": "rd" });
+
+  /** The logo's letters as embedded points: `perCell` dots stacked down
+   *  each solid cell (logoCells, `solid` only), jittered a little in the
+   *  plane, each with a depth `z` in [-1, 1] and a `tint`: a cluster index
+   *  for about a `tinted` share of them, else -1 (the accent). */
+  function logoDots(cells, rand, { perCell = 2, jitter = 0.14, tinted = 0.07 } = {}) {
+    const dots = [];
+    for (const c of cells) {
+      const h = c.h / perCell;
+      for (let k = 0; k < perCell; k++) {
+        dots.push({
+          x: c.x + c.w / 2 + gauss(rand) * jitter * c.w,
+          y: c.y + h * (k + 0.5) + gauss(rand) * jitter * h,
+          z: Math.max(-1, Math.min(1, gauss(rand) * 0.45)),
+          tint: rand() < tinted ? Math.floor(rand() * CLUSTERS.length) : -1,
+        });
+      }
+    }
+    return dots;
+  }
+
+  /** Distance from (px, py) to the segment a–b. */
+  function segmentDist(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+    const t = len2 > 0 ? Math.min(1, Math.max(0, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0;
+    return Math.hypot(px - ax - dx * t, py - ay - dy * t);
+  }
+
+  // A logo dot drifting off: out, a pause, then back home, in steps.
+  const DRIFT = Object.freeze({ out: 36, hold: 14, back: 56 });
+
+  /** How far out a drifting dot is `age` steps into its drift: 0 at home,
+   *  1 at the far end, eased both ways; 0 before and after. */
+  function driftAt(age) {
+    const { out, hold, back } = DRIFT;
+    if (age <= 0 || age >= out + hold + back) return 0;
+    if (age < out) return easeInOut(age / out);
+    if (age < out + hold) return 1;
+    return 1 - easeInOut((age - out - hold) / back);
+  }
+
   Object.assign(window.OMP_BACKDROPS, {
     CLUSTERS, QUERIES, clusterCentres, makeCloud, rotate, project, nearest,
     projectCloud, depthOrder, retrieve, RETRIEVAL, retrievalAt, pickCluster,
+    EDGE_ARMS, logoDots, segmentDist, DRIFT, driftAt,
   });
 })();

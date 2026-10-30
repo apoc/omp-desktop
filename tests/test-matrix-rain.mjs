@@ -63,6 +63,19 @@ check("no logo when the area is too small or unmeasured", () => {
   assert.equal(M.fitLogo(800, 600, { cellW: 0, cellH: 1.2 }), null);
 });
 
+check("logo cells cover every drawn glyph, inside the fitted rect", () => {
+  const fit = M.fitLogo(1200, 900, CELL);
+  const cells = M.logoCells(fit);
+  const drawn = M.LOGO.join("").replace(/ /g, "");
+  assert.equal(cells.length, [...drawn].length);
+  assert.equal(cells.filter(c => c.solid).length, [...drawn].filter(ch => ch === "█").length);
+  for (const c of cells) {
+    assert.equal([...M.LOGO[c.row]][c.col], c.ch);
+    assert.ok(c.x >= fit.x - 1e-9 && c.x + c.w <= fit.x + fit.width + 1e-9);
+    assert.ok(c.y >= fit.y - 1e-9 && c.y + c.h <= fit.y + fit.height + 1e-9);
+  }
+});
+
 check("drops start at or above the top edge, one per column", () => {
   let i = 0;
   const seq = [0, 0.5, 0.99];

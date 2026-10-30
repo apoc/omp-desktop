@@ -141,6 +141,11 @@
         ? { x: x0, y: y0, w: Math.max(...keep.map(r => r.x + r.w)) - x0, h: Math.max(...keep.map(r => r.y + r.h)) - y0 }
         : null;
       newQuery(s, rand, PITCH);
+      // The logo (design/backdrops/latent-logo.js) and its view of the
+      // frame: the lean, the query point and where its retrieval stands
+      // (set by `step`).
+      s.mark = window.OMP_LATENT_LOGO.makeMark(env, rand, CLUSTER_COLOURS);
+      s.sway = 0; s.pitch = PITCH; s.qx = 0; s.qy = 0; s.at = null; s.hits = null; s.landAge = -1;
       return s;
     },
     step(ctx, s, env, theme) {
@@ -160,6 +165,7 @@
       s.tiltPitch += (leanPitch - s.tiltPitch) * 0.06;
       const yaw = s.yaw + s.tiltYaw;
       const pitch = PITCH + Math.sin(s.steps * 0.0041) * 0.1 - s.tiltPitch;
+      s.pitch = pitch; s.sway = pitch - PITCH;
       const { points } = s.cloud;
       const P = s.proj, D = s.dustProj, lens = s.lens;
       B.projectCloud(points, yaw, pitch, s.cx, s.cy, s.scale, P);
@@ -335,10 +341,16 @@
       // Last, so the cloud passes behind it rather than through the text.
       if (s.box) drawSearchBox(ctx, s, at, theme);
 
+      s.qx = qx; s.qy = qy; s.at = at; s.hits = query.hits;
+      s.landAge = at.fly >= 1 ? s.t - landedAt : -1;
+
       if (++s.t >= R.cycle) {
         s.t = 0;
         newQuery(s, env.rand, pitch);
       }
+    },
+    logo(ctx, s, env, theme) {
+      window.OMP_LATENT_LOGO.paint(ctx, s, env, theme);
     },
   };
 })();

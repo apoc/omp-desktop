@@ -402,13 +402,16 @@
        (tab-group-chip.jsx) and window.OMP_PROJECT_NAV at top level. -->
   <script type="text/babel" src="design/project-sidebar.jsx"></script>
   <!-- Start screens: one renderer per screen (plain IIFEs registering on
-       window.OMP_BACKDROP_RENDERERS, read when the canvas effect runs),
-       then the canvas host window.Backdrop, which destructures
-       window.OMP_MATRIX at top level. empty-workspace.jsx destructures
-       window.Backdrop, window.MarkdownContent and window.OMP_BACKDROPS at
-       top level; settings/controls.jsx reads window.Backdrop at render. -->
+       window.OMP_BACKDROP_RENDERERS, read when the canvas effect runs; the
+       latent screen's logo lives in latent-logo.js, window.OMP_LATENT_LOGO,
+       which latent.js reads at call time), then the canvas host
+       window.Backdrop, which destructures window.OMP_MATRIX at top level.
+       empty-workspace.jsx destructures window.Backdrop,
+       window.MarkdownContent and window.OMP_BACKDROPS at top level;
+       settings/controls.jsx reads window.Backdrop at render. -->
   <script src="design/backdrops/matrix.js"></script>
   <script src="design/backdrops/latent.js"></script>
+  <script src="design/backdrops/latent-logo.js"></script>
   <script src="design/backdrops/sampling.js"></script>
   <script src="design/backdrops/orbit.js"></script>
   <script src="design/backdrops/neural.js"></script>

@@ -11,6 +11,12 @@
   const HOLD = 90;         // a finished snippet stays this long...
   const FADE = 24;         // ...then fades out
   const KIND_COLOUR = { keyword: "lilac", call: "cyan", string: "amber", number: "rose", ident: "fg", punct: "fg3" };
+  // The logo is editor text: typed in as accepted ghost text on create, and
+  // re-run by the cursor (a quick reformat sweep) whenever a snippet starts.
+  const TYPE_DELAY = 6;    // steps before the logo starts typing
+  const TYPE_RATE = 1.6;   // logo columns typed per step (all 91 in ~2 s)
+  const SWEEP_RATE = 3.2;  // columns per step of the snippet-start sweep
+  const GHOST = 0.22;      // alpha of the not-yet-typed logo
 
   const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
   const easeOut = (t) => 1 - (1 - t) ** 3;
@@ -24,7 +30,7 @@
     s.toks.forEach((t, i) => { if (t.kind === "ident" && s.toks[i + 1]?.tok === "(") t.kind = "call"; });
     s.words = s.toks.filter(t => t.kind !== "space").length;
     s.born = new Float64Array(s.toks.length).fill(-1e9);
-    s.idx = 0; s.phase = "gen"; s.t = 0; s.scroll = 0; s.cand = null;
+    s.idx = 0; s.phase = "gen"; s.t = 0; s.scroll = 0; s.cand = null; s.sweepAt = s.n;
   }
 
   /** Commit whitespace instantly, then draw the candidates for the next word. */
@@ -273,6 +279,97 @@
     });
   }
 
+  /** The logo as editor text, pre-rendered per size/dpr/theme: solid █
+   *  cells in the accent (with its glow), box-drawing edges as punctuation
+   *  in a syntax colour. */
+  function logoImage(s, env, theme) {
+    const dpr = window.devicePixelRatio || 1, key = `${dpr}|${Object.values(theme).join("|")}`;
+    if (s.logoImg?.key === key) return s.logoImg;
+    const { fit, logo } = env, pad = Math.ceil(fit.font);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil((fit.width + pad * 2) * dpr);
+    canvas.height = Math.ceil((fit.height + pad * 2) * dpr);
+    const c = canvas.getContext("2d");
+    c.scale(dpr, dpr);
+    c.font = `${fit.font}px ${theme.mono}`;
+    c.textBaseline = "top";
+    const at = (cell) => [pad + cell.x - fit.x, pad + cell.y - fit.y];
+    c.fillStyle = theme.lilac; c.globalAlpha = 0.9;
+    for (const cell of logo.cells) if (!cell.solid) c.fillText(cell.ch, ...at(cell));
+    c.fillStyle = theme.accent; c.globalAlpha = 1;
+    c.shadowColor = theme.glow; c.shadowBlur = fit.font * 0.8;
+    for (const cell of logo.cells) if (cell.solid) c.fillText(cell.ch, ...at(cell));
+    return (s.logoImg = { key, canvas, pad, dpr });
+  }
+
+  /** Columns [from, to) of the pre-rendered logo, `from`'s left and `to`'s
+   *  right side extended into the glow padding at the logo's ends. */
+  function drawColumns(ctx, img, fit, cellW, from, to) {
+    const { canvas, pad, dpr } = img;
+    const x0 = from <= 0 ? 0 : pad + from * cellW;
+    const x1 = to >= window.OMP_MATRIX.LOGO_COLS ? canvas.width / dpr : pad + to * cellW;
+    if (x1 <= x0) return;
+    ctx.drawImage(canvas, x0 * dpr, 0, (x1 - x0) * dpr, canvas.height,
+      fit.x - pad + x0, fit.y - pad, x1 - x0, canvas.height / dpr);
+  }
+
+  function drawLogo(ctx, s, env, theme) {
+    const { fit } = env, cols = window.OMP_MATRIX.LOGO_COLS, img = logoImage(s, env, theme);
+    const cellW = fit.width / cols, m = fit.font * 1.5;
+    // Typed so far (create), and the sweep's position (snippet start).
+    const typed = clamp(Math.floor((s.n - TYPE_DELAY) * TYPE_RATE), 0, cols);
+    const sweep = (s.n - s.sweepAt) * SWEEP_RATE;
+    const sweeping = typed === cols && sweep < cols;
+    const edge = typed < cols ? typed : sweeping ? Math.floor(sweep) : cols;
+    // The logo is the current line: a faint line highlight behind it.
+    ctx.globalAlpha = 0.06; ctx.fillStyle = theme.accent;
+    ctx.fillRect(fit.x - m, fit.y - fit.font * 0.5, fit.width + m * 2, fit.height + fit.font);
+    // Cell edges on device pixels, so neighbouring translucent cells don't seam.
+    const dpr = img.dpr, px = (v) => Math.round(v * dpr) / dpr, rows = window.OMP_MATRIX.LOGO_ROWS;
+    const cellH = fit.height / rows, colX = (col) => px(fit.x + col * cellW), rowY = (row) => px(fit.y + row * cellH);
+    // Pointer: a soft selection around the hovered letters, seen in the gaps.
+    const p = env.pointer;
+    if (p?.strength > 0.01) {
+      const r = fit.font * 7, c0 = Math.floor((p.x - r - fit.x) / cellW), c1 = Math.ceil((p.x + r - fit.x) / cellW);
+      ctx.fillStyle = theme.accent;
+      for (let col = Math.max(0, c0); col < Math.min(cols, c1); col++) {
+        for (let row = 0; row < rows; row++) {
+          const lens = lensAt(p, fit.x + (col + 0.5) * cellW, fit.y + (row + 0.5) * cellH, r);
+          if (lens < 0.01) continue;
+          ctx.globalAlpha = 0.2 * lens;
+          ctx.fillRect(colX(col), rowY(row), colX(col + 1) - colX(col), rowY(row + 1) - rowY(row));
+        }
+      }
+    }
+    // Freshly written columns stay lit a moment, like a committed token:
+    // behind the typing, or behind the latest sweep once typing is done.
+    const swept = s.sweepAt > TYPE_DELAY + cols / TYPE_RATE;
+    const origin = swept ? s.sweepAt : TYPE_DELAY, rate = swept ? SWEEP_RATE : TYPE_RATE;
+    const head = swept ? Math.min(cols, Math.floor(sweep)) : typed;
+    ctx.fillStyle = theme.accent;
+    for (let col = Math.max(0, Math.floor(head - FLASH * rate)); col < head; col++) {
+      const age = s.n - (origin + (col + 1) / rate);
+      if (age >= FLASH) continue;
+      ctx.globalAlpha = 0.28 * (1 - age / FLASH);
+      ctx.fillRect(colX(col), fit.y - fit.font * 0.25, colX(col + 1) - colX(col), fit.height + fit.font * 0.5);
+    }
+    // Text: typed columns in full, the rest as inline ghost text.
+    ctx.globalAlpha = 1;
+    drawColumns(ctx, img, fit, cellW, 0, typed);
+    if (typed < cols) { ctx.globalAlpha = GHOST; drawColumns(ctx, img, fit, cellW, typed, cols); }
+    // Cursor: a block riding the edge while writing, then a caret parked
+    // after the logo that follows the editor's (steady while generating).
+    ctx.fillStyle = theme.accent;
+    if (edge < cols) {
+      ctx.globalAlpha = 0.6;
+      ctx.fillRect(fit.x + edge * cellW, fit.y - fit.font * 0.25, cellW, fit.height + fit.font * 0.5);
+    } else if (s.phase === "gen" || Math.floor(s.n / 15) % 2 === 0) {
+      ctx.globalAlpha = 0.75;
+      ctx.fillRect(fit.x + fit.width + cellW * 0.6, fit.y - fit.font * 0.25, Math.max(2, cellW * 0.45),
+        fit.height + fit.font * 0.5);
+    }
+  }
+
   (window.OMP_BACKDROP_RENDERERS ??= {}).sampling = {
     stepMs: STEP_MS,
     plate: true,           // the editor sits behind the logo when space is short
@@ -285,6 +382,7 @@
       s.toks.forEach((t, i) => { if (t.kind !== "space") words.push(i); });
       s.idx = words[Math.floor(words.length * (0.3 + env.rand() * 0.25))];
       next(s, env);
+      s.sweepAt = -1e9;  // the first snippet's logo is typed, not swept
       s.rate = 1000 / (s.len * STEP_MS);
       return s;
     },
@@ -299,6 +397,9 @@
       ctx.fillRect(0, 0, env.width, env.height);
       if (g.compact) drawCompact(ctx, s, env, theme);
       else drawFull(ctx, s, env, theme);
+    },
+    logo(ctx, s, env, theme) {
+      if (env.logo) drawLogo(ctx, s, env, theme);
     },
   };
 })();

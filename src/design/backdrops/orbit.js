@@ -16,6 +16,31 @@
   // Context dust: motes in a band around the track, inner ones faster
   // (Kepler-ish), so the screen keeps a quiet motion between calls.
   const DUST = 90, DUST_COMPACT = 26;
+  // The logo is the model: a light sweep crosses its letters as a turn
+  // starts (thinking), the letters facing a tool glint as a call leaves
+  // (faint) and as its result lands (cyan, rose on failure), and the ripple
+  // starts as an echo of the letters themselves.
+  const SWEEP_STEPS = 44;
+  const GLINT_STEPS = 40;
+  const ECHO_STEPS = 34;
+  const SWEEP_ALPHA = 0.7;
+
+  /** Offscreen copy of the logo in one colour (light glow, baked once per
+   *  size/dpr/theme): the source for the per-cell highlights and the echo. */
+  function logoLayer(fit, cells, font, colour, glow, dpr, pad) {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil((fit.width + pad * 2) * dpr);
+    canvas.height = Math.ceil((fit.height + pad * 2) * dpr);
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    ctx.font = font;
+    ctx.textBaseline = "top";
+    ctx.fillStyle = colour;
+    ctx.shadowColor = colour;
+    ctx.shadowBlur = glow;
+    for (const c of cells) ctx.fillText(c.ch, c.x - fit.x + pad, c.y - fit.y + pad);
+    return canvas;
+  }
 
   /** Control point bending C → P to one side (`dir` ±1): the out and back
    *  legs bend opposite ways, so every call draws a closed loop. */
@@ -70,6 +95,7 @@
   /** Issue the next turn: its calls launch staggered, and go to the log. */
   function startTurn(s, env) {
     const { nextTurn, callSpans } = window.OMP_BACKDROPS;
+    s.turnAt = s.n;
     nextTurn(env.rand).forEach((call, i) => {
       Object.assign(call, { start: s.n + i * STAGGER, spans: callSpans(call), dir: env.rand() < 0.5 ? 1 : -1, arrived: false });
       s.calls.push(call);
@@ -103,6 +129,7 @@
       }
       return {
         cx, cy, rx, ry, core, log, dust, n: 0, spin: rand() * TAU, calls: [], ripples: [], nextTurnAt: 4,
+        turnAt: -1e9, glints: [], layers: null,
         logLines: compact ? 0 : window.OMP_BACKDROPS.logRoom(height, { cx, cy, rx, ry }, { max: LOG_LINES }),
         nodes: [], flash: new Float64Array(8).fill(-1e9),
         from: { x: cx, y: cy }, ctrl: { x: 0, y: 0 },
@@ -170,6 +197,10 @@
         if (phase === "wait") continue;
         from.x = cx + Math.cos(node.a) * s.core.rx * 0.85;
         from.y = cy + Math.sin(node.a) * s.core.ry * 0.85;
+        if (!call.left) {
+          call.left = true;
+          s.glints.push({ born: s.n, x: from.x, y: from.y, tone: 0, power: 0.4 });
+        }
         if (phase === "out") {
           packet(ctx, from, bend(from, node, call.dir, ctrl), node, easeInOut(t), theme.accent, compact, pointer);
         } else if (phase === "exec") {
@@ -195,10 +226,14 @@
         } else {
           s.calls.splice(i, 1);
           s.ripples.push({ born: s.n, ok: call.ok });
+          s.glints.push({ born: s.n, x: from.x, y: from.y, tone: call.ok ? 1 : 2, power: 1 });
           const entry = s.log.find(e => e.call === call);
           if (entry) entry.done = true;
           if (!s.calls.length) s.nextTurnAt = s.n + 10 + env.rand() * 24;  // thinking
         }
+      }
+      for (let i = s.glints.length - 1; i >= 0; i--) {
+        if (s.n - s.glints[i].born >= GLINT_STEPS) s.glints.splice(i, 1);
       }
 
       // Ripples: the model reading a result, spreading out from the logo.
@@ -307,6 +342,68 @@
         ctx.globalAlpha = fade;
         ctx.fillStyle = theme.fg2;
         ctx.fillText(logLine(call, done), x + 13, y);
+      }
+    },
+
+    logo(ctx, s, env, theme) {
+      const { logoSweep, proximity, easeInOut } = window.OMP_BACKDROPS;
+      const { fit, logo, pointer } = env;
+      const { cells } = logo;
+      const dpr = ctx.getTransform().a || 1;
+      const key = `${fit.x}|${fit.y}|${fit.width}|${fit.height}|${dpr}|${theme.fg}|${theme.cyan}|${theme.rose}|${theme.mono}`;
+      if (s.layers?.key !== key) {
+        const pad = Math.ceil(fit.font);
+        const font = `${fit.font}px ${theme.mono}`;
+        const glow = fit.font * 0.35;
+        s.layers = {
+          key, pad,
+          tones: [theme.fg, theme.cyan, theme.rose].map(c => logoLayer(fit, cells, font, c, glow, dpr, pad)),
+          weights: [0, 1, 2].map(() => new Float32Array(cells.length)),
+        };
+      }
+      const { pad, tones, weights } = s.layers;
+      const lx = fit.x - pad, ly = fit.y - pad;
+      const lw = fit.width + pad * 2, lh = fit.height + pad * 2;
+      const mx = fit.x + fit.width / 2, my = fit.y + fit.height / 2;
+
+      // The echo: a result's ripple leaves as a copy of the letters
+      // swelling outward, behind the logo itself.
+      for (const r of s.ripples) {
+        const k = (s.n - r.born) / ECHO_STEPS;
+        if (k >= 1) continue;
+        const grow = 1 + 0.1 * easeInOut(k);
+        ctx.globalAlpha = 0.24 * (1 - k) * (1 - k);
+        ctx.drawImage(tones[r.ok ? 1 : 2], mx - (mx - lx) * grow, my - (my - ly) * grow, lw * grow, lh * grow);
+      }
+      ctx.globalAlpha = 1;
+      logo.paintDefault(ctx);
+
+      // Per-cell highlights: sweep and pointer (fg), glints by tone.
+      const sweepK = (s.n - s.turnAt) / SWEEP_STEPS;
+      const sx = fit.width * 0.2, sy = fit.height * 0.9;
+      const reach = fit.font * 9;
+      for (const w of weights) w.fill(0);
+      for (let i = 0; i < cells.length; i++) {
+        const c = cells[i];
+        const ccx = c.x + c.w / 2, ccy = c.y + c.h / 2;
+        let hot = SWEEP_ALPHA * logoSweep(c.col, c.row, sweepK);
+        if (pointer.strength) hot += 0.3 * pointer.strength * proximity(pointer.x, pointer.y, ccx, ccy, reach);
+        weights[0][i] = hot;
+        for (const g of s.glints) {
+          const k = (s.n - g.born) / GLINT_STEPS;
+          const fade = k < 0.15 ? k / 0.15 : ((1 - k) / 0.85) ** 2;
+          const dx = (ccx - g.x) / sx, dy = (ccy - g.y) / sy;
+          weights[g.tone][i] += g.power * fade * Math.exp(-(dx * dx + dy * dy));
+        }
+      }
+      for (let t = 0; t < tones.length; t++) {
+        const src = tones[t], w = weights[t];
+        for (let i = 0; i < cells.length; i++) {
+          if (w[i] < 0.03) continue;
+          const c = cells[i];
+          ctx.globalAlpha = Math.min(0.9, w[i]);
+          ctx.drawImage(src, (c.x - lx) * dpr, (c.y - ly) * dpr, c.w * dpr, c.h * dpr, c.x, c.y, c.w, c.h);
+        }
       }
     },
   };
