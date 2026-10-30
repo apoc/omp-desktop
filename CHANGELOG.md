@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-31
+
 ### Added
 
 - Five new start screens for the empty workspace, next to the matrix rain: **Latent space** (code-token embeddings rotating in 3-D, with semantic queries retrieving their nearest neighbours), **Next token** (code written token by token, the top-k candidates and their probabilities at the cursor), **Agent loop** (tool calls flying from the model to tools orbiting the logo and back) **Forward pass** (a neural network firing on a window of code and predicting the next token) and **Attention** (a transformer generating code: multi-head self-attention over the tokens so far, under a causal mask, through stacked blocks). Latent space is the new default; pick another in Settings → Appearance → Start screen, where every tile is a live preview. Each screen draws the OMP-DESKTOP logo in its own style: the rain makes letter blocks flash, the letters form an embedding point cloud, the logo is typed in like generated code, a light sweep and result flares run across it with each agent turn, or the letters are built from neuron dots that fire with the forward pass. All screens follow the theme and accent, react subtly to the mouse moving over them, and show a still frame under reduced motion.
