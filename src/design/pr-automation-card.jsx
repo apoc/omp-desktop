@@ -1,65 +1,26 @@
 // Shows the checked-out branch's PR; Auto-fix is explicitly opt-in.
 function PrAutomationCard({ automation, available = true, bridge }) {
   const [collapsed, setCollapsed] = React.useState(false);
-  const [menu, setMenu] = React.useState(null);
+  const [menuOpen, setMenuOpen] = React.useState(false);
   const [actionError, setActionError] = React.useState(null);
   const triggerRef = React.useRef(null);
-  const popRef = React.useRef(null);
-  const rootRef = React.useRef(null);
   const menuId = React.useId();
-  const descriptionId = React.useId();
   const pr = automation.snapshot;
-  // The menu is portaled out of the rail's scroll container.
-  rootRef.current = {
-    contains: (node) =>
-      triggerRef.current?.contains(node) || popRef.current?.contains(node),
-  };
   const close = (refocus = true) => {
-    setMenu(null);
+    setMenuOpen(false);
     if (refocus) triggerRef.current?.focus();
   };
-  window.usePopoverDismiss(!!menu, rootRef, () => close(false), close);
   React.useEffect(() => {
-    setMenu(null);
+    setMenuOpen(false);
     setActionError(null);
   }, [pr?.url]);
-  React.useEffect(() => {
-    if (!menu) return undefined;
-    popRef.current?.querySelector('[role="menuitem"]')?.focus();
-    const dismiss = (e) => {
-      if (e.type === "resize" || !popRef.current?.contains(e.target))
-        close(false);
-    };
-    window.addEventListener("resize", dismiss);
-    document.addEventListener("scroll", dismiss, true);
-    return () => {
-      window.removeEventListener("resize", dismiss);
-      document.removeEventListener("scroll", dismiss, true);
-    };
-  }, [menu]);
 
   const openMenu = () => {
-    if (menu) {
+    if (menuOpen) {
       close();
       return;
     }
-    const rect = triggerRef.current.getBoundingClientRect();
-    const below = window.innerHeight - rect.bottom - 12;
-    const above = rect.top - 12;
-    const position =
-      below < 280 && above > below
-        ? {
-            bottom: window.innerHeight - rect.top + 4,
-            maxHeight: Math.max(0, above),
-          }
-        : { top: rect.bottom + 4, maxHeight: Math.max(0, below) };
-    setMenu({
-      right: Math.max(
-        8,
-        Math.min(window.innerWidth - rect.right, window.innerWidth - 258),
-      ),
-      ...position,
-    });
+    setMenuOpen(true);
     setActionError(null);
   };
   /** Open `url` in the system browser; a failure shows under the card. */
@@ -106,6 +67,7 @@ function PrAutomationCard({ automation, available = true, bridge }) {
           <div className="pr-changes-row">
             <span
               className={`pr-changes-icon${pr.isDraft ? " draft" : ""}`}
+              role="img"
               aria-label={
                 pr.isDraft ? "Draft pull request" : "Open pull request"
               }
@@ -128,18 +90,18 @@ function PrAutomationCard({ automation, available = true, bridge }) {
             <button
               className="pr-changes-title"
               title={pr.title}
-              onClick={() => openUrl("")}
+              onClick={() => openExternal(pr.url)}
             >
               {pr.title}
             </button>
             <button
               ref={triggerRef}
-              className={`pr-changes-more${menu ? " active" : ""}`}
+              className={`pr-changes-more${menuOpen ? " active" : ""}`}
               onClick={openMenu}
               aria-label={`Actions for pull request #${pr.number}`}
               aria-haspopup="menu"
-              aria-expanded={!!menu}
-              aria-controls={menu ? menuId : undefined}
+              aria-expanded={menuOpen}
+              aria-controls={menuOpen ? menuId : undefined}
             >
               <svg
                 width="14"
@@ -193,73 +155,24 @@ function PrAutomationCard({ automation, available = true, bridge }) {
           Turn off Auto-fix
         </button>
       )}
-      {actionError && !menu && (
+      {actionError && !menuOpen && (
         <p className="pr-changes-error" role="alert">
           {actionError}
         </p>
       )}
-      {menu &&
-        pr &&
-        ReactDOM.createPortal(
-          <div
-            ref={popRef}
-            id={menuId}
-            className="pr-changes-menu"
-            style={menu}
-            role="menu"
-            aria-label={`Pull request #${pr.number}`}
-            onKeyDown={(e) =>
-              window.menuKeyNav(e, popRef.current, '[role^="menuitem"]', close)
-            }
-          >
-            <button role="menuitem" onClick={() => openUrl("")}>
-              Open on GitHub
-            </button>
-            <button role="menuitem" onClick={copyLink}>
-              Copy link
-            </button>
-            <div className="pr-changes-separator" role="separator" />
-            <button role="menuitem" onClick={() => openUrl("/files")}>
-              View changes
-            </button>
-            <button
-              role="menuitem"
-              onClick={() => openUrl("#discussion_bucket")}
-            >
-              Open review comments
-            </button>
-            <div className="pr-changes-separator" role="separator" />
-            <button
-              className="pr-changes-autofix"
-              role="menuitemcheckbox"
-              aria-checked={automation.enabled}
-              disabled={!available}
-              aria-describedby={descriptionId}
-              onClick={automation.toggle}
-            >
-              <span className="pr-changes-checkbox" aria-hidden="true">
-                {automation.enabled && <window.Icon name="check" size={10} />}
-              </span>
-              Auto-fix
-            </button>
-            <p id={descriptionId} className="pr-changes-menu-note">
-              Fix CI and review feedback. May commit, push and resolve addressed
-              threads; tool approvals still apply.
-            </p>
-            <p className="pr-changes-menu-status" role="status">
-              {automation.status}
-            </p>
-            <p className="pr-changes-menu-note">
-              This tab only. Stop also turns Auto-fix off.
-            </p>
-            {actionError && (
-              <p className="pr-changes-error" role="alert">
-                {actionError}
-              </p>
-            )}
-          </div>,
-          document.body,
-        )}
+      {menuOpen && pr && (
+        <window.PrAutomationMenu
+          id={menuId}
+          pr={pr}
+          automation={automation}
+          available={available}
+          triggerRef={triggerRef}
+          error={actionError}
+          onOpen={openUrl}
+          onCopy={copyLink}
+          onClose={close}
+        />
+      )}
     </section>
   );
 }

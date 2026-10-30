@@ -7,41 +7,38 @@ mod git;
 #[cfg(test)]
 mod tests;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::State;
 
+use crate::child_path::child_path_dirs;
 use crate::terminal::TerminalManager;
 
 #[cfg(test)]
-use feedback::parse_check;
+use feedback::{parse_check, SelectedPr};
 use feedback::{parse_feedback, select_pr};
 #[cfg(test)]
 use git::github_repo;
 use git::{local_branch, LocalBranch};
 
-const FIND_QUERY: &str = r"query($owner:String!, $repo:String!, $ref:String!, $branch:String!) {
+/// The upstream repository as GitHub resolves it (renames and transfers
+/// followed), its fork parent, and the PRs associated with the upstream
+/// branch's head commit. Open PRs from the head owner's branch are listed
+/// per repository over REST ([`gh::Gh::open_pulls`]) instead: GraphQL's
+/// `pullRequests(headRefName:)` lists every fork's PRs with that branch name.
+const FIND_QUERY: &str = r"query($owner:String!, $repo:String!, $ref:String!) {
   repository(owner:$owner, name:$repo) {
-    isFork
-    pullRequests(first:100, states:OPEN, headRefName:$branch) {
-      pageInfo { hasNextPage } nodes { ...PrIdentity }
-    }
-    parent {
-      pullRequests(first:100, states:OPEN, headRefName:$branch) {
-        pageInfo { hasNextPage } nodes { ...PrIdentity }
-      }
-    }
+    nameWithOwner isFork
+    parent { nameWithOwner }
     ref(qualifiedName:$ref) { target { ... on Commit { oid
       associatedPullRequests(first:100) {
-        pageInfo { hasNextPage } nodes { ...PrIdentity }
+        pageInfo { hasNextPage }
+        nodes { url id state headRefOid headRefName headRepository { nameWithOwner } }
       }
     } } }
   }
-}
-fragment PrIdentity on PullRequest {
-  id state headRefOid headRefName headRepository { nameWithOwner }
 }";
 
 const FEEDBACK_QUERY: &str = r"query($id:ID!) {
@@ -49,7 +46,8 @@ const FEEDBACK_QUERY: &str = r"query($id:ID!) {
     number url title repository { nameWithOwner } additions deletions isDraft
     state headRefOid headRefName headRepository { nameWithOwner }
     reviewThreads(first:100) { pageInfo { hasNextPage } nodes {
-      id isResolved isOutdated comments(last:1) { nodes { updatedAt url } }
+      id isResolved isOutdated
+      comments(last:100) { pageInfo { hasPreviousPage } nodes { updatedAt viewerDidAuthor } }
     } }
     commits(last:1) { nodes { commit {
       oid statusCheckRollup { contexts(first:100) { pageInfo { hasNextPage } nodes {
@@ -113,18 +111,33 @@ struct FailedCheck {
 #[serde(rename_all = "camelCase")]
 struct ReviewThread {
     id: String,
+    /// When someone other than the viewer last commented, so the agent's
+    /// own replies do not make the thread new again.
     updated_at: String,
-    url: String,
 }
 
 /// A failed lookup, as the webview receives it. `ghMissing` marks the one
-/// failure the Changes card shows as a disabled state instead of an error:
-/// there is no GitHub CLI to ask.
+/// failure for which the Changes card is hidden instead of showing an error:
+/// there is no GitHub CLI to ask. `retryable` marks transient lag (GitHub
+/// not yet showing a push, the branch moving mid-read), which the webview
+/// retries with a backoff instead of pausing Auto-fix.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LookupError {
     message: String,
     gh_missing: bool,
+    retryable: bool,
+}
+
+impl LookupError {
+    /// A failure that clears up once GitHub or the checkout settles.
+    fn transient(message: &str) -> Self {
+        Self {
+            message: message.to_owned(),
+            gh_missing: false,
+            retryable: true,
+        }
+    }
 }
 
 impl From<String> for LookupError {
@@ -132,6 +145,7 @@ impl From<String> for LookupError {
         Self {
             message,
             gh_missing: false,
+            retryable: false,
         }
     }
 }
@@ -150,36 +164,41 @@ pub async fn pr_automation_snapshot(
 }
 
 fn snapshot(folder: &Path) -> Result<Option<PrAutomationSnapshot>, LookupError> {
+    snapshot_in(&child_path_dirs(), folder)
+}
+
+/// [`snapshot`] with `gh` looked up in `dirs`.
+fn snapshot_in(
+    dirs: &[PathBuf],
+    folder: &Path,
+) -> Result<Option<PrAutomationSnapshot>, LookupError> {
     // First, so a missing gh reads as such in any folder, GitHub or not.
-    let gh = gh::Gh::locate().map_err(|message| LookupError {
+    let gh = gh::Gh::locate_in(dirs).map_err(|message| LookupError {
         message,
         gh_missing: true,
+        retryable: false,
     })?;
     let local = local_branch(folder)?;
-    let remote_branch = local
-        .remote_ref
-        .strip_prefix("refs/heads/")
-        .ok_or_else(|| "Invalid upstream branch".to_string())?;
     let result = gh.query(
         FIND_QUERY,
         &[
             ("owner", &local.owner),
             ("repo", &local.repo),
             ("ref", &local.remote_ref),
-            ("branch", remote_branch),
         ],
     )?;
-    let Some((id, head)) = select_pr(&result, &local)? else {
+    let Some(pr) = select_pr(&result, &local, |repository, head| {
+        gh.open_pulls(repository, head)
+    })?
+    else {
         return Ok(None);
     };
-    let result = gh.query(FEEDBACK_QUERY, &[("id", &id)])?;
-    let snapshot = parse_feedback(&result, &local, &head)?;
+    let result = gh.query(FEEDBACK_QUERY, &[("id", &pr.id)])?;
+    let snapshot = parse_feedback(&result, &local, &pr)?;
     if local_branch(folder)? != local {
-        return Err(
-            "Git branch, HEAD, or upstream changed while loading PR feedback"
-                .to_string()
-                .into(),
-        );
+        return Err(LookupError::transient(
+            "Git branch, HEAD, or upstream changed while loading PR feedback",
+        ));
     }
     Ok(Some(snapshot))
 }

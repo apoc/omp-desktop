@@ -1,11 +1,12 @@
-//! Bounded, supervised `gh api graphql` execution. No project-provided
-//! executable or API endpoint is ever used.
+//! Bounded, supervised `gh api` execution (GraphQL, and one REST list). No
+//! project-provided executable or API endpoint is ever used.
+use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::child_path::{child_path_dirs, locate_program, TrustedProgram};
+use crate::child_path::{locate_program, TrustedProgram};
 use crate::child_run::{recv_until, spawn_drain, terminate, wait_for_exit, WaitError};
 use crate::supervisor::ProcessSupervisor;
 
@@ -23,8 +24,30 @@ const TIMED_OUT: &str = "gh request timed out";
 pub(super) struct Gh(TrustedProgram);
 
 impl Gh {
-    pub(super) fn locate() -> Result<Self, String> {
-        locate_program(&child_path_dirs(), "gh").map(Self)
+    pub(super) fn locate_in(dirs: &[PathBuf]) -> Result<Self, String> {
+        locate_program(dirs, "gh").map(Self)
+    }
+
+    /// `gh api <endpoint>` against github.com, whatever the environment
+    /// says: `GH_REPO` would redirect `{owner}` placeholders, and
+    /// `GH_DEBUG`, `CLICOLOR_FORCE` and `GH_FORCE_TTY` mix logs or ANSI
+    /// colour into the JSON even when it goes to a pipe.
+    fn api(&self, endpoint: &str, method: &str) -> Command {
+        let mut cmd = Command::new(&self.0.binary);
+        cmd.env("PATH", &self.0.path)
+            .env_remove("GH_REPO")
+            .env_remove("GH_DEBUG")
+            .env_remove("CLICOLOR_FORCE")
+            .env_remove("GH_FORCE_TTY")
+            .args([
+                "api",
+                endpoint,
+                "--hostname",
+                "github.com",
+                "--method",
+                method,
+            ]);
+        cmd
     }
 
     pub(super) fn query(
@@ -32,25 +55,29 @@ impl Gh {
         query: &str,
         variables: &[(&str, &str)],
     ) -> Result<serde_json::Value, String> {
-        let mut cmd = Command::new(&self.0.binary);
-        cmd.env("PATH", &self.0.path)
-            .env_remove("GH_REPO")
-            .env_remove("GH_DEBUG")
-            .args([
-                "api",
-                "graphql",
-                "--hostname",
-                "github.com",
-                "--method",
-                "POST",
-                "-f",
-            ])
-            .arg(format!("query={query}"));
+        let mut cmd = self.api("graphql", "POST");
+        cmd.arg("-f").arg(format!("query={query}"));
         for (key, value) in variables {
             // -f treats values literally, unlike -F's @file interpretation.
             cmd.arg("-f").arg(format!("{key}={value}"));
         }
         parse_response(&run(&mut cmd, TIMEOUT)?)
+    }
+
+    /// The REST list of open PRs into `repository` (a validated GitHub
+    /// `owner/name`) whose head is `head` (`owner:branch`), up to 100. For a
+    /// GET, gh URL-encodes the `-f` fields into the query string.
+    pub(super) fn open_pulls(
+        &self,
+        repository: &str,
+        head: &str,
+    ) -> Result<serde_json::Value, String> {
+        let mut cmd = self.api(&format!("repos/{repository}/pulls"), "GET");
+        cmd.args(["-f", "state=open", "-f"])
+            .arg(format!("head={head}"))
+            .args(["-f", "per_page=100"]);
+        serde_json::from_slice(&run(&mut cmd, TIMEOUT)?)
+            .map_err(|_| "GitHub returned malformed JSON".to_string())
     }
 }
 

@@ -1,5 +1,8 @@
-//! Fail-closed normalization of GitHub GraphQL feedback.
-use super::{CheckState, CiCheck, FailedCheck, LocalBranch, PrAutomationSnapshot, ReviewThread};
+//! Fail-closed normalization of GitHub GraphQL and REST responses.
+use super::git::valid_component;
+use super::{
+    CheckState, CiCheck, FailedCheck, LocalBranch, LookupError, PrAutomationSnapshot, ReviewThread,
+};
 use serde_json::Value;
 
 fn field<'a>(v: &'a Value, key: &str) -> Result<&'a Value, String> {
@@ -44,104 +47,219 @@ fn optional_url(v: &Value, key: &str, fallback: &str) -> Result<String, String> 
         _ => Err(format!("GitHub response has invalid {key}")),
     }
 }
-fn same_repo(v: &Value, local: &LocalBranch) -> Result<bool, String> {
-    let repo = field(v, "headRepository")?;
-    if repo.is_null() {
-        return Ok(false);
+/// A GitHub-resolved `owner/name`, checked to be safe in an API path.
+fn resolved_repo(v: &Value) -> Result<&str, String> {
+    let name = string(v, "nameWithOwner")?;
+    match name.split_once('/') {
+        Some((owner, repo)) if valid_component(owner) && valid_component(repo) => Ok(name),
+        _ => Err("GitHub returned an invalid repository name".into()),
     }
-    Ok(string(repo, "nameWithOwner")?
-        .split_once('/')
-        .is_some_and(|(owner, name)| {
-            owner.eq_ignore_ascii_case(&local.owner) && name.eq_ignore_ascii_case(&local.repo)
-        }))
 }
 fn upstream_branch(local: &LocalBranch) -> &str {
     local.remote_ref.strip_prefix("refs/heads/").unwrap_or("")
 }
 
+/// The PR [`select_pr`] found, what `FEEDBACK_QUERY` loads and is checked
+/// against.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct SelectedPr {
+    /// GraphQL `id` or REST `node_id`; `node(id:)` takes either.
+    pub(super) id: String,
+    pub(super) head: String,
+    /// The head repository's `owner/name` as GitHub resolved it, so a
+    /// remote still using a renamed repository's old URL matches.
+    pub(super) repository: String,
+}
+
+/// A PR from either API, normalized.
+struct Candidate<'a> {
+    /// GitHub's canonical web URL, the same from both APIs (ids are not).
+    url: &'a str,
+    id: &'a str,
+    /// `false`: closed or merged.
+    open: bool,
+    branch: &'a str,
+    head: &'a str,
+    /// `None` once the head repository is deleted.
+    repository: Option<&'a str>,
+}
+
+fn graphql_candidate(v: &Value) -> Result<Candidate<'_>, String> {
+    let open = match string(v, "state")? {
+        "OPEN" => true,
+        "CLOSED" | "MERGED" => false,
+        _ => return Err("GitHub returned an unknown PR state".into()),
+    };
+    let repo = field(v, "headRepository")?;
+    Ok(Candidate {
+        url: string(v, "url")?,
+        id: string(v, "id")?,
+        open,
+        branch: string(v, "headRefName")?,
+        head: string(v, "headRefOid")?,
+        repository: if repo.is_null() {
+            None
+        } else {
+            Some(string(repo, "nameWithOwner")?)
+        },
+    })
+}
+
+fn rest_candidate(v: &Value) -> Result<Candidate<'_>, String> {
+    let open = match string(v, "state")? {
+        "open" => true,
+        "closed" => false,
+        _ => return Err("GitHub returned an unknown PR state".into()),
+    };
+    let head = field(v, "head")?;
+    let repo = field(head, "repo")?;
+    Ok(Candidate {
+        url: string(v, "html_url")?,
+        id: string(v, "node_id")?,
+        open,
+        branch: string(head, "ref")?,
+        head: string(head, "sha")?,
+        repository: if repo.is_null() {
+            None
+        } else {
+            Some(string(repo, "full_name")?)
+        },
+    })
+}
+
+/// A REST page of up to 100 items; a full page may have a next one, so it
+/// is rejected like a truncated GraphQL connection.
+fn rest_list<'a>(v: &'a Value, name: &str) -> Result<&'a Vec<Value>, String> {
+    let items = v
+        .as_array()
+        .ok_or_else(|| format!("GitHub response has invalid {name}"))?;
+    if items.len() >= 100 {
+        return Err(format!(
+            "GitHub {name} exceeds the 100-item limit; auto-fix paused"
+        ));
+    }
+    Ok(items)
+}
+
+/// The open PR for the upstream branch, `None` when there is none.
+/// `open_prs(repository, head)` lists the open PRs into `repository` from
+/// `head` (`owner:branch`); it runs for the resolved repository and, for a
+/// fork, its parent.
 pub(super) fn select_pr(
     result: &Value,
     local: &LocalBranch,
-) -> Result<Option<(String, String)>, String> {
+    mut open_prs: impl FnMut(&str, &str) -> Result<Value, String>,
+) -> Result<Option<SelectedPr>, LookupError> {
     let data = field(result, "data")?;
     let repo = field(data, "repository")?;
     if repo.is_null() {
-        return Err("GitHub repository was not found or is inaccessible".into());
+        return Err("GitHub repository was not found or is inaccessible"
+            .to_string()
+            .into());
     }
+    let name = resolved_repo(repo)?;
     let reference = field(repo, "ref")?;
     if reference.is_null() {
-        return Err("Upstream branch was not found on GitHub".into());
+        return Err("Upstream branch was not found on GitHub".to_string().into());
     }
     let target = field(reference, "target")?;
     let head = string(target, "oid")?;
     if head != local.head {
         return Err(
             "Local HEAD differs from the upstream branch on GitHub; synchronize before auto-fix"
+                .to_string()
                 .into(),
         );
     }
-    let mut connections = [
-        connection(
-            field(target, "associatedPullRequests")?,
-            "associated pull requests",
-        )?
-        .as_slice(),
-        connection(field(repo, "pullRequests")?, "repository pull requests")?.as_slice(),
-        &[],
-    ];
+    let associated = connection(
+        field(target, "associatedPullRequests")?,
+        "associated pull requests",
+    )?;
+    let is_fork = boolean(repo, "isFork")?;
     let parent = field(repo, "parent")?;
-    if boolean(repo, "isFork")? && parent.is_null() {
-        return Err("GitHub fork parent is unavailable; cannot safely select a PR".into());
+    if is_fork && parent.is_null() {
+        return Err(
+            "GitHub fork parent is unavailable; cannot safely select a PR"
+                .to_string()
+                .into(),
+        );
     }
-    if !parent.is_null() {
-        connections[2] =
-            connection(field(parent, "pullRequests")?, "parent pull requests")?.as_slice();
-    }
-    let mut selected: Option<&str> = None;
+    let branch = upstream_branch(local);
+    let owner = name.split_once('/').map_or(name, |(owner, _)| owner);
+    let filter = format!("{owner}:{branch}");
+    let in_repo = open_prs(name, &filter)?;
+    let in_parent = if parent.is_null() {
+        None
+    } else {
+        Some(open_prs(resolved_repo(parent)?, &filter)?)
+    };
+    let in_parent = in_parent
+        .as_ref()
+        .map(|v| rest_list(v, "parent pull requests"))
+        .transpose()?;
+    let candidates = associated.iter().map(graphql_candidate).chain(
+        rest_list(&in_repo, "repository pull requests")?
+            .iter()
+            .chain(in_parent.into_iter().flatten())
+            .map(rest_candidate),
+    );
+    let mut selected: Option<Candidate> = None;
     let mut completed = false;
-    for pr in connections.into_iter().flatten() {
-        let state = string(pr, "state")?;
-        let branch = string(pr, "headRefName")?;
-        let pr_head = string(pr, "headRefOid")?;
-        if matches!(state, "CLOSED" | "MERGED")
-            && branch == upstream_branch(local)
-            && pr_head == head
-            && same_repo(pr, local)?
-        {
-            completed = true;
+    for pr in candidates {
+        let pr = pr?;
+        if pr.branch != branch || pr.repository.is_none_or(|r| !r.eq_ignore_ascii_case(name)) {
+            continue;
         }
-        if state == "OPEN" && branch == upstream_branch(local) && same_repo(pr, local)? {
-            if pr_head != head {
+        if !pr.open {
+            completed |= pr.head == head;
+            continue;
+        }
+        if pr.head != head {
+            return Err(LookupError::transient(
+                "PR head differs from the upstream branch; retry after GitHub updates",
+            ));
+        }
+        match &selected {
+            // The same PR from another source: GraphQL and REST ids differ.
+            Some(previous) if previous.url.eq_ignore_ascii_case(pr.url) => {}
+            Some(_) => {
                 return Err(
-                    "PR head differs from the upstream branch; retry after GitHub updates".into(),
-                );
+                    "Multiple open PRs match this upstream branch; auto-fix paused"
+                        .to_string()
+                        .into(),
+                )
             }
-            let id = string(pr, "id")?;
-            if selected.is_some_and(|previous| previous != id) {
-                return Err("Multiple open PRs match this upstream branch; auto-fix paused".into());
-            }
-            selected = Some(id);
+            None => selected = Some(pr),
         }
     }
-    if selected.is_none() && !completed && boolean(repo, "isFork")? {
-        return Err("No PR found in the head repository or its parent; PRs targeting other forks cannot be ruled out".into());
+    if selected.is_none() && !completed && is_fork {
+        return Err("No PR found in the head repository or its parent; PRs targeting other forks cannot be ruled out".to_string().into());
     }
-    Ok(selected.map(|id| (id.to_owned(), head.to_owned())))
+    Ok(selected.map(|pr| SelectedPr {
+        id: pr.id.to_owned(),
+        head: head.to_owned(),
+        repository: name.to_owned(),
+    }))
 }
 
 pub(super) fn parse_feedback(
     result: &Value,
     local: &LocalBranch,
-    head: &str,
-) -> Result<PrAutomationSnapshot, String> {
+    selected: &SelectedPr,
+) -> Result<PrAutomationSnapshot, LookupError> {
+    let head = selected.head.as_str();
     let data = field(result, "data")?;
     let pr = field(data, "node")?;
+    let head_repo = field(pr, "headRepository")?;
     if string(pr, "state")? != "OPEN"
         || string(pr, "headRefOid")? != head
         || string(pr, "headRefName")? != upstream_branch(local)
-        || !same_repo(pr, local)?
+        || head_repo.is_null()
+        || !string(head_repo, "nameWithOwner")?.eq_ignore_ascii_case(&selected.repository)
     {
-        return Err("PR head or branch changed while loading feedback".into());
+        return Err(LookupError::transient(
+            "PR head or branch changed while loading feedback",
+        ));
     }
     let number = field(pr, "number")?
         .as_u64()
@@ -157,11 +275,15 @@ pub(super) fn parse_feedback(
         .as_array()
         .ok_or_else(|| "GitHub response has invalid PR commits".to_string())?;
     if commits.len() != 1 {
-        return Err("GitHub did not return the latest PR commit".into());
+        return Err("GitHub did not return the latest PR commit"
+            .to_string()
+            .into());
     }
     let object = field(&commits[0], "commit")?;
     if string(object, "oid")? != head {
-        return Err("GitHub returned feedback for a different commit".into());
+        return Err(LookupError::transient(
+            "GitHub returned feedback for a different commit",
+        ));
     }
     let mut checks = Vec::new();
     let mut failed_checks = Vec::new();
@@ -182,17 +304,9 @@ pub(super) fn parse_feedback(
         if resolved || outdated {
             continue;
         }
-        let id = string(thread, "id")?.to_owned();
-        let comments = field(field(thread, "comments")?, "nodes")?
-            .as_array()
-            .ok_or_else(|| "GitHub response has invalid thread comments".to_string())?;
-        if comments.len() != 1 {
-            return Err("GitHub returned a review thread without its latest comment".into());
-        }
         threads.push(ReviewThread {
-            id,
-            updated_at: string(&comments[0], "updatedAt")?.into(),
-            url: string(&comments[0], "url")?.into(),
+            id: string(thread, "id")?.to_owned(),
+            updated_at: thread_updated_at(field(thread, "comments")?)?.to_owned(),
         });
     }
     Ok(PrAutomationSnapshot {
@@ -210,6 +324,35 @@ pub(super) fn parse_feedback(
         failed_checks,
         threads,
     })
+}
+
+/// A thread's Auto-fix identity: when its newest comment not written by
+/// the viewer (the signed-in gh user, whom Auto-fix replies as) was last
+/// updated, or its first comment's when the viewer wrote them all.
+fn thread_updated_at(comments: &Value) -> Result<&str, String> {
+    if boolean(field(comments, "pageInfo")?, "hasPreviousPage")? {
+        return Err(
+            "GitHub review thread comments exceed the 100-item limit; auto-fix paused".into(),
+        );
+    }
+    let nodes = field(comments, "nodes")?
+        .as_array()
+        .ok_or_else(|| "GitHub response has invalid thread comments".to_string())?;
+    if nodes.len() > 100 {
+        return Err("GitHub returned too many thread comments".into());
+    }
+    let mut newest_other = None;
+    for comment in nodes {
+        let updated = string(comment, "updatedAt")?;
+        if !boolean(comment, "viewerDidAuthor")? {
+            newest_other = Some(updated);
+        }
+    }
+    match (newest_other, nodes.first()) {
+        (Some(updated), _) => Ok(updated),
+        (None, Some(first)) => string(first, "updatedAt"),
+        (None, None) => Err("GitHub returned a review thread without comments".into()),
+    }
 }
 
 /// One check context of the head commit: what the card shows for it, and the

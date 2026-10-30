@@ -70,11 +70,7 @@ const check = (id, name = "build") => ({
   name,
   url: "https://github.com/actions/runs/1",
 });
-const thread = (id, updatedAt = "2026-01-01T00:00:00Z") => ({
-  id,
-  updatedAt,
-  url: "https://github.com/review",
-});
+const thread = (id, updatedAt = "2026-01-01T00:00:00Z") => ({ id, updatedAt });
 const snapshot = (over = {}) => ({
   number: 42,
   url: "https://github.com/example/repo/pull/42",
@@ -101,6 +97,7 @@ function harness({
   branchKey = "feature",
   conversationKey = "conversation-a",
   featureEnabled = true,
+  visible,
 } = {}) {
   const time = clock();
   const win = load(time);
@@ -126,6 +123,7 @@ function harness({
     branchKey,
     conversationKey,
     featureEnabled,
+    visible,
   };
   const controller = win.OMP_PR_AUTOMATION.createController({
     getContext: () => current,
@@ -555,18 +553,255 @@ await checkAsync(
 await checkAsync(
   "a disconnected or changed project cannot accept an in-flight discovery result",
   async () => {
-    for (const changes of [{ connected: false }, { projectKey: "/other" }]) {
+    const cases = [
+      [{ connected: false }, { connected: true }],
+      [{ projectKey: "/other" }, { projectKey: "/repo" }],
+    ];
+    for (const [changes, original] of cases) {
       const pending = deferred();
-      const h = harness({ getSnapshot: () => pending.promise });
+      let calls = 0;
+      const h = harness({
+        getSnapshot: () =>
+          ++calls === 1 ? pending.promise : new Promise(() => {}),
+      });
+      h.toggle();
       await h.time.advance(0);
-      // The latest context can change before React runs the synchronization effect.
+      // The latest context changes before React runs the synchronization
+      // effect, and flips back while the late answer is being taken in:
+      // only the check right after the read can tell, not the view.
       Object.assign(h.current, changes);
-      pending.resolve(snapshot({ title: "Wrong project" }));
+      const late = snapshot({ failedChecks: [check("wrong-project")] });
+      Object.defineProperty(late, "number", {
+        enumerable: true,
+        get() {
+          Object.assign(h.current, original);
+          return 42;
+        },
+      });
+      pending.resolve(late);
       await h.time.flush();
+      Object.assign(h.current, original);
       assert.equal(h.view().snapshot, null);
       assert.deepEqual(h.sends, []);
       h.stop();
     }
+  },
+);
+
+await checkAsync(
+  "a read still running for the previous tab keeps the new tab loading, not 'no PR'",
+  async () => {
+    const first = deferred();
+    const h = harness({
+      getSnapshot: (id) =>
+        id === "a" ? first.promise : snapshot({ title: "Tab B" }),
+    });
+    await h.time.advance(0);
+    h.update({ tabId: "b", projectKey: "/other" });
+    assert.equal(h.view().loading, true);
+    assert.equal(h.view().snapshot, null);
+    await h.time.advance(20000);
+    assert.equal(h.view().loading, true);
+    assert.deepEqual(h.reads, ["a"]);
+    first.resolve(snapshot({ title: "Tab A" }));
+    await h.time.advance(0);
+    assert.deepEqual(h.reads, ["a", "b"]);
+    assert.equal(h.view().snapshot.title, "Tab B");
+    assert.equal(h.view().loading, false);
+  },
+);
+
+for (const [label, leave, back] of [
+  ["switching tabs", { tabId: "b", projectKey: "/other" }, { tabId: "a", projectKey: "/repo" }],
+  ["opening Settings", { connected: false }, { connected: true }],
+]) {
+  await checkAsync(
+    `a send refused after ${label} keeps Auto-fix on and sends again on return`,
+    async () => {
+      const pending = deferred();
+      let calls = 0;
+      const h = harness({
+        getSnapshot: (id) =>
+          id === "a" ? snapshot({ failedChecks: [check("CI")] }) : null,
+        send: () => (++calls === 1 ? pending.promise : true),
+      });
+      h.toggle();
+      await h.time.advance(0);
+      assert.match(h.view().status, /Sending fix prompt/);
+      h.update(leave);
+      pending.resolve(false);
+      await h.time.advance(0);
+      h.update(back);
+      assert.equal(h.view().enabled, true);
+      assert.equal(h.view().error, null);
+      await h.time.advance(0);
+      assert.equal(h.sends.length, 2);
+      assert.deepEqual(payload(h.sends[1].text).checkIds, ["CI"]);
+      assert.match(h.view().status, /awaiting the agent/);
+    },
+  );
+}
+
+const lag = () =>
+  Promise.reject({
+    message: "PR head not updated yet",
+    ghMissing: false,
+    retryable: true,
+  });
+
+for (const enabled of [false, true]) {
+  await checkAsync(
+    `retryable read errors back off and recover without pausing (Auto-fix ${enabled ? "on" : "off"})`,
+    async () => {
+      let answer = () => snapshot({ title: "Before push" });
+      const h = harness({ getSnapshot: () => answer() });
+      if (enabled) h.toggle();
+      await h.time.advance(0);
+      assert.equal(h.view().snapshot.title, "Before push");
+      let failures = 2;
+      const lagging = () =>
+        failures-- > 0 ? lag() : snapshot({ title: "After push" });
+      answer = lagging;
+      h.refresh();
+      await h.time.advance(0);
+      const reads = h.reads.length;
+      let view = h.view();
+      assert.equal(view.snapshot.title, "Before push");
+      assert.equal(view.error, null);
+      assert.equal(view.discoveryError, null);
+      assert.equal(view.loading, true);
+      assert.doesNotMatch(view.status, /error/);
+      await h.time.advance(2999);
+      assert.equal(h.reads.length, reads);
+      await h.time.advance(1);
+      assert.equal(h.reads.length, reads + 1);
+      assert.equal(h.view().error, null);
+      // The wait doubles.
+      await h.time.advance(5999);
+      assert.equal(h.reads.length, reads + 1);
+      await h.time.advance(1);
+      assert.equal(h.reads.length, reads + 2);
+      view = h.view();
+      assert.equal(view.snapshot.title, "After push");
+      assert.equal(view.error, null);
+      assert.equal(view.discoveryError, null);
+      assert.equal(view.loading, false);
+      assert.equal(view.enabled, enabled);
+      if (enabled) assert.match(view.status, /No failed checks/);
+      // A successful read resets the backoff.
+      failures = 1;
+      h.refresh();
+      await h.time.advance(3000);
+      assert.equal(h.reads.length, reads + 4);
+      assert.equal(h.view().error, null);
+      assert.deepEqual(h.sends, []);
+    },
+  );
+
+  await checkAsync(
+    `retryable errors past the cap are reported like any other (Auto-fix ${enabled ? "on" : "off"})`,
+    async () => {
+      const h = harness({ getSnapshot: () => lag() });
+      if (enabled) h.toggle();
+      await h.time.advance(0);
+      assert.equal(h.view().discoveryError, null);
+      assert.equal(h.view().error, null);
+      // Five retries: 3 + 6 + 12 + 24 + 48 seconds.
+      await h.time.advance(92999);
+      assert.equal(h.reads.length, 5);
+      assert.equal(h.view().discoveryError, null);
+      await h.time.advance(1);
+      assert.equal(h.reads.length, 6);
+      assert.equal(h.view().discoveryError, "PR head not updated yet");
+      assert.equal(h.view().loading, false);
+      if (enabled) {
+        assert.equal(h.view().error, "PR head not updated yet");
+        assert.match(h.view().status, /Paused after an error/);
+      } else assert.equal(h.view().error, null);
+      await h.time.advance(600000);
+      assert.equal(h.reads.length, 6);
+    },
+  );
+}
+
+await checkAsync(
+  "a retryable failure of the bridge's pre-send read retries instead of pausing",
+  async () => {
+    let calls = 0;
+    const h = harness({
+      getSnapshot: () => snapshot({ failedChecks: [check("CI")] }),
+      send: () => (++calls === 1 ? lag() : true),
+    });
+    h.toggle();
+    await h.time.advance(0);
+    assert.equal(h.sends.length, 1);
+    assert.equal(h.view().error, null);
+    assert.doesNotMatch(h.view().status, /error/);
+    await h.time.advance(3000);
+    assert.equal(h.sends.length, 2);
+    assert.deepEqual(payload(h.sends[1].text).checkIds, ["CI"]);
+    assert.equal(h.view().error, null);
+    assert.match(h.view().status, /awaiting the agent/);
+  },
+);
+
+await checkAsync(
+  "a failing read with Auto-fix off stops the CI polling of its last snapshot",
+  async () => {
+    let fail = false;
+    const h = harness({
+      getSnapshot: () =>
+        fail
+          ? Promise.reject(new Error("GitHub unavailable"))
+          : snapshot({ checks: [ci("build", "running")] }),
+    });
+    await h.time.advance(0);
+    fail = true;
+    await h.time.advance(15000);
+    assert.equal(h.reads.length, 2);
+    assert.equal(h.view().discoveryError, "GitHub unavailable");
+    await h.time.advance(120000);
+    assert.equal(h.reads.length, 2);
+    fail = false;
+    h.refresh();
+    await h.time.advance(0);
+    assert.equal(h.reads.length, 3);
+    assert.equal(h.view().discoveryError, null);
+    await h.time.advance(15000);
+    assert.equal(h.reads.length, 4);
+  },
+);
+
+await checkAsync(
+  "a hidden card reads nothing with Auto-fix off, but Auto-fix keeps polling",
+  async () => {
+    const h = harness({
+      visible: false,
+      getSnapshot: () => snapshot({ checks: [ci("build", "running")] }),
+    });
+    await h.time.advance(120000);
+    // Window focus while the rail is hidden asks nothing either.
+    h.refresh();
+    await h.time.advance(120000);
+    assert.deepEqual(h.reads, []);
+    h.update({ visible: true });
+    await h.time.advance(0);
+    assert.deepEqual(h.reads, ["a"]);
+    assert.equal(h.view().snapshot.checks[0].state, "running");
+    assert.equal(h.view().loading, false);
+    // Running CI polls only while the card can be seen.
+    h.update({ visible: false });
+    await h.time.advance(120000);
+    assert.equal(h.reads.length, 1);
+    h.update({ visible: true });
+    await h.time.advance(0);
+    h.toggle();
+    await h.time.advance(0);
+    h.update({ visible: false });
+    await h.time.advance(0);
+    const reads = h.reads.length;
+    await h.time.advance(60000);
+    assert.equal(h.reads.length, reads + 4);
   },
 );
 
@@ -1235,6 +1470,16 @@ await checkAsync(
     assert.equal(ui.enabled, true);
     ui.pause();
     assert.equal(render().enabled, false);
+    // Rail hidden (focus layout, tree or browser) with Auto-fix off: no reads
+    // until the card is back on screen.
+    const hiddenReads = reads;
+    render({ railVisible: false });
+    ui.refresh();
+    await time.advance(60000);
+    assert.equal(reads, hiddenReads);
+    render({ railVisible: true });
+    await time.advance(0);
+    assert.equal(reads, hiddenReads + 1);
     for (const slot of slots) slot?.cleanup?.();
     assert.equal(windowListeners.size, 0);
     assert.equal(documentListeners.size, 0);

@@ -1,5 +1,8 @@
 /* Per-tab PR automation: the controller owns polling and dispatch; this hook
-   supplies current React state and redraws when its visible state changes. */
+   supplies current React state and redraws when its visible state changes.
+   `railVisible`: the card's rail is on screen (layout not focus, not replaced
+   by the tree or browser); with the window, it gates reads while Auto-fix is
+   off. */
 function usePrAutomation({
   bridge,
   tabId,
@@ -11,8 +14,13 @@ function usePrAutomation({
   conversationKey = null,
   featureEnabled = true,
   connected = bridge?.isConnected ?? true,
+  railVisible = true,
 }) {
   const [, redraw] = React.useState(0);
+  const [windowVisible, setWindowVisible] = React.useState(
+    window.document?.visibilityState !== "hidden",
+  );
+  const visible = railVisible && windowVisible;
   const context = React.useRef(null);
   context.current = {
     bridge,
@@ -25,6 +33,7 @@ function usePrAutomation({
     branchKey,
     conversationKey,
     featureEnabled,
+    visible,
   };
   const controller = React.useRef(null);
   if (!controller.current) {
@@ -52,11 +61,14 @@ function usePrAutomation({
     branchKey,
     conversationKey,
     featureEnabled,
+    visible,
   ]);
   React.useEffect(() => {
     const onFocus = () => automation.refresh();
     const onVisibilityChange = () => {
-      if (window.document?.visibilityState === "visible") automation.refresh();
+      const shown = window.document?.visibilityState === "visible";
+      setWindowVisible(shown);
+      if (shown) automation.refresh();
     };
     window.addEventListener?.("focus", onFocus);
     window.document?.addEventListener("visibilitychange", onVisibilityChange);

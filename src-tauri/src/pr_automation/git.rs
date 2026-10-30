@@ -76,7 +76,9 @@ pub(super) fn github_repo(url: &gix::Url) -> Result<(String, String), String> {
     Ok((owner.into(), repo.into()))
 }
 
-fn valid_component(s: &str) -> bool {
+/// One GitHub owner or repository name: the characters GitHub allows, and
+/// never a `.`/`..` path segment, so it is safe inside an API path.
+pub(super) fn valid_component(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 100
         && s.bytes()

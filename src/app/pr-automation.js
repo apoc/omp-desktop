@@ -8,6 +8,11 @@
   const STALE = Object.freeze({ stale: true });
   /** How soon a STALE read is asked again. */
   const BUSY_RETRY_MS = 250;
+  /** First wait after a retryable read error (GitHub or the local checkout
+   *  briefly lagging); it doubles per attempt. */
+  const RETRY_BASE_MS = 3_000;
+  /** Retryable errors in a row before one is reported like any other. */
+  const RETRY_MAX = 5;
   /** How often the card re-reads while a check is queued or running, even
    *  with Auto-fix off; it stops once every check has finished. */
   const CI_INTERVAL_MS = 15_000;
@@ -221,6 +226,7 @@
           discoveryError: null,
           conversationKey: null,
           branchKey: null,
+          retries: 0,
         };
         tabs.set(id, e);
       }
@@ -237,6 +243,7 @@
       e.loading = false;
       e.seenBusy = false;
       e.handled.clear();
+      e.retries = 0;
     };
 
     function view() {
@@ -251,7 +258,14 @@
           : null;
       const discovery = {
         snapshot: discoverable(c) ? (e?.snapshot ?? null) : null,
-        loading: discoverable(c) ? !e || e.loading || refreshRequested : false,
+        // A read started for an outdated tab, branch or conversation still
+        // holds the single flight; this view's own read waits behind it.
+        loading: discoverable(c)
+          ? !e ||
+            e.loading ||
+            refreshRequested ||
+            (flight !== null && flight.stamp !== generation)
+          : false,
         discoveryError: e?.discoveryError ?? null,
         ghMissing,
       };
@@ -296,16 +310,26 @@
       };
     }
 
-    /** `retry`: the bridge was busy (STALE); read again after `delay` even
-     *  with Auto-fix off, and keep the card on "Updating…" meanwhile. */
+    /** `retry`: the bridge was busy (STALE) or a read failed retryably; read
+     *  again after `delay` even with Auto-fix off, and keep the card on
+     *  "Updating…" meanwhile. */
     function schedule(delay, retry = false) {
       const c = ctx();
       if (!active || timer !== null || flight || !discoverable(c)) return;
       const e = tabs.get(c.tabId);
       if (!e || (e.enabled && e.error && !refreshRequested)) return;
+      // A card nobody can see reads nothing unless Auto-fix depends on it.
+      if (c.visible === false && !e.enabled) return;
       const immediate = !retry && (refreshRequested || delay === 0);
-      // Periodic reads need an opt-in, or CI still running on this PR.
-      if (!immediate && !retry && !e.enabled && !ciActive(e.snapshot)) return;
+      // Periodic reads need an opt-in, or CI still running on this PR as of
+      // a read that succeeded (a failing one must not poll forever).
+      if (
+        !immediate &&
+        !retry &&
+        !e.enabled &&
+        (e.discoveryError || !ciActive(e.snapshot))
+      )
+        return;
       timerEntry = e;
       timer = setTimer(
         () => {
@@ -340,6 +364,7 @@
         conversationKey: c.conversationKey,
         branchKey: c.branchKey,
         featureEnabled: c.featureEnabled,
+        visible: c.visible,
         ids: JSON.stringify(ids),
       };
       const changed =
@@ -420,13 +445,14 @@
       const bridge = c.bridge;
       const projectKey = c.projectKey;
       const dispatchEligible = e.enabled && !e.error && ready(c);
-      const operation = { entry: e };
+      const operation = { entry: e, stamp };
       flight = operation;
       e.loading = true;
       if (dispatchEligible) e.phase = "checking";
       notify();
       let stale = false;
       let busy = false;
+      let retryIn = null;
       let dispatchStarted = false;
       try {
         const snapshot = await bridge.prAutomationSnapshot(id);
@@ -446,6 +472,7 @@
         }
         e.snapshot = snapshot;
         e.discoveryError = null;
+        e.retries = 0;
         ghMissing = false;
         e.loading = false;
         if (e.enabled) {
@@ -513,11 +540,31 @@
           e.phase = "handled";
           notify();
         } else if (sent !== true) {
+          const now = ctx();
+          // Refused because the user left the tab (or opened Settings) mid
+          // send: nothing was delivered and Auto-fix stays on; it checks
+          // again once the tab is back.
+          if (now.tabId !== id || !discoverable(now)) {
+            if (tabs.get(id) === e && e.enabled && e.token === token) {
+              e.phase = "inactive";
+              notify();
+            }
+            stale = true;
+            return;
+          }
           throw new Error(
             "The agent did not accept the fix prompt. Turn off and on to retry.",
           );
         }
       } catch (error) {
+        // GitHub or the checkout lagging (a push not yet visible, HEAD moving
+        // mid-read): not an error yet. The last snapshot stays on the card.
+        const retryable =
+          error?.retryable === true &&
+          !error?.ghMissing &&
+          tabs.get(id) === e &&
+          e.token === token &&
+          e.retries < RETRY_MAX;
         // Any answer but "not installed" means gh is there (an error such
         // as "no upstream" included): the card comes back.
         if (!error?.ghMissing && ghMissing) {
@@ -538,6 +585,18 @@
           e.discoveryError = null;
           ghMissing = true;
           notify();
+        } else if (retryable && dispatchStarted && e.enabled) {
+          // The bridge's pre-send read failed: no prompt reached the agent.
+          e.fixing = false;
+          if (stillCurrent(id, e, token, stamp, bridge, projectKey)) {
+            e.retries++;
+            retryIn = RETRY_BASE_MS * 2 ** (e.retries - 1);
+            e.phase = "pending";
+          } else {
+            e.phase = "inactive";
+            stale = true;
+          }
+          notify();
         } else if (
           dispatchStarted &&
           tabs.get(id) === e &&
@@ -545,6 +604,7 @@
           e.token === token
         ) {
           e.fixing = false;
+          e.retries = 0;
           e.error = errorMessage(error);
           e.phase = "error";
           notify();
@@ -552,12 +612,19 @@
           stillCurrent(id, e, token, stamp, bridge, projectKey) &&
           (!dispatchEligible || ready(ctx()))
         ) {
-          e.loading = false;
-          e.discoveryError = errorMessage(error);
-          if (dispatchEligible) {
-            e.fixing = false;
-            e.error = e.discoveryError;
-            e.phase = "error";
+          if (retryable) {
+            e.retries++;
+            retryIn = RETRY_BASE_MS * 2 ** (e.retries - 1);
+            if (dispatchEligible) e.phase = "pending";
+          } else {
+            e.retries = 0;
+            e.loading = false;
+            e.discoveryError = errorMessage(error);
+            if (dispatchEligible) {
+              e.fixing = false;
+              e.error = e.discoveryError;
+              e.phase = "error";
+            }
           }
           notify();
         } else stale = true;
@@ -565,7 +632,8 @@
         e.loading = false;
         if (flight === operation) flight = null;
         const changed = reconcile();
-        if (busy && !changed) schedule(BUSY_RETRY_MS, true);
+        if (retryIn !== null && !changed) schedule(retryIn, true);
+        else if (busy && !changed) schedule(BUSY_RETRY_MS, true);
         else if (changed || stale || generation !== stamp) schedule(0);
         else schedule(ciActive(e.snapshot) ? Math.min(intervalMs, ciIntervalMs) : intervalMs);
       }
@@ -592,6 +660,7 @@
         e.phase = "pending";
         e.error = null;
         e.handled.clear();
+        e.retries = 0;
         e.fixing = false;
         e.seenBusy = false;
       }

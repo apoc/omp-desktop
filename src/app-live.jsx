@@ -536,6 +536,8 @@ function App() {
     branchKey: activeProject.branch ?? null,
     conversationKey: JSON.stringify([activeProject.profile, activeProject.sessionFile ?? null]),
     featureEnabled: t.showChanges ?? true,
+    // Same rail visibility as the widgets: the card is on screen only there.
+    railVisible: t.layout !== "focus" && side === "rail",
     connected: !!bridge?.isConnected && !stab.active,
     blocked: !bridge?.isConnected || !activeProject.path || stab.active || plan.mode ||
       goalUi.mode || !!goalUi.planBlocked ||
@@ -884,10 +886,13 @@ function App() {
             )}
             {showSidebar && <ResizeHandle className="at-sidebar" {...panes.handle("sidebar")} />}
             <div ref={stageRef} className={`stage ${side === "browser" ? `with-browser${browserFull ? " browser-full" : ""}` : sideRail ? `with-${sideRail}` : ""}`}>
-              {/* Focus entering the conversation from elsewhere refreshes the
-                  PR card; moves inside it would each start a GitHub read. */}
+              {/* Focus entering the conversation from another element
+                  refreshes the PR card; moves inside it would each start a
+                  GitHub read, and focus coming back from <body> (no
+                  relatedTarget, e.g. after clicking transcript text) is not
+                  a return: window focus is the hook's own listener. */}
               <main className="session" onFocusCapture={e => {
-                if (!e.currentTarget.contains(e.relatedTarget)) prAutomation.refresh();
+                if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget)) prAutomation.refresh();
               }}>
                 {noTab ? (
                   <EmptyWorkspace notes={workspaceNotes} />

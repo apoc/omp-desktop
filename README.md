@@ -33,6 +33,7 @@ Built on Tauri 2 (Rust + the system webview). It doesn't bundle Electron or load
 - **Tool cards** for every call: `read`, `grep`, `bash`, `eval` (JS/Python kernel cells), `edit`, `task` and more. Output streams live, code is syntax-highlighted, edit diffs have a scrubber, and the file path on an edit card opens the git browser on that file.
 - **Approvals.** The tool approval mode is chosen in the approvals panel (status-bar ✓) or in Settings → Approvals: `always ask`, `write` (the default) or `yolo`, for all projects or one project. Exec-tier tools ask first in `write`. Answer *Approve*, *Allow for this session* or *Always allow in this project*, and review or revoke the saved rules in the approvals panel. A change restarts the tab's agent, and the conversation continues; a tab that is working switches when its turn ends. The status bar shows the mode in use.
 - **Ambient rail.** Shows the context-window gauge, cost, a tokens/sec sparkline, an agent radar of recent tool activity, and a minimap of the session. Click a minimap cell to jump to that message. Show or hide each card under Settings → Rail.
+- **Changes card.** With the [GitHub CLI](https://cli.github.com/) (`gh`) installed and signed in, the rail shows the open GitHub PR for the project's checked-out branch: title, diff counts and its CI checks, each opening its CI page. Its menu has an opt-in **Auto-fix**, off by default and per tab: when CI fails or a reviewer leaves an unresolved comment, it prompts the agent to fix, verify, commit and push, and resolve the threads it addressed. Your tool approvals still apply. Without `gh` the card stays hidden.
 - **Subagent manager.** Agents started by a `task` call appear in the rail as they run. Open the manager to get totals, a swimlane timeline, agents grouped by the task call that spawned them, and an inspector for each agent's assignment, tools, output and transcript.
 
 ![Subagent manager: four parallel scouts, their timeline and per-agent cost](screenshots/subagents.webp)
@@ -119,6 +120,8 @@ Settings → Remote access lets a phone on your network (or VPN) open the app's 
 ### Requirements
 
 `omp` must be installed and on your `PATH` (on Windows it is usually `%LOCALAPPDATA%\omp\omp.exe`). Each release needs a recent omp: a tab started against an older one does not start, and its message names the version required (`omp update` fixes it). On macOS, GUI apps get a minimal `PATH`, so the app also looks in Homebrew, `~/.local/bin` and `~/.cargo/bin`.
+
+Optional: the [GitHub CLI](https://cli.github.com/) (`gh`), signed in with `gh auth login`, for the Changes card. It is found the same way as `omp`.
 
 ### Download
 

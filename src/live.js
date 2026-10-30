@@ -3289,12 +3289,11 @@
   /** `OMP_BRIDGE.send`: the user bubble at once, then `prompt`. A
    *  `streamingBehavior` tells omp what to do if a turn is running by the
    *  time the prompt arrives; idle, omp ignores it and runs the prompt. */
-  function _sendPrompt(text, images, streamingBehavior, canSend) {
+  function _sendPrompt(text, images, streamingBehavior) {
     state.messages = [...state.messages, { kind: "user", time: timeNow(), text, images: images ?? [] }];
     _disarmAutoRename(text);
     _recordPrompt(text);
     notify();
-    if (canSend && !canSend()) return Promise.resolve(false);
     return _send({ type: "prompt", message: text, images: images ?? [], ...(streamingBehavior ? { streamingBehavior } : {}) });
   }
 
@@ -3385,9 +3384,11 @@
         "pr_automation_snapshot", { sessionId },
       );
       if (!ready() || !latest || latest.url.toLowerCase() !== expected.url.toLowerCase() || latest.branch !== expected.branch || latest.head !== expected.head) return false;
-      // Once handed to omp the prompt is out, whatever happened meanwhile:
-      // the controller records it as sent even after a tab switch.
-      return _sendPrompt(text, undefined, undefined, ready);
+      // `ready()` just ran in this same synchronous step, so nothing can
+      // change between it and the handoff. Once handed to omp the prompt is
+      // out, whatever happens meanwhile: the controller records it as sent
+      // even after a tab switch.
+      return _sendPrompt(text);
     },
     // No id on purpose: a pending-id match returns before the command
     // switch, and the abort response is what releases a cancelled

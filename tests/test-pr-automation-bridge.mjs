@@ -421,39 +421,6 @@ await check(
 );
 
 await check(
-  "a conversation reset during prompt publication prevents the handoff",
-  async () => {
-    const h = harness(),
-      id = await h.bridge.openSession("/project");
-    await flush();
-    h.clean();
-    h.setResult(snapshot());
-    let armed = false;
-    const unsubscribe = h.bridge.onUpdate((value) => {
-      if (
-        armed &&
-        value.messages.some((m) => m.kind === "user" && m.text === "stale work")
-      ) {
-        armed = false;
-        h.emit(id, {
-          type: "response",
-          command: "new_session",
-          success: true,
-          data: {},
-        });
-      }
-    });
-    armed = true;
-    assert.equal(
-      await h.bridge.prAutomationSend(id, "stale work", snapshot(), permit),
-      false,
-    );
-    unsubscribe();
-    assert.deepEqual(h.prompts, []);
-  },
-);
-
-await check(
   "tab switches discard in-flight discovery and reject publication to another tab",
   async () => {
     const h = harness(),
