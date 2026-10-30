@@ -138,9 +138,19 @@
   <script src="app/drag-reorder.js"></script>
 
   <!-- Empty-workspace backdrop: pure digital-rain + ASCII logo geometry.
-       Dependency-free IIFE; design/empty-workspace.jsx destructures
+       Dependency-free IIFE; design/backdrops/backdrop.jsx destructures
        window.OMP_MATRIX at top level, so it must load before it. -->
   <script src="app/matrix-rain.js"></script>
+  <!-- Start screens: the screen list, shared math and the next-token rules,
+       then each other screen's rules, added to the same object (so after
+       it). Dependency-free IIFEs; design/empty-workspace.jsx destructures
+       window.OMP_BACKDROPS at top level, the renderers in
+       design/backdrops/ read it at run time, and app/settings-schema.js
+       reads it late (start screen tiles). -->
+  <script src="app/backdrops.js"></script>
+  <script src="app/backdrops-latent.js"></script>
+  <script src="app/backdrops-orbit.js"></script>
+  <script src="app/backdrops-neural.js"></script>
 
   <!-- Per-tab composer draft + plan-mode state (issue #28): pure map and
        transition helpers. Dependency-free IIFE; design/composer.jsx,
@@ -391,8 +401,18 @@
   <!-- Project sidebar (#27); reads window.TabRunDot / window.TabLabel
        (tab-group-chip.jsx) and window.OMP_PROJECT_NAV at top level. -->
   <script type="text/babel" src="design/project-sidebar.jsx"></script>
-  <!-- Session column with no tab open; destructures window.MarkdownContent
-       and window.OMP_MATRIX at top level. -->
+  <!-- Start screens: one renderer per screen (plain IIFEs registering on
+       window.OMP_BACKDROP_RENDERERS, read when the canvas effect runs),
+       then the canvas host window.Backdrop, which destructures
+       window.OMP_MATRIX at top level. empty-workspace.jsx destructures
+       window.Backdrop, window.MarkdownContent and window.OMP_BACKDROPS at
+       top level; settings/controls.jsx reads window.Backdrop at render. -->
+  <script src="design/backdrops/matrix.js"></script>
+  <script src="design/backdrops/latent.js"></script>
+  <script src="design/backdrops/sampling.js"></script>
+  <script src="design/backdrops/orbit.js"></script>
+  <script src="design/backdrops/neural.js"></script>
+  <script type="text/babel" src="design/backdrops/backdrop.jsx"></script>
   <script type="text/babel" src="design/empty-workspace.jsx"></script>
   <script type="text/babel" src="design/panels.jsx"></script>
   <!-- Git browser: the files pane exports window.GitFileTree and

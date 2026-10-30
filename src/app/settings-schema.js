@@ -6,7 +6,7 @@
 //
 // Two row kinds:
 //   - `tweak`: one key of TWEAK_DEFAULTS (app/constants.js), rendered by the
-//     page itself; `type` is toggle | seg | slider | themes | swatches.
+//     page itself; `type` is toggle | seg | slider | themes | swatches | screens.
 //   - `custom`: rendered by `window.OMP_SETTINGS_ROWS[type]`
 //     (design/settings/rows-*.jsx). `keys` / `keyPrefix` name the tweak keys
 //     the row owns, so its changes count in the badges and the section
@@ -15,9 +15,10 @@
 // `desc` is schema-authored text; `backtick` segments render as code.
 // Bounds of collapseAfter / promptHistoryLimit / pasteCollapseLines and the
 // fold modes come from OMP_COLLAPSE / OMP_PROMPT_HISTORY / OMP_SESSION_UI,
-// read late (getters), as are OMP_ACCENT (accent comparison), OMP_KEYMAP
-// (shortcut keywords) and TWEAK_DEFAULTS, so load order among the plain
-// app/*.js modules does not matter.
+// the start screens from OMP_BACKDROPS, read late (getters), as are
+// OMP_ACCENT (accent comparison), OMP_KEYMAP (shortcut keywords) and
+// TWEAK_DEFAULTS, so load order among the plain app/*.js modules does not
+// matter.
 (function () {
   const THEMES = Object.freeze([
     { id: "aurora", tone: "dark", accent: "#8AF0C8" },
@@ -34,6 +35,8 @@
   const sessionUi = () => window.OMP_SESSION_UI;
   const opts = (values, labels = {}) => values.map(v => ({ value: v, label: labels[v] ?? String(v) }));
   const foldOptions = () => opts(collapse()?.MODES ?? ["auto", "open", "folded"]);
+  const screenOptions = () => (window.OMP_BACKDROPS?.SCREENS ?? [{ id: "matrix", label: "Matrix", blurb: "" }])
+    .map(s => ({ value: s.id, label: s.label, blurb: s.blurb }));
 
   // Descriptors, not spread: spread would read the bound getters once, now.
   const withExtra = (base, extra) => Object.defineProperties(base, Object.getOwnPropertyDescriptors(extra ?? {}));
@@ -41,10 +44,12 @@
   const custom = (type, label, desc, kw, extra) => withExtra({ kind: "custom", id: `custom:${type}`, type, label, desc, kw }, extra);
 
   const SECTIONS = [
-    { id: "appearance", icon: "sparkle", title: "Appearance", blurb: "Colour theme, accent, density and text size of the whole window.", groups: [
+    { id: "appearance", icon: "sparkle", title: "Appearance", blurb: "Colour theme, accent, start screen, density and text size of the whole window.", groups: [
       { name: "Theme", rows: [
         tweak("theme", "themes", "Theme", "Picking a theme also resets the accent to the theme's own.", "dark light colour color aurora phosphor daylight"),
         tweak("accent", "swatches", "Accent", "Focus rings, the active tab, links and the assistant's marks.", "color colour highlight"),
+        tweak("startScreen", "screens", "Start screen", "The animated screen behind the logo while no tab is open. It follows the theme and accent.", "welcome backdrop empty animation matrix latent embedding next token sampling agent loop orbit forward pass neural",
+          { get options() { return screenOptions(); } }),
       ] },
       { name: "Text", rows: [
         tweak("density", "seg", "Density", "Row height, padding and the base text size.", "spacing compact",
@@ -213,7 +218,7 @@
       const stepped = row.min + Math.round((n - row.min) / row.step) * row.step;
       return Math.min(row.max, Math.max(row.min, stepped));
     }
-    if (row.type === "seg") return row.options.some(o => o.value === v) ? v : fallback;
+    if (row.type === "seg" || row.type === "screens") return row.options.some(o => o.value === v) ? v : fallback;
     if (row.type === "toggle") return typeof v === "boolean" ? v : fallback;
     return v ?? fallback;
   }

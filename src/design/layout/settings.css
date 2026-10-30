@@ -206,6 +206,11 @@
 .st-nm small { margin-left: auto; color: var(--fg-3); font-weight: 400; font-size: var(--d-text-xs); }
 .st-radio { width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--fg-4); }
 .st-th[aria-checked="true"] .st-radio { border: 4px solid var(--accent); }
+/* Start screen tiles reuse the theme cards; the preview is a live canvas. */
+.st-pv-live { display: block; position: relative; }
+.st-pv-live canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.st-pv-live + .st-nm { white-space: nowrap; }
+.st-pv-live + .st-nm small { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 .st-sw { display: flex; flex: none; align-items: center; gap: 8px; }
 .st-sw button {

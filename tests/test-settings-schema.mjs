@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const win = {};
 // The schema loads before the modules it reads bounds from: they are read late.
-for (const f of ["constants.js", "settings-schema.js", "accent.js", "chat-collapse.js", "prompt-history.js", "session-ui.js", "keymap.js"]) {
+for (const f of ["constants.js", "settings-schema.js", "accent.js", "chat-collapse.js", "prompt-history.js", "session-ui.js", "keymap.js", "backdrops.js"]) {
   // eslint-disable-next-line no-new-func
   new Function("window", readFileSync(join(root, "src/app", f), "utf8"))(win);
 }
@@ -69,6 +69,17 @@ check("bounds come from the owning modules", () => {
   assert.equal(row("pasteCollapseLines").max, win.OMP_SESSION_UI.PASTE_LINES_MAX);
   assert.deepEqual(row("foldTools").options.map(o => o.value), [...win.OMP_COLLAPSE.MODES]);
   assert.deepEqual([row("fontSize").min, row("fontSize").max, row("fontSize").step], [75, 150, 5]);
+});
+
+check("start screen tiles come from OMP_BACKDROPS; a stale stored screen falls back", () => {
+  const r = row("startScreen");
+  assert.equal(r.type, "screens");
+  assert.deepEqual(r.options.map(o => o.value), win.OMP_BACKDROPS.SCREENS.map(s => s.id));
+  for (const o of r.options) assert.ok(o.label && o.blurb, o.value);
+  assert.equal(S.clamp(r, "neural"), "neural");
+  assert.equal(S.clamp(r, "starfield"), D.startScreen);
+  assert.equal(S.isModified(r, vals({ startScreen: "orbit" })), true);
+  assert.deepEqual(S.resetRow(r, vals({ startScreen: "orbit" })), { startScreen: D.startScreen });
 });
 
 check("clamp keeps values in bounds and on the step", () => {
