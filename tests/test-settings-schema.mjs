@@ -122,6 +122,14 @@ check("custom rows count their owned tweak keys", () => {
   assert.equal(S.modifiedCount("rail", vals({ "widget:plugin:gone": false })), 1);
 });
 
+check("keep-awake is searchable in Session without creating a local tweak", () => {
+  const found = S.search("keep computer awake", vals()).groups.find(g =>
+    g.sectionId === "session" && g.rows.some(r => r.id === "custom:keepAwake"));
+  assert.equal(found.src, "keep-awake.json");
+  assert.equal(S.isModified(row("custom:keepAwake"), vals()), false);
+  assert.deepEqual(S.resetRow(row("custom:keepAwake"), vals()), {});
+});
+
 check("modifiedCount per section and overall, hidden rows excluded", () => {
   const v = vals({ fontSize: 110, showMinimap: false, railWidth: 300 });
   assert.equal(S.modifiedCount("appearance", v), 1);
