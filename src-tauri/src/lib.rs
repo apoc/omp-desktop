@@ -44,6 +44,7 @@ mod terminal;
 mod test_support;
 mod text;
 mod updater;
+mod voice_spectrum;
 mod widgets;
 mod workspace;
 
@@ -972,6 +973,31 @@ fn widgets_set_view(view: widgets::ViewArgs, host: State<'_, Arc<widgets::Widget
     host.set_view(view);
 }
 
+/// Start the composer's voice spectrum (`voice://spectrum` frames from the
+/// default microphone) while voice to text or a live conversation records;
+/// already running is fine. `async` + `spawn_blocking`: opening the device
+/// can take a moment. Fails when there is no usable microphone.
+#[tauri::command]
+async fn voice_spectrum_start(
+    app: AppHandle,
+    spectrum: State<'_, Arc<voice_spectrum::VoiceSpectrum>>,
+) -> Result<(), String> {
+    with_blocking(&spectrum, move |s| s.start(app)).await
+}
+
+/// Stop the voice spectrum, if running. `async` + `spawn_blocking`: closing
+/// the device and joining its thread block.
+#[tauri::command]
+async fn voice_spectrum_stop(
+    spectrum: State<'_, Arc<voice_spectrum::VoiceSpectrum>>,
+) -> Result<(), String> {
+    with_blocking(&spectrum, |s| {
+        s.stop();
+        Ok(())
+    })
+    .await
+}
+
 /// Manual refresh of one card; a malformed id is ignored.
 #[tauri::command]
 fn widgets_refresh(plugin_id: String, host: State<'_, Arc<widgets::WidgetHost>>) {
@@ -1476,6 +1502,7 @@ fn with_plugins_and_state(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder
         .manage(OpenProjectState::new())
         .manage(updater::UpdaterState::default())
         .manage(CloseGuard::default())
+        .manage(Arc::new(voice_spectrum::VoiceSpectrum::default()))
 }
 
 /// Run the Tauri application. Panics if the runtime fails to initialise.
@@ -1557,6 +1584,8 @@ pub fn run() {
             widgets_approve,
             widgets_set_view,
             widgets_refresh,
+            voice_spectrum_start,
+            voice_spectrum_stop,
             usage_stats,
             goal_continuation_get,
             goal_continuation_set,

@@ -35,7 +35,8 @@ jobs:
           workspaces: src-tauri
           key: test-${{ matrix.os }}
 
-      # WebKit + GTK are required to compile the Tauri crate on Linux
+      # WebKit + GTK are required to compile the Tauri crate on Linux; ALSA
+      # for the voice spectrum's microphone capture (cpal).
       - name: Install system dependencies (Linux only)
         if: matrix.os == 'ubuntu-22.04'
         run: |
@@ -44,6 +45,7 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
+            libasound2-dev \
             patchelf
 
       # The runner images ship Google Chrome. A real-Chromium test that

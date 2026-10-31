@@ -36,7 +36,7 @@ function hintKeyFor(actionId, fallback) {
 // ── The composer (input + plan/steer modes + send) ────────────────────
 // `submitKey` ("enter" | "ctrl+enter") and `pasteCollapseLines` come from the
 // tweaks (Settings › Composer); the defaults match TWEAK_DEFAULTS.
-function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, planBlocked = "", goalMode = false, goalTint = false, onToggleGoal, goalBlocked = "", goalStrip = null, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued, onSendQueuedNow, browserChips = [], onRemoveBrowserChip, onBrowserChipClick, submitKey = "enter", pasteCollapseLines = 5, liveVoice, liveError, onLiveAction, codexLogin = null, dictation, dictationError, onDictationAction, dictationCompleted, onAckDictation }) {
+function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, planBlocked = "", goalMode = false, goalTint = false, onToggleGoal, goalBlocked = "", goalStrip = null, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued, onSendQueuedNow, browserChips = [], onRemoveBrowserChip, onBrowserChipClick, submitKey = "enter", pasteCollapseLines = 5, liveVoice, liveError, onLiveAction, codexLogin = null, voiceSpectrum = null, dictation, dictationError, onDictationAction, dictationCompleted, onAckDictation }) {
   // Drafts are per tab (issue #28). The composer stays mounted across tab
   // switches and keeps one draft per session id (app/session-ui.js
   // DRAFT_IDLE): text, pending image attachments (sent alongside the next
@@ -663,6 +663,8 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
 
       {/* Keyed by tab: an open preview is that tab's, not the next one's. */}
       <PasteStrip key={sessionId} pastes={collapsed} onExpand={expandPaste} />
+
+      {voiceSpectrum && <VoiceSpectrum source={voiceSpectrum} />}
 
       <div className="composer-row">
         <button className="btn icon ghost" title="attach image" onClick={() => fileInputRef.current?.click()}>

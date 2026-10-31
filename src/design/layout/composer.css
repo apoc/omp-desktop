@@ -45,6 +45,20 @@
 /* `.btn` has no disabled look of its own (cf. `.queue-btn:disabled`). */
 .btn.voice-mode-btn:disabled, .live-voice .btn:disabled { opacity: .4; cursor: default; }
 .btn.voice-mode-btn:disabled:hover, .live-voice .btn:disabled:hover { background: transparent; color: var(--fg-3); }
+/* The microphone's equalizer (design/voice-spectrum.jsx) right above the
+   input while voice capture records; the bars are canvas-drawn. */
+.voice-spectrum {
+  height: 44px; margin: 0 2px 8px;
+  border: 1px solid var(--line-bright); border-radius: 8px;
+  background:
+    radial-gradient(120% 90% at 50% 100%, var(--accent-soft), transparent 70%),
+    var(--bg-elevated);
+  overflow: hidden;
+  animation: voice-spectrum-in .22s ease-out;
+}
+.voice-spectrum canvas { display: block; width: 100%; height: 100%; }
+@keyframes voice-spectrum-in { from { opacity: 0; transform: translateY(4px); } }
+@media (prefers-reduced-motion: reduce) { .voice-spectrum { animation: none; } }
 .dictation-preview { margin-top: 6px; max-height: 120px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-2); }
 
 /* Image attachments, and the collapsed-paste chips (#31) under the same layout.

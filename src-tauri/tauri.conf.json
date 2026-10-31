@@ -60,10 +60,12 @@
     },
     "linux": {
       "deb": {
-        "desktopTemplate": "packaging/omp-desktop.desktop"
+        "desktopTemplate": "packaging/omp-desktop.desktop",
+        "depends": ["libasound2"]
       },
       "rpm": {
-        "desktopTemplate": "packaging/omp-desktop.desktop"
+        "desktopTemplate": "packaging/omp-desktop.desktop",
+        "depends": ["alsa-lib"]
       }
     },
     "windows": {

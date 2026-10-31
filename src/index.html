@@ -161,6 +161,10 @@
   <script src="app/live-voice.js"></script>
   <!-- Quoted chat/voice history for each native live connection. -->
   <script src="app/live-context.js"></script>
+  <!-- Voice spectrum: when the microphone analyser runs and the bar
+       physics; dependency-free IIFE, read late by app-live.jsx and
+       design/voice-spectrum.jsx. -->
+  <script src="app/voice-spectrum.js"></script>
   <!-- Accent tokens (#37): the soft/glow/deep shades derived from a picked
        accent. Dependency-free IIFE; app/use-bridge-snapshot.jsx's
        useThemeEffect calls window.OMP_ACCENT at effect time. -->
@@ -391,6 +395,9 @@
   <script type="text/babel" src="design/goal-strip.jsx"></script>
   <!-- Composer's live voice status, controls and ephemeral captions. -->
   <script type="text/babel" src="design/live-voice.jsx"></script>
+  <!-- Composer's microphone equalizer (canvas); reads window.OMP_VOICE_SPECTRUM
+       when it mounts. -->
+  <script type="text/babel" src="design/voice-spectrum.jsx"></script>
   <script type="text/babel" src="design/composer.jsx"></script>
   <!-- Per-tab profile selector — toolbar.jsx destructures window.ProfileMenu
        at top level, so this must load before it. -->
@@ -534,6 +541,9 @@
   <!-- Browser panel hook; destructures window.OMP_BROWSER and
        window.OMP_BROWSER_SCREEN at top level. -->
   <script type="text/babel" src="app/use-browser.jsx"></script>
+  <!-- Composer voice spectrum: starts/stops Rust's microphone analyser and
+       keeps its newest frame in a ref; exports useVoiceSpectrum. -->
+  <script type="text/babel" src="app/use-voice-spectrum.jsx"></script>
   <!-- Phone publisher and actions; follows live.js and app/remote-view.js,
        exports useRemote for app-live.jsx. -->
   <script type="text/babel" src="app/use-remote.jsx"></script>

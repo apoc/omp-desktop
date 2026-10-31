@@ -360,6 +360,9 @@ function App() {
     const timer = setTimeout(() => requestDictationAction("stop"), dictationAutoStopMs);
     return () => clearTimeout(timer);
   }, [dictationAutoStopMs, dictation?.captureId, dictation?.text, t.dictationSend]);
+  // The equalizer above the input while the microphone records (Rust reads
+  // the device itself; omp's capture is out of reach in its own process).
+  const voiceSpectrum = useVoiceSpectrum(bridge, window.OMP_VOICE_SPECTRUM.shouldRun(dictation, liveVoice));
   const handleLiveAction = (args = "") => {
     const action = window.OMP_SLASH.liveCommand(args, liveVoice);
     if (!action) {
@@ -1052,6 +1055,7 @@ function App() {
                     liveError={liveErrors[planKey]}
                     onLiveAction={handleLiveAction}
                     codexLogin={codexLogin}
+                    voiceSpectrum={voiceSpectrum}
                     dictation={dictation}
                     dictationError={dictationErrors[planKey]}
                     onDictationAction={requestDictationAction}

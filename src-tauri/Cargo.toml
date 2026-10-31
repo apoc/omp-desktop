@@ -30,6 +30,11 @@ rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"]
 # Read-only access to omp's own `agent.db` (model MRU for the picker, #11).
 # `bundled` compiles SQLite in, so no system library is needed on any OS.
 rusqlite = { version = "0.40", features = ["bundled"] }
+# The composer's voice spectrum (`src/voice_spectrum/`): the app reads the
+# default microphone itself (omp's capture is in its own process) and turns
+# it into equalizer bands. ALSA on Linux (`libasound2-dev` to build).
+cpal = "0.18"
+realfft = "3.5"
 # The terminal panel's pseudo-terminal (`src/terminal/`): a shell per tab.
 portable-pty = "0.9"
 # Terminal output travels as base64 in JSON event payloads. Already in the
