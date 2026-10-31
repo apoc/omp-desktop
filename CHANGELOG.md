@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-10-31
+
 ### Added
 
 - The composer has separate one-click buttons for **Voice to text** and **Live conversation**. Live conversation (#68) is Codex only (its button is greyed out while the tab's profile has no Codex login) and connects to the native omp call with state, levels, captions, mute, pause, resume and end controls. Voice to text uses the profile's omp speech-to-text engine, previews dictation and appends the final text to the originating draft without sending a prompt or playing a reply. Switching tabs or opening Settings pauses live conversation and stops dictation; closing a tab ends capture. A failed stop keeps the active control visible for retry.
