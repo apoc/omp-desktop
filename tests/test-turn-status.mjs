@@ -78,6 +78,15 @@ check("only an open ask waits on the user", () => {
   assert.equal(T.runStateOf({ ...base, messages: [ask(), ask({ answered: true })] }), "waiting-user");
 });
 
+check("a repository is busy while any tab on a folder of it works, background jobs included", () => {
+  const tab = (repoRoot, runState) => ({ id: `${repoRoot}:${runState}`, path: `${repoRoot}/sub`, repoRoot, runState });
+  for (const state of ["running", "retrying", "waiting-user", "background"]) {
+    assert.equal(T.busyInRepo([tab("/r", "idle"), tab("/r", state)], "/r"), true, state);
+  }
+  assert.equal(T.busyInRepo([tab("/r", "idle"), tab("/r", "failed"), tab("/q", "running")], "/r"), false);
+  assert.equal(T.busyInRepo([tab(null, "running")], null), false, "no repository");
+});
+
 check("a yield is agent_end with yielded, or a terminal end from a frame without it", () => {
   // The captured background-job end: non-terminal, but the agent yielded.
   assert.equal(T.isYield({ type: "agent_end", isTerminal: false, yielded: true, awaitingAsyncWork: true }), true);

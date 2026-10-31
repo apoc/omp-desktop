@@ -812,26 +812,38 @@ async fn open_project(app: tauri::AppHandle) -> Result<Option<String>, String> {
     .await?
 }
 
+/// What `start_git_watch` reports for a tab's folder.
+#[derive(serde::Serialize)]
+struct GitWatch {
+    /// The short branch name; `None` outside a repository or on a detached HEAD.
+    branch: Option<String>,
+    /// The repository's work tree, shared by every tab on a folder of it (the
+    /// branch picker's busy lock); `None` outside a repository.
+    root: Option<String>,
+}
+
 /// Start watching `.git/HEAD` for a session's project path.
 ///
-/// Returns the short branch name at call time, or `None` when `path` is
-/// not inside a git repo or HEAD is detached.  The watcher fires
-/// `"git://branch/{session_id}"` events on every subsequent HEAD change.
-/// Watcher errors are silently ignored — the branch chip simply won't
-/// update live.
+/// Returns the branch and work tree at call time (see `GitWatch`). The
+/// watcher fires `"git://branch/{session_id}"` events on every subsequent
+/// HEAD change. Watcher errors are silently ignored — the branch chip
+/// simply won't update live.
 #[tauri::command]
 fn start_git_watch(
     session_id: String,
     path: String,
     watcher: State<'_, GitWatcherState>,
     app: tauri::AppHandle,
-) -> Option<String> {
+) -> GitWatch {
     let p = std::path::Path::new(&path);
-    let (branch, head) = git::probe(p);
-    if let Some(h) = head {
+    let probe = git::probe(p);
+    if let Some(h) = probe.head {
         let _ = watcher.start(&session_id, p, h, app);
     }
-    branch
+    GitWatch {
+        branch: probe.branch,
+        root: probe.root,
+    }
 }
 
 /// Stop the HEAD watcher for a session.  No-op when none is active.
@@ -902,6 +914,13 @@ async fn git_browser_commit_file(
     off_ipc(move || git_browser::commit_file(Path::new(&path), &sha, &rel_path)).await?
 }
 
+/// The branches the status bar's picker offers — see `git_browser::branches`.
+/// `async` + `spawn_blocking`: see `git_browser_status`.
+#[tauri::command]
+async fn git_browser_branches(path: String) -> Result<Vec<git_browser::Branch>, String> {
+    off_ipc(move || git_browser::branches(Path::new(&path))).await?
+}
+
 /// A file of the tab's project for the in-app preview — see
 /// `project_file::read`. The folder is the one `start_session` registered
 /// for the tab, never one sent by the webview. `async` + `spawn_blocking`:
@@ -936,6 +955,14 @@ async fn workspace_accept(path: String, rel_path: String) -> Result<(), String> 
 #[tauri::command]
 async fn workspace_reject(path: String, rel_path: String) -> Result<(), String> {
     off_ipc(move || workspace::reject(Path::new(&path), &rel_path)).await?
+}
+
+/// Switch the project's work tree to a listed branch — see
+/// `workspace::switch_branch`. `async` + `spawn_blocking`: `git switch`
+/// rewrites the work tree.
+#[tauri::command]
+async fn workspace_switch_branch(path: String, name: String, remote: bool) -> Result<(), String> {
+    off_ipc(move || workspace::switch_branch(Path::new(&path), &name, remote)).await?
 }
 
 /// Widget config, approvals, active view and runs — see
@@ -1576,12 +1603,14 @@ pub fn run() {
             git_browser_status,
             git_browser_file,
             git_browser_log,
+            git_browser_branches,
             git_browser_commit,
             git_browser_commit_file,
             project_file_read,
             pr_automation::pr_automation_snapshot,
             workspace_accept,
             workspace_reject,
+            workspace_switch_branch,
             widgets_state,
             widgets_reload,
             widgets_approve,

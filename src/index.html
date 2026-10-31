@@ -410,6 +410,10 @@
        window.TabGroupChip / window.TabRunDot / window.TabLabel at top level,
        so this must load before it. -->
   <script type="text/babel" src="design/tab-group-chip.jsx"></script>
+  <!-- The status bar's branch pill and picker: chrome.jsx destructures
+       window.BranchMenu at top level, and it destructures OMP_GIT_BROWSER
+       (app/git-browser.js) and calls usePopoverDismiss. -->
+  <script type="text/babel" src="design/branch-menu.jsx"></script>
   <script type="text/babel" src="design/chrome.jsx"></script>
   <!-- App toolbar between the title bar and the tabs; app-live.jsx
        destructures window.Toolbar. -->

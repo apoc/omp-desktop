@@ -1177,7 +1177,9 @@ function App() {
           </div>
           {/* Full window width under the workspace: no side column (rail,
               tree, browser panel, subagent split) ever narrows it. */}
-          <StatusBar ctx={liveCtx} todoDone={todoCounts.done} todoTotal={todoCounts.total} onTodo={() => setPlanOpen(true)} updater={updater} />
+          <StatusBar ctx={liveCtx} todoDone={todoCounts.done} todoTotal={todoCounts.total} onTodo={() => setPlanOpen(true)} updater={updater}
+            branch={activeProject.branch} tabId={activeProject.id} bridge={bridge}
+            branchLocked={window.OMP_TURN_STATUS.busyInRepo(sessions, activeProject.repoRoot)} />
         </div>
       </div>
 

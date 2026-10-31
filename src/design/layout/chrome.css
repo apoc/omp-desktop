@@ -38,7 +38,9 @@
   display: flex; align-items: center; justify-content: center;
   border-radius: 4px; cursor: default;
 }
-.chrome-title { display: flex; align-items: center; gap: 6px; font-size: var(--d-text-sm); flex: 1; justify-content: center; }
+/* Baseline, not center: JetBrains Mono ("OMP ·") sits its glyphs higher in
+   the line box than Geist (the project name), so centred boxes misalign the text. */
+.chrome-title { display: flex; align-items: baseline; gap: 6px; font-size: var(--d-text-sm); flex: 1; justify-content: center; }
 .chrome-right { display: flex; align-items: center; gap: 6px; }
 
 /* ── Per-tab profile selector ─────────────────────────────────────────── */
@@ -46,10 +48,11 @@
 /* Toolbar height (the menu sits in toolbar.jsx's right cluster). */
 .profile-trigger { display: flex; align-items: center; gap: 6px; max-width: 220px; height: 34px; padding: 0 10px; }
 .profile-trigger-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Dropdown chrome shared by the profile, tab-group and thinking menus
-   (thinking-menu.jsx, positioned in composer.css) and the browser panel's
-   annotate popover (positioned in browser.css). */
-.profile-pop, .tab-group-pop, .thinking-pop, .browser-popover {
+/* Dropdown chrome shared by the profile, tab-group, thinking and branch
+   menus (thinking-menu.jsx, positioned in composer.css; branch-menu.jsx in
+   rail.css) and the browser panel's annotate popover (positioned in
+   browser.css). */
+.profile-pop, .tab-group-pop, .thinking-pop, .branch-pop, .browser-popover {
   position: absolute; z-index: 40;
   padding: 4px;
   display: flex; flex-direction: column; gap: 1px;
@@ -91,19 +94,27 @@
    the risk gradient has to point the same way.) */
 .profile-row { display: flex; align-items: center; gap: 6px; }
 .profile-row .profile-item { flex: 1; min-width: 0; }
-.profile-item, .thinking-item {
+.profile-item, .thinking-item, .branch-item {
   appearance: none; border: 0; background: transparent;
   display: flex; align-items: center; gap: 8px;
   padding: 5px 8px; border-radius: var(--r-1);
   font-size: var(--d-text-sm); color: var(--fg-2);
   text-align: left; cursor: pointer;
 }
-.profile-item:hover, .thinking-item:hover { background: var(--bg-hover); color: var(--fg); }
+.profile-item:hover, .thinking-item:hover, .branch-item:hover { background: var(--bg-hover); color: var(--fg); }
 /* The row button is not a `.btn`, so it misses the global focus ring in
    styles.css - without this, tabbing lights the two small icon buttons and
    leaves the primary target between them invisible. */
-.profile-item:focus-visible, .thinking-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.profile-item:focus-visible, .thinking-item:focus-visible, .branch-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
 .profile-item.active, .thinking-item.active { color: var(--fg); }
+/* The thinking and branch menus (positioned in composer.css / rail.css):
+   a pick in flight, the notes under the rows, and rows whose hint or age
+   sits on the name's baseline. */
+.thinking-pop.busy, .thinking-pop.busy .thinking-item,
+.branch-pop.busy, .branch-pop.busy .branch-item { cursor: progress; }
+.thinking-pop-note, .branch-pop-note { padding: 5px 8px; font-size: var(--d-text-xs); color: var(--fg-3); }
+.thinking-pop-note.error, .branch-pop-note.error { color: var(--rose); overflow-wrap: anywhere; }
+.thinking-item, .branch-item { align-items: baseline; }
 /* Fixed-width gutter so names stay aligned whether or not the row is the
    running one (the mark is rendered only when it is). */
 .profile-item-mark {

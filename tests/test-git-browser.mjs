@@ -211,6 +211,34 @@ check("absolutePath: no project leaves the path as it is", () => {
   assert.equal(G.absolutePath("", "src/a.js"), "src/a.js");
 });
 
+// ── branchMatches ─────────────────────────────────────────────────────────────
+
+const br = (name, remote = false) => ({ name, remote, at: 0 });
+const branchList = [br("feat/login"), br("origin/fix-login", true), br("main-old"), br("origin/docs", true)];
+const names = m => [m.local.map(b => b.name), m.remote.map(b => b.name), m.hidden];
+
+check("branchMatches: a blank query keeps every branch, locals and remotes apart in Rust's order", () =>
+  assert.deepEqual(names(G.branchMatches(branchList, "  ")),
+    [["feat/login", "main-old"], ["origin/fix-login", "origin/docs"], 0]));
+
+check("branchMatches: case-insensitive name match, surrounding blanks ignored", () =>
+  assert.deepEqual(names(G.branchMatches(branchList, " LOGIN ")),
+    [["feat/login"], ["origin/fix-login"], 0]));
+
+check("branchMatches: no match leaves both groups empty", () =>
+  assert.deepEqual(names(G.branchMatches(branchList, "nope")), [[], [], 0]));
+
+check("branchMatches: past the row cap, locals fill first and the rest count as hidden", () => {
+  const many = [
+    ...Array.from({ length: G.MAX_BRANCH_ROWS - 1 }, (_, i) => br(`l${i}`)),
+    br("origin/a", true), br("origin/b", true), br("origin/c", true),
+  ];
+  const m = G.branchMatches(many, "");
+  assert.equal(m.local.length, G.MAX_BRANCH_ROWS - 1);
+  assert.deepEqual(m.remote.map(b => b.name), ["origin/a"]);
+  assert.equal(m.hidden, 2);
+});
+
 // ── Done ──────────────────────────────────────────────────────────────────────
 
 console.log(`git-browser: ${passed} checks passed`);

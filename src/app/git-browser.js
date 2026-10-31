@@ -1,15 +1,18 @@
-// Git browser view helpers (design/git/*.jsx, app/use-git-browser.jsx).
+// Git browser view helpers (design/git/*.jsx, app/use-git-browser.jsx) and
+// the status bar's branch picker (design/branch-menu.jsx).
 //
 // Every git fact — the tree with its status marks, the inline line diff, the
-// commit graph and its lanes — comes from Rust (src-tauri/src/git_browser/).
-// What is left here is view state over those payloads: which tree rows an
-// expansion set shows (`flatten`), which directories to open so every change
-// is in view (`changedDirs`, `ancestorDirs`), the name filter
-// (`filterFiles`), the first file to select (`firstFile`), hunk navigation
-// (`hunkStarts`), the copy-diff text (`diffText`), compact commit ages
-// (`relativeTime`), the discard confirmation rule (`discardDeletes`), the
-// refresh trigger counting finished edit/write tool cards (`finishedEdits`)
-// and an edit card's path made absolute (`absolutePath`).
+// commit graph and its lanes, the branch list — comes from Rust
+// (src-tauri/src/git_browser/). What is left here is view state over those
+// payloads: which tree rows an expansion set shows (`flatten`), which
+// directories to open so every change is in view (`changedDirs`,
+// `ancestorDirs`), the name filter (`filterFiles`), the first file to select
+// (`firstFile`), hunk navigation (`hunkStarts`), the copy-diff text
+// (`diffText`), compact commit ages (`relativeTime`), the discard
+// confirmation rule (`discardDeletes`), the refresh trigger counting
+// finished edit/write tool cards (`finishedEdits`), an edit card's path made
+// absolute (`absolutePath`) and the branch picker's filtered rows
+// (`branchMatches`).
 //
 // A tree node is Rust's `TreeNode`: `{ name, path, dir, status, changed,
 // children }`, children dirs first then files, `status` null when unchanged.
@@ -167,8 +170,25 @@
     return `${projectPath.replace(/[/\\]+$/, "")}/${target.replace(/^\.[/\\]/, "")}`;
   }
 
+  /** Rows the status bar's branch picker shows a cap of. */
+  const MAX_BRANCH_ROWS = 200;
+
+  /** The branch picker's rows for `query`: Rust's `Branch[]` (newest first)
+   *  whose name contains it (case-insensitive, blanks ignored; a blank query
+   *  keeps all), split into `local` and `remote` in that order, at most
+   *  `MAX_BRANCH_ROWS` together, locals first; `hidden` counts the matches
+   *  cut off. */
+  function branchMatches(branches, query) {
+    const q = query.trim().toLowerCase();
+    const hits = q ? branches.filter(b => b.name.toLowerCase().includes(q)) : branches;
+    const local = hits.filter(b => !b.remote).slice(0, MAX_BRANCH_ROWS);
+    const remote = hits.filter(b => b.remote).slice(0, MAX_BRANCH_ROWS - local.length);
+    return { local, remote, hidden: hits.length - local.length - remote.length };
+  }
+
   window.OMP_GIT_BROWSER = {
     flatten, changedDirs, ancestorDirs, filterFiles, firstFile, hunkStarts,
     splitPath, relativeTime, diffText, discardDeletes, finishedEdits, absolutePath,
+    MAX_BRANCH_ROWS, branchMatches,
   };
 })();

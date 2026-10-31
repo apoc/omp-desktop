@@ -6,23 +6,33 @@
 
 use std::path::{Path, PathBuf};
 
-/// Open the nearest git repository containing `path` and return:
-/// - the short current branch name (`None` when HEAD is detached or on error)
-/// - the absolute path to `.git/HEAD` used as the watch target
-///
-/// Both fields are `None` when `path` is not inside any git repository.
-/// Opens the repository only once so callers that need both values pay
-/// a single discovery cost. Holds the spawn gate: gix may run `git` to find
-/// its installation config.
-pub fn probe(path: &Path) -> (Option<String>, Option<PathBuf>) {
+/// What [`probe`] finds for a folder; every field `None` outside a git
+/// repository.
+#[derive(Debug, Default)]
+pub struct Probe {
+    /// The short current branch name (`None` when HEAD is detached).
+    pub branch: Option<String>,
+    /// The absolute path to `.git/HEAD`, the watch target.
+    pub head: Option<PathBuf>,
+    /// The repository's work tree (`None` for a bare one): tabs on folders
+    /// of one repository share it, which is what a branch switch changes.
+    pub root: Option<String>,
+}
+
+/// Open the nearest git repository containing `path` and read its branch,
+/// HEAD file and work tree in one discovery. Holds the spawn gate: gix may
+/// run `git` to find its installation config.
+pub fn probe(path: &Path) -> Probe {
     let Ok((_gate, repo)) = crate::spawn_gate::discover(path) else {
-        return (None, None);
+        return Probe::default();
     };
-    let branch = repo
-        .head_name()
-        .ok()
-        .flatten()
-        .map(|n| n.shorten().to_string());
-    let head = repo.git_dir().join("HEAD");
-    (branch, Some(head))
+    Probe {
+        branch: repo
+            .head_name()
+            .ok()
+            .flatten()
+            .map(|n| n.shorten().to_string()),
+        head: Some(repo.git_dir().join("HEAD")),
+        root: repo.workdir().map(|dir| dir.to_string_lossy().into_owned()),
+    }
 }

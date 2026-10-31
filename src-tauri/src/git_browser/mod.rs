@@ -12,18 +12,22 @@
 //! | `git_browser_log`         | [`log`] (lanes from [`graph`]) |
 //! | `git_browser_commit`      | [`commit`]   |
 //! | `git_browser_commit_file` | [`commit`]   |
+//! | `git_browser_branches`    | [`branches`] |
 //!
 //! Every path crossing the IPC boundary is project-relative to the
 //! repository's work dir (not to the tab's folder, which may be a
-//! subdirectory) and `/`-separated. Staging and discarding stay in
-//! [`crate::workspace`] (`git add` / `git checkout`).
+//! subdirectory) and `/`-separated. Staging, discarding and switching
+//! branches stay in [`crate::workspace`] (`git add` / `git checkout` /
+//! `git switch`).
 
+mod branches;
 mod commit;
 mod file;
 mod graph;
 mod log;
 mod status;
 
+pub use branches::{branches, Branch};
 pub use commit::{commit, commit_file, CommitView};
 pub use file::{file, is_binary, FileView};
 pub use log::{log, LogView};

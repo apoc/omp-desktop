@@ -6,7 +6,7 @@
    - Ambient rail: TokenGauge, ActivityRadar, subagents card, Minimap
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot, TabLabel, RenameField } = window;
+const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot, TabLabel, RenameField, BranchMenu } = window;
 const { groupTabs } = window.OMP_PROJECT_NAV;
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` — same
@@ -37,15 +37,12 @@ function WindowChrome({ project }) {
       )}
 
       <div className="chrome-title">
-        <span className="mono" style={{ color: "var(--fg-3)" }}>OMP</span>
-        <span className="mono" style={{ color: "var(--fg-5)" }}>·</span>
+        {/* No tab: EMPTY_PROJECT's name is the app's own, so no "OMP ·" prefix. */}
+        {project.id && <>
+          <span className="mono" style={{ color: "var(--fg-3)" }}>OMP</span>
+          <span className="mono" style={{ color: "var(--fg-5)" }}>·</span>
+        </>}
         <span style={{ color: "var(--fg-2)" }}>{project.name}</span>
-        {project.branch && (
-          <span className="chip muted" style={{ marginLeft: 6 }}>
-            <Icon name="branch" size={9} color="var(--fg-3)" />
-            <span className="mono" style={{ color: "var(--fg-3)" }}>{project.branch}</span>
-          </span>
-        )}
       </div>
 
       <div className="chrome-right">
@@ -168,19 +165,27 @@ function TabBar({
 }
 
 // ── Status bar (footer) ──────────────────────────────────────────────
-// Connection, tokens, cost, throughput and todo on the left, the app
-// version (and an available update) on the right; the app's other buttons
-// are on the toolbar (toolbar.jsx). The model and
+// Connection, the project's branch (a picker, design/branch-menu.jsx),
+// tokens, cost, throughput and todo on the left, the app version (and an
+// available update) on the right; the app's other buttons are on the
+// toolbar (toolbar.jsx). The model and
 // thinking level are not repeated here: the composer's pills below the
 // prompt box show (and change) both. It spans the window under the
 // workspace; the st-ctx meter, st-cost and st-tps cells (each with its
 // separator) drop out when the window is narrow (layout/rail.css).
 // `updater`: app/use-updater.jsx's result, as UpdateModal takes it.
-function StatusBar({ ctx, todoDone, todoTotal, onTodo, updater }) {
+// `branch`: the active tab's (null: no repository, or a detached HEAD);
+// `tabId` keys the picker, so a tab switch closes it; `branchLocked`: an
+// agent works on the folder, so the picker lists but does not switch.
+function StatusBar({ ctx, todoDone, todoTotal, onTodo, updater, branch, tabId, branchLocked, bridge }) {
   const todoChord = hintFor("desktop.panel.todo", "");
   return (
     <div className="status">
       <span className="status-cell"><span className="dot live" /> connected</span>
+      {branch && <>
+        <span className="status-sep">·</span>
+        <BranchMenu key={tabId} branch={branch} bridge={bridge} locked={branchLocked} />
+      </>}
       <span className="status-sep">·</span>
       <span className="status-cell st-ctx mono">
         <span style={{ color: "var(--fg-3)" }}>{ctx.label}</span>

@@ -39,6 +39,35 @@
   color: var(--fg-4);
   font-size: var(--d-text-xs);
 }
+/* The project's branch; opens the picker (design/branch-menu.jsx). */
+.btn.branch-pill {
+  height: 20px; padding: 0 6px; gap: 5px;
+  color: var(--fg-2);
+  font-size: var(--d-text-xs);
+}
+.branch-pill .mono { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+/* The picker, portaled to <body> (the bar clips its overflow) and placed
+   above the pill: `left`, `bottom` and `max-height` are set inline. */
+.branch-pop { position: fixed; width: 360px; max-width: calc(100vw - 16px); }
+/* An agent works on the repository: rows stay readable but do not switch. */
+.branch-pop.locked .branch-item { cursor: not-allowed; color: var(--fg-4); }
+.branch-pop.locked .branch-item:hover { background: transparent; }
+.branch-pop-filter {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px 6px; margin-bottom: 3px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.branch-pop-filter input {
+  flex: 1; min-width: 0;
+  background: transparent; border: 0; outline: none;
+  color: var(--fg); font-size: var(--d-text-sm);
+}
+.branch-pop-list { display: flex; flex-direction: column; gap: 1px; min-height: 0; overflow-y: auto; }
+.branch-pop-head { padding: 5px 8px 2px; font-size: var(--d-text-xs); color: var(--fg-4); }
+/* git's refusal keeps its line breaks. */
+.branch-pop-note.error { white-space: pre-wrap; }
+.branch-item-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-item-age { flex: none; font-size: var(--d-text-xs); color: var(--fg-4); }
 @container status (max-width: 58rem) { .st-tps { display: none; } }
 @container status (max-width: 54rem) { .st-cost { display: none; } }
 @container status (max-width: 50rem) { .st-ctx .status-bar-tube, .st-ctx-pct { display: none; } }

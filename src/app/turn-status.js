@@ -41,6 +41,11 @@
    *  the PR card's Auto-fix must not prompt while one is. */
   const busyElsewhere = (sessions, id, path) =>
     sessions.some(s => s.id !== id && s.path === path && isBusyRunState(s.runState));
+  /** Whether any tab on a folder of the repository whose work tree is
+   *  `root` (`sessions[i].repoRoot`) is busy: the status bar's branch picker
+   *  must not switch the files under a working agent. */
+  const busyInRepo = (sessions, root) =>
+    !!root && sessions.some(s => s.repoRoot === root && isBusyRunState(s.runState));
 
   /** Whether an `agent_end` is the agent yielding its turn. `yielded: false`
    *  ends are the agent's own continuations (a retry, compaction, a
@@ -363,7 +368,7 @@
   }
 
   window.OMP_TURN_STATUS = Object.freeze({
-    runStateOf, isBusyRunState, busyElsewhere, isYield, stripDiagnostics, providerHeadline, failureOf, finalFailures,
+    runStateOf, isBusyRunState, busyElsewhere, busyInRepo, isYield, stripDiagnostics, providerHeadline, failureOf, finalFailures,
     withPromptError, finishedJobsOf,
     failedStop, producedOutput, isHidden, retryIndex, retryStarted, retryAttempting, retryEnded, retryFinished, retryYielded, retryCleared,
   });

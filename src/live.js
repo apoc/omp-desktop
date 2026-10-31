@@ -1270,13 +1270,14 @@
         approvalMode: AMODE.isMode(approvalMode) ? approvalMode : null,
       });
     }
-    // Git: read initial branch and arm the HEAD watcher (fire-and-forget errors)
+    // Git: read initial branch and work tree and arm the HEAD watcher
+    // (fire-and-forget errors)
     if (cwd) {
-      const branch = await window.__TAURI__.core
+      const watch = await window.__TAURI__.core
         .invoke("start_git_watch", { sessionId: id, path: cwd })
         .catch(() => null);
       const entry = sessionRegistry.get(id);
-      if (entry) sessionRegistry.set(id, { ...entry, branch: branch ?? null });
+      if (entry) sessionRegistry.set(id, { ...entry, branch: watch?.branch ?? null, repoRoot: watch?.root ?? null });
       // Live updates: re-emitted by Rust whenever .git/HEAD changes
       const { listen } = window.__TAURI__.event;
       const unlisten = await listen(`git://branch/${id}`, ev => {
@@ -1744,9 +1745,10 @@
     const tabName = name || _tabNameFor(cwd, resume ? "resumed" : "new session");
     const color = resume ? "var(--cyan)" : "var(--lilac)";
     // Register in tab list before starting omp so the tab shows immediately.
-    // Register with null branch — chip hidden until git resolves.
+    // Register with null branch — chip hidden until git resolves. `repoRoot`:
+    // the repository's work tree, shared by every tab on a folder of it.
     sessionRegistry.set(id, {
-      id, name: tabName, path: cwd ?? "", color, branch: null, profile,
+      id, name: tabName, path: cwd ?? "", color, branch: null, repoRoot: null, profile,
       // The approval mode `start_session` spawned this tab's current omp
       // with (set by `_spawnSession`); null while no process runs it.
       approvalMode: null,
@@ -4324,6 +4326,20 @@
     /** A file as of commit `sha` with that commit's change inline: `FileView`. */
     gitBrowserCommitFile(sha, relPath) {
       return _gitBrowserInvoke("git_browser_commit_file", { sha, relPath });
+    },
+
+    /** The branches the status bar's picker offers: `Branch[]` (`{ name,
+     *  remote, at }`), newest tip first, without the checked-out one or a
+     *  remote branch whose local one exists. */
+    gitBranches() {
+      return _gitBrowserInvoke("git_browser_branches", {});
+    },
+
+    /** Switch the project's work tree to a listed branch (`git switch`; a
+     *  `remote` one gets a local branch tracking it). The HEAD watcher then
+     *  reports the new branch (`git://branch/{id}`). */
+    gitSwitchBranch(name, remote) {
+      return _gitBrowserInvoke("workspace_switch_branch", { name, remote });
     },
 
     /** A file of the active tab's project for the preview (issue #39):

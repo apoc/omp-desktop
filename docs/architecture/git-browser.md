@@ -18,12 +18,13 @@ The working tree is shown against **HEAD**: staged and unstaged changes in one v
 
 | File | Responsibility |
 |---|---|
-| `mod.rs` | the `pub fn` entry points the five `#[tauri::command]` wrappers in `lib.rs` call, the shared types (`TreeNode`, `StatusKind`), repo opening (`workspace::discover`, shared with stage/discard, minus the repository's own filter drivers — see [Filter drivers](#filter-drivers)), path relativising, `MAX_FILES`, the test fixture |
+| `mod.rs` | the `pub fn` entry points the six `#[tauri::command]` wrappers in `lib.rs` call, the shared types (`TreeNode`, `StatusKind`), repo opening (`workspace::discover`, shared with stage/discard, minus the repository's own filter drivers — see [Filter drivers](#filter-drivers)), path relativising, `MAX_FILES`, the test fixture |
 | `status.rs` | `StatusView` / `RepoInfo`, the per-path status merge, folding the paths into a `TreeNode` tree |
 | `file.rs` | `FileView` / `Line` / `LineKind` / `FileKind`, the full-file inline line diff (worktree vs HEAD, commit vs first parent), binary sniff, the per-file caps |
 | `log.rs` | `LogView` / `LogRow` / `Ref`, the topological walk over HEAD and every ref, ref badges, ahead/behind vs upstream, `MAX_COMMITS` |
 | `graph.rs` | the lane layout, `MAX_LANES` |
 | `commit.rs` | `CommitView`, the tree-to-tree diff vs the first parent, folded into the tree of touched files |
+| `branches.rs` | `Branch`, the status bar's branch list — see [Branch picker](#branch-picker-status-bar) |
 
 Every command takes `path` (the tab's project folder, as the `workspace_*` commands do), runs under `tauri::async_runtime::spawn_blocking` and returns `Result<T, String>`; the error string reaches the overlay as is (e.g. "not a git repository"). The repo is found with `gix::discover(path)` (`mod.rs` `open`); the **work dir**, not `path`, is the root of every relative path. Relative paths from the webview go through `workspace::validate_relative_path`; a path inside a stored commit tree gets only its textual checks (no `..`, no `.git` component, not absolute), since resolving it against today's disk could follow a directory that has since become a symlink. Structs are `#[serde(rename_all = "camelCase")]`; enums serialise as bare strings.
 
@@ -35,7 +36,7 @@ Submodules are opened by gix from their own config, which `open` never sees, so 
 
 The drivers that stay, and the `git` gix runs once to find its installation config, are children of the app: every command holds the spawn gate (`spawn_gate::shared`, the guard `open` returns) for as long as it reads, so none starts while a Chromium launch has its CDP pipe ends in reach of a child (`docs/architecture/browser.md`). A Chromium launch waits for the reads in flight; other spawns do not wait behind it.
 
-Stage and discard (`workspace_accept`/`workspace_reject`) run the `git` binary, which applies the repository's drivers like any `git add` / `git checkout`; they run only on the user's explicit action.
+Stage, discard and the branch switch (`workspace_accept`/`workspace_reject`/`workspace_switch_branch`) run the `git` binary, which applies the repository's drivers and hooks like any `git add` / `git checkout` / `git switch`; they run only on the user's explicit action.
 
 ### Commands and payloads
 
@@ -67,9 +68,14 @@ git_browser_commit(path, sha) -> CommitView
                tree: TreeNode /* only the files the commit touched */, files: u32, truncated: bool }
 
 git_browser_commit_file(path, sha, relPath) -> FileView
+
+git_browser_branches(path) -> Vec<Branch>
+  Branch { name /* "main", or "origin/main" for a remote one */, remote: bool, at: i64 /* tip's committer time, unix secs; 0 = unreadable */ }
+
+workspace_switch_branch(path, name, remote) -> ()
 ```
 
-The webview sends a project path, a file path and a sha — never git arguments.
+The webview sends a project path, a file path, a sha and a branch name — never git arguments.
 
 ### Files and the status merge
 
@@ -122,13 +128,13 @@ Rename detection between HEAD and the index follows the repo's config (`status.r
 
 ### Why gix, and where `git` still runs
 
-Reads go through gix (0.87, default features: `status`, `blob-diff`, `revision`, `dirwalk`, `index`, `attributes`, `excludes`): no process per refresh, no output parsing, no dependence on the user's `git` version, PATH or config aliases. The `git` binary still runs for **`workspace::accept` / `reject` only** (`git add` / `git checkout`): gix has no mature index add or worktree restore. `workspace::git` runs it by absolute path, the first `git` (`git.exe`) in the absolute folders of the child PATH (`child_path::child_path_dirs` + `locate_program`), with those folders as its PATH; never a bare `git`, which an empty or relative PATH entry would resolve inside the project. No `git` there is the command's `Err`.
+Reads go through gix (0.87, default features: `status`, `blob-diff`, `revision`, `dirwalk`, `index`, `attributes`, `excludes`): no process per refresh, no output parsing, no dependence on the user's `git` version, PATH or config aliases. The `git` binary still runs for **`workspace::accept` / `reject` / `switch_branch` only** (`git add` / `git checkout` / `git switch`): gix has no mature index add, worktree restore or checkout. `workspace::git` runs it by absolute path, the first `git` (`git.exe`) in the absolute folders of the child PATH (`child_path::child_path_dirs` + `locate_program`), with those folders as its PATH; never a bare `git`, which an empty or relative PATH entry would resolve inside the project. No `git` there is the command's `Err`.
 
 ## Frontend
 
 ### Bridge (`live.js`)
 
-`gitBrowserStatus()`, `gitBrowserFile(relPath)`, `gitBrowserLog()`, `gitBrowserCommit(sha)`, `gitBrowserCommitFile(sha, relPath)` invoke the commands with `{ path, relPath, sha }`, `path` being `_activeProjectPath()`. Each resolves `{ ok: true, value }` or `{ ok: false, error }` (the Rust error string), and `null` when the tab has no project folder: errors are passed on, not swallowed into a fallback, so the overlay can show them. `workspaceAccept` / `workspaceReject` are the stage / discard calls.
+`gitBrowserStatus()`, `gitBrowserFile(relPath)`, `gitBrowserLog()`, `gitBrowserCommit(sha)`, `gitBrowserCommitFile(sha, relPath)`, `gitBranches()` and `gitSwitchBranch(name, remote)` invoke the commands with `{ path, relPath, sha, name, remote }`, `path` being `_activeProjectPath()`. Each resolves `{ ok: true, value }` or `{ ok: false, error }` (the Rust error string), and `null` when the tab has no project folder: errors are passed on, not swallowed into a fallback, so the overlay can show them. `workspaceAccept` / `workspaceReject` are the stage / discard calls.
 
 ### Pure helpers (`app/git-browser.js`, `window.OMP_GIT_BROWSER`, `test-git-browser.mjs`)
 
@@ -143,6 +149,7 @@ Reads go through gix (0.87, default features: `status`, `blob-diff`, `revision`,
 - `firstFile(root, changedOnly)` → the first file in display order, selected on open when there is no `initialPath`;
 - `discardDeletes(status)` → whether discard removes the file outright (`Untracked`, `Added`, `Renamed`: no HEAD blob to restore) — the discard confirmation rule;
 - `finishedEdits(messages)` → the count of finished edit/write tool cards, the refresh trigger below.
+- `branchMatches(branches, query)` → the branch picker's rows: `{ local, remote, hidden }`, name contains the query (case-insensitive, blank = all), Rust's order kept, at most `MAX_BRANCH_ROWS` (200) together, locals first.
 
 ### Hook (`app/use-git-browser.jsx`, `window.useGitBrowser`)
 
@@ -160,6 +167,15 @@ Mounted with the overlay as `useGitBrowser({ bridge, initialPath, branch, edits 
 
 A click on a commit row calls `browse(sha)`: the files pane shows the commit's touched files (`CommitView.tree`), the file pane shows a file as of that commit with the commit's change against its first parent inline, read-only (no stage / discard). A click on the working-tree row (`browse("@")`) returns to worktree mode. The history pane stays as it is in both modes.
 
+## Branch picker (status bar)
+
+The active tab's branch is a pill in the status bar (`design/branch-menu.jsx`, `BranchMenu({ branch, bridge, locked })`, memoised, rendered by `chrome.jsx` `StatusBar` keyed by tab id, so a tab switch closes it); the title bar no longer shows it. No branch (not a repository, or a detached HEAD: `git::probe` reports none) → no pill.
+
+- **List** (`git_browser_branches`, `branches.rs`): every local branch except the checked-out one, and every remote-tracking branch whose local counterpart (its name after the remote: `origin/feat/x` → `feat/x`) does not exist — `git switch --track` would refuse that name, and the local one is listed instead (or is the current one). Only `refs/heads/` and `refs/remotes/` are walked, each tip read once (`peel_to_commit`); symbolic refs (`origin/HEAD`) and refs that do not peel to a commit are skipped. Sorted newest tip (committer time) first, then by name. Fetched each time the menu opens.
+- **Menu**: a filter field (focused on open; ↓ enters the list, Enter picks the first match), then `local` and `remote` groups (`branchMatches`), each row with its tip's age (`relativeTime`). ↑ on the first row returns to the filter; Escape, Tab (from the filter too), an outside click and a window resize close it; a switch that settles after its menu closed is ignored (the `pending` token, as in `thinking-menu.jsx`). The status bar clips its overflow, so the menu is portaled to `<body>` with `position: fixed`, placed above the pill when it opens (as `pr-automation-menu.jsx` is).
+- **Switch** (`workspace_switch_branch`, `workspace::switch_branch`): the name must be one `branches` lists, with the same `remote` flag (a leading `-` is refused too); then `git switch --no-guess <name>` for a local branch, `git switch --track refs/remotes/<name>` for a remote one (a new local branch tracking it; the full ref, because a local branch or tag named like the short `origin/x` would make it ambiguous, and git checks out the commit it picked before failing to create the branch). Git refuses when local changes would be overwritten and changes nothing; its message (`git switch failed: …`) shows in the menu, which stays open. On success the menu closes; the new name arrives through the HEAD watcher (`git://branch/{id}` → `sessions[i].branch`), which also refreshes an open git browser.
+- **Locked while an agent works**: `app-live.jsx` passes `branchLocked = OMP_TURN_STATUS.busyInRepo(sessions, repoRoot)` — any tab on a folder of the same repository in a busy run state (`sessions[i].repoRoot`, the work tree `start_git_watch` reports with the branch: `git::probe`, `{ branch, root }`; a switch changes the whole work tree, not just the tab's folder) (`running`, `retrying`, `waiting-user`, or `background`: a background job may still write files). The menu still opens and lists, but its rows are disabled (`.branch-pop.locked`, `pick` returns early, Enter does nothing) with a note, and the pill's tooltip says so; the lock lifts live when the agent goes idle. The guard is the webview's: Rust does not know run states, and a switch only ever comes from this menu.
+
 ## Things easy to break
 
 - Payload field names are camelCase on the wire (`relPath`, `truncated`, `changed`, …) and the hook reads them by name. A renamed Rust field or a missing `rename_all` breaks the overlay silently; change both sides together.
@@ -167,4 +183,4 @@ A click on a commit row calls `browse(sha)`: the files pane shows the commit's t
 - The caps: 500 commits (`MAX_COMMITS`), 20 000 files (`MAX_FILES`) and 20 000 lines (`MAX_LINES`), 2 MiB per side (`MAX_SIDE_BYTES`, → `TooLarge`), 500 chars per line (`MAX_LINE_CHARS`), 12 lanes (`MAX_LANES`). They keep a large repo or file from freezing the webview; raise them only with a measurement.
 - A rename is shown on its **new** path only, in both the worktree tree and a commit's tree; the old path is not a row. The file view diffs it against the rename **source**'s blob (`git_browser_file`: the HEAD blob at the source path of the HEAD → index rename; `git_browser_commit_file`: the source location from the tree diff), so a pure rename is all `ctx` and a rename plus edit shows only the edit. A copy (copy-detected rewrite) counts as `Added` and diffs against an empty side.
 - `truncated` is always shown when set (tree, file and history each carry it): a capped view must not look complete.
-- Reads stay in gix; adding a `git` subprocess to `git_browser/` reintroduces the PATH and output-parsing problems the cutover removed. Only `workspace::accept` / `reject` run `git`.
+- Reads stay in gix; adding a `git` subprocess to `git_browser/` reintroduces the PATH and output-parsing problems the cutover removed. Only `workspace::accept` / `reject` / `switch_branch` run `git`.

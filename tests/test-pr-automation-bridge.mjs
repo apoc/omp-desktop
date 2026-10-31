@@ -96,7 +96,7 @@ function harness() {
     core: {
       async invoke(command, args) {
         if (command === "start_session") return "write";
-        if (command === "start_git_watch") return "feature";
+        if (command === "start_git_watch") return { branch: "feature", root: "/repo" };
         if (command === "stop_session") {
           journal.delete(args.sessionId);
           return null;

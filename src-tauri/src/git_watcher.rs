@@ -50,8 +50,7 @@ impl GitWatcherState {
             if !is_head_change(&event) {
                 return;
             }
-            let (branch, _) = crate::git::probe(&repo_owned);
-            if let Some(b) = branch {
+            if let Some(b) = crate::git::probe(&repo_owned).branch {
                 let _ = app.emit(&format!("git://branch/{sid}"), b);
             }
             crate::widgets::notify_branch(&app, &sid);

@@ -1,17 +1,17 @@
-//! Git working-tree mutation for the git browser — validated, single-file
-//! stage (`accept`) and discard (`reject`) operations on one repository.
-//! Every read (status, diffs, history) lives in [`crate::git_browser`], on
-//! gix.
+//! Git working-tree mutation — validated, single-file stage (`accept`) and
+//! discard (`reject`), and the branch switch (`switch_branch`), on one
+//! repository. Every read (status, diffs, history, branches) lives in
+//! [`crate::git_browser`], on gix.
 //!
 //! [`validate_relative_path`] and repository discovery ([`discover`]) use
 //! the filesystem and [`gix`] (the same `gix::discover` pattern as
 //! [`crate::git`]); the git browser's reads resolve paths through them too.
 //!
-//! [`accept`] and [`reject`] shell out to the `git` binary, invoked with a
-//! fully static argv (never a shell string) via [`crate::spawn_gate`]:
-//! gix's index-writing/checkout support is far less mature than its read
-//! APIs, and `git add` / `git checkout` / `git reset` already implement
-//! safe, atomic index and worktree mutation.
+//! [`accept`], [`reject`] and [`switch_branch`] shell out to the `git`
+//! binary, invoked with a fully static argv (never a shell string) via
+//! [`crate::spawn_gate`]: gix's index-writing/checkout support is far less
+//! mature than its read APIs, and `git add` / `git checkout` / `git reset` /
+//! `git switch` already implement safe, atomic index and worktree mutation.
 
 use crate::child_path::{child_path_dirs, locate_program, TrustedProgram};
 use std::path::{Path, PathBuf};
@@ -196,7 +196,7 @@ fn git_output(work_dir: &Path, args: &[&str], label: &str) -> Result<Vec<u8>, St
     if !output.status.success() {
         return Err(format!(
             "git {label} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&output.stderr).trim_end()
         ));
     }
     Ok(output.stdout)
@@ -274,6 +274,38 @@ fn resolve_file_target(
 pub fn accept(repo_root: &Path, rel_path: &str) -> Result<(), String> {
     let (work_dir, _abs, rel_norm) = resolve_file_target(repo_root, rel_path)?;
     git_output(&work_dir, &["add", "--", &rel_norm], "add")?;
+    Ok(())
+}
+
+/// Switch the work tree to `name`, a branch [`crate::git_browser::branches`]
+/// lists (`remote` says which kind): a local branch (`git switch`), or a
+/// remote-tracking one, which gets a local branch of its name tracking it
+/// (`git switch --track refs/remotes/origin/x` makes `x`). Git refuses,
+/// changing nothing, when local changes would be overwritten; its message is
+/// the error.
+///
+/// Only a listed name gets through: the webview sends a branch name, never
+/// git arguments. Listed names come from refs, which git never names with a
+/// leading `-`; one is refused anyway, as it would read as an option. A
+/// remote one goes to git as its full ref: the short `origin/x` would also
+/// match a local branch or tag of that name, which git prefers, and it
+/// checks that commit out before failing to create the branch.
+pub fn switch_branch(repo_root: &Path, name: &str, remote: bool) -> Result<(), String> {
+    let (_, _, work_dir) = discover(repo_root)?;
+    let listed = crate::git_browser::branches(&work_dir)?
+        .iter()
+        .any(|branch| branch.remote == remote && branch.name == name);
+    if !listed || name.starts_with('-') {
+        return Err(format!("{name} is not a branch to switch to"));
+    }
+    let full_ref;
+    let args = if remote {
+        full_ref = format!("refs/remotes/{name}");
+        ["switch", "--track", full_ref.as_str()]
+    } else {
+        ["switch", "--no-guess", name]
+    };
+    git_output(&work_dir, &args, "switch")?;
     Ok(())
 }
 
@@ -421,7 +453,7 @@ fn find_rename_source(
 
 #[cfg(test)]
 mod tests {
-    use super::{accept, git, git_in, reject, validate_relative_path};
+    use super::{accept, git, git_in, reject, switch_branch, validate_relative_path};
     use crate::test_support::{executable, TempDir};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -450,13 +482,19 @@ mod tests {
         ))
     }
 
-    fn run_git(dir: &Path, args: &[&str]) {
-        let status = std::process::Command::new("git")
+    /// Run `git args` in `dir`, panicking on failure; its stdout, trimmed.
+    fn run_git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
             .current_dir(dir)
             .args(args)
-            .status()
+            .output()
             .expect("spawn git");
-        assert!(status.success(), "git {args:?} failed in {dir:?}");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed in {dir:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
     /// Build a real throwaway git repo with one committed file, so `HEAD`
@@ -825,6 +863,91 @@ mod tests {
         let content = std::fs::read_to_string(repo.join("subdir/file.txt")).expect("read back");
         assert_eq!(content, "changed\n");
 
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    // ── switch_branch ────────────────────────────────────────────────────
+
+    fn current_branch(dir: &Path) -> String {
+        run_git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+    }
+
+    #[test]
+    fn switch_branch_checks_out_a_listed_local_branch() {
+        let Some(repo) = init_repo("switch-local") else {
+            return;
+        };
+        let start = current_branch(&repo);
+        run_git(&repo, &["branch", "other"]);
+
+        switch_branch(&repo, "other", false).expect("switch to other");
+        assert_eq!(current_branch(&repo), "other");
+        switch_branch(&repo, &start, false).expect("switch back");
+        assert_eq!(current_branch(&repo), start);
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn switch_branch_tracks_a_remote_branch_under_its_local_name() {
+        let Some(repo) = init_repo("switch-remote") else {
+            return;
+        };
+        let head = run_git(&repo, &["rev-parse", "HEAD"]);
+        run_git(&repo, &["remote", "add", "origin", "../nowhere"]);
+        run_git(&repo, &["update-ref", "refs/remotes/origin/feat/x", &head]);
+        // A local branch named like the remote one: the short `origin/feat/x`
+        // would be ambiguous to git.
+        run_git(&repo, &["branch", "origin/feat/x"]);
+
+        switch_branch(&repo, "origin/feat/x", true).expect("switch to origin/feat/x");
+        assert_eq!(current_branch(&repo), "feat/x");
+        assert_eq!(
+            run_git(
+                &repo,
+                &["rev-parse", "--symbolic-full-name", "feat/x@{upstream}"]
+            ),
+            "refs/remotes/origin/feat/x"
+        );
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn switch_branch_refuses_names_it_does_not_list() {
+        let Some(repo) = init_repo("switch-refuse") else {
+            return;
+        };
+        let start = current_branch(&repo);
+        run_git(&repo, &["branch", "other"]);
+        for (name, remote) in [
+            ("missing", false),
+            (start.as_str(), false), // checked out already
+            ("other", true),         // a local branch, asked for as remote
+            ("--orphan=x", false),   // an option, never a listed ref
+        ] {
+            let err = switch_branch(&repo, name, remote).unwrap_err();
+            assert!(err.contains("not a branch to switch to"), "{name}: {err}");
+        }
+        assert_eq!(current_branch(&repo), start);
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn switch_branch_reports_git_refusing_to_overwrite_local_changes() {
+        let Some(repo) = init_repo("switch-dirty") else {
+            return;
+        };
+        let start = current_branch(&repo);
+        run_git(&repo, &["checkout", "-q", "-b", "other"]);
+        std::fs::write(repo.join("committed.txt"), "other content\n").expect("write");
+        run_git(&repo, &["commit", "-q", "-am", "other"]);
+        run_git(&repo, &["checkout", "-q", &start]);
+        std::fs::write(repo.join("committed.txt"), "local edit\n").expect("write");
+
+        let err = switch_branch(&repo, "other", false).unwrap_err();
+        assert!(err.contains("git switch failed"), "{err}");
+        assert_eq!(current_branch(&repo), start);
+        let content = std::fs::read_to_string(repo.join("committed.txt")).expect("read back");
+        assert_eq!(content, "local edit\n");
         std::fs::remove_dir_all(&repo).ok();
     }
 }
