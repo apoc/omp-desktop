@@ -137,7 +137,16 @@
         return state;
     }
   }
-  const DICTATION = Object.freeze({ EMPTY: DICTATION_EMPTY, apply: applyDictation });
+  // "Stop after a pause" (`seconds`, 0 = off): how long after the last text
+  // change a recording capture stops by itself, or null for no timer. omp
+  // sends new text only for sound it takes as speech, so no new text stands
+  // in for silence. Nothing is armed before the first words: a capture you
+  // have not spoken into yet waits for you.
+  function autoStopDelay(dictation, seconds) {
+    if (!dictation?.active || dictation.phase !== "recording" || !dictation.text) return null;
+    return typeof seconds === "number" && seconds > 0 ? Math.round(seconds * 1000) : null;
+  }
+  const DICTATION = Object.freeze({ EMPTY: DICTATION_EMPTY, apply: applyDictation, autoStopDelay });
   // omp's live voice runs only on its Codex login (`openai-codex`): whether
   // the tab's profile has one, from `get_login_providers`; null = unknown.
   function codexLogin(providers) {

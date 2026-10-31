@@ -59,6 +59,7 @@
     "browserLocalhostInPanel": true,
     "submitKey": "enter",
     "dictationSend": false,
+    "dictationAutoStop": 3,
     "pasteCollapseLines": 5,
     "restoreTabs": true,
     "confirmBusyClose": false,

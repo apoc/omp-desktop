@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The composer has separate one-click buttons for **Voice to text** and **Live conversation**. Live conversation (#68) is Codex only (its button is greyed out while the tab's profile has no Codex login) and connects to the native omp call with state, levels, captions, mute, pause, resume and end controls. Voice to text uses the profile's omp speech-to-text engine, previews dictation and appends the final text to the originating draft without sending a prompt or playing a reply. Switching tabs or opening Settings pauses live conversation and stops dictation; closing a tab ends capture. A failed stop keeps the active control visible for retry.
 - Settings → Composer → **Send voice to text on stop** (off by default): stopping voice to text yourself sends the draft with the dictated text instead of only filling it in.
+- Voice to text stops by itself after a pause in your speech: Settings → Composer → **Stop voice to text after a pause** (3 s by default; off, 1.5, 2 or 5 s). Together with send on stop, dictation is hands-free.
 
 ### Changed
 

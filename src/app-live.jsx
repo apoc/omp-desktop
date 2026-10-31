@@ -351,6 +351,15 @@ function App() {
     return runVoiceAction(dictationActionSeq, setDictationErrors, "Voice to text",
       b => action === "start" ? b.dictationStart() : b.dictationStop({ send: !!t.dictationSend }));
   };
+  // Settings › Composer › Stop after a pause: no new dictated text for that
+  // long stops the capture as the user's own stop, so "Send voice to text on
+  // stop" applies to it too. Every text change re-arms the timer.
+  const dictationAutoStopMs = window.OMP_LIVE_VOICE.DICTATION.autoStopDelay(dictation, t.dictationAutoStop);
+  React.useEffect(() => {
+    if (dictationAutoStopMs == null) return undefined;
+    const timer = setTimeout(() => requestDictationAction("stop"), dictationAutoStopMs);
+    return () => clearTimeout(timer);
+  }, [dictationAutoStopMs, dictation?.captureId, dictation?.text, t.dictationSend]);
   const handleLiveAction = (args = "") => {
     const action = window.OMP_SLASH.liveCommand(args, liveVoice);
     if (!action) {

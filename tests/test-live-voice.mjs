@@ -177,6 +177,16 @@ check("dictation previews replace rather than accumulate, and stale captures are
   assert.deepEqual([s.active, s.text, s.error], [false, "final", "STT failed"]);
   assert.equal(D.apply(s, { type: "dictation_end", captureId: "one", text: "duplicate" }), s);
 });
+check("auto-stop arms only while recording after the first words", () => {
+  const recording = text => ({ ...D.EMPTY, active: true, phase: "recording", captureId: "c", text });
+  assert.equal(D.autoStopDelay(recording("Hello."), 2), 2000);
+  assert.equal(D.autoStopDelay(recording("Hello."), 1.5), 1500);
+  assert.equal(D.autoStopDelay(recording(""), 2), null, "no words yet: keep waiting");
+  assert.equal(D.autoStopDelay(recording("Hello."), 0), null, "off");
+  assert.equal(D.autoStopDelay({ ...recording("Hello."), phase: "stopping" }, 2), null);
+  assert.equal(D.autoStopDelay({ ...recording("Hello."), phase: "starting" }, 2), null);
+  assert.equal(D.autoStopDelay(D.EMPTY, 2), null);
+});
 
 // Render the actual JSX controls with the same lightweight React stand-in used
 // by the settings UI regressions; exercise the buttons rather than the bridge.
