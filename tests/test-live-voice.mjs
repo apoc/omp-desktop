@@ -616,7 +616,7 @@ await checkAsync("dictation cancels while starting, flushes before switching, an
   await switching;
   await starting;
   assert.equal(h.snapshot().activeSessionId, b);
-  assert.deepEqual(h.snapshot().dictationCompleted, [{ sessionId: a, captureId: start.captureId, text: "final words" }]);
+  assert.deepEqual(h.snapshot().dictationCompleted, [{ sessionId: a, captureId: start.captureId, text: "final words", send: false }]);
   assert.equal(h.commands.some(c => c.type === "prompt"), false);
   h.reply(start);
   await h.bridge.activateSession(a);
@@ -643,7 +643,7 @@ await checkAsync("failed dictation stop keeps the microphone visible until retry
   h.reply(await h.waitCommand("dictation_stop", 2), true, { text: "saved" });
   await switch2;
   assert.equal(h.snapshot().activeSessionId, b);
-  assert.deepEqual(h.snapshot().dictationCompleted, [{ sessionId: a, captureId: start.captureId, text: "saved" }]);
+  assert.deepEqual(h.snapshot().dictationCompleted, [{ sessionId: a, captureId: start.captureId, text: "saved", send: false }]);
 });
 
 await checkAsync("unsolicited terminal wins a late failed reply and prevents stale frames", async () => {
@@ -705,7 +705,7 @@ await checkAsync("process exit preserves preview and close refuses a failed stop
   h.exit(a, "omp crashed");
   assert.equal(h.snapshot().dictation.active, false);
   assert.equal(h.snapshot().dictation.error, "omp crashed");
-  assert.deepEqual(h.snapshot().dictationCompleted, [{ sessionId: a, captureId: start.captureId, text: "recover me" }]);
+  assert.deepEqual(h.snapshot().dictationCompleted, [{ sessionId: a, captureId: start.captureId, text: "recover me", send: false }]);
   await h.bridge.closeSession(a);
   assert.deepEqual(h.snapshot().dictationCompleted, []);
 });
@@ -725,7 +725,7 @@ await checkAsync("profile respawn flushes dictation and preserves the originatin
   assert.equal((await restart).ok, true);
   assert.equal(h.snapshot().activeSessionId, a);
   assert.equal(h.snapshot().dictation.active, false);
-  assert.deepEqual(h.snapshot().dictationCompleted, [{ sessionId: a, captureId: command.captureId, text: "before restart" }]);
+  assert.deepEqual(h.snapshot().dictationCompleted, [{ sessionId: a, captureId: command.captureId, text: "before restart", send: false }]);
   assert.equal(h.invocations.some(call => call.command === "stop_session"), true);
 });
 
@@ -785,6 +785,26 @@ await checkAsync("Codex login is read per tab on activation and again after omp 
   assert.equal(h.snapshot().codexLogin, null, "b has not answered yet");
   await h.bridge.activateSession(a);
   assert.equal(h.snapshot().codexLogin, false);
+});
+
+await checkAsync("send on stop tags only the capture the user stopped, never a tab-switch stop", async () => {
+  const h = bridgeHarness();
+  const { a, b } = await twoTabs(h);
+  const capture = async (n, stopWith) => {
+    const starting = h.bridge.dictationStart(), start = await h.waitCommand("dictation_start", n);
+    h.reply(start); await starting;
+    const stopping = stopWith();
+    const stop = await h.waitCommand("dictation_stop", n);
+    h.emit(a, { type: "dictation_end", captureId: start.captureId, text: `words ${n}` });
+    h.reply(stop, true, { text: `words ${n}` });
+    await stopping;
+  };
+  await capture(1, () => h.bridge.dictationStop({ send: true }));
+  await capture(2, () => h.bridge.dictationStop());
+  await capture(3, () => h.bridge.activateSession(b));
+  assert.deepEqual(h.snapshot().dictationCompleted.map(item => [item.text, item.send]),
+    [["words 1", true], ["words 2", false], ["words 3", false]]);
+  assert.equal(h.commands.some(c => c.type === "prompt"), false, "the bridge never sends; the composer does");
 });
 
 console.log(`test-live-voice: ${passed} checks passed`);

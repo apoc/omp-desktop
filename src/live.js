@@ -270,6 +270,10 @@
   // Completed captures wait here until the mounted composer consumes them;
   // React may coalesce snapshots across a tab switch or several captures.
   let _dictationCompleted = [];
+  // The capture the user stopped with "send on stop" on: its completion is
+  // tagged `send`, so the composer sends that tab's draft once it holds the
+  // text. Stops for a tab switch, Settings or a close never set it.
+  let _dictationSendCapture = null;
   let _nextCmdId = 1;
   // Timeout for a short interactive command a user is waiting on.
   const QUICK_CMD_TIMEOUT_MS = 15000;
@@ -3636,8 +3640,10 @@
     const next = DICTATION.apply(before, event);
     if (next === before || next.active) return;
     state.dictation = next;
+    const send = before.captureId === _dictationSendCapture;
+    if (send) _dictationSendCapture = null;
     if (next.text && sessionRegistry.has(activeSessionId)) {
-      _dictationCompleted = [..._dictationCompleted, { sessionId: activeSessionId, captureId: before.captureId, text: next.text }];
+      _dictationCompleted = [..._dictationCompleted, { sessionId: activeSessionId, captureId: before.captureId, text: next.text, send }];
     }
     _dictationStartPending?.request?.cancel(next.error || "Voice to text ended");
     notify();
@@ -3677,10 +3683,11 @@
     return op.promise;
   }
 
-  function _dictationStop() {
+  function _dictationStop(send = false) {
     if (_dictationStopPending) return _dictationStopPending.promise;
     if (!state.dictation.active) return Promise.resolve({ ok: true });
     const id = activeSessionId, captureId = state.dictation.captureId, gen = ++_dictationGen;
+    if (send) _dictationSendCapture = captureId;
     const startHandoff = _dictationStartPending?.request.handedOff;
     _dictationStartPending?.request.cancel("Voice to text was stopped");
     state.dictation = DICTATION.apply(state.dictation, { type: "stop" });
@@ -3727,7 +3734,7 @@
     liveMute: _liveMute,
     dictationStart: _dictationStart,
     stopActiveVoice() { return state.dictation.active || _dictationStopPending ? _dictationStop() : state.liveVoice.active || _liveStopPending ? _livePause() : Promise.resolve({ ok: true }); },
-    dictationStop: _dictationStop,
+    dictationStop: ({ send = false } = {}) => _dictationStop(send),
     ackDictation(captureIds) {
       const ids = new Set(captureIds);
       const remaining = _dictationCompleted.filter(item => !ids.has(item.captureId));

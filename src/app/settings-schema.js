@@ -95,6 +95,7 @@
       { name: "Sending", rows: [
         tweak("submitKey", "seg", "Send with", "In the composer, an ask's answer box and a subagent's steer box; the other chord inserts a newline. One-line fields always send with Enter.", "submit newline shift enter",
           { options: opts(["enter", "ctrl+enter"]) }),
+        tweak("dictationSend", "toggle", "Send voice to text on stop", "Stopping voice to text yourself (the microphone or the panel's stop) sends the draft with the dictated text, as Enter would. Off, the text only goes into the draft. A stop caused by switching tabs or opening Settings never sends.", "dictation speech microphone voice auto send submit"),
       ] },
       { name: "Pasting", rows: [
         tweak("pasteCollapseLines", "slider", "Collapse pastes longer than", "A longer paste shows as a `[paste #1 +40 lines]` chip; the agent still gets the full text.", "paste chip",

@@ -72,13 +72,27 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   sessionIdRef.current = sessionId;
   React.useEffect(() => { setDrafts(m => pruneDrafts(m, sessionIds)); }, [sessionIds]);
   const consumedDictations = React.useRef(new Set());
+  // A capture stopped with "send on stop" (Settings › Composer): its tab's
+  // draft is sent, as Enter would, once it holds the dictated text — and
+  // only while that tab is shown.
+  const sendDictated = React.useRef(null);
   React.useEffect(() => {
     const items = (dictationCompleted ?? []).filter(item => !consumedDictations.current.has(item.captureId));
     if (!items.length) return;
     for (const item of items) consumedDictations.current.add(item.captureId);
     setDrafts(m => items.reduce((draftMap, item) => window.OMP_SESSION_UI.appendDictation(draftMap, sessionIdsRef.current ?? [], item), m));
+    const toSend = items.findLast(item => item.send && item.sessionId === sessionIdRef.current);
+    if (toSend) sendDictated.current = { sessionId: toSend.sessionId, text: toSend.text };
     onAckDictation(items.map(item => item.captureId));
   }, [dictationCompleted]);
+  React.useEffect(() => {
+    const pending = sendDictated.current;
+    if (!pending) return;
+    if (pending.sessionId !== sessionId) { sendDictated.current = null; return; }
+    if (!draft.text.endsWith(pending.text)) return; // the append has not rendered yet
+    sendDictated.current = null;
+    send();
+  }, [drafts, sessionId]);
   const [activeIdx, setActiveIdx] = React.useState(0);
   const taRef   = React.useRef(null);
   // Prompt-history recall (issues #16, #55, Arrow Up/Down): the recall

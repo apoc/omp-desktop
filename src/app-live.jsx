@@ -347,8 +347,9 @@ function App() {
   }, [stab.active, planKey]);
   const requestDictationAction = action => {
     if (action === "start" && settingsOpening.current) return Promise.resolve(false);
+    // The user's own stop sends the draft when Settings › Composer says so.
     return runVoiceAction(dictationActionSeq, setDictationErrors, "Voice to text",
-      b => action === "start" ? b.dictationStart() : b.dictationStop());
+      b => action === "start" ? b.dictationStart() : b.dictationStop({ send: !!t.dictationSend }));
   };
   const handleLiveAction = (args = "") => {
     const action = window.OMP_SLASH.liveCommand(args, liveVoice);
