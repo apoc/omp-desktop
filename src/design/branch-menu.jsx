@@ -29,11 +29,6 @@ function BranchMenu({ branch, bridge, locked = false }) {
   const open = place !== null;
   const [list, setList] = React.useState(null); // { branches } or { error }
   const [query, setQuery] = React.useState("");
-  const [busy, setBusy] = React.useState(false);
-  const [error, setError] = React.useState(null); // a refused switch
-  // The switch in flight, if any. Every close clears it, so a switch that
-  // settles after its menu closed leaves the next one alone.
-  const pending = React.useRef(null);
   const triggerRef = React.useRef(null);
   const popRef = React.useRef(null);
   const inputRef = React.useRef(null);
@@ -41,16 +36,13 @@ function BranchMenu({ branch, bridge, locked = false }) {
   rootRef.current = {
     contains: node => triggerRef.current?.contains(node) || popRef.current?.contains(node),
   };
-
-  const close = React.useCallback((refocus = true) => {
-    pending.current = null;
+  // The switch in flight, git's refusal and the close that drops a late
+  // switch (ui/use-menu-pick.js); a close also resets the filter and list.
+  const { busy, error, pick: run, close } = window.useMenuPick(triggerRef, () => {
     setPlace(null);
-    setBusy(false);
-    setError(null);
     setQuery("");
     setList(null);
-    if (refocus) triggerRef.current?.focus();
-  }, []);
+  });
 
   React.useEffect(() => {
     if (!open) return undefined;
@@ -69,18 +61,12 @@ function BranchMenu({ branch, bridge, locked = false }) {
   // An outside click leaves focus where it lands; Escape returns it.
   window.usePopoverDismiss(open, rootRef, () => close(false), close);
 
-  const pick = async b => {
-    if (pending.current || locked) return;
-    const token = {};
-    pending.current = token;
-    setBusy(true);
-    setError(null);
-    const res = await bridge.gitSwitchBranch(b.name, b.remote);
-    if (pending.current !== token) return;
-    if (res?.ok) { close(); return; }
-    pending.current = null;
-    setBusy(false);
-    setError(res ? res.error : "this tab has no project folder");
+  const pick = b => {
+    if (locked) return;
+    run(async () => {
+      const res = await bridge.gitSwitchBranch(b.name, b.remote);
+      if (!res?.ok) throw new Error(res ? res.error : "this tab has no project folder");
+    }, e => e.message);
   };
 
   const rows = list?.branches ? _BM_GIT.branchMatches(list.branches, query) : null;
