@@ -2,10 +2,13 @@
 // Local actions bracket RPC frames so replayed frames cannot start a call.
 (function () {
   const LIMITS = Object.freeze({ transcripts: 100, text: 8192 });
+  // `resumable`: this call connected (or resumed a paused one), so an
+  // unexpected end pauses it; a call that never connected ends in error.
   const EMPTY = Object.freeze({
     active: false, paused: false, phase: "idle", muted: false, input: 0, output: 0,
-    transcripts: Object.freeze([]), error: null, turnOffset: 0, discardTranscripts: false,
+    transcripts: Object.freeze([]), error: null, turnOffset: 0, discardTranscripts: false, resumable: false,
   });
+  const CONNECTED_PHASES = new Set(["listening", "working", "speaking", "muted"]);
   const PHASES = new Set(["connecting", "listening", "working", "speaking", "muted", "error"]);
   const level = n => typeof n === "number" && Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
   // RMS amplitude from omp, not sample peaks: this cannot detect clipping.
@@ -37,7 +40,7 @@
         // call beyond all retained turns so existing role+turn keys stay stable.
         const turnOffset = state.transcripts.length ? Math.max(...state.transcripts.map(t => t.turn)) + 1 : 0;
         return { ...state, active: true, paused: false, phase: "connecting", muted: false, input: 0, output: 0,
-          error: null, turnOffset, discardTranscripts: false };
+          error: null, turnOffset, discardTranscripts: false, resumable: state.paused };
       }
       case "stop":
         if (!state.active) return state.paused ? ended(state, null) : state;
@@ -64,12 +67,14 @@
       case "live_end":
         // During an explicit stop omp can report a transport error caused by
         // cancellation. Stop's reply, not that error, decides the outcome.
+        // omp sends this end before its failed `live_start` reply (a missing
+        // Codex login), so a never-connected call must not read as paused.
         if (!state.active || state.phase === "stopping") return state;
-        return ended(state, event.error, true);
+        return ended(state, event.error, state.resumable);
       case "live_phase":
         if (!state.active || state.phase === "stopping" || !PHASES.has(event.phase)) return state;
         return { ...state, phase: event.phase, muted: event.phase === "muted" || state.muted,
-          input: event.phase === "muted" ? 0 : state.input };
+          input: event.phase === "muted" ? 0 : state.input, resumable: state.resumable || CONNECTED_PHASES.has(event.phase) };
       case "live_levels": {
         if (!state.active || state.phase === "stopping") return state;
         const input = state.muted ? 0 : level(event.input);
@@ -93,10 +98,10 @@
           if (old.text === entry.text && old.final === entry.final) return state;
           const transcripts = state.transcripts.slice();
           transcripts[i] = entry;
-          return { ...state, transcripts };
+          return { ...state, transcripts, resumable: state.resumable || state.active };
         }
         const transcripts = [...state.transcripts, entry].slice(-LIMITS.transcripts);
-        return { ...state, transcripts };
+        return { ...state, transcripts, resumable: state.resumable || state.active };
       }
       default:
         return state;

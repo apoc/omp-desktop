@@ -39,7 +39,7 @@ check("voice meter handles silence, invalid input and full-scale boundaries", ()
 });
 check("start opens a connecting call and each phase is visible", () => {
   let s = start();
-  assert.deepEqual(s, { active: true, paused: false, phase: "connecting", muted: false, input: 0, output: 0, transcripts: [], error: null, turnOffset: 0, discardTranscripts: false });
+  assert.deepEqual(s, { active: true, paused: false, phase: "connecting", muted: false, input: 0, output: 0, transcripts: [], error: null, turnOffset: 0, discardTranscripts: false, resumable: false });
   for (const phase of ["listening", "working", "speaking", "muted"]) {
     s = apply(s, { type: "live_phase", phase });
     assert.equal(s.phase, phase);
@@ -108,8 +108,18 @@ check("start, mute, and process failures remain observable", () => {
   s = apply(s, caption("user", 1, "kept"), { type: "process_exit", error: "omp crashed" });
   assert.deepEqual([s.active, s.paused, s.phase, s.error, s.transcripts[0].text], [false, true, "paused", "omp crashed", "kept"]);
   const failed = apply(start(), { type: "live_end", error: "Provider refused connection" }, { type: "process_exit", error: "omp crashed" });
-  assert.deepEqual([failed.phase, failed.error, failed.transcripts], ["paused", "Provider refused connection", []]);
+  assert.deepEqual([failed.phase, failed.paused, failed.error, failed.transcripts], ["error", false, "Provider refused connection", []]);
   assert.equal(apply(V.EMPTY, { type: "process_exit" }), V.EMPTY);
+});
+check("a call that never connected ends in error, a resumed one stays resumable", () => {
+  // omp's order for a missing Codex login: phase error and end, then the failed reply.
+  const fresh = apply(start(), { type: "live_phase", phase: "connecting" }, { type: "live_phase", phase: "error" },
+    { type: "live_end", error: "No Codex OAuth credential is available for a live call." },
+    { type: "start_failure", error: "No Codex OAuth credential is available for a live call." });
+  assert.deepEqual([fresh.active, fresh.paused, fresh.phase, fresh.error], [false, false, "error", "No Codex OAuth credential is available for a live call."]);
+  const paused = apply(start(), { type: "live_phase", phase: "listening" }, caption("user", 1, "kept", true), { type: "stop" }, { type: "stop_success", paused: true });
+  const resumed = apply(paused, { type: "start" }, { type: "live_phase", phase: "error" }, { type: "live_end", error: "network down" });
+  assert.deepEqual([resumed.paused, resumed.phase, resumed.error, resumed.transcripts[0].text], [true, "paused", "network down", "kept"]);
 });
 check("stop preserves captions and later calls use distinct turn keys", () => {
   const s = apply(start(), caption("user", 1, "saved while viewing"), { type: "stop" },
