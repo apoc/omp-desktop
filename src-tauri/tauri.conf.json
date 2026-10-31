@@ -55,6 +55,7 @@
     ],
     "macOS": {
       "infoPlist": "packaging/Info.plist",
+      "entitlements": "packaging/Entitlements.plist",
       "signingIdentity": "-"
     },
     "linux": {

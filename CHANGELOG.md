@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The composer has separate one-click buttons for **Voice to text** and **Live conversation**. Live conversation (#68) connects to the native omp call with state, levels, captions, mute, pause, resume and end controls. Voice to text uses the profile's omp speech-to-text engine, previews dictation and appends the final text to the originating draft without sending a prompt or playing a reply. Switching tabs or opening Settings pauses live conversation and stops dictation; closing a tab ends capture. A failed stop keeps the active control visible for retry.
+
+### Changed
+
+- Live conversation uses a speech-bubble-and-waveform icon rather than a recording symbol, distinct from the dictation microphone.
+- Live conversation microphone and speaker meters now use a logarithmic −60 to 0 dBFS scale, displayed as bars without numeric clutter. Normal speech is readable instead of barely filling a linear bar; 0 dBFS is full scale. Audio gain is unchanged, and the RMS readings do not claim to detect sample-peak clipping.
+
+### Fixed
+
+- Live conversation no longer overfills the service's instruction limit on long or heavily escaped conversations. The complete startup template now has a conservative UTF-8 budget that includes JSON overhead; it preserves the original objective, saved intent and latest turn, with omitted/truncated history marked explicitly.
+- Live conversation captions automatically scroll to the latest speech as new turns arrive or the current transcript grows, instead of leaving ongoing dialogue below the visible history.
+- Live conversation keeps the tab's spoken discussion across pauses, tab switches, reconnects and ended calls. Pause turns off microphone and speaker; Resume explicitly reconnects. Every connection includes the current coding-chat history plus prior voice discussion, so a call started mid-chat knows the existing task, decisions and reported results instead of starting from no context. Voice history is memory-only for the tab's current coding conversation; oversized context is marked as truncated.
+- macOS microphone access (#68): the app now declares its microphone usage description and signs with the hardened-runtime audio-input entitlement, so native omp voice capture can request microphone access on behalf of OMP Desktop.
+
 ## [0.13.0] - 2026-10-31
 
 ### Added

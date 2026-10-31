@@ -159,6 +159,7 @@ check("non-colliding RPC entries are appended after the full local list, in orde
 // ── slashMenu (composer inline popup) ────────────────────────────────────
 
 const cmds = S.mergeSlashCommands(S.LOCAL_COMMANDS, S.adaptAvailableCommands([
+  rpc({ name: "live", description: "omp live command" }),
   rpc({ name: "skill:diagnose-crash", source: "skill", description: "crash triage" }),
   rpc({ name: "security" }),
   rpc({ name: "fixPR", source: "file", description: "apply review feedback" }),
@@ -201,6 +202,32 @@ check("still typing the command token with args pending keeps filtering", () => 
 check("args typed after a desktop command keeps only that command (Enter still runs it)", () => {
   const out = S.slashMenu(cmds, "/plan add the login flow");
   assert.deepEqual(out.map(c => c.name), ["plan"]);
+});
+
+check("live is a local command and shadows omp's command", () => {
+  const rows = S.slashMenu(cmds, "/live start");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].name, "live");
+  assert.equal(rows[0].source, "desktop");
+});
+
+check("live toggle starts idle, resumes paused, and stops even while connecting", () => {
+  assert.equal(S.liveCommand("", null), "start");
+  assert.equal(S.liveCommand("", { active: false, phase: "error" }), "start");
+  assert.equal(S.liveCommand("", { active: false, paused: true, phase: "paused" }), "resume");
+  assert.equal(S.liveCommand("   ", { active: false, paused: true }), "resume");
+  assert.equal(S.liveCommand("", { active: true, phase: "connecting" }), "stop");
+  assert.equal(S.liveCommand("", { active: true, phase: "error" }), "stop");
+});
+
+check("live explicit controls are case-insensitive and reject extra arguments", () => {
+  for (const action of ["start", "pause", "resume", "stop", "mute", "unmute"]) {
+    assert.equal(S.liveCommand(`  ${action.toUpperCase()}  `, { active: true }), action);
+    assert.equal(S.liveCommand(action, { active: false, paused: true }), action);
+  }
+  assert.equal(S.liveCommand("pause now", null), null);
+  assert.equal(S.liveCommand("start now", null), null);
+  assert.equal(S.liveCommand("unknown", null), null);
 });
 
 check("args typed after a non-desktop (RPC) command closes the menu — omp runs it, not the composer", () => {

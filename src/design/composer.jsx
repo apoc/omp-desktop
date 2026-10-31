@@ -36,7 +36,7 @@ function hintKeyFor(actionId, fallback) {
 // ── The composer (input + plan/steer modes + send) ────────────────────
 // `submitKey` ("enter" | "ctrl+enter") and `pasteCollapseLines` come from the
 // tweaks (Settings › Composer); the defaults match TWEAK_DEFAULTS.
-function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, planBlocked = "", goalMode = false, goalTint = false, onToggleGoal, goalBlocked = "", goalStrip = null, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued, onSendQueuedNow, browserChips = [], onRemoveBrowserChip, onBrowserChipClick, submitKey = "enter", pasteCollapseLines = 5 }) {
+function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, planBlocked = "", goalMode = false, goalTint = false, onToggleGoal, goalBlocked = "", goalStrip = null, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued, onSendQueuedNow, browserChips = [], onRemoveBrowserChip, onBrowserChipClick, submitKey = "enter", pasteCollapseLines = 5, liveVoice, liveError, onLiveAction, dictation, dictationError, onDictationAction, dictationCompleted, onAckDictation }) {
   // Drafts are per tab (issue #28). The composer stays mounted across tab
   // switches and keeps one draft per session id (app/session-ui.js
   // DRAFT_IDLE): text, pending image attachments (sent alongside the next
@@ -71,6 +71,14 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   const sessionIdRef = React.useRef(sessionId);
   sessionIdRef.current = sessionId;
   React.useEffect(() => { setDrafts(m => pruneDrafts(m, sessionIds)); }, [sessionIds]);
+  const consumedDictations = React.useRef(new Set());
+  React.useEffect(() => {
+    const items = (dictationCompleted ?? []).filter(item => !consumedDictations.current.has(item.captureId));
+    if (!items.length) return;
+    for (const item of items) consumedDictations.current.add(item.captureId);
+    setDrafts(m => items.reduce((draftMap, item) => window.OMP_SESSION_UI.appendDictation(draftMap, sessionIdsRef.current ?? [], item), m));
+    onAckDictation(items.map(item => item.captureId));
+  }, [dictationCompleted]);
   const [activeIdx, setActiveIdx] = React.useState(0);
   const taRef   = React.useRef(null);
   // Prompt-history recall (issues #16, #55, Arrow Up/Down): the recall
@@ -299,10 +307,10 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
     // Text typed after a desktop command goes to its handler: `/goal
     // <objective>` puts the objective back into the composer in goal mode.
     const args = expandPastes(/^\/\S*\s+([\s\S]*)$/.exec(text)?.[1]?.trim() ?? "", draft.pastes);
+    if (onPick?.(cmd, args) === false) return;
     updateDraft(sessionId, d => ({ ...d, text: "", pastes: DRAFT_IDLE.pastes, pasteCounter: 0 }));
     setActiveIdx(0);
     setMentionDismissedKey(null);
-    onPick?.(cmd, args);
   };
 
   // Replace `range` (an @mention or mid-prompt `/token`) with `insert` and
@@ -582,6 +590,8 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
       )}
       {/* Goal mode (goal-strip.jsx): built by app-live.jsx, keyed by tab. */}
       {goalStrip}
+      <LiveVoicePanel voice={liveVoice} error={liveError} onAction={onLiveAction} dictationActive={!!dictation?.active} />
+      <DictationPanel dictation={dictation} error={dictationError} onAction={onDictationAction} />
 
       {showSlash && (
         <div className="slash-pop" ref={listRef}>
@@ -652,9 +662,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
           style={{ display: "none" }}
           onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
         />
-        <button className="btn icon ghost" title="dictate">
-          <Icon name="voice" size={13} />
-        </button>
+        <VoiceModeButton key={sessionId} live={liveVoice} dictation={dictation} onLiveAction={onLiveAction} onDictationAction={onDictationAction} />
         <div className="composer-input">
           <textarea
             ref={taRef}
