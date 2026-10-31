@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-10-31
+
 ### Added
 
 - The project's branch is a pill in the status bar; clicking it lists the other local and remote branches, newest first, with a filter, and a click switches the project folder to that branch (`git switch`; a remote branch gets a local branch tracking it). The branch you're on is left out, and so is a remote branch whose local branch already exists. If git refuses, for example because local changes would be overwritten, its message shows in the menu and nothing changes. While an agent works in the repository (a turn, a retry, a pending question or background jobs, in any tab on a folder of it) the list still opens but switching is disabled.
