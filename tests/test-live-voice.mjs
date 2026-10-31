@@ -121,6 +121,25 @@ check("a call that never connected ends in error, a resumed one stays resumable"
   const resumed = apply(paused, { type: "start" }, { type: "live_phase", phase: "error" }, { type: "live_end", error: "network down" });
   assert.deepEqual([resumed.paused, resumed.phase, resumed.error, resumed.transcripts[0].text], [true, "paused", "network down", "kept"]);
 });
+check("Codex login comes from get_login_providers; unknown stays null", () => {
+  assert.equal(V.codexLogin([{ id: "anthropic", authenticated: true }, { id: "openai-codex", authenticated: true }]), true);
+  assert.equal(V.codexLogin([{ id: "openai-codex", authenticated: false }]), false);
+  assert.equal(V.codexLogin([{ id: "anthropic", authenticated: true }]), false, "an omp without the Codex provider cannot run live voice");
+  assert.equal(V.codexLogin(undefined), null);
+});
+check("live button is Codex only: greyed out without a login, a running call stays stoppable", () => {
+  assert.deepEqual(V.liveButton(V.EMPTY, false, true), { label: "Start live conversation (Codex only)", disabled: false });
+  assert.deepEqual(V.liveButton(V.EMPTY, false, null), { label: "Start live conversation (Codex only)", disabled: false }, "an unknown login does not block");
+  assert.deepEqual(V.liveButton(V.EMPTY, false, false), { label: V.CODEX_MISSING, disabled: true });
+  const paused = apply(start(), { type: "live_phase", phase: "listening" }, { type: "stop" }, { type: "stop_success", paused: true });
+  assert.deepEqual(V.liveButton(paused, false, false), { label: V.CODEX_MISSING, disabled: true });
+  assert.deepEqual(V.liveButton(paused, false, true), { label: "Resume live conversation (Codex only)", disabled: false });
+  const calling = apply(start(), { type: "live_phase", phase: "listening" });
+  assert.deepEqual(V.liveButton(calling, false, false), { label: "Stop live conversation (Codex only)", disabled: false });
+  assert.deepEqual(V.liveButton(start(), false, false), { label: "Cancel live conversation (Codex only)", disabled: false });
+  assert.equal(V.liveButton(apply(calling, { type: "stop" }), false, true).disabled, true, "stopping");
+  assert.equal(V.liveButton(V.EMPTY, true, true).disabled, true, "voice to text running");
+});
 check("stop preserves captions and later calls use distinct turn keys", () => {
   const s = apply(start(), caption("user", 1, "saved while viewing"), { type: "stop" },
     caption("user", 1, "saved while viewing", true), { type: "stop_success" });
@@ -164,11 +183,11 @@ check("dictation previews replace rather than accumulate, and stale captures are
 check("voice controls start independently and retain stop and cancel actions", () => {
   const Babel = createRequire(import.meta.url)(join(root, "src/babel.min.js"));
   const { code } = Babel.transform(readFileSync(join(root, "src/design/live-voice.jsx"), "utf8"), { presets: ["react"] });
-  const window = { Icon: () => null };
+  const window = { Icon: () => null, OMP_LIVE_VOICE: V };
   const React = { Fragment: "fragment", createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }) };
   runInNewContext(code, { window, React });
   const actions = [];
-  const render = (live = {}, dictation = {}) => window.VoiceModeButton({ live, dictation,
+  const render = (live = {}, dictation = {}, codexLogin = null) => window.VoiceModeButton({ live, dictation, codexLogin,
     onLiveAction: action => actions.push(["live", action]),
     onDictationAction: action => actions.push(["dictation", action]),
   }).children;
@@ -205,6 +224,8 @@ check("voice controls start independently and retain stop and cancel actions", (
   assert.equal(live.props.disabled, false);
   live.props.onClick();
   assert.deepEqual(actions, [["dictation", "start"], ["live", "start"], ["dictation", "stop"], ["live", "stop"], ["dictation", "stop"], ["live", "stop"]]);
+  [dictation, live] = render({}, {}, false);
+  assert.deepEqual([live.props.disabled, live.props.title, dictation.props.disabled], [true, V.CODEX_MISSING, false], "no Codex login greys out live only");
 });
 
 // Exercise the public bridge against a deterministic fake IPC transport. The
@@ -737,6 +758,33 @@ await checkAsync("same-conversation process replacement preserves paused voice h
   const resume = h.bridge.liveResume(), command = await h.waitCommand("live_start", 2);
   assert.deepEqual(contextOf(command).voice.messages.map(row => row.text), ["retain across restart"]);
   h.reply(command); await resume;
+});
+
+await checkAsync("Codex login is read per tab on activation and again after omp refuses a live call", async () => {
+  const h = bridgeHarness();
+  const { a, b } = await twoTabs(h);
+  const providers = authenticated => ({ providers: [{ id: "anthropic", authenticated: true }, { id: "openai-codex", authenticated }] });
+  const loginOf = async (sid, count) => (await h.waitCommand("get_login_providers", count)).sessionId === sid;
+  // Activations: a, b, a again — each tab asks its own omp.
+  assert.equal(await loginOf(a, 3), true);
+  h.reply(h.commands.filter(c => c.type === "get_login_providers")[2], true, providers(true));
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(h.snapshot().codexLogin, true);
+  // omp's order without a login: end frame, then the failed reply.
+  const starting = h.bridge.liveStart(), command = await h.waitCommand("live_start");
+  h.emit(a, { type: "live_phase", phase: "error" });
+  h.emit(a, { type: "live_end", error: "No Codex OAuth credential is available for a live call." });
+  h.reply(command, false, null, "No Codex OAuth credential is available for a live call.");
+  assert.equal((await starting).ok, false);
+  const refresh = await h.waitCommand("get_login_providers", 4);
+  h.reply(refresh, true, providers(false));
+  await new Promise(r => setTimeout(r, 0));
+  assert.deepEqual([h.snapshot().codexLogin, h.snapshot().liveVoice.phase, h.snapshot().liveVoice.paused], [false, "error", false]);
+  // A tab's login travels with its snapshot; the other tab is asked anew.
+  await h.bridge.activateSession(b);
+  assert.equal(h.snapshot().codexLogin, null, "b has not answered yet");
+  await h.bridge.activateSession(a);
+  assert.equal(h.snapshot().codexLogin, false);
 });
 
 console.log(`test-live-voice: ${passed} checks passed`);

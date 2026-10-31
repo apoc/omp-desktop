@@ -36,7 +36,7 @@ function hintKeyFor(actionId, fallback) {
 // ── The composer (input + plan/steer modes + send) ────────────────────
 // `submitKey` ("enter" | "ctrl+enter") and `pasteCollapseLines` come from the
 // tweaks (Settings › Composer); the defaults match TWEAK_DEFAULTS.
-function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, planBlocked = "", goalMode = false, goalTint = false, onToggleGoal, goalBlocked = "", goalStrip = null, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued, onSendQueuedNow, browserChips = [], onRemoveBrowserChip, onBrowserChipClick, submitKey = "enter", pasteCollapseLines = 5, liveVoice, liveError, onLiveAction, dictation, dictationError, onDictationAction, dictationCompleted, onAckDictation }) {
+function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, planBlocked = "", goalMode = false, goalTint = false, onToggleGoal, goalBlocked = "", goalStrip = null, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued, onSendQueuedNow, browserChips = [], onRemoveBrowserChip, onBrowserChipClick, submitKey = "enter", pasteCollapseLines = 5, liveVoice, liveError, onLiveAction, codexLogin = null, dictation, dictationError, onDictationAction, dictationCompleted, onAckDictation }) {
   // Drafts are per tab (issue #28). The composer stays mounted across tab
   // switches and keeps one draft per session id (app/session-ui.js
   // DRAFT_IDLE): text, pending image attachments (sent alongside the next
@@ -590,7 +590,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
       )}
       {/* Goal mode (goal-strip.jsx): built by app-live.jsx, keyed by tab. */}
       {goalStrip}
-      <LiveVoicePanel voice={liveVoice} error={liveError} onAction={onLiveAction} dictationActive={!!dictation?.active} />
+      <LiveVoicePanel voice={liveVoice} error={liveError} onAction={onLiveAction} dictationActive={!!dictation?.active} codexLogin={codexLogin} />
       <DictationPanel dictation={dictation} error={dictationError} onAction={onDictationAction} />
 
       {showSlash && (
@@ -662,7 +662,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
           style={{ display: "none" }}
           onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
         />
-        <VoiceModeButton key={sessionId} live={liveVoice} dictation={dictation} onLiveAction={onLiveAction} onDictationAction={onDictationAction} />
+        <VoiceModeButton key={sessionId} live={liveVoice} dictation={dictation} codexLogin={codexLogin} onLiveAction={onLiveAction} onDictationAction={onDictationAction} />
         <div className="composer-input">
           <textarea
             ref={taRef}

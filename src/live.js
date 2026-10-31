@@ -97,6 +97,9 @@
     extWidgets:     EXT.EMPTY,
     liveVoice:      LIVE.EMPTY,
     dictation:      DICTATION.EMPTY,
+    // Whether this tab's profile has omp's Codex login, which live voice
+    // needs (`_refreshCodexLogin`); null until known.
+    codexLogin:     null,
   };
 
   // Cancels in-flight reads and sends when the tab's conversation is replaced.
@@ -398,6 +401,7 @@
       extWidgets:      state.extWidgets,
       liveVoice:       state.liveVoice,
       dictation:       state.dictation,
+      codexLogin:      state.codexLogin,
       dictationCompleted: _dictationCompleted,
       // Tab list — derived from session registry, not per-session state.
       // runState: active tab reads live state; background tabs read their
@@ -826,6 +830,7 @@
       extWidgets:    EXT.EMPTY,
       liveVoice:     keepVoice ? state.liveVoice : LIVE.EMPTY,
       dictation:     keepVoice ? state.dictation : DICTATION.EMPTY,
+      codexLogin:    keepVoice ? state.codexLogin : null,
     });
     sessionContext = {};
     streamingBubble = null;
@@ -880,6 +885,7 @@
       extWidgets:    state.extWidgets,
       liveVoice:     state.liveVoice,
       dictation:     state.dictation,
+      codexLogin:    state.codexLogin,
       // volatile vars
       sessionContext,
       streamingBubble,
@@ -924,6 +930,7 @@
       extWidgets:    snap.extWidgets ?? EXT.EMPTY,
       liveVoice:     snap.liveVoice ?? LIVE.EMPTY,
       dictation:     snap.dictation ?? DICTATION.EMPTY,
+      codexLogin:    snap.codexLogin ?? null,
     });
     sessionContext = snap.sessionContext ?? {};
     streamingBubble = snap.streamingBubble;
@@ -3022,7 +3029,21 @@
         // respawned process starts at "off" — so (re)assert it every time.
         _send({ type: "set_subagent_subscription", level: SUB.subscriptionLevelFor({ inspecting: subagentInspecting }) });
         _send({ type: "get_subagents" });
+        _refreshCodexLogin();
       });
+  }
+
+  // Ask omp whether the active tab's profile has a Codex login. Refreshed on
+  // activation, after a login and after a failed live start (a login can
+  // also end outside the app).
+  function _refreshCodexLogin() {
+    const id = activeSessionId;
+    _sendWithResponse({ type: "get_login_providers" }, QUICK_CMD_TIMEOUT_MS).then(data => {
+      const login = LIVE.codexLogin(data?.providers);
+      if (id !== activeSessionId || login === null || login === state.codexLogin) return;
+      state.codexLogin = login;
+      notify();
+    }, () => {});
   }
 
   // ── Send a command to the active session's omp ────────────────────────────
@@ -3518,6 +3539,8 @@
       } catch (e) {
         const error = String(e?.message ?? e);
         if (id === activeSessionId && gen === _liveGen) _voiceUpdate({ type: "start_failure", error, paused: wasPaused });
+        // omp's end frame for a missing login cancels this request first.
+        if (id === activeSessionId) _refreshCodexLogin();
         return { ok: false, error: id === activeSessionId && state.liveVoice.error || error };
       } finally {
         if (_liveStartPending === op) _liveStartPending = null;
@@ -4092,6 +4115,7 @@
       if (seededProfile) {
         await _invokeSafe("clear_profile_bootstrap", { id: seededProfile }, null);
       }
+      _refreshCodexLogin();
       return res;
     },
 

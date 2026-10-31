@@ -138,5 +138,22 @@
     }
   }
   const DICTATION = Object.freeze({ EMPTY: DICTATION_EMPTY, apply: applyDictation });
-  window.OMP_LIVE_VOICE = { EMPTY, LIMITS, apply, DICTATION, meterLevel };
+  // omp's live voice runs only on its Codex login (`openai-codex`): whether
+  // the tab's profile has one, from `get_login_providers`; null = unknown.
+  function codexLogin(providers) {
+    if (!Array.isArray(providers)) return null;
+    return providers.some(p => p?.id === "openai-codex" && p.authenticated === true);
+  }
+  const CODEX_MISSING = "Live conversation (Codex only): log in with /login → ChatGPT Plus/Pro (Codex Subscription)";
+  // The composer's live-conversation button: its label (also the tooltip) and
+  // whether it is clickable. Without a Codex login no call can start, but a
+  // running one stays stoppable; an unknown login does not block.
+  function liveButton(live, dictating, login) {
+    const calling = !!live?.active;
+    if (!calling && login === false) return { label: CODEX_MISSING, disabled: true };
+    const action = calling ? (live.phase === "connecting" ? "Cancel live conversation" : "Stop live conversation")
+      : live?.paused ? "Resume live conversation" : "Start live conversation";
+    return { label: `${action} (Codex only)`, disabled: !!dictating || (calling && live.phase === "stopping") };
+  }
+  window.OMP_LIVE_VOICE = { EMPTY, LIMITS, apply, DICTATION, meterLevel, codexLogin, liveButton, CODEX_MISSING };
 })();

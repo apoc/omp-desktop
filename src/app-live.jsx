@@ -118,6 +118,8 @@ function App() {
   const [extWidgets,   setExtWidgets]   = React.useState(_EXT_EMPTY);
   const [liveVoice, setLiveVoice] = React.useState(null);
   const [dictation, setDictation] = React.useState(null);
+  // Whether the tab's profile has the Codex login live voice needs (null = unknown).
+  const [codexLogin, setCodexLogin] = React.useState(null);
   const [dictationCompleted, setDictationCompleted] = React.useState([]);
   const [dictationErrors, setDictationErrors] = React.useState({});
   const dictationActionSeq = React.useRef({});
@@ -159,7 +161,7 @@ function App() {
     setModelState, setThinkingLevel,
     setSessions, setActiveSessionId, setProfiles, setStartupProfileId, setRecentProjects,
     setNoTabProfileId, setWorkspaceNotes, setApprovalModes, setCloseConfirm,
-    setPromptHistory, setSubagents, setSubagentTranscripts, setQueue, setQueueSending, setGoal, setExtWidgets, setLiveVoice, setDictation, setDictationCompleted,
+    setPromptHistory, setSubagents, setSubagentTranscripts, setQueue, setQueueSending, setGoal, setExtWidgets, setLiveVoice, setDictation, setCodexLogin, setDictationCompleted,
   });
   useRemote({ bridge });
   useThemeEffect(t);
@@ -1039,6 +1041,7 @@ function App() {
                     liveVoice={liveVoice}
                     liveError={liveErrors[planKey]}
                     onLiveAction={handleLiveAction}
+                    codexLogin={codexLogin}
                     dictation={dictation}
                     dictationError={dictationErrors[planKey]}
                     onDictationAction={requestDictationAction}

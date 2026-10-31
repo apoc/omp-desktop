@@ -42,6 +42,9 @@
 .live-voice-role { flex: none; min-width: 4.5em; color: var(--fg-3); font-family: var(--font-mono); }
 .live-voice-interim { color: var(--fg-3); }
 .btn.icon.live-voice-mic-on { color: var(--accent); background: var(--accent-soft); }
+/* `.btn` has no disabled look of its own (cf. `.queue-btn:disabled`). */
+.btn.voice-mode-btn:disabled, .live-voice .btn:disabled { opacity: .4; cursor: default; }
+.btn.voice-mode-btn:disabled:hover, .live-voice .btn:disabled:hover { background: transparent; color: var(--fg-3); }
 .dictation-preview { margin-top: 6px; max-height: 120px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-2); }
 
 /* Image attachments, and the collapsed-paste chips (#31) under the same layout.

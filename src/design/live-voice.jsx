@@ -1,5 +1,5 @@
 /* Live voice controls and captions for the active tab. */
-function LiveVoicePanel({ voice, error, onAction, dictationActive }) {
+function LiveVoicePanel({ voice, error, onAction, dictationActive, codexLogin = null }) {
   const active = !!voice?.active;
   const paused = !!voice?.paused;
   const phase = voice?.phase ?? "idle";
@@ -33,7 +33,8 @@ function LiveVoicePanel({ voice, error, onAction, dictationActive }) {
             disabled={phase === "stopping"} aria-label={phase === "connecting" ? "Cancel live conversation" : "End live conversation"}>{phase === "connecting" ? "cancel" : "end"}</button>
         </> : paused ? <>
           <button className="btn outlined" onClick={() => onAction("resume")}
-            disabled={dictationActive} aria-label="Resume live conversation">resume</button>
+            disabled={dictationActive || codexLogin === false} aria-label="Resume live conversation"
+            title={codexLogin === false ? window.OMP_LIVE_VOICE.CODEX_MISSING : undefined}>resume</button>
           <button className="btn outlined" onClick={() => onAction("stop")}
             aria-label="End live conversation">end</button>
         </> : null}
@@ -49,24 +50,25 @@ function LiveVoicePanel({ voice, error, onAction, dictationActive }) {
   );
 }
 // Each mode stays in place while active so its button can stop or cancel it.
-function VoiceModeButton({ live, dictation, onLiveAction, onDictationAction }) {
+// Live conversation is omp's Codex call: greyed out without a Codex login.
+function VoiceModeButton({ live, dictation, codexLogin = null, onLiveAction, onDictationAction }) {
   const dictating = !!dictation?.active;
   const calling = !!live?.active;
   const paused = !!live?.paused;
   const dictationBusy = dictating && (dictation.phase === "starting" || dictation.phase === "stopping");
   const liveBusy = calling && (live.phase === "connecting" || live.phase === "stopping");
   const dictationLabel = dictating ? (dictation.phase === "starting" ? "Cancel voice to text" : "Stop voice to text") : "Start voice to text";
-  const liveLabel = calling ? (live.phase === "connecting" ? "Cancel live conversation" : "Stop live conversation") : paused ? "Resume live conversation" : "Start live conversation";
+  const liveButton = window.OMP_LIVE_VOICE.liveButton(live, dictating, codexLogin);
   return <>
-    <button className={`btn icon ghost${dictating ? " live-voice-mic-on" : ""}`}
+    <button className={`btn icon ghost voice-mode-btn${dictating ? " live-voice-mic-on" : ""}`}
       title={dictationLabel} aria-label={dictationLabel} aria-pressed={dictating} aria-busy={dictationBusy}
       disabled={calling || (dictating && dictation.phase === "stopping")}
       onClick={() => onDictationAction(dictating ? "stop" : "start")}>
       <window.Icon name="voice" size={13} />
     </button>
-    <button className={`btn icon ghost${calling ? " live-voice-mic-on" : ""}`}
-      title={liveLabel} aria-label={liveLabel} aria-pressed={calling} aria-busy={liveBusy}
-      disabled={dictating || (calling && live.phase === "stopping")}
+    <button className={`btn icon ghost voice-mode-btn${calling ? " live-voice-mic-on" : ""}`}
+      title={liveButton.label} aria-label={liveButton.label} aria-pressed={calling} aria-busy={liveBusy}
+      disabled={liveButton.disabled}
       onClick={() => onLiveAction(calling ? "stop" : paused ? "resume" : "start")}>
       <window.Icon name="conversation" size={13} />
     </button>
