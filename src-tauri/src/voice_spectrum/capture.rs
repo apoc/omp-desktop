@@ -130,17 +130,13 @@ where
 {
     let channels = usize::from(config.channels);
     let ring = Arc::clone(ring); // the audio callback owns one handle
-                                 // Reused across callbacks: the converted block before the mixdown.
-    let mut block: Vec<f32> = Vec::new();
     device
         .build_input_stream::<T, _, _>(
             config,
             move |data: &[T], _| {
-                block.clear();
-                block.extend(data.iter().map(|&s| s.to_sample::<f32>()));
                 ring.lock()
                     .unwrap_or_else(PoisonError::into_inner)
-                    .push_interleaved(&block, channels);
+                    .push_interleaved(data, channels);
             },
             |e| eprintln!("[omp-desktop] voice spectrum: microphone error: {e}"),
             Some(OPEN_TIMEOUT),

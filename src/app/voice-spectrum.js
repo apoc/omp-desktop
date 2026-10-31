@@ -3,7 +3,6 @@
 // then drop). The canvas is design/voice-spectrum.jsx; the frames come from
 // src-tauri/src/voice_spectrum through OMP_BRIDGE.onVoiceSpectrum.
 (function () {
-  const BANDS = 32;
   // Time constants (ms) of the exponential approach to a new frame.
   const ATTACK_MS = 28;
   const RELEASE_MS = 150;
@@ -15,13 +14,14 @@
   const REST = 0.002;
 
   // Whether the microphone is recording for the active tab: voice to text
-  // while it records, a live call while connected and not muted.
+  // while it records, a live call while connected (OMP_LIVE_VOICE's phases)
+  // and not muted.
   function shouldRun(dictation, live) {
     if (dictation?.active && dictation.phase === "recording") return true;
-    return !!live?.active && !live.muted && live.phase !== "connecting" && live.phase !== "stopping";
+    return !!live?.active && !live.muted && window.OMP_LIVE_VOICE.CONNECTED_PHASES.has(live.phase);
   }
 
-  function createState(bands = BANDS) {
+  function createState(bands) {
     return {
       values: new Float32Array(bands),
       peaks: new Float32Array(bands),
@@ -56,5 +56,5 @@
     return moving;
   }
 
-  window.OMP_VOICE_SPECTRUM = { BANDS, shouldRun, createState, step };
+  window.OMP_VOICE_SPECTRUM = { shouldRun, createState, step };
 })();

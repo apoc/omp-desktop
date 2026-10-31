@@ -164,5 +164,5 @@
       : live?.paused ? "Resume live conversation" : "Start live conversation";
     return { label: `${action} (Codex only)`, disabled: !!dictating || (calling && live.phase === "stopping") };
   }
-  window.OMP_LIVE_VOICE = { EMPTY, LIMITS, apply, DICTATION, meterLevel, codexLogin, liveButton, CODEX_MISSING };
+  window.OMP_LIVE_VOICE = { EMPTY, LIMITS, CONNECTED_PHASES, apply, DICTATION, meterLevel, codexLogin, liveButton, CODEX_MISSING };
 })();

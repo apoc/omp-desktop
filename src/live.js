@@ -3687,7 +3687,9 @@
     if (_dictationStopPending) return _dictationStopPending.promise;
     if (!state.dictation.active) return Promise.resolve({ ok: true });
     const id = activeSessionId, captureId = state.dictation.captureId, gen = ++_dictationGen;
-    if (send) _dictationSendCapture = captureId;
+    // Each stop decides: a failed send-stop's tag must not carry over to a
+    // retry that is not the user's (tab switch, Settings).
+    _dictationSendCapture = send ? captureId : null;
     const startHandoff = _dictationStartPending?.request.handedOff;
     _dictationStartPending?.request.cancel("Voice to text was stopped");
     state.dictation = DICTATION.apply(state.dictation, { type: "stop" });

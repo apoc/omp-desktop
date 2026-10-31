@@ -42,9 +42,6 @@
 .live-voice-role { flex: none; min-width: 4.5em; color: var(--fg-3); font-family: var(--font-mono); }
 .live-voice-interim { color: var(--fg-3); }
 .btn.icon.live-voice-mic-on { color: var(--accent); background: var(--accent-soft); }
-/* `.btn` has no disabled look of its own (cf. `.queue-btn:disabled`). */
-.btn.voice-mode-btn:disabled, .live-voice .btn:disabled { opacity: .4; cursor: default; }
-.btn.voice-mode-btn:disabled:hover, .live-voice .btn:disabled:hover { background: transparent; color: var(--fg-3); }
 /* The microphone's equalizer (design/voice-spectrum.jsx) right above the
    input while voice capture records; the bars are canvas-drawn. */
 .voice-spectrum {
@@ -118,8 +115,9 @@
 /* `.btn.icon.ghost` (styles.css), sized down; the inset ring stays inside
    the strip's scroll box. */
 .btn.icon.queue-btn { flex: none; width: 1.25rem; height: 1.25rem; }
-.queue-btn:disabled { opacity: .4; cursor: default; }
-.btn.queue-btn:disabled:hover { background: transparent; color: var(--fg-3); }
+/* `.btn` has no disabled look of its own. */
+.queue-btn:disabled, .btn.voice-mode-btn:disabled, .live-voice .btn:disabled { opacity: .4; cursor: default; }
+.btn.queue-btn:disabled:hover, .btn.voice-mode-btn:disabled:hover, .live-voice .btn:disabled:hover { background: transparent; color: var(--fg-3); }
 .btn.queue-btn:focus-visible { outline-offset: -2px; }
 
 .composer-row {

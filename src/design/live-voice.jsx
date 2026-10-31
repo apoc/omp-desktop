@@ -13,6 +13,7 @@ function LiveVoicePanel({ voice, error, onAction, dictationActive, codexLogin = 
 
   const input = window.OMP_LIVE_VOICE.meterLevel(voice?.input);
   const output = window.OMP_LIVE_VOICE.meterLevel(voice?.output);
+  const resume = window.OMP_LIVE_VOICE.liveButton(voice, dictationActive, codexLogin);
   return (
     <section className="live-voice" aria-label="Live voice">
       <div className="live-voice-head">
@@ -33,8 +34,7 @@ function LiveVoicePanel({ voice, error, onAction, dictationActive, codexLogin = 
             disabled={phase === "stopping"} aria-label={phase === "connecting" ? "Cancel live conversation" : "End live conversation"}>{phase === "connecting" ? "cancel" : "end"}</button>
         </> : paused ? <>
           <button className="btn outlined" onClick={() => onAction("resume")}
-            disabled={dictationActive || codexLogin === false} aria-label="Resume live conversation"
-            title={codexLogin === false ? window.OMP_LIVE_VOICE.CODEX_MISSING : undefined}>resume</button>
+            disabled={resume.disabled} aria-label="Resume live conversation" title={resume.label}>resume</button>
           <button className="btn outlined" onClick={() => onAction("stop")}
             aria-label="End live conversation">end</button>
         </> : null}

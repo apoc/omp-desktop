@@ -817,4 +817,20 @@ await checkAsync("send on stop tags only the capture the user stopped, never a t
   assert.equal(h.commands.some(c => c.type === "prompt"), false, "the bridge never sends; the composer does");
 });
 
+await checkAsync("a failed send-on-stop does not tag the Settings stop that follows", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  const starting = h.bridge.dictationStart(), start = await h.waitCommand("dictation_start");
+  h.reply(start); await starting;
+  const failed = h.bridge.dictationStop({ send: true });
+  h.reply(await h.waitCommand("dictation_stop"), false, null, "microphone busy");
+  assert.equal((await failed).ok, false);
+  assert.equal(h.snapshot().dictation.active, true);
+  const settingsStop = h.bridge.stopActiveVoice(), stop = await h.waitCommand("dictation_stop", 2);
+  h.emit(a, { type: "dictation_end", captureId: start.captureId, text: "words" });
+  h.reply(stop, true, { text: "words" });
+  await settingsStop;
+  assert.deepEqual(h.snapshot().dictationCompleted.map(item => [item.text, item.send]), [["words", false]]);
+});
+
 console.log(`test-live-voice: ${passed} checks passed`);

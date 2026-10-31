@@ -3,7 +3,8 @@
    Rust's newest frame in; the canvas redraws on animation frames with the
    bar physics of app/voice-spectrum.js, so no frame re-renders React. */
 
-// Theme colours, re-read now and then so a theme switch shows up.
+// Theme colours, read once per mount: the theme only changes in Settings,
+// and opening Settings stops voice capture, which unmounts the canvas.
 function _VS_colors(el) {
   const css = getComputedStyle(el);
   const v = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
@@ -21,8 +22,17 @@ function _VS_bar(ctx, x, y, w, h, r) {
   else ctx.fillRect(x, y, w, h);
 }
 
-function _VS_draw(ctx, w, h, state, colors) {
-  const dpr = window.devicePixelRatio || 1;
+// The bars' horizontal hue; rebuilt only when the canvas size or ratio changes.
+function _VS_gradient(ctx, w, dpr, colors) {
+  const pad = 10 * dpr;
+  const hue = ctx.createLinearGradient(pad, 0, w - pad, 0);
+  hue.addColorStop(0, colors.low);
+  hue.addColorStop(0.55, colors.mid);
+  hue.addColorStop(1, colors.high);
+  return hue;
+}
+
+function _VS_draw(ctx, w, h, dpr, state, colors, hue) {
   const { values, peaks } = state;
   const n = values.length;
   const pad = 10 * dpr;
@@ -35,10 +45,7 @@ function _VS_draw(ctx, w, h, state, colors) {
   const minBar = 2 * dpr;
 
   ctx.clearRect(0, 0, w, h);
-  const hue = ctx.createLinearGradient(pad, 0, w - pad, 0);
-  hue.addColorStop(0, colors.low);
-  hue.addColorStop(0.55, colors.mid);
-  hue.addColorStop(1, colors.high);
+  ctx.shadowColor = colors.glow;
 
   for (let i = 0; i < n; i++) {
     const v = values[i];
@@ -47,7 +54,6 @@ function _VS_draw(ctx, w, h, state, colors) {
     // Bar: brighter and glowing as it rises.
     ctx.fillStyle = hue;
     ctx.globalAlpha = 0.45 + 0.55 * v;
-    ctx.shadowColor = colors.glow;
     ctx.shadowBlur = 10 * dpr * v;
     _VS_bar(ctx, x, baseline - bh, barW, bh, radius);
     // Reflection under the baseline, faint and short.
@@ -72,16 +78,18 @@ function VoiceSpectrum({ source }) {
     if (!canvas) return undefined;
     const ctx = canvas.getContext("2d");
     const VS = window.OMP_VOICE_SPECTRUM;
-    let state = VS.createState();
-    let colors = _VS_colors(canvas);
-    let colorsAt = performance.now();
+    let state = null; // sized by the first frame (the start's bar count)
+    const colors = _VS_colors(canvas);
+    let hue = null;
+    let dpr = 1;
     let last = performance.now();
     let raf = 0;
     let dirty = true;
     const fit = () => {
-      const dpr = window.devicePixelRatio || 1;
+      dpr = window.devicePixelRatio || 1;
       canvas.width = Math.max(1, Math.round(canvas.clientWidth * dpr));
       canvas.height = Math.max(1, Math.round(canvas.clientHeight * dpr));
+      hue = null;
       dirty = true;
     };
     const resize = new ResizeObserver(fit);
@@ -89,13 +97,20 @@ function VoiceSpectrum({ source }) {
     fit();
     const tick = now => {
       raf = requestAnimationFrame(tick);
-      if (now - colorsAt > 1000) { colors = _VS_colors(canvas); colorsAt = now; dirty = true; }
+      // A move to a monitor with another scale factor changes the ratio but
+      // not the CSS size, so the ResizeObserver never fires for it.
+      if ((window.devicePixelRatio || 1) !== dpr) fit();
       const frame = source.current;
-      // The bar count follows the frames (Settings may change it mid-call).
-      if (frame && frame.length !== state.values.length) { state = VS.createState(frame.length); dirty = true; }
-      const moving = VS.step(state, frame, now - last);
+      if (frame && frame.length !== state?.values.length) { state = VS.createState(frame.length); dirty = true; }
+      const dt = now - last;
       last = now;
-      if (moving || dirty) { _VS_draw(ctx, canvas.width, canvas.height, state, colors); dirty = false; }
+      if (!state) return;
+      const moving = VS.step(state, frame, dt);
+      if (moving || dirty) {
+        hue ??= _VS_gradient(ctx, canvas.width, dpr, colors);
+        _VS_draw(ctx, canvas.width, canvas.height, dpr, state, colors, hue);
+        dirty = false;
+      }
     };
     raf = requestAnimationFrame(tick);
     return () => { cancelAnimationFrame(raf); resize.disconnect(); };

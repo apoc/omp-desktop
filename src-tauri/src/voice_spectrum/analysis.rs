@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+use cpal::{FromSample, Sample};
+
 use realfft::num_complex::Complex;
 use realfft::{RealFftPlanner, RealToComplex};
 
@@ -44,13 +46,17 @@ impl Ring {
         self.next = (self.next + 1) % FFT_SIZE;
     }
 
-    /// Mixes interleaved `frames` of `channels` samples down to mono.
-    pub fn push_interleaved(&mut self, frames: &[f32], channels: usize) {
+    /// Mixes interleaved `frames` of `channels` samples (any format cpal
+    /// reports) down to mono `f32`.
+    pub fn push_interleaved<T: Sample>(&mut self, frames: &[T], channels: usize)
+    where
+        f32: FromSample<T>,
+    {
         let channels = channels.max(1);
         #[allow(clippy::cast_precision_loss)] // a channel count, far below 2^23
         let scale = 1.0 / channels as f32;
         for frame in frames.chunks_exact(channels) {
-            self.push(frame.iter().sum::<f32>() * scale);
+            self.push(frame.iter().map(|&s| s.to_sample::<f32>()).sum::<f32>() * scale);
         }
     }
 
@@ -77,9 +83,10 @@ pub struct Analyzer {
 }
 
 impl Analyzer {
-    /// `bands` is clamped to [`MIN_BANDS`] through [`MAX_BANDS`].
+    /// `bands` is within [`MIN_BANDS`] through [`MAX_BANDS`] (checked at
+    /// the IPC boundary, `super::band_count`).
     pub fn new(sample_rate: u32, bands: usize) -> Self {
-        let bands = bands.clamp(MIN_BANDS, MAX_BANDS);
+        debug_assert!((MIN_BANDS..=MAX_BANDS).contains(&bands));
         let fft = RealFftPlanner::<f32>::new().plan_fft_forward(FFT_SIZE);
         #[allow(clippy::cast_precision_loss)] // FFT_SIZE is a small power of two
         let window: Vec<f32> = (0..FFT_SIZE)
@@ -245,8 +252,6 @@ mod tests {
     #[test]
     fn silence_is_an_empty_display() {
         assert_eq!(bands_of(&Ring::new()), [0; BANDS]);
-        assert_eq!(Analyzer::new(RATE, 1).levels().len(), MIN_BANDS);
-        assert_eq!(Analyzer::new(RATE, 1_000).levels().len(), MAX_BANDS);
     }
 
     #[test]
