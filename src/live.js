@@ -3724,8 +3724,8 @@
   // command on a worker thread, so they could otherwise finish out of order
   // and leave the microphone reader running).
   let _voiceSpectrumChain = Promise.resolve();
-  function _voiceSpectrumCall(cmd) {
-    const call = _voiceSpectrumChain.then(() => _invokeResult(cmd));
+  function _voiceSpectrumCall(cmd, args) {
+    const call = _voiceSpectrumChain.then(() => _invokeResult(cmd, args));
     _voiceSpectrumChain = call;
     return call;
   }
@@ -3752,12 +3752,13 @@
     },
     /** The composer's voice spectrum (Rust `voice_spectrum`): an
      *  analysis-only reader of the default microphone, run while voice
-     *  capture records. Start and stop are queued so a stop never
-     *  overtakes the start before it; both resolve to `{ ok, error? }`. */
-    voiceSpectrumStart() { return _voiceSpectrumCall("voice_spectrum_start"); },
+     *  capture records, `bands` bars wide (8..=128; another count restarts
+     *  it). Start and stop are queued so a stop never overtakes the start
+     *  before it; both resolve to `{ ok, error? }`. */
+    voiceSpectrumStart(bands) { return _voiceSpectrumCall("voice_spectrum_start", { bands }); },
     voiceSpectrumStop() { return _voiceSpectrumCall("voice_spectrum_stop"); },
-    /** `cb(bands)` per frame (~30/s): 32 values 0..255, low to high
-     *  frequency. Returns `{ stop, ready }`. */
+    /** `cb(bands)` per frame (~30/s): as many values 0..255 as the start
+     *  asked for, low to high frequency. Returns `{ stop, ready }`. */
     onVoiceSpectrum(cb) { return _listen("voice://spectrum", p => cb(p?.bands ?? null)); },
 
     // ── Messaging ────────────────────────────────────────────────────────────

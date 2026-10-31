@@ -362,7 +362,7 @@ function App() {
   }, [dictationAutoStopMs, dictation?.captureId, dictation?.text, t.dictationSend]);
   // The equalizer above the input while the microphone records (Rust reads
   // the device itself; omp's capture is out of reach in its own process).
-  const voiceSpectrum = useVoiceSpectrum(bridge, window.OMP_VOICE_SPECTRUM.shouldRun(dictation, liveVoice));
+  const voiceSpectrum = useVoiceSpectrum(bridge, window.OMP_VOICE_SPECTRUM.shouldRun(dictation, liveVoice), t.voiceSpectrumBands);
   const handleLiveAction = (args = "") => {
     const action = window.OMP_SLASH.liveCommand(args, liveVoice);
     if (!action) {

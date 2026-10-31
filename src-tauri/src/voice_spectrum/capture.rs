@@ -11,7 +11,7 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, Stream, StreamConfig};
 
-use super::analysis::{Analyzer, Ring, BANDS};
+use super::analysis::{Analyzer, Ring};
 
 /// About 30 frames a second; the composer smooths between them.
 const FRAME: Duration = Duration::from_millis(33);
@@ -25,10 +25,11 @@ pub struct Capture {
 }
 
 impl Capture {
-    /// Opens the default input device and calls `emit` with fresh bands
-    /// every [`FRAME`] until dropped. Fails when there is no microphone or
-    /// it cannot be opened (missing permission, device in exclusive use).
-    pub fn start(emit: impl Fn(&[u8; BANDS]) + Send + 'static) -> Result<Self, String> {
+    /// Opens the default input device and calls `emit` with `bands` fresh
+    /// values every [`FRAME`] until dropped. Fails when there is no
+    /// microphone or it cannot be opened (missing permission, device in
+    /// exclusive use).
+    pub fn start(bands: usize, emit: impl Fn(&[u8]) + Send + 'static) -> Result<Self, String> {
         let (stop, stop_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::channel();
         let thread = std::thread::Builder::new()
@@ -42,7 +43,7 @@ impl Capture {
                     }
                 };
                 let _ = ready_tx.send(Ok(()));
-                run(&ring, rate, &stop_rx, &emit);
+                run(&ring, Analyzer::new(rate, bands), &stop_rx, &emit);
                 drop(stream);
             })
             .map_err(|e| format!("could not start the voice spectrum thread: {e}"))?;
@@ -73,17 +74,17 @@ impl Drop for Capture {
 }
 
 /// Analyse and emit until told to stop (or the owner is gone).
-fn run(ring: &Mutex<Ring>, rate: u32, stop: &mpsc::Receiver<()>, emit: &impl Fn(&[u8; BANDS])) {
-    let mut analyzer = Analyzer::new(rate);
-    let mut bands = [0; BANDS];
+fn run(
+    ring: &Mutex<Ring>,
+    mut analyzer: Analyzer,
+    stop: &mpsc::Receiver<()>,
+    emit: &impl Fn(&[u8]),
+) {
     loop {
         match stop.recv_timeout(FRAME) {
             Err(RecvTimeoutError::Timeout) => {
-                analyzer.bands(
-                    &ring.lock().unwrap_or_else(PoisonError::into_inner),
-                    &mut bands,
-                );
-                emit(&bands);
+                analyzer.load(&ring.lock().unwrap_or_else(PoisonError::into_inner));
+                emit(analyzer.levels());
             }
             Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
         }

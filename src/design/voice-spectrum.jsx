@@ -72,7 +72,7 @@ function VoiceSpectrum({ source }) {
     if (!canvas) return undefined;
     const ctx = canvas.getContext("2d");
     const VS = window.OMP_VOICE_SPECTRUM;
-    const state = VS.createState();
+    let state = VS.createState();
     let colors = _VS_colors(canvas);
     let colorsAt = performance.now();
     let last = performance.now();
@@ -90,7 +90,10 @@ function VoiceSpectrum({ source }) {
     const tick = now => {
       raf = requestAnimationFrame(tick);
       if (now - colorsAt > 1000) { colors = _VS_colors(canvas); colorsAt = now; dirty = true; }
-      const moving = VS.step(state, source.current, now - last);
+      const frame = source.current;
+      // The bar count follows the frames (Settings may change it mid-call).
+      if (frame && frame.length !== state.values.length) { state = VS.createState(frame.length); dirty = true; }
+      const moving = VS.step(state, frame, now - last);
       last = now;
       if (moving || dirty) { _VS_draw(ctx, canvas.width, canvas.height, state, colors); dirty = false; }
     };

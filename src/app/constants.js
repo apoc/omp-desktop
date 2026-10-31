@@ -60,6 +60,7 @@
     "submitKey": "enter",
     "dictationSend": false,
     "dictationAutoStop": 3,
+    "voiceSpectrumBands": 64,
     "pasteCollapseLines": 5,
     "restoreTabs": true,
     "confirmBusyClose": false,

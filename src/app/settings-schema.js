@@ -91,13 +91,17 @@
         tweak("followOutput", "toggle", "Follow new output", "Keep the transcript scrolled to the newest message while the agent works. Scrolling up always pauses it.", "auto scroll bottom pin"),
       ] },
     ] },
-    { id: "composer", icon: "edit", title: "Composer", blurb: "Sending, pasting and recalling prompts.", groups: [
+    { id: "composer", icon: "edit", title: "Composer", blurb: "Sending, voice input, pasting and recalling prompts.", groups: [
       { name: "Sending", rows: [
         tweak("submitKey", "seg", "Send with", "In the composer, an ask's answer box and a subagent's steer box; the other chord inserts a newline. One-line fields always send with Enter.", "submit newline shift enter",
           { options: opts(["enter", "ctrl+enter"]) }),
+      ] },
+      { name: "Voice", rows: [
         tweak("dictationSend", "toggle", "Send voice to text on stop", "Stopping voice to text yourself (the microphone, the panel's stop or a pause below) sends the draft with the dictated text, as Enter would. Off, the text only goes into the draft. A stop caused by switching tabs or opening Settings never sends.", "dictation speech microphone voice auto send submit"),
         tweak("dictationAutoStop", "seg", "Stop voice to text after a pause", "Stop recording once no new words have come in for this long; until your first words it keeps waiting. Background noise that omp hears as words keeps it going.", "dictation speech microphone voice silence auto stop hands-free",
           { options: opts([0, 1.5, 2, 3, 5], { 0: "off", 1.5: "1.5 s", 2: "2 s", 3: "3 s", 5: "5 s" }) }),
+        tweak("voiceSpectrumBands", "seg", "Spectrum bars", "How many frequency bars the microphone equalizer above the input draws while voice to text or a live conversation records.", "voice microphone equalizer spectrum fft bands bars",
+          { options: opts([16, 32, 48, 64, 96, 128]) }),
       ] },
       { name: "Pasting", rows: [
         tweak("pasteCollapseLines", "slider", "Collapse pastes longer than", "A longer paste shows as a `[paste #1 +40 lines]` chip; the agent still gets the full text.", "paste chip",

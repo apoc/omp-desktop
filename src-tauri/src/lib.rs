@@ -973,16 +973,19 @@ fn widgets_set_view(view: widgets::ViewArgs, host: State<'_, Arc<widgets::Widget
     host.set_view(view);
 }
 
-/// Start the composer's voice spectrum (`voice://spectrum` frames from the
-/// default microphone) while voice to text or a live conversation records;
-/// already running is fine. `async` + `spawn_blocking`: opening the device
-/// can take a moment. Fails when there is no usable microphone.
+/// Start the composer's voice spectrum (`voice://spectrum` frames of `bands`
+/// bars from the default microphone) while voice to text or a live
+/// conversation records; already running with that count is fine, another
+/// count restarts it. `async` + `spawn_blocking`: opening the device can
+/// take a moment. Fails when there is no usable microphone or `bands` is
+/// outside 8..=128.
 #[tauri::command]
 async fn voice_spectrum_start(
+    bands: u16,
     app: AppHandle,
     spectrum: State<'_, Arc<voice_spectrum::VoiceSpectrum>>,
 ) -> Result<(), String> {
-    with_blocking(&spectrum, move |s| s.start(app)).await
+    with_blocking(&spectrum, move |s| s.start(app, bands)).await
 }
 
 /// Stop the voice spectrum, if running. `async` + `spawn_blocking`: closing
