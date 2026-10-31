@@ -303,26 +303,21 @@ function App() {
     dictationActionSeq.current = pruneEntries(dictationActionSeq.current, sessionIds);
   }, [sessionIds]);
 
-  const requestLiveAction = (action) => {
-    if ((action === "start" || action === "resume") && settingsOpening.current) return Promise.resolve(false);
+  // One voice request for the shown tab: its error belongs to that tab, and
+  // only the tab's latest request of the mode may report one.
+  const runVoiceAction = (seqs, setErrors, label, call) => {
     const id = planKey;
-    const report = error => setLiveErrors(m => ({ ...m, [id]: error }));
-    const seq = (liveActionSeq.current[id] ?? 0) + 1;
-    liveActionSeq.current[id] = seq;
-    report(null);
+    const seq = (seqs.current[id] ?? 0) + 1;
+    seqs.current[id] = seq;
+    setErrors(m => ({ ...m, [id]: null }));
     const fail = error => {
-      if (liveActionSeq.current[id] === seq && openVoiceTabs.current.includes(id)) {
-        report(error || "Live voice failed.");
+      if (seqs.current[id] === seq && openVoiceTabs.current.includes(id)) {
+        setErrors(m => ({ ...m, [id]: error || `${label} failed.` }));
       }
     };
     try {
-      if (!bridge) { fail("Live voice is unavailable without an agent connection."); return Promise.resolve(false); }
-      const request = action === "start" ? bridge.liveStart()
-        : action === "pause" ? bridge.livePause()
-        : action === "resume" ? bridge.liveResume()
-        : action === "stop" ? bridge.liveStop()
-        : bridge.liveMute(action === "mute");
-      return Promise.resolve(request).then(result => {
+      if (!bridge) { fail(`${label} is unavailable without an agent connection.`); return Promise.resolve(false); }
+      return Promise.resolve(call(bridge)).then(result => {
         if (!result?.ok) fail(result?.error);
         return !!result?.ok;
       }, error => { fail(error?.message ?? String(error)); return false; });
@@ -330,6 +325,15 @@ function App() {
       fail(error?.message ?? String(error));
       return Promise.resolve(false);
     }
+  };
+  const requestLiveAction = (action) => {
+    if ((action === "start" || action === "resume") && settingsOpening.current) return Promise.resolve(false);
+    return runVoiceAction(liveActionSeq, setLiveErrors, "Live voice", b =>
+      action === "start" ? b.liveStart()
+        : action === "pause" ? b.livePause()
+        : action === "resume" ? b.liveResume()
+        : action === "stop" ? b.liveStop()
+        : b.liveMute(action === "mute"));
   };
   // Wait for Settings to leave the screen before opening a microphone, and
   // discard the request if its owning tab has changed in the meantime.
@@ -340,26 +344,9 @@ function App() {
     if (pending.id === planKey && !settingsOpening.current) requestLiveAction(pending.action);
   }, [stab.active, planKey]);
   const requestDictationAction = action => {
-    const id = planKey;
     if (action === "start" && settingsOpening.current) return Promise.resolve(false);
-    const seq = (dictationActionSeq.current[id] ?? 0) + 1;
-    dictationActionSeq.current[id] = seq;
-    setDictationErrors(m => ({ ...m, [id]: null }));
-    const fail = error => {
-      if (dictationActionSeq.current[id] === seq && openVoiceTabs.current.includes(id)) {
-        setDictationErrors(m => ({ ...m, [id]: error || "Voice to text failed." }));
-      }
-    };
-    try {
-      if (!bridge) { fail("Voice to text is unavailable without an agent connection."); return Promise.resolve(false); }
-      return Promise.resolve(action === "start" ? bridge.dictationStart() : bridge.dictationStop()).then(result => {
-        if (!result?.ok) fail(result?.error);
-        return !!result?.ok;
-      }, error => { fail(error?.message ?? String(error)); return false; });
-    } catch (error) {
-      fail(error?.message ?? String(error));
-      return Promise.resolve(false);
-    }
+    return runVoiceAction(dictationActionSeq, setDictationErrors, "Voice to text",
+      b => action === "start" ? b.dictationStart() : b.dictationStop());
   };
   const handleLiveAction = (args = "") => {
     const action = window.OMP_SLASH.liveCommand(args, liveVoice);

@@ -3473,10 +3473,24 @@
     if (next !== state.liveVoice) { state.liveVoice = next; notify(); }
   }
 
+  // Why the active tab cannot open a microphone now, or null when it can.
+  // `otherBusy`: the other voice mode still holds or is releasing it.
+  function _voiceStartRefusal(otherBusy, otherLabel) {
+    if (!window.__TAURI__ || !activeSessionId || !sessionRegistry.has(activeSessionId)) return "Not connected";
+    if (_replayBuffer || _switchAwayFrom === activeSessionId || _respawning.has(activeSessionId) || _closingVoiceTabs.has(activeSessionId)) return "Tab is not ready";
+    return otherBusy ? `${otherLabel} is active` : null;
+  }
+
+  // A failed live request updates the call only while it is still that call.
+  function _liveRequestFailed(id, gen, type, e) {
+    const error = String(e?.message ?? e);
+    if (id === activeSessionId && gen === _liveGen) _voiceUpdate({ type, error });
+    return { ok: false, error };
+  }
+
   function _liveStart() {
-    if (!window.__TAURI__ || !activeSessionId || !sessionRegistry.has(activeSessionId)) return Promise.resolve({ ok: false, error: "Not connected" });
-    if (_replayBuffer || _switchAwayFrom === activeSessionId || _respawning.has(activeSessionId) || _closingVoiceTabs.has(activeSessionId)) return Promise.resolve({ ok: false, error: "Tab is not ready" });
-    if (state.dictation.active || _dictationStopPending) return Promise.resolve({ ok: false, error: "Voice to text is active" });
+    const refusal = _voiceStartRefusal(state.dictation.active || !!_dictationStopPending, "Voice to text");
+    if (refusal) return Promise.resolve({ ok: false, error: refusal });
     if (state.liveVoice.active) {
       if (_liveStartPending && state.liveVoice.phase !== "stopping") return _liveStartPending.promise;
       return Promise.resolve({ ok: false, error: state.liveVoice.phase === "stopping" ? "Live voice is stopping" : "Live voice is already active" });
@@ -3543,9 +3557,7 @@
         _voiceUpdate({ type: "stop_success", paused });
         return { ok: true };
       } catch (e) {
-        const error = String(e?.message ?? e);
-        if (id === activeSessionId && gen === _liveGen) _voiceUpdate({ type: "stop_failure", error });
-        return { ok: false, error };
+        return _liveRequestFailed(id, gen, "stop_failure", e);
       } finally {
         if (_liveStopPending === op) _liveStopPending = null;
       }
@@ -3574,9 +3586,7 @@
         _voiceUpdate({ type: "mute_success", muted: data?.muted });
         return { ok: true };
       } catch (e) {
-        const error = String(e?.message ?? e);
-        if (id === activeSessionId && gen === _liveGen) _voiceUpdate({ type: "mute_failure", error });
-        return { ok: false, error };
+        return _liveRequestFailed(id, gen, "mute_failure", e);
       } finally {
         if (_liveMutePending === op) _liveMutePending = null;
       }
@@ -3611,9 +3621,8 @@
   }
 
   function _dictationStart() {
-    if (!window.__TAURI__ || !activeSessionId || !sessionRegistry.has(activeSessionId)) return Promise.resolve({ ok: false, error: "Not connected" });
-    if (_replayBuffer || _switchAwayFrom === activeSessionId || _respawning.has(activeSessionId) || _closingVoiceTabs.has(activeSessionId)) return Promise.resolve({ ok: false, error: "Tab is not ready" });
-    if (state.liveVoice.active || _liveStopPending) return Promise.resolve({ ok: false, error: "Live conversation is active" });
+    const refusal = _voiceStartRefusal(state.liveVoice.active || !!_liveStopPending, "Live conversation");
+    if (refusal) return Promise.resolve({ ok: false, error: refusal });
     if (state.dictation.active) {
       if (state.dictation.phase === "starting" && _dictationStartPending) return _dictationStartPending.promise;
       return Promise.resolve({ ok: false, error: "Voice to text is already active" });
