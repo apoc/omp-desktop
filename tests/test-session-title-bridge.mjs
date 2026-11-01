@@ -10,7 +10,7 @@ const flush = async () => {
   for (let i = 0; i < 50; i++) await Promise.resolve();
 };
 
-function harness(t, { title, autoName = true } = {}) {
+function harness(t, { title, autoName = true, isStreaming = false } = {}) {
   const window = { OMP_TWEAKS_STORE: { read: () => ({ autoName }) } };
   const timers = new Set();
   const scope = {
@@ -100,8 +100,8 @@ function harness(t, { title, autoName = true } = {}) {
             sessionFile: args.args.resume || `/saved/${id}.jsonl`,
             sessionName: title,
             messageCount: 2,
-            isStreaming: false,
-            isSettled: true,
+            isStreaming,
+            isSettled: !isStreaming,
           });
           return {
             approvalMode: "write",
@@ -149,6 +149,12 @@ function harness(t, { title, autoName = true } = {}) {
     rejectRename(value) {
       rejectRename = value;
     },
+    setStreaming(value) {
+      Object.assign(states.get(bridge.activeSessionId), {
+        isStreaming: value,
+        isSettled: !value,
+      });
+    },
     async reopen() {
       await bridge.resumeSession({
         path: "/saved/conversation.jsonl",
@@ -186,6 +192,27 @@ function harness(t, { title, autoName = true } = {}) {
     },
   };
 }
+
+test("the first title lands when the turn-end snapshot stays busy until session settlement", async (t) => {
+  const h = harness(t, { isStreaming: true });
+  await h.reopen();
+  await h.turn();
+  assert.equal(
+    h.renames().length,
+    0,
+    "a busy turn-end snapshot must not start naming",
+  );
+  h.setStreaming(false);
+  h.emit({ type: "session_settled" });
+  await flush();
+  assert.equal(
+    h.renames().length,
+    1,
+    "settlement must recheck the first completed exchange",
+  );
+  await h.named("Explain binary search");
+  assert.equal(h.snapshot.sessions[0].name, "Explain binary search");
+});
 
 test("reopening an unnamed completed conversation generates its title", async (t) => {
   const h = harness(t);

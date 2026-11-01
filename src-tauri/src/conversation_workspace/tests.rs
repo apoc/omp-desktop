@@ -440,7 +440,8 @@ fn isolated_checkout_uses_selected_commit_preserves_source_and_maps_subfolder() 
     );
     assert_eq!(prepared.workspace.unwrap().project_path, sub);
     let created = runner.dest.lock().unwrap().take().unwrap();
-    assert!(Path::new(&prepared.path).starts_with(created.canonicalize().unwrap()));
+    let created_canonical = crate::external_open::canonical_folder(&created).unwrap();
+    assert!(Path::new(&prepared.path).starts_with(created_canonical));
     for local in ["target", "node_modules", ".claude/worktrees"] {
         assert!(!created.join(local).exists(), "{local} was copied");
     }
