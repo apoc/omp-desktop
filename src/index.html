@@ -300,6 +300,8 @@
   <script src="app/settings-tab.js"></script>
   <!-- Native keep-awake snapshot/action controller, shared by the hook and UI. -->
   <script src="app/keep-awake.js"></script>
+  <!-- Workspace storage presentation; native Rust owns cleanup and leases. -->
+  <script src="app/worktree-storage.js"></script>
 
   <!-- Tweak storage (localStorage `omp-desktop:tweaks`): useTweaks and the
        OMP_TWEAKS_STORE reader live.js uses at its top-level init. IIFE. -->
@@ -464,6 +466,7 @@
        window.Icon at top level. app-live.jsx renders it from live.js's
        closeConfirm snapshot field. -->
   <script type="text/babel" src="design/confirm-close.jsx"></script>
+  <script type="text/babel" src="design/worktree-close.jsx"></script>
   <!-- Workspace setup dialog; reads OMP_CONVERSATION_WORKSPACE at load. -->
   <script type="text/babel" src="design/new-conversation.jsx"></script>
   <!-- Conversation tree pane: rows (formatters, graph, meter) → detail
@@ -491,6 +494,7 @@
   <script type="text/babel" src="design/settings/rows-programs.jsx"></script>
   <script type="text/babel" src="design/settings/rows-agent.jsx"></script>
   <script type="text/babel" src="design/settings/rows-session.jsx"></script>
+  <script type="text/babel" src="design/settings/rows-worktrees.jsx"></script>
   <script type="text/babel" src="design/settings/rows-notifications.jsx"></script>
   <script type="text/babel" src="design/settings/rows-approvals.jsx"></script>
   <script type="text/babel" src="design/settings/rows-remote-shared.jsx"></script>
@@ -526,6 +530,7 @@
   <!-- App root — wired to OMP_BRIDGE, no demo effects -->
   <!-- Cross-cutting hooks (must load before app-live.jsx) -->
   <script type="text/babel" src="app/use-bridge-snapshot.jsx"></script>
+  <script type="text/babel" src="app/use-worktree-storage.jsx"></script>
   <script type="text/babel" src="app/use-keep-awake.jsx"></script>
   <script type="text/babel" src="app/use-keymap.jsx"></script>
   <script type="text/babel" src="app/use-subagent-manager.jsx"></script>

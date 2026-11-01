@@ -1,0 +1,21 @@
+/* Managed worktree close and Settings storage row. */
+.worktree-close-scrim { padding: 8vh 20px 20px; }
+.close-confirm-panel.worktree-close { width: min(620px, 100%); max-height: 84vh; display: flex; flex-direction: column; }
+.worktree-close-body { overflow-y: auto; }
+.worktree-close-body p { margin: 8px 0; }
+.worktree-close-actions { flex-wrap: wrap; }
+.worktree-close-actions button:disabled, .st-worktrees button:disabled { opacity: .45; cursor: not-allowed; }
+.worktree-path { overflow-wrap: anywhere; }
+.worktree-error { color: var(--rose); overflow-wrap: anywhere; }
+.st-worktrees { display: flex; flex-direction: column; gap: 10px; padding: 0 16px 14px; color: var(--fg-3); font-size: var(--d-text-sm); }
+.st-worktrees p { margin: 0; }
+.st-worktrees-summary { display: flex; flex-wrap: wrap; gap: 4px 18px; color: var(--fg-2); font-family: var(--font-mono); }
+.st-worktrees-warning { color: var(--amber); }
+.st-worktrees-budget { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.st-worktrees-budget label { display: flex; flex-direction: column; gap: 4px; }
+.st-worktrees-budget input { width: 180px; }
+.st-worktrees-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.st-worktrees-item { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.st-worktrees-info { display: flex; flex: 1 1 260px; min-width: 0; flex-direction: column; gap: 3px; }
+.st-worktrees-info strong { color: var(--fg-2); font-family: var(--font-mono); font-weight: 500; }
+.st-worktrees-actions { display: flex; align-items: start; gap: 6px; }

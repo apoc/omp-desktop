@@ -1,7 +1,7 @@
 //! Serializes workspace preparation with tab registration and lifecycle.
 mod admission;
 mod inspect;
-mod process;
+pub mod process;
 mod runner;
 #[cfg(test)]
 mod tests;
@@ -44,13 +44,16 @@ pub struct StartContext<'a> {
     pub data: Option<&'a Path>,
     pub manager: &'a WorkspaceManager,
     pub ticket: &'a Admission,
-    pub profile: Option<&'a str>,
 }
 
 #[derive(Clone)]
 pub struct Prepared {
     pub path: String,
     pub workspace: Option<WorkspaceBinding>,
+    /// Resolved native profile, retained across close and session-file binding.
+    pub profile: String,
+    /// Catalog identity survives a missing or partially removed cwd.
+    pub storage_id: Option<String>,
     default_cwd: Option<String>,
     terminal_cwd: Option<String>,
 }
@@ -83,6 +86,47 @@ pub fn status(manager: &WorkspaceManager, path: &str) -> Result<WorkspaceStatus,
 }
 
 impl Registry {
+    pub fn get(&self, id: &str) -> Option<&Prepared> {
+        self.tabs.get(id)
+    }
+
+    /// Move the rollback state while the caller retains the lifecycle guard.
+    pub fn take_registration(&mut self, id: &str) -> Option<(String, Prepared)> {
+        self.tabs.remove_entry(id)
+    }
+
+    /// A failed user close keeps the visible tab reserved, even when its
+    /// children were already stopped before snapshot verification failed.
+    pub fn retain_registration(&mut self, id: String, prepared: Prepared) {
+        self.tabs.entry(id).or_insert(prepared);
+    }
+
+    pub fn set_profile(&mut self, id: &str, profile: &str) -> Result<(), String> {
+        let prepared = self
+            .tabs
+            .get_mut(id)
+            .ok_or_else(|| "conversation tab is no longer registered".to_string())?;
+        prepared.profile.clear();
+        prepared.profile.push_str(profile);
+        Ok(())
+    }
+
+    pub fn set_storage_id(&mut self, id: &str, storage_id: Option<&str>) -> Result<(), String> {
+        let prepared = self
+            .tabs
+            .get_mut(id)
+            .ok_or_else(|| "conversation tab is no longer registered".to_string())?;
+        if prepared.storage_id.as_deref() != storage_id {
+            prepared.storage_id = storage_id.map(str::to_owned);
+        }
+        Ok(())
+    }
+
+    /// Unknown ownership is an error, never permission to remove a checkout.
+    pub fn owners_for_path(&self, path: &str) -> Result<usize, String> {
+        self.owners(&inspect::identity(path)?)
+    }
+
     fn owners(&self, identity: &Path) -> Result<usize, String> {
         let mut owners = 0;
         for tab in self.tabs.values() {
@@ -138,7 +182,7 @@ impl Registry {
         options: Option<WorkspaceOptions>,
         context: StartContext<'_>,
     ) -> Result<Prepared, String> {
-        let native = runner::Native::for_start(context.manager, context.ticket, context.profile);
+        let native = runner::Native::for_start(context.manager, context.ticket);
         self.prepare_with(id, cwd, options, context.data, &native)
     }
 
@@ -202,6 +246,8 @@ impl Registry {
             Prepared {
                 path,
                 workspace: None,
+                profile: crate::profiles::DEFAULT_PROFILE_ID.to_string(),
+                storage_id: None,
                 default_cwd,
                 terminal_cwd,
             }
@@ -240,6 +286,8 @@ impl Registry {
         };
         Ok(Prepared {
             path: actual,
+            profile: crate::profiles::DEFAULT_PROFILE_ID.to_string(),
+            storage_id: None,
             workspace: Some(WorkspaceBinding {
                 project_path,
                 base_ref: options.base_ref,
@@ -354,7 +402,7 @@ fn create_worktree(
     if worktrees.starts_with(&canonical_root) {
         return Err("the app data worktree folder is inside the source repository".to_string());
     }
-    // Drop Windows' verbatim prefix before passing the destination to omp.
+    // Drop Windows' verbatim prefix before passing the destination to Git.
     let worktrees = PathBuf::from(crate::external_open::canonical_folder(&worktrees)?);
     let mut random = [0u8; 16];
     SystemRandom::new()

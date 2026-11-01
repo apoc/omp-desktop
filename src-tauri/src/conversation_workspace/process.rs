@@ -11,7 +11,7 @@ const POLL: Duration = Duration::from_millis(25);
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
-pub(super) struct Output {
+pub struct Output {
     pub status: ExitStatus,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
@@ -70,7 +70,7 @@ fn take_output(
 
 /// Supervise and reap the child tree; never wait indefinitely for a hook or
 /// a descendant holding an output pipe. Captured diagnostics are tail-bounded.
-pub(super) fn run(
+pub fn run(
     command: &mut Command,
     cancelled: impl Fn() -> bool,
     timeout: Duration,

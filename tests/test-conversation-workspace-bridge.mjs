@@ -19,7 +19,7 @@ const flush = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
 };
 
-function harness({ savedSessions = [] } = {}) {
+function harness({ savedSessions = [], workspaceInfo = null } = {}) {
   const window = { OMP_TWEAKS_STORE: { read: () => ({}) } };
   const timers = new Set();
   const scope = {
@@ -42,6 +42,7 @@ function harness({ savedSessions = [] } = {}) {
   };
   for (const file of [
     "app/constants.js",
+    "app/marked-setup.js",
     "app/slash-commands.js",
     "app/subagents.js",
     "app/background-tasks.js",
@@ -76,6 +77,8 @@ function harness({ savedSessions = [] } = {}) {
     starts = 0,
     failure = null,
     hold = null;
+  let closeFailure = null;
+  let closeHold = null;
   const bridge = window.OMP_BRIDGE;
   bridge.onUpdate((next) => {
     snapshot = own(next);
@@ -150,7 +153,11 @@ function harness({ savedSessions = [] } = {}) {
           case "recent_projects_touch":
           case "recent_projects_list":
             return [];
+          case "worktree_storage_close_info":
+            return workspaceInfo;
           case "close_tab":
+            if (closeHold) await closeHold;
+            if (closeFailure) throw new Error(closeFailure);
             bindings.delete(args.sessionId);
             return null;
           case "git_browser_status":
@@ -202,6 +209,12 @@ function harness({ savedSessions = [] } = {}) {
     },
     hold(promise) {
       hold = promise;
+    },
+    failClose(message) {
+      closeFailure = message;
+    },
+    holdClose(promise) {
+      closeHold = promise;
     },
     close() {
       for (const timer of timers) clearTimeout(timer);
@@ -517,4 +530,70 @@ test("project-default editing never starts an agent", async () => {
   } finally {
     h.close();
   }
+});
+
+const storedWorkspace = {
+  id: "workspace-1", path: "/isolated/existing", projectPath: "/source",
+  profile: "default", pinned: false, state: "present", excludedCaches: ["node_modules"],
+};
+const storedConversation = {
+  path: "/saved/conversation.jsonl", cwd: storedWorkspace.path,
+  profile_id: "default", title: "Retained work",
+};
+
+test("cancelling the worktree close question leaves the conversation open", async () => {
+  const h = harness({ workspaceInfo: storedWorkspace });
+  try {
+    const id = await h.bridge.resumeSession(storedConversation);
+    const closing = h.bridge.closeSessionGuarded(id);
+    await flush();
+    assert.equal(h.snapshot.worktreeCloseConfirm.path, storedWorkspace.path);
+    assert.deepEqual(h.snapshot.sessions.map(session => session.id), [id]);
+    await h.bridge.resolveWorktreeClose("cancel");
+    assert.equal(await closing, false);
+    assert.equal(h.snapshot.worktreeCloseConfirm, null);
+    assert.equal(h.snapshot.activeSessionId, id);
+    assert.deepEqual(h.snapshot.sessions.map(session => session.path), [storedWorkspace.path]);
+  } finally { h.close(); }
+});
+
+test("a failed restore-point close keeps the tab and permits a safe Keep retry", async () => {
+  const h = harness({ workspaceInfo: storedWorkspace });
+  try {
+    const id = await h.bridge.resumeSession(storedConversation);
+    h.failClose("Restore point verification failed: disk full");
+    const closing = h.bridge.closeSessionGuarded(id);
+    await flush();
+    assert.equal(await h.bridge.resolveWorktreeClose("snapshotRemove"), false);
+    assert.match(h.snapshot.worktreeCloseConfirm.error, /verification failed: disk full/);
+    assert.equal(h.snapshot.worktreeCloseConfirm.busy, false);
+    assert.deepEqual(h.snapshot.sessions.map(session => session.id), [id]);
+    assert.equal(h.snapshot.activeSessionId, id);
+    h.failClose(null);
+    assert.equal(await h.bridge.resolveWorktreeClose("keep"), true);
+    assert.equal(await closing, true);
+    assert.deepEqual(h.snapshot.sessions, []);
+    assert.equal(h.snapshot.worktreeCloseConfirm, null);
+  } finally { h.close(); }
+});
+
+test("the tab stays visible until native close commits and busy close cannot be cancelled", async () => {
+  const h = harness({ workspaceInfo: storedWorkspace });
+  let release;
+  try {
+    const id = await h.bridge.resumeSession(storedConversation);
+    h.holdClose(new Promise(resolve => { release = resolve; }));
+    const closing = h.bridge.closeSessionGuarded(id);
+    await flush();
+    const committing = h.bridge.resolveWorktreeClose("snapshotRemove");
+    await flush();
+    assert.equal(h.snapshot.worktreeCloseConfirm.busy, true);
+    assert.deepEqual(h.snapshot.sessions.map(session => session.id), [id]);
+    assert.equal(await h.bridge.resolveWorktreeClose("cancel"), false);
+    assert.equal(h.snapshot.worktreeCloseConfirm.busy, true);
+    release();
+    assert.equal(await committing, true);
+    assert.equal(await closing, true);
+    assert.deepEqual(h.snapshot.sessions, []);
+  } finally { release?.(); h.close(); }
 });

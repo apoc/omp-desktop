@@ -47,11 +47,17 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
+    # Refuse removal when NTFS extended attributes cannot be preserved.
+    "Wdk_Storage_FileSystem",
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
     "Win32_Security",
+    # Private workspace snapshots and owner/group/DACL restoration.
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
     "Win32_System_JobObjects",
     # WTS session flags: the screen-lock probe (`remote/lock.rs`).
     "Win32_System_RemoteDesktop",
@@ -97,6 +103,20 @@ libc = "0.2"
 # (`base64` comes from the normal dependencies).
 [dev-dependencies]
 png = "0.18"
+
+# Keep line tables for app backtraces without full dependency debug data.
+# Incremental builds retain Cargo's defaults and each checkout its own target.
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = 0
+
+[profile.test]
+debug = 1
+
+[profile.test.package."*"]
+debug = 0
 
 [profile.release]
 opt-level = 3

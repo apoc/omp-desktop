@@ -283,6 +283,8 @@
   // `quitConfirm` shape), or null; `_closeConfirmAnswer` settles it.
   let closeConfirm = null;
   let _closeConfirmAnswer = null;
+  let worktreeCloseConfirm = null;
+  let _worktreeCloseAnswer = null;
   // Last armed state handed to Rust's close guard (null = none sent yet),
   // and whether a confirmed quit is closing the window: the guard then
   // stays disarmed, or a notify would re-arm it under the closing window.
@@ -481,6 +483,7 @@
       recentProjects,
       workspaceNotes,
       closeConfirm,
+      worktreeCloseConfirm,
       conversationSetup: conversationSetups[0]?.view ?? null,
     };
   }
@@ -722,6 +725,7 @@
   async function _resolveAsk(id, patch, payload) {
     const msg = state.messages.find(m => m.kind === "ask" && m.id === id && !m.answered && !m.cancelled);
     if (!msg) return false;
+    _noteWorkspaceUse();
     if (msg.recovery) return _resolveRecoveredAsk(msg, patch, payload);
     const send = _beginAskSend(msg);
     if (!send) return false;
@@ -1437,9 +1441,9 @@
    *
    *  The launch boundary and actual-folder adoption are covered by
    *  tests/test-conversation-workspace-bridge.mjs. */
-  async function _spawnSession(id, cwd, { resume = null, profile, workspace = null }) {
+  async function _spawnSession(id, cwd, { resume = null, profile, workspace = null, userInitiated = false }) {
     const started = await window.__TAURI__.core.invoke("start_session", {
-      args: { sessionId: id, cwd: cwd ?? "", resume, profile, ...(workspace ? { workspace } : {}) },
+      args: { sessionId: id, cwd: cwd ?? "", resume, profile, userInitiated, ...(workspace ? { workspace } : {}) },
     });
     const actualCwd = started.path;
     if (typeof actualCwd !== "string") throw new Error("Agent startup did not return its working folder");
@@ -1531,7 +1535,14 @@
    *  watcher, widget state and terminal shell) and drop its JS-side bindings.
    *  Every path that removes a tab from `sessionRegistry` goes through here;
    *  a respawn uses `_killSessionProcess`, which keeps the browser and shell. */
-  function _closeTab(id) {
+  async function _closeTab(id, { worktreeAction = null, sessionFile = null } = {}) {
+    const closed = window.__TAURI__
+      ? await _invokeResult("close_tab", {
+        sessionId: id,
+        ...(worktreeAction ? { worktreeAction, sessionFile } : {}),
+      })
+      : { ok: true };
+    if (!closed.ok) return closed;
     if (id === activeSessionId) {
       _cancelLiveRequests();
       state.liveVoice = LIVE.EMPTY;
@@ -1539,7 +1550,6 @@
       state.dictation = DICTATION.EMPTY;
     }
     _dictationCompleted = _dictationCompleted.filter(item => item.sessionId !== id);
-    const closed = _invokeSafe("close_tab", { sessionId: id });
     _dropGitListener(id);
     respawnVoice.delete(id);
     sessionSnapshots.delete(id);
@@ -1957,7 +1967,7 @@
    *  derivation) now lives in, and is proven by, `_tabNameFor`. */
   async function _startProjectSession(cwd, {
     resume = null, name = null, profile, activate = true, remember = true,
-    workspace = null, workspaceBinding = null,
+    workspace = null, workspaceBinding = null, userInitiated = true,
   }) {
     _lastSessionMs = Math.max(Date.now(), _lastSessionMs + 1);
     const id = `session-${_lastSessionMs}`;
@@ -1993,7 +2003,7 @@
       autoRenameSessionId: null,
     });
     try {
-      await _spawnSession(id, cwd, { resume, profile, workspace });
+      await _spawnSession(id, cwd, { resume, profile, workspace, userInitiated });
     } catch (e) {
       // A dangling/unlisted profile (inherited from another tab, deleted by
       // a second window, or a hand-edited profiles.json) makes the
@@ -2210,7 +2220,7 @@
         const { cwd, ...opts } = window.OMP_PROJECT_NAV.restoreSpec(tab);
         let id;
         try {
-          id = await _startProjectSession(cwd, { ...opts, activate: false, remember: false });
+          id = await _startProjectSession(cwd, { ...opts, activate: false, remember: false, userInitiated: false });
         } catch (e) {
           console.error(`[live] reopening tab '${cwd}' failed:`, e);
           notes.push(`**Could not reopen ${tab.name || cwd || "a tab"}:** ${String(e?.message ?? e)}`);
@@ -2222,7 +2232,7 @@
           // since the spawn resolved. Guarded so a failed switch cannot
           // abort the loop and leave the rest of the saved tabs unopened.
           try {
-            await window.OMP_BRIDGE.activateSession(id);
+            await window.OMP_BRIDGE.activateSession(id, { userInitiated: false });
           } catch (e) {
             console.error(`[live] activating restored tab '${id}' failed:`, e);
           }
@@ -3238,6 +3248,11 @@
     const current = activeSessionId ? sessionRegistry.get(activeSessionId) : null;
     if (rpcState.sessionFile && current && current.sessionFile !== rpcState.sessionFile) {
       sessionRegistry.set(activeSessionId, { ...current, sessionFile: rpcState.sessionFile });
+      void _invokeResult("worktree_storage_bind_conversation", {
+        sessionId: activeSessionId, sessionFile: rpcState.sessionFile,
+      }).then(result => {
+        if (!result.ok) console.error("[live] conversation recovery binding failed:", result.error);
+      });
     }
 
     // ── Auto-rename (src/app/session-title.js) ──────────────────────────
@@ -3642,6 +3657,39 @@
       };
       closeConfirm = confirm;
       notify();
+    });
+  }
+
+  function _askWorktreeClose(id, workspace) {
+    if (worktreeCloseConfirm) return Promise.resolve(false);
+    return new Promise(resolve => {
+      _worktreeCloseAnswer = resolve;
+      worktreeCloseConfirm = {
+        ...workspace, sessionId: id, name: sessionRegistry.get(id)?.name,
+        busy: false, error: null,
+      };
+      notify();
+    });
+  }
+
+  function _reportCloseFailure(id, error) {
+    const reason = String(error?.message ?? error);
+    console.error(`[live] close '${id}' failed:`, reason);
+    if (worktreeCloseConfirm?.sessionId === id) {
+      worktreeCloseConfirm = { ...worktreeCloseConfirm, error: reason, busy: false };
+    } else {
+      const note = `**Could not close the conversation:**\n\n${window.OMP_MARKDOWN.fenceCode(reason)}`;
+      if (activeSessionId) _pushAssistantNote(note);
+      else workspaceNotes = [...workspaceNotes, note];
+    }
+    notify();
+  }
+
+  // Only explicit user actions renew inactivity: never replay, polling or auto-fix.
+  function _noteWorkspaceUse(id = activeSessionId) {
+    if (!id || !sessionRegistry.has(id) || !window.__TAURI__) return;
+    void _invokeResult("worktree_storage_touch", { sessionId: id }).then(result => {
+      if (!result.ok) console.error("[live] workspace activity could not be saved:", result.error);
     });
   }
 
@@ -4115,6 +4163,7 @@
     // persisted message. A command omp runs locally sends no echo, so its
     // bubble keeps no `ts` and the get_messages merge leaves it in place.
     send(text, images) {
+      _noteWorkspaceUse();
       return _sendPrompt(text, images);
     },
     // Monitoring is read-only. Only the selected, fully settled tab may
@@ -4227,6 +4276,7 @@
     // (OMP_BROWSER.annotationText neutralises page data and comments).
     // See `_sendQueued` for how the message shows until omp delivers it.
     followUp(text, images) {
+      _noteWorkspaceUse();
       const imgs = images ?? [];
       const isCmd = isCommandInvocation(state.commands, text);
       return _sendQueued("followUp", text, imgs, () =>
@@ -4234,6 +4284,7 @@
       );
     },
     steer(text, images) {
+      _noteWorkspaceUse();
       const imgs = images ?? [];
       const isCmd = isCommandInvocation(state.commands, text);
       return _sendQueued("steering", text, imgs, () =>
@@ -5359,9 +5410,10 @@
     },
 
     /** Switch the active tab. Resets state and re-fetches from the session's omp. */
-    async activateSession(id) {
-      if (id === activeSessionId) return;
+    async activateSession(id, { userInitiated = true } = {}) {
       if (!sessionRegistry.has(id)) return;
+      if (userInitiated) _noteWorkspaceUse(id);
+      if (id === activeSessionId) return;
       // A respawn for this tab is still in flight (see `_respawnSession`):
       // the session doesn't exist on the backend yet (start_session hasn't
       // resolved), so listen/replay_events/get_state would all target an id
@@ -5616,7 +5668,7 @@
 
     /** Close a tab after stopping its microphone; a failed stop leaves the
      *  tab visible so the user can retry. */
-    async closeSession(id) {
+    async closeSession(id, { worktreeAction = null } = {}) {
       if (!sessionRegistry.has(id) || _closingVoiceTabs.has(id)) return false;
       _closingVoiceTabs.add(id);
       try {
@@ -5632,20 +5684,31 @@
             id === activeSessionId &&
             (state.dictation.active || state.liveVoice.active)
           )
+          {
+            _reportCloseFailure(id, stopped.error || "The active microphone could not be stopped; the worktree was retained.");
             return false;
+          }
           if (!sessionRegistry.has(id)) return false;
         }
-        _closeTab(id);
+        const closed = await _closeTab(id, {
+          worktreeAction, sessionFile: sessionRegistry.get(id)?.sessionFile ?? null,
+        });
+        if (!closed.ok) {
+          _reportCloseFailure(id, closed.error);
+          return false;
+        }
         sessionRegistry.delete(id);
         promptHistories.delete(id);
         _modeRestartMissed.delete(id);
         if (id === activeSessionId) {
           const remaining = [...sessionRegistry.keys()];
           if (remaining.length > 0) {
-            await _switchToSession(remaining[remaining.length - 1]);
+            try { await _switchToSession(remaining[remaining.length - 1]); }
+            catch (error) { console.error("[live] activating the remaining tab failed:", error); }
           } else {
             // No sessions left — reset to empty state
-            await _detachActiveSession();
+            try { await _detachActiveSession(); }
+            catch (error) { console.error("[live] detaching the closed tab failed:", error); }
             // No active tab: the active profile falls back to the startup one.
             _syncRecentsProfile();
             notify();
@@ -5663,16 +5726,59 @@
      *  closing a busy tab" is on and the tab's agent is busy. Resolves to
      *  whether the tab was closed. */
     async closeSessionGuarded(id) {
+      if (!sessionRegistry.has(id) || worktreeCloseConfirm) return false;
+      if (sessionRegistry.get(id)?.preparing) return window.OMP_BRIDGE.closeSession(id);
       const confirm = PREFS.tabCloseConfirm(sessionPrefs, _sessionsView(), id);
       if (confirm && !(await _askClose(confirm))) return false;
-      if (!sessionRegistry.has(id)) return false; // closed meanwhile
-      return window.OMP_BRIDGE.closeSession(id);
+      if (!sessionRegistry.has(id)) return false;
+      if (!window.__TAURI__) return window.OMP_BRIDGE.closeSession(id);
+      const info = await _invokeResult("worktree_storage_close_info", { sessionId: id });
+      if (!info.ok) {
+        _reportCloseFailure(id, info.error);
+        return false;
+      }
+      if (!sessionRegistry.has(id)) return false;
+      return info.value ? _askWorktreeClose(id, info.value) : window.OMP_BRIDGE.closeSession(id);
     },
 
     /** Answer the busy-close confirmation on screen (snapshot
      *  `closeConfirm`): `true` closes / quits, `false` keeps everything. */
     resolveCloseConfirm(ok) {
       _closeConfirmAnswer?.(ok === true);
+    },
+
+    async resolveWorktreeClose(choice) {
+      const request = worktreeCloseConfirm;
+      const answer = _worktreeCloseAnswer;
+      if (!request || !answer || request.busy) return false;
+      if (choice === "cancel") {
+        worktreeCloseConfirm = null;
+        _worktreeCloseAnswer = null;
+        notify();
+        answer(false);
+        return false;
+      }
+      if (choice !== "keep" && choice !== "snapshotRemove") return false;
+      worktreeCloseConfirm = { ...request, busy: true, error: null };
+      notify();
+      let closed = false;
+      try {
+        closed = await window.OMP_BRIDGE.closeSession(request.sessionId, { worktreeAction: choice });
+      } catch (error) {
+        _reportCloseFailure(request.sessionId, error);
+      }
+      if (_worktreeCloseAnswer !== answer) return closed;
+      if (closed) {
+        worktreeCloseConfirm = null;
+        _worktreeCloseAnswer = null;
+        notify();
+        answer(true);
+      } else {
+        worktreeCloseConfirm = { ...worktreeCloseConfirm, busy: false,
+          error: worktreeCloseConfirm?.error || "Close did not finish; the worktree was retained." };
+        notify();
+      }
+      return closed;
     },
 
     /** Apply Settings → Session / Agent prefs (`restoreTabs`,

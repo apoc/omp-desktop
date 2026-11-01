@@ -96,8 +96,8 @@ impl OpenTabsStore {
     /// [`restorable`]). Unlocked for the same reason as
     /// `RecentProjectsStore::list` (`write_atomic` never exposes a
     /// half-written file).
-    pub fn load(&self) -> Restore {
-        restorable(self.backing.read_or_default())
+    pub fn load(&self, can_restore: impl FnMut(&OpenTab) -> bool) -> Restore {
+        restorable(self.backing.read_or_default(), can_restore)
     }
 
     /// Replace the saved layout with `layout`. Written as is: the file is
@@ -127,11 +127,11 @@ fn sanitize(mut layout: Layout) -> Layout {
 /// - A conversation file gone from disk (an empty conversation omp never
 ///   wrote, or one deleted since) reopens as a fresh conversation in the
 ///   same folder: the folder is what the user had open.
-/// - A folder gone from disk drops the tab and lists it in `skipped`:
-///   omp cannot start there.
+/// - A missing folder is retained only when its saved conversation has a
+///   native recovery point; otherwise it is dropped and listed in `skipped`.
 /// - A pathless tab without a conversation has nothing left to reopen and
 ///   is dropped silently.
-fn restorable(layout: Layout) -> Restore {
+fn restorable(layout: Layout, mut can_restore: impl FnMut(&OpenTab) -> bool) -> Restore {
     let Layout { tabs, active } = sanitize(layout);
     let mut out = Vec::with_capacity(tabs.len());
     let mut skipped = Vec::new();
@@ -144,7 +144,10 @@ fn restorable(layout: Layout) -> Restore {
         {
             tab.session_file = None;
         }
-        if !tab.path.is_empty() && !Path::new(&tab.path).is_dir() {
+        if !(tab.path.is_empty()
+            || Path::new(&tab.path).is_dir()
+            || tab.session_file.is_some() && can_restore(&tab))
+        {
             skipped.push(tab.path);
             continue;
         }
@@ -246,7 +249,7 @@ mod tests {
             })
             .expect("save");
 
-        let got = store.load();
+        let got = store.load(|_| false);
         assert_eq!(got.layout.tabs, vec![tab(&a, None), tab(&b, Some(&conv))]);
         assert_eq!(got.layout.active, Some(1));
         assert_eq!(got.skipped, Vec::<String>::new());
@@ -266,7 +269,7 @@ mod tests {
         store
             .save(&serde_json::from_value(payload).expect("layout"))
             .expect("save");
-        let restored = serde_json::to_value(store.load()).expect("serialize");
+        let restored = serde_json::to_value(store.load(|_| false)).expect("serialize");
         assert_eq!(restored["tabs"][0]["path"], working);
         assert_eq!(restored["tabs"][0]["workspace"]["projectPath"], origin);
         assert_eq!(restored["active"], 0);
@@ -286,21 +289,46 @@ mod tests {
         store
             .save(&serde_json::from_value(payload).expect("layout"))
             .expect("save");
-        let restored = store.load();
+        let restored = store.load(|_| false);
         assert_eq!(restored.layout.tabs, Vec::<OpenTab>::new());
         assert_eq!(restored.skipped, vec![missing]);
         assert_eq!(restored.layout.active, None);
     }
 
     #[test]
+    fn a_recoverable_missing_checkout_stays_bound_to_its_saved_conversation() {
+        let (store, dir) = scratch_store();
+        let missing = dir.missing("evicted-worktree");
+        let conversation = dir.file("conversation.jsonl");
+        store
+            .save(&Layout {
+                tabs: vec![tab(&missing, Some(&conversation))],
+                active: Some(0),
+            })
+            .expect("save");
+        let restored = store
+            .load(|candidate| candidate.session_file.as_deref() == Some(conversation.as_str()));
+        assert_eq!(
+            restored.layout.tabs,
+            vec![tab(&missing, Some(&conversation))]
+        );
+        assert_eq!(restored.layout.active, Some(0));
+        assert_eq!(restored.skipped, Vec::<String>::new());
+        assert!(
+            !Path::new(&missing).exists(),
+            "filtering does not reconstruct or renew a workspace"
+        );
+    }
+
+    #[test]
     fn missing_or_corrupt_file_restores_nothing() {
         let (store, dir) = scratch_store();
-        let empty = store.load();
+        let empty = store.load(|_| false);
         assert!(empty.layout.tabs.is_empty() && empty.layout.active.is_none());
 
         fs::create_dir_all(&dir.0).expect("create scratch dir");
         fs::write(dir.0.join("open-tabs.json"), b"{ not json").expect("write");
-        let corrupt = store.load();
+        let corrupt = store.load(|_| false);
         assert!(corrupt.layout.tabs.is_empty() && corrupt.layout.active.is_none());
     }
 
@@ -310,7 +338,7 @@ mod tests {
         let a = dir.folder("a");
         let gone = dir.missing("gone");
         let store = OpenTabsStore::new(None);
-        let empty = store.load();
+        let empty = store.load(|_| false);
         assert!(empty.layout.tabs.is_empty() && empty.layout.active.is_none());
 
         store
@@ -320,11 +348,14 @@ mod tests {
             })
             .expect("save");
         // The same sanitising restore as a file-backed store.
-        let got = store.load();
+        let got = store.load(|_| false);
         assert_eq!(got.layout.tabs, vec![tab(&a, None)]);
         assert_eq!(got.layout.active, Some(0));
         assert_eq!(got.skipped, vec![gone]);
-        assert_eq!(OpenTabsStore::new(None).load().layout.tabs, Vec::new());
+        assert_eq!(
+            OpenTabsStore::new(None).load(|_| false).layout.tabs,
+            Vec::new()
+        );
     }
 
     #[test]
@@ -332,10 +363,13 @@ mod tests {
         let dir = scratch();
         let gone = dir.missing("gone");
         let kept = dir.folder("kept");
-        let got = restorable(Layout {
-            tabs: vec![tab(&gone, None), tab(&kept, None)],
-            active: Some(1),
-        });
+        let got = restorable(
+            Layout {
+                tabs: vec![tab(&gone, None), tab(&kept, None)],
+                active: Some(1),
+            },
+            |_| false,
+        );
         assert_eq!(got.layout.tabs, vec![tab(&kept, None)]);
         assert_eq!(got.layout.active, Some(0));
         assert_eq!(got.skipped, vec![gone]);
@@ -346,10 +380,13 @@ mod tests {
         let dir = scratch();
         let gone = dir.missing("gone");
         let kept = dir.folder("kept");
-        let got = restorable(Layout {
-            tabs: vec![tab(&kept, None), tab(&gone, None)],
-            active: Some(1),
-        });
+        let got = restorable(
+            Layout {
+                tabs: vec![tab(&kept, None), tab(&gone, None)],
+                active: Some(1),
+            },
+            |_| false,
+        );
         assert_eq!(got.layout.active, None);
     }
 
@@ -358,10 +395,13 @@ mod tests {
         let dir = scratch();
         let folder = dir.folder("p");
         let gone = dir.missing("never-written.jsonl");
-        let got = restorable(Layout {
-            tabs: vec![tab(&folder, Some(&gone))],
-            active: None,
-        });
+        let got = restorable(
+            Layout {
+                tabs: vec![tab(&folder, Some(&gone))],
+                active: None,
+            },
+            |_| false,
+        );
         assert_eq!(got.layout.tabs, vec![tab(&folder, None)]);
         assert_eq!(got.skipped, Vec::<String>::new());
     }
@@ -371,10 +411,13 @@ mod tests {
         let dir = scratch();
         let conv = dir.file("conv.jsonl");
         let gone = dir.missing("gone.jsonl");
-        let got = restorable(Layout {
-            tabs: vec![tab("", Some(&gone)), tab("", Some(&conv))],
-            active: Some(1),
-        });
+        let got = restorable(
+            Layout {
+                tabs: vec![tab("", Some(&gone)), tab("", Some(&conv))],
+                active: Some(1),
+            },
+            |_| false,
+        );
         assert_eq!(got.layout.tabs, vec![tab("", Some(&conv))]);
         assert_eq!(got.layout.active, Some(0));
         // Nothing the user could recognise to report.
@@ -393,7 +436,7 @@ mod tests {
             })
             .expect("save");
 
-        let got = store.load();
+        let got = store.load(|_| false);
         assert_eq!(got.layout.tabs.len(), MAX_TABS);
         assert_eq!(got.layout.active, None);
     }

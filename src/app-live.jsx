@@ -28,6 +28,7 @@ const {
   useKeymap, useKeymapDispatch, useBrowser, BrowserDock, MarkdownLinkContext: _AL_MdLinkCtx,
   usePaneWidths, ResizeHandle, useRemote, useNotifications, usePrAutomation, useKeepAwake, PrAutomationCard, ContextCard,
 } = window;
+const { WorktreeCloseDialog: _AL_WorktreeClose } = window.OMP_WORKTREE_CLOSE;
 const { routeSubmit: _routeSubmit } = window.OMP_SLASH;
 const { mergeIntoMessage: _mergeBrowserChips, browserCommand: _browserCommand, MIN_WIDTH: _AL_BROWSER_MIN } = window.OMP_BROWSER;
 const { recentRows, groupKey, moveGroup, moveMember, shiftGroup } = window.OMP_PROJECT_NAV;
@@ -66,6 +67,7 @@ function App() {
   const [stab, setStab] = React.useState(window.OMP_SETTINGS_TAB.initial);
   // live.js's pending "close a working tab / quit?" question, or null.
   const [closeConfirm, setCloseConfirm] = React.useState(null);
+  const [worktreeCloseConfirm, setWorktreeCloseConfirm] = React.useState(null);
   const [conversationSetup, setConversationSetup] = React.useState(null);
   const setupAvailable = window.useModalAvailable();
   const [planOpen,    setPlanOpen]    = React.useState(false);
@@ -183,7 +185,7 @@ function App() {
     setModels, setActivity, setSparkline,
     setModelState, setThinkingLevel,
     setSessions, setActiveSessionId, setProfiles, setStartupProfileId, setRecentProjects,
-    setNoTabProfileId, setWorkspaceNotes, setApprovalModes, setCloseConfirm, setConversationSetup,
+    setNoTabProfileId, setWorkspaceNotes, setApprovalModes, setCloseConfirm, setWorktreeCloseConfirm, setConversationSetup,
     setPromptHistory, setSubagents, setSubagentTranscripts, setBackgroundTasks, setAgentContext, setContextPolicy, setEvidence, setQueue, setQueueSending, setGoal, setExtWidgets, setLiveVoice, setDictation, setDictationCompleted,
   });
   useRemote({ bridge });
@@ -931,6 +933,7 @@ function App() {
   const handleSetStartupProfile = React.useCallback(id => bridge?.setStartupProfile(id), [bridge]);
   // Stable: the dialog's key listener re-subscribes on a new handler.
   const handleCloseAnswer = React.useCallback(ok => bridge?.resolveCloseConfirm(ok), [bridge]);
+  const handleWorktreeClose = React.useCallback(choice => bridge?.resolveWorktreeClose(choice), [bridge]);
 
   const showRail  = t.layout !== "focus";
   const showSplit = subagentUi.paneOpen;
@@ -1337,7 +1340,11 @@ function App() {
         <ConfirmCloseDialog confirm={closeConfirm} onAnswer={handleCloseAnswer} />
       )}
 
-      {conversationSetup && setupAvailable && (
+      {worktreeCloseConfirm && !closeConfirm && (
+        <_AL_WorktreeClose request={worktreeCloseConfirm} onResolve={handleWorktreeClose} />
+      )}
+
+      {conversationSetup && setupAvailable && !worktreeCloseConfirm && (
         <NewConversationDialog key={conversationSetup.id} request={conversationSetup} bridge={bridge} suspended={!!closeConfirm} />
       )}
     </_AL_MdLinkCtx.Provider>

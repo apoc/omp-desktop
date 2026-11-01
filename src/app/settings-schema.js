@@ -160,6 +160,9 @@
         tweak("confirmBusyClose", "toggle", "Ask before closing a working tab", "Closing a tab whose agent is mid-turn stops it. Ask first, also when quitting.", "confirm quit close"),
         tweak("autoName", "toggle", "Name tabs automatically", "omp titles a new conversation from its first turns (one small model call). `/rename` always wins.", "rename title"),
       ] },
+      { name: "Workspace storage", rows: [
+        custom("worktrees", "Conversation worktrees", "Keep conversation history and evidence while saving restore points and removing unused checkouts.", "worktree snapshot restore recovery retention cleanup storage disk cache pinned thirty 30 days"),
+      ] },
       { name: "Power", src: "keep-awake.json", rows: [
         custom("keepAwake", "Keep computer awake by default", "Applies while agents work; individual chats can override this default. Manual locks and security policies still apply.", "sleep display idle power prevent awake working agent"),
       ] },

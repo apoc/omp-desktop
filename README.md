@@ -23,11 +23,30 @@ Built on Tauri 2 (Rust + the system webview). It doesn't bundle Electron or load
 - **Project sidebar** (`Ctrl+B`): open tabs grouped by project, plus recently opened folders. Tabs on the same folder collapse into one tab-bar chip with a dropdown. Drag a project or a conversation in the tab bar, the dropdown or the sidebar to reorder it; the order is kept across restarts.
 - **Named conversations.** A new tab starts under its folder name and renames itself to the conversation's generated title once the first exchange ends. A `/rename` you type always wins.
 - **Conversation history** (`Ctrl+H`): search and resume saved sessions across all configured profiles, without switching the top-bar profile first. Each row identifies its profile, and Resume opens that profile's conversation or focuses its existing tab.
+- **Disposable worktrees.** Closing an app-managed conversation offers Cancel, Keep for now, or a verified restore point followed by checkout removal. Conversation history and evidence remain available; [reopening reconstructs the saved workspace](#disposable-conversation-worktrees).
 - **Keep computer awake.** The chat's status-bar control prevents idle sleep while its agent works, including in the background. **Settings → Session → Power** sets the default for all chats; each chat can opt in, opt out, or use that default. Idle chats hold no request. Manual locks, lid-close sleep and security policies still apply.
 - **Open with OMP Desktop.** Open a folder from Finder, Explorer or your Linux file manager, or run `omp-desktop /path/to/project`. If the app is already running, the folder opens as a new tab in the existing window.
 - **Welcome screen.** With no tab open, the app shows a welcome screen and doesn't run any agent until you open a project.
 
 ![Welcome screen with recent projects in the sidebar](screenshots/welcome.webp)
+
+### Disposable conversation worktrees
+
+Choose **Worktree** in new-conversation setup for an isolated branch and folder. New checkouts start from tracked Git state without inheriting ignored dependencies, build outputs or local environment files from the source; install dependencies and provide local setup separately.
+
+Clicking **×** on an app-managed worktree offers:
+
+- **Cancel:** keep the conversation open and leave its files alone.
+- **Keep for now:** close the tab and retain the checkout. After thirty days without explicitly reopening or using the conversation, the app may save and verify a restore point, then remove the checkout.
+- **Save restore point and remove:** stop the tab's processes, preserve its workspace state and remove its checkout only after verification. A failed capture retains the files and shows an error; the stopped tab remains available for a safe retry.
+
+Open app conversations and pinned worktrees are protected. App startup and background checks do not restart the inactivity period. The expiry worker runs while the app is open, checking shortly after startup and then hourly. Use **Settings → Session → Workspace storage** to pin a checkout, inspect sizes, refresh measurements, restore files or check expired leases now. Restoring files there does not open the conversation.
+
+Reopen the saved conversation from **History** to reconstruct its commit, staged and unstaged changes, untracked files and ignored local data, including environment files and databases. Only disclosed, Git-ignored rebuildable caches with no tracked files are excluded: `node_modules/`, `target/`, `.next/` and `.turbo/`. A moved branch is never reset, and an occupied old folder is never overwritten. The source repository must still be available with its original identity; the removed conversation checkout need not exist.
+
+Storage limits default to fifteen retained checkouts and 20 GiB of measured checkout data. They are advisory: pressure never deletes open, pinned or unexpired work, and restore points are reported separately and never automatically deleted. Unknown sizes remain labelled. Conversation transcripts, evidence and restore metadata live outside disposable checkouts. Local restore points may contain secrets; they are not an off-device backup. Pin a checkout used in an external editor and stop external writers before removing it.
+
+Lifecycle and failure invariants: [Disposable conversation worktrees](docs/architecture/session-model.md#disposable-conversation-worktrees).
 
 ### Watching the agent work
 
@@ -208,6 +227,8 @@ npm run build          # precompiles src/ into dist/ and bundles installers
 ```
 
 There is no bundler. In dev, `src/index.html` loads every script in dependency order and `@babel/standalone` transpiles the JSX in the page. Release builds embed `dist/`, written by `scripts/build-frontend.mjs`: the JSX is compiled ahead of time with the same vendored Babel, and React's production build is used.
+
+Dev and test builds retain limited app debug information but omit dependency debug information to reduce future build-output growth. Each checkout keeps its own Cargo target directory; do not share a Tauri target directory between concurrent checkouts. Existing build outputs are not automatically deleted by this profile change.
 
 | Check | Command |
 |---|---|

@@ -25,6 +25,7 @@
 @import "./file-preview.css";
 @import "./settings.css";
 @import "./settings-rows.css";
+@import "./worktree-storage.css";
 @import "./panels.css";
 @import "./git.css";
 @import "./subagents.css";

@@ -1,5 +1,4 @@
 use super::{process, Admission, WorkspaceManager};
-use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -14,18 +13,12 @@ pub(super) trait Runner {
 #[derive(Default)]
 pub(super) struct Native<'a> {
     cancellation: Option<(&'a WorkspaceManager, &'a Admission)>,
-    profile: Option<&'a str>,
 }
 
 impl<'a> Native<'a> {
-    pub const fn for_start(
-        manager: &'a WorkspaceManager,
-        ticket: &'a Admission,
-        profile: Option<&'a str>,
-    ) -> Self {
+    pub const fn for_start(manager: &'a WorkspaceManager, ticket: &'a Admission) -> Self {
         Self {
             cancellation: Some((manager, ticket)),
-            profile,
         }
     }
 
@@ -51,10 +44,8 @@ impl<'a> Native<'a> {
 
 impl Runner for Native<'_> {
     fn switch(&self, root: &Path, branch: &str) -> Result<(), String> {
-        let program =
-            crate::child_path::locate_program(&crate::child_path::child_path_dirs(), "git")?;
-        let mut command = Command::new(program.binary);
-        command.env("PATH", program.path).current_dir(root).args([
+        let mut command = git(root)?;
+        command.args([
             "--no-optional-locks",
             "switch",
             "--no-guess",
@@ -63,49 +54,35 @@ impl Runner for Native<'_> {
             "--",
             branch,
         ]);
-        // Never allow an inherited Git environment to redirect the mutation to
-        // a different index, work tree or repository from the one inspected.
-        for name in [
-            "GIT_DIR",
-            "GIT_WORK_TREE",
-            "GIT_INDEX_FILE",
-            "GIT_COMMON_DIR",
-            "GIT_OBJECT_DIRECTORY",
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-            "GIT_NAMESPACE",
-        ] {
-            command.env_remove(name);
-        }
         self.execute(&mut command, "git switch")
     }
 
     fn worktree(&self, root: &Path, branch: &str, dest: &Path, commit: &str) -> Result<(), String> {
-        let args = worktree_args(root, branch, dest, commit, self.profile);
-        let mut command = crate::agent::spawn::omp_command_in(root, &args)?;
-        self.execute(&mut command, "omp worktree add")
+        let mut command = git(root)?;
+        // This is an explicit checkout mutation: Git's normal checkout filters
+        // and post-checkout hook still run, just as with an in-place switch.
+        command
+            .args(["worktree", "add", "-b", branch, "--"])
+            .arg(dest)
+            .arg(commit);
+        self.execute(&mut command, "git worktree add")
     }
 }
 
-fn worktree_args(
-    root: &Path,
-    branch: &str,
-    dest: &Path,
-    commit: &str,
-    profile: Option<&str>,
-) -> Vec<OsString> {
-    let mut args = Vec::with_capacity(9);
-    if let Some(flag) = crate::agent::spawn::profile_flag(profile) {
-        args.push(OsString::from(flag));
+fn git(root: &Path) -> Result<Command, String> {
+    let program = crate::child_path::locate_program(&crate::child_path::child_path_dirs(), "git")?;
+    let mut command = Command::new(program.binary);
+    command.env("PATH", program.path).current_dir(root);
+    // Inherited Git settings can redirect the repository, index, object store,
+    // or configuration away from the checkout we inspected.
+    for (name, _) in std::env::vars_os() {
+        if name
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("GIT_")
+        {
+            command.env_remove(name);
+        }
     }
-    args.extend([
-        OsString::from("worktree"),
-        OsString::from("add"),
-        OsString::from("--cwd"),
-        root.as_os_str().to_owned(),
-        OsString::from("-b"),
-        OsString::from(branch),
-        dest.as_os_str().to_owned(),
-        OsString::from(commit),
-    ]);
-    args
+    Ok(command)
 }

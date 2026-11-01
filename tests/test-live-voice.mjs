@@ -213,6 +213,7 @@ function bridgeHarness() {
     DEFAULT_PROFILE_ID: "default", INTENT_FRAMING: () => "", timeNow: () => "00:00",
   };
   // Use the real context builder; the fake transport only supplies omp data.
+  new Function("window", readFileSync(join(root, "src/app/marked-setup.js"), "utf8"))(w);
   new Function("window", readFileSync(join(root, "src/app/live-context.js"), "utf8"))(w);
   new Function("window", readFileSync(join(root, "src/app/approval-mode.js"), "utf8"))(w);
   new Function("window", readFileSync(join(root, "src/app/project-nav.js"), "utf8"))(w);

@@ -80,28 +80,6 @@ pub fn omp_output<S: AsRef<OsStr>>(args: &[S]) -> Result<std::process::Output, S
     Omp::locate()?.output(args)
 }
 
-/// Construct a native omp command in a selected repository with the trusted
-/// binary, PATH and profile environment. The caller supervises its execution.
-pub fn omp_command_in<S: AsRef<OsStr>>(cwd: &Path, args: &[S]) -> Result<Command, String> {
-    let omp = Omp::locate()?;
-    let mut command = omp.command();
-    command.current_dir(cwd).args(args);
-    // Native worktree operations must use the inspected repository and index,
-    // not a Git environment inherited from the shell that launched the app.
-    for name in [
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_NAMESPACE",
-    ] {
-        command.env_remove(name);
-    }
-    Ok(command)
-}
-
 // ── omp version floor ───────────────────────────────────────────────────────
 
 /// First stable release with the draft-only dictation RPC (upstream #17158).

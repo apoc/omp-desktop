@@ -31,8 +31,7 @@ fn options(info: &super::WorkspaceInfo, name: &str, worktree: bool, ack: bool) -
     }
 }
 
-/// Test the real filesystem boundary with git's worktree implementation,
-/// without depending on an installed omp or a user's omp configuration.
+/// Records the destination while exercising the native checkout.
 struct GitWorktree {
     dest: Mutex<Option<PathBuf>>,
     fail_after_checkout: bool,
@@ -55,16 +54,7 @@ impl runner::Runner for GitWorktree {
     fn worktree(&self, root: &Path, branch: &str, dest: &Path, commit: &str) -> Result<(), String> {
         // The assertion after the call needs the destination owned separately.
         *self.dest.lock().unwrap() = Some(dest.to_path_buf());
-        let output = std::process::Command::new("git")
-            .current_dir(root)
-            .args(["worktree", "add", "-b", branch])
-            .arg(dest)
-            .arg(commit)
-            .output()
-            .unwrap();
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).into_owned());
-        }
+        runner::Native::default().worktree(root, branch, dest, commit)?;
         if self.fail_after_checkout {
             Err("post-checkout hook failed".to_string())
         } else {
@@ -412,6 +402,12 @@ fn isolated_checkout_uses_selected_commit_preserves_source_and_maps_subfolder() 
         return;
     };
     let data = TempDir::new("conversation-workspace", "isolated-data");
+    repo.write(
+        ".gitignore",
+        "/target/\n/node_modules/\n/.claude/worktrees/\n",
+    );
+    repo.git(&["add", ".gitignore"]);
+    repo.commit("ignore local artifacts", 1_700_000_050);
     repo.git(&["switch", "-q", "-c", "other"]);
     repo.write("sub/file.txt", "other base\n");
     repo.git(&["add", "."]);
@@ -421,6 +417,9 @@ fn isolated_checkout_uses_selected_commit_preserves_source_and_maps_subfolder() 
     repo.git(&["add", "."]);
     repo.write("sub/file.txt", "unstaged\n");
     repo.write("untracked.txt", "untouched\n");
+    repo.write("target/debug/build.bin", "build output\n");
+    repo.write("node_modules/package/index.js", "installed package\n");
+    repo.write(".claude/worktrees/nested/local.txt", "nested work\n");
     let before = repo.git(&["status", "--porcelain=v1"]);
     let sub = crate::external_open::canonical_folder(&repo.path().join("sub")).unwrap();
     let mut registry = Registry::default();
@@ -442,6 +441,19 @@ fn isolated_checkout_uses_selected_commit_preserves_source_and_maps_subfolder() 
     assert_eq!(prepared.workspace.unwrap().project_path, sub);
     let created = runner.dest.lock().unwrap().take().unwrap();
     assert!(Path::new(&prepared.path).starts_with(created.canonicalize().unwrap()));
+    for local in ["target", "node_modules", ".claude/worktrees"] {
+        assert!(!created.join(local).exists(), "{local} was copied");
+    }
+    for (local, contents) in [
+        ("target/debug/build.bin", "build output\n"),
+        ("node_modules/package/index.js", "installed package\n"),
+        (".claude/worktrees/nested/local.txt", "nested work\n"),
+    ] {
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join(local)).unwrap(),
+            contents
+        );
+    }
     assert_eq!(
         inspect::read(prepared.path).unwrap().head.as_deref(),
         Some(other_commit.as_str())

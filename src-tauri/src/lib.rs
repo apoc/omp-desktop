@@ -51,6 +51,8 @@ mod updater;
 mod widgets;
 mod window_chrome;
 mod workspace;
+mod worktree_lifecycle;
+mod worktree_storage;
 
 use agent::AgentBridge;
 use approval::RuleBook;
@@ -99,6 +101,9 @@ struct StartSessionArgs {
     profile: Option<String>,
     /// Present only for an explicitly prepared new conversation.
     workspace: Option<conversation_workspace::WorkspaceOptions>,
+    /// Only explicit user opens renew a kept checkout's inactivity lease.
+    #[serde(default)]
+    user_initiated: bool,
 }
 
 /// Prepare and register the tab before spawning omp. All process and
@@ -132,6 +137,17 @@ fn start_session_blocking(
         }
         saved_sessions::validate_resume(app, resume, profile)?;
     }
+    let profile_id = profile.unwrap_or(profiles::DEFAULT_PROFILE_ID);
+    let recovery = worktree_lifecycle::prepare_resume(
+        app,
+        profile_id,
+        args.resume.as_deref(),
+        &args.cwd,
+        args.user_initiated,
+    )?;
+    let requested_cwd = recovery
+        .as_ref()
+        .map_or(args.cwd.as_str(), |workspace| workspace.path.as_str());
     let data = app
         .path()
         .app_data_dir()
@@ -139,13 +155,12 @@ fn start_session_blocking(
         .filter(|path| path.is_absolute());
     let prepared = registry.prepare_for_start(
         &args.session_id,
-        &args.cwd,
+        requested_cwd,
         args.workspace,
         conversation_workspace::StartContext {
             data: data.as_deref(),
             manager: &manager,
             ticket: &ticket,
-            profile,
         },
     )?;
     if let Err(error) = manager.check_ticket(&ticket) {
@@ -164,22 +179,48 @@ fn start_session_blocking(
             },
         );
     }
-    let cwd = (!prepared.path.is_empty()).then_some(prepared.path.as_str());
+    registry.set_profile(&args.session_id, profile_id)?;
+    let stored = worktree_lifecycle::register(app, &prepared, profile_id, args.resume.as_deref())?;
+    registry.set_storage_id(
+        &args.session_id,
+        stored.as_ref().map(|workspace| workspace.id.as_str()),
+    )?;
+    manager.check_ticket(&ticket)?;
+    let workspace = prepared
+        .workspace
+        .or_else(|| stored.map(worktree_lifecycle::binding));
+    let started = spawn_registered_session(
+        app,
+        &args.session_id,
+        profile,
+        args.resume.as_deref(),
+        prepared.path,
+        workspace,
+        keep_awake_epoch,
+    );
+    // Keep ownership serialized through registration and the actual spawn.
+    drop(registry);
+    started
+}
+
+fn spawn_registered_session(
+    app: &AppHandle,
+    session_id: &str,
+    profile: Option<&str>,
+    resume: Option<&str>,
+    path: String,
+    workspace: Option<conversation_workspace::WorkspaceBinding>,
+    keep_awake_epoch: u64,
+) -> Result<conversation_workspace::StartResponse, String> {
+    let cwd = (!path.is_empty()).then_some(path.as_str());
     let mode = app
         .state::<Arc<ApprovalModeStore>>()
         .resolve(cwd.map(Path::new));
     app.state::<Arc<terminal::TerminalManager>>()
-        .register_tab(&args.session_id, cwd.map(Path::new));
+        .register_tab(session_id, cwd.map(Path::new));
     let retained = |error: String| {
-        if prepared
-            .workspace
-            .as_ref()
-            .is_some_and(|binding| binding.worktree)
-        {
-            format!(
-                "{error}. The created worktree was retained at {}",
-                prepared.path
-            )
+        if workspace.as_ref().is_some_and(|binding| binding.worktree) {
+            format!("{error}. The created worktree was retained at {path}")
         } else {
             error
         }
@@ -187,23 +228,22 @@ fn start_session_blocking(
     // The tab owns its browser and shell across profile/approval respawns.
     let overlay = app
         .state::<browser::BrowserManager>()
-        .allocate_if_available(&args.session_id)
+        .allocate_if_available(session_id)
         .map_err(|e| retained(format!("browser: {e}")))?;
     app.state::<Arc<keep_awake::KeepAwake>>()
-        .register(&args.session_id, keep_awake_epoch)
+        .register(session_id, keep_awake_epoch)
         .map_err(retained)?;
     let rule_book = app.state::<Arc<RuleBook>>();
     app.state::<AgentBridge>()
         .start_session(
-            // The bridge owns this id; the widget hook still needs it.
-            args.session_id.clone(),
+            // The bridge owns this id; the widget hook below still borrows it.
+            session_id.to_owned(),
             agent::Launch {
                 cwd,
-                source_project: prepared
-                    .workspace
+                source_project: workspace
                     .as_ref()
                     .map(|binding| binding.project_path.as_str()),
-                resume: args.resume.as_deref(),
+                resume,
                 profile,
                 mode,
                 config: overlay.as_deref(),
@@ -213,15 +253,12 @@ fn start_session_blocking(
         )
         .map_err(retained)?;
     app.state::<Arc<widgets::WidgetHost>>()
-        .session_started(&args.session_id, cwd.map(Path::new));
-    let response = conversation_workspace::StartResponse {
+        .session_started(session_id, cwd.map(Path::new));
+    Ok(conversation_workspace::StartResponse {
         approval_mode: mode.as_str().to_string(),
-        path: prepared.path,
-        workspace: prepared.workspace,
-    };
-    // Keep ownership serialized through registration and the actual spawn.
-    drop(registry);
-    Ok(response)
+        path,
+        workspace,
+    })
 }
 
 #[tauri::command]
@@ -507,8 +544,16 @@ fn end_tabs_locked<S: AsRef<str> + Sync>(
 /// Close a tab (the frontend's `closeSession`) — see [`end_tabs`]. `async` +
 /// `spawn_blocking`: reaping omp and killing the shell's processes block.
 #[tauri::command]
-async fn close_tab(session_id: String, app: AppHandle) -> Result<(), String> {
-    off_ipc(move || end_tabs(&app, &[session_id])).await
+async fn close_tab(
+    session_id: String,
+    worktree_action: Option<worktree_lifecycle::CloseAction>,
+    session_file: Option<String>,
+    app: AppHandle,
+) -> Result<(), String> {
+    off_ipc(move || {
+        worktree_lifecycle::close_tab(&app, &session_id, worktree_action, session_file.as_deref())
+    })
+    .await?
 }
 
 /// End every tab the backend knows. Called by the webview at boot, before
@@ -1326,13 +1371,15 @@ async fn recent_projects_remove(
     with_blocking(&recents, move |s| s.remove(&key, &path)).await
 }
 
-/// The open-tab layout saved by the previous run (issue #17), minus tabs
-/// whose folder is gone — see `open_tabs::restorable`.
+/// Saved tabs whose folder exists or whose native conversation can recover it.
 #[tauri::command]
-async fn open_tabs_load(
-    tabs: State<'_, Arc<open_tabs::OpenTabsStore>>,
-) -> Result<open_tabs::Restore, String> {
-    with_blocking(&tabs, |s| Ok(s.load())).await
+async fn open_tabs_load(app: AppHandle) -> Result<open_tabs::Restore, String> {
+    off_ipc(move || {
+        let manager = app.state::<conversation_workspace::WorkspaceManager>();
+        let _registry = manager.lock();
+        worktree_lifecycle::load_tabs(&app)
+    })
+    .await
 }
 
 /// Replace the saved open-tab layout.
@@ -1389,6 +1436,9 @@ pub(crate) fn kill_child_processes(app: &AppHandle) {
     if let Some(manager) = &manager {
         manager.shutdown();
     }
+    // Join retention before acquiring the guard its worker uses, otherwise
+    // shutdown could deadlock against a pending expiry check.
+    worktree_lifecycle::stop(app);
     // A native checkout already in flight must finish before children are
     // killed; admission is permanently closed so it cannot spawn afterwards.
     let _registry = manager.as_ref().map(|manager| manager.lock());
@@ -1587,6 +1637,7 @@ fn setup(app: &tauri::App) {
     app.manage(Arc::new(open_tabs::OpenTabsStore::new(config_file(
         "open-tabs.json",
     ))));
+    worktree_lifecycle::install(app);
     // Phone remote access: settings in <app_config_dir>/remote.json, devices
     // in remote-devices.json; started once from the saved settings.
     let remote_sink = remote::bridge::install(app, resolved_config_dir.clone()); // `config_file` still borrows it
@@ -1720,6 +1771,14 @@ pub fn run() {
             conversation_workspace_inspect,
             conversation_workspace_status,
             conversation_workspace_defaults_set,
+            worktree_lifecycle::commands::worktree_storage_view,
+            worktree_lifecycle::commands::worktree_storage_set_policy,
+            worktree_lifecycle::commands::worktree_storage_set_pin,
+            worktree_lifecycle::commands::worktree_storage_sweep,
+            worktree_lifecycle::commands::worktree_storage_restore,
+            worktree_lifecycle::commands::worktree_storage_close_info,
+            worktree_lifecycle::commands::worktree_storage_bind_conversation,
+            worktree_lifecycle::commands::worktree_storage_touch,
             stop_session,
             terminal_open,
             terminal_status,
