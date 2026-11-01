@@ -3130,6 +3130,10 @@
         state.asyncPending = false;
         notify();
       }
+      // The agent_end snapshot can still be busy while omp finishes its
+      // run. Recheck at quiescence so the first title is not left waiting
+      // for another user prompt or tab switch.
+      _send({ type: "get_state" });
       return;
     }
 
