@@ -323,6 +323,11 @@ fn sanitize_child_env(cmd: &mut Command) {
 /// [`crate::supervisor::ProcessSupervisor`] already attached to it, so the
 /// whole process tree (subagents, tool-call children) can be torn down as
 /// a unit — plain `Child::kill` only signals the direct `omp` process.
+///
+/// Branch timing, intent and naming are agent decisions over the task's
+/// context, not a chat-opening prerequisite or a second model request. Append
+/// the desktop policy without replacing the user's system/project instructions;
+/// the agent's Git calls still use the tab's normal tool-approval mode.
 pub(super) fn spawn_omp(
     cwd: Option<&str>,
     resume: Option<&str>,
@@ -344,6 +349,9 @@ pub(super) fn spawn_omp(
     // piped. No `cmd /C` wrapper on Windows: killing cmd.exe would orphan
     // omp without a Job Object.
     let mut cmd = omp.command();
+    if let Some(policy) = super::branch_policy::for_workspace(resolved_cwd.as_deref()) {
+        cmd.arg("--append-system-prompt").arg(policy);
+    }
     cmd.args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
