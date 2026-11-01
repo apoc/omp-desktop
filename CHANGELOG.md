@@ -40,6 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Automatic conversation naming rechecks native state when a session settles. A busy snapshot at turn end no longer leaves the completed chat labeled **New conversation** until another prompt or tab switch.
+- Windows workspace recovery creates its private storage with the current user's explicit ownership, including elevated launches, instead of inheriting an Administrators-owned root that recovery must reject.
 - Conversation History now lists saved sessions across all configured profiles, with visible, searchable profile labels. Resume uses the conversation's original profile and working folder, or focuses its existing tab, without requiring a top-bar profile switch.
 - Saving a conversation compaction target no longer reports failure when a native settings reload races its post-save confirmation. Only the read is retried; the saved write is not replayed.
 - Browser launch now creates its own initial blank page before exposing CDP, avoiding duplicate pages when Chromium's automatic startup races panel discovery.

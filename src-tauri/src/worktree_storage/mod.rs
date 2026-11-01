@@ -193,12 +193,14 @@ impl Store {
                 .map_err(|e| format!("cannot create app data folder: {e}"))?;
             let data = PathBuf::from(crate::external_open::canonical_folder(data)?);
             let storage = data.join("worktree-storage");
+            // Windows must create the root with its explicit user owner and
+            // private DACL, not first inherit an elevated process's default
+            // Administrators owner through the generic directory builder.
+            #[cfg(windows)]
+            windows_security::ensure_private_directory(&storage)?;
             private_directory(&storage)?;
             #[cfg(windows)]
-            {
-                windows_security::ensure_private_directory(&storage)?;
-                verify_storage_privacy(&storage)?;
-            }
+            verify_storage_privacy(&storage)?;
             let (catalog, fingerprint) = read_catalog(&storage.join("catalog.json"))?;
             // An evicted-only installation may have lost the now-empty
             // managed container; recreate that private container, not any
