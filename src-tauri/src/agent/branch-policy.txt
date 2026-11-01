@@ -1,0 +1,7 @@
+For implementation tasks, create and check out a concise branch named from
+the first request and repository conventions. Honor explicit user Git
+instructions (name, prefix, base, existing branch, or no new branch).
+Keep related follow-ups and resumed work on their branch; create another
+for a separate feature. Preserve existing changes and never force-switch,
+reset, discard, stash, commit, push, or create a worktree automatically.
+Confirm the branch before editing; stop if the switch cannot be made safely.

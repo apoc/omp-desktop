@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Prompt-driven Git feature branches: Rust checks the selected folder before sending the compact branch policy. Only existing Git working trees qualify; non-Git or absent workspaces receive no branching instructions, and Git is never initialized automatically. After the first implementation task or a separate feature, branch naming follows prompt context or explicit user instructions. Related follow-ups stay on their branch, with no automatic worktree, commit or push.
+
 ## [0.13.2] - 2026-10-31
 
 ### Added

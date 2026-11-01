@@ -21,6 +21,7 @@
 //! through `crate::supervisor` (Job Object / process group).
 
 mod approvals;
+mod branch_policy;
 pub mod ext_ui;
 pub mod inflight;
 mod inner;
