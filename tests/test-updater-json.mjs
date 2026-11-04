@@ -14,8 +14,10 @@ import { fileURLToPath } from "node:url";
 import {
   buildPlatforms, changelogSection, keysFor, versionMismatch,
 } from "../.github/scripts/updater-json.mjs";
+import { releaseNotes } from "../.github/scripts/release-notes.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "../.github/scripts/updater-json.mjs");
+const NOTES_SCRIPT = join(dirname(SCRIPT), "release-notes.mjs");
 
 let passed = 0;
 function check(label, fn) {
@@ -103,6 +105,25 @@ check("a stable tag must match the app version; a prerelease may not", () => {
   assert.equal(versionMismatch("v0.3.2-rc.1", "0.3.1"), null);
 });
 
+check("the release body is the version's changes, then the installation text", () => {
+  const text = [
+    "# Changelog", "", "## [Unreleased]", "", "- next", "",
+    "## [0.3.1] - 2026-01-01", "", "### Fixed", "", "- one", "",
+    "## [0.3.0] - 2025-12-01", "", "- zero",
+  ].join("\n");
+  const body = releaseNotes(text, "v0.3.1", "0.3.1");
+  assert.match(body, /^## omp-desktop v0\.3\.1\n\n### Fixed\n\n- one\n\n### Installation\n/);
+  assert.ok(!body.includes("- next") && !body.includes("- zero"), "only this version's section");
+  // A stable release cut without its CHANGELOG step must not ship a page
+  // (and updater feed) that lists nothing.
+  assert.throws(() => releaseNotes(text, "v0.3.2", "0.3.2"), /no "## \[0\.3\.2\]" section/);
+  // A dry run lists what is unreleased; with nothing there, just the install text.
+  assert.match(releaseNotes(text, "v0.3.2-rc.1", "0.3.2"), /^## omp-desktop v0\.3\.2-rc\.1\n\n- next\n\n### Installation\n/);
+  assert.match(releaseNotes("# Changelog", "v0.3.2-rc.1", "0.3.2"), /^## omp-desktop v0\.3\.2-rc\.1\n\n### Installation\n/);
+  // A prerelease of an already-sectioned version uses that section.
+  assert.match(releaseNotes(text, "v0.3.1-rc.2", "0.3.1"), /\n\n### Fixed\n\n- one\n\n/);
+});
+
 // The CLI path the workflow actually runs, through a symlink whose name has
 // a space — the case where a naive `import.meta.url === file://argv[1]`
 // entry guard silently skipped main() and emitted an empty feed.
@@ -123,6 +144,14 @@ check("run directly (via a symlink with a space), the CLI writes the feed", () =
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+check("run directly, release-notes writes the body from the real CHANGELOG", () => {
+  const changelog = join(dirname(SCRIPT), "../../CHANGELOG.md");
+  const out = execFileSync(process.execPath, [NOTES_SCRIPT, "--tag", "v0.13.2", "--app-version", "0.13.2",
+    "--changelog", changelog], { encoding: "utf8", stdio: "pipe" });
+  assert.match(out, /^## omp-desktop v0\.13\.2\n\n### Added\n/);
+  assert.match(out, /\n### Requirements\n/);
 });
 
 console.log(`test-updater-json: ${passed} checks passed`);
