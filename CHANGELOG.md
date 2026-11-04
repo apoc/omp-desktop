@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.3] - 2026-11-04
+
 ### Fixed
 
 - Release pages on GitHub list what changed in that version (its CHANGELOG section) above the installation notes; before, only the in-app updater showed the changes (#75).
