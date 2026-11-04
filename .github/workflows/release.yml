@@ -6,8 +6,9 @@
 #      passes
 #   2. Builds signed installers on Windows, macOS (arm64 + x64), Linux
 #   3. Uploads artefacts + their updater `.sig` files to a draft GitHub Release
-#   4. Once every build succeeded, `updater-json` assembles `latest.json` from
-#      those signatures and uploads it to the same draft
+#   4. Once every build succeeded, `updater-json` writes the release notes
+#      (the CHANGELOG section + installation text) into the draft's body and
+#      assembles `latest.json` from those signatures into the same draft
 #   5. You review the draft, then publish manually
 #
 # Manual run (Actions → Release → Run workflow, or
@@ -197,25 +198,8 @@ jobs:
           releaseName: 'omp-desktop ${{ env.TAG }}'
           # Assembled once by the `updater-json` job below instead.
           includeUpdaterJson: false
-          releaseBody: |
-            ## omp-desktop ${{ env.TAG }}
-
-            ### Installation
-            | Platform | File |
-            |----------|------|
-            | Windows  | `.msi` (recommended) or `.exe` (NSIS) |
-            | macOS    | `.dmg` |
-            | Linux    | `.AppImage` or `.deb` |
-
-            **Windows:** if SmartScreen blocks the installer, click _More info → Run anyway_.
-            This will resolve once the app is code-signed.
-
-            **Updates:** Windows, macOS and the Linux `.AppImage` update themselves
-            in-app; `.deb`/`.rpm` installs are notified and link here.
-
-            ### Requirements
-            - [oh-my-pi](https://github.com/can1357/oh-my-pi) (`omp`) must be installed
-              and available on your `PATH`.
+          # No releaseBody: the `updater-json` job writes the whole body
+          # (CHANGELOG section + installation text) once every build passed.
           releaseDraft: true        # publish manually after reviewing artefacts
           prerelease: ${{ contains(env.TAG, '-') }}
           args: ${{ matrix.args }} --config src-tauri/tauri.dist.conf.json --config src-tauri/tauri.release.conf.json
@@ -259,6 +243,20 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
+
+      # The release page's body: this version's CHANGELOG section, then the
+      # installation text (.github/scripts/release-notes.mjs). First, so a
+      # stable tag without its CHANGELOG section fails before the feed is
+      # uploaded and the draft can't be published whole.
+      - name: Write release notes
+        run: |
+          node .github/scripts/release-notes.mjs \
+            --tag "$TAG" \
+            --app-version "$(jq -r .version src-tauri/tauri.conf.json)" \
+            --changelog CHANGELOG.md \
+            > notes.md
+          cat notes.md
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
 
       # A draft is invisible to GitHub's by-tag release lookup; `gh` falls
       # back to searching drafts.
