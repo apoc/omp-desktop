@@ -282,6 +282,12 @@
        OMP_PATH_SETTING at call time; precedes
        app/use-browser.jsx, design/settings/rows-programs.jsx and app-live.jsx. -->
   <script src="app/browser.js"></script>
+  <!-- Files panel pure helpers (marks, chip label, the text merged into the
+       outgoing message, stale check, the tree cut to the tab folder). IIFE;
+       reads OMP_BROWSER (above), OMP_SESSION_UI and OMP_PROJECT_NAV at call
+       time; app/use-file-comments.jsx destructures window.OMP_FILE_COMMENTS
+       at top level, app-live.jsx too. -->
+  <script src="app/file-comments.js"></script>
   <!-- Phone remote: bounded transcript mapping and serial action handler.
        Dependency-free IIFE; app/use-remote.jsx reads OMP_REMOTE_VIEW when
        its effect mounts, before app-live.jsx renders. -->
@@ -466,6 +472,14 @@
   <script type="text/babel" src="design/git/file-view.jsx"></script>
   <script type="text/babel" src="design/git/history.jsx"></script>
   <script type="text/babel" src="design/git/git-browser.jsx"></script>
+  <!-- Files panel: file-code.jsx (the commentable rows; destructures
+       window.Icon, OMP_FILE_PREVIEW and OMP_FILE_COMMENTS) before
+       files-panel.jsx, which destructures window.FileCode, GitFileTree
+       (git/file-tree.jsx), FileState / FILE_STATES (chat/file-preview.jsx),
+       CopyButton, OMP_FILE_PREVIEW and OMP_UPDATER at top level.
+       app-live.jsx destructures FilesPanel. -->
+  <script type="text/babel" src="design/files/file-code.jsx"></script>
+  <script type="text/babel" src="design/files/files-panel.jsx"></script>
   <!-- Approvals panel's mode section (#57); approval-rules-panel.jsx
        destructures window.ApprovalModeSection at top level. -->
   <script type="text/babel" src="design/approval-mode-section.jsx"></script>
@@ -568,6 +582,9 @@
   <!-- Git browser data flow; destructures window.OMP_GIT_BROWSER at top
        level. -->
   <script type="text/babel" src="app/use-git-browser.jsx"></script>
+  <!-- Files panel state; destructures window.OMP_FILE_COMMENTS,
+       window.OMP_GIT_BROWSER and window.OMP_SESSION_UI at top level. -->
+  <script type="text/babel" src="app/use-file-comments.jsx"></script>
   <!-- Resizable column widths (#41); destructures window.OMP_LAYOUT_WIDTHS
        at top level, calls window.useEdgeDrag at render time. -->
   <script type="text/babel" src="app/use-pane-widths.jsx"></script>

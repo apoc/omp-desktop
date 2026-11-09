@@ -42,7 +42,8 @@ Stage, discard and the branch switch (`workspace_accept`/`workspace_reject`/`wor
 
 ```
 git_browser_status(path) -> StatusView
-  StatusView { repo: RepoInfo, tree: TreeNode, changed: u32, truncated: bool }
+  StatusView { repo: RepoInfo, tree: TreeNode, changed: u32, truncated: bool,
+               folder: Option<String> /* `path` relative to the work dir, both canonicalised, "/"-separated, "" = the work dir; None = unresolvable (the files panel's cut, file-comments.md) */ }
   RepoInfo   { name /* work dir basename */, branch: Option<String> /* short; None = detached */,
                head: Option<String> /* full sha; None = unborn */, ahead: Option<u32>, behind: Option<u32> /* None = no upstream */ }
   TreeNode   { name, path /* project-relative, "/"-separated, "" for the root */, dir: bool,
@@ -92,7 +93,7 @@ The file list is the index entries (tracked files; a file deleted in the worktre
 
 Rename detection between HEAD and the index follows the repo's config (`status.renames` / `diff.renames`, on unless the user turned it off); between the index and the work tree there is none, as in `git status`, so an unstaged `mv` shows the old path as `Deleted` and the new one as `Untracked`. A detected rename shows only on its new path; the old path is not in the tree.
 
-`changed` on the root and on each dir counts the changed files below it. More than `MAX_FILES` (20 000) files: the tree stops there and `truncated` is `true`.
+`changed` on the root and on each dir counts the changed files below it. More than `MAX_FILES` (20 000) files: the tree stops there and `truncated` is `true`. Changed files are always kept; of the unchanged ones, those under the asked-for folder (`path`, as `StatusView.folder` places it) come first, so a subfolder tab's files survive the cap (the files panel shows only that folder).
 
 ### Inline diff (`file.rs`)
 

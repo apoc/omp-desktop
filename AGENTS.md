@@ -22,6 +22,7 @@ Feature internals (RPC frames, state machines, measured omp behaviour) live in `
 |`conversation-tree.md`|conversation tree + prompt-cache model, branch/fork|`conversation_tree/`, `app/conversation-tree*.js`|
 |`git-browser.md`|git browser: files tree, full-file inline diff, commit graph, browse a commit; status bar branch picker and switch|`src-tauri/src/git_browser/`, `workspace.rs` `switch_branch`, `app/git-browser.js`, `app/use-git-browser.jsx`, `design/git/`, `design/branch-menu.jsx`|
 |`file-preview.md`|file preview of read-card paths and agent file links, read-card image thumbnails, write-card paths to the git browser|`project_file.rs`, `app/file-preview.js`, `design/chat/file-preview.jsx`, `design/chat/tool-card.jsx`|
+|`file-comments.md`|files panel: the git browser's tree beside a commentable file, explain / comment marks on lines or a selection, composer chips, the text merged into the message, stale marks|`app/file-comments.js`, `app/use-file-comments.jsx`, `design/files/`, `design/git/file-tree.jsx` (optional props), `git_browser/status.rs` `StatusView.folder`, `app-live.jsx` `takeChips`|
 |`goal-mode.md`|goal mode, auto-continue|`app/goal.js`, `goal_config.rs`|
 |`updater.md`|in-app updates, release signing|`updater.rs`, `app/updater.js`|
 |`external-open.md`|"Open with OMP Desktop" on macOS/Windows/Linux|`external_open.rs`, `src-tauri/packaging/`|
@@ -102,6 +103,7 @@ Regression files are mostly named after the `src/app/<name>.js` module they cove
 |`src/app/terminal-stream.js`|pure output-sync reducer: instance adoption, seq dedupe, gap → replay, queue while replaying, acks (`window.OMP_TERMINAL_STREAM`)|
 |`src/app/terminal-xterm.js`|builds a tab's xterm (OSC 8 off, fit addon, key routing), ConPTY option, theme colours, exit/failure lines (`window.OMP_TERMINAL_XTERM`)|
 |`src/app/use-terminal.jsx`|per-tab xterm instances, data/exit listeners, runs the stream reducer's actions (replays, writes, acks), spawn/fit (the hook, not pure)|
+|`src/app/file-comments.js`, `src/app/use-file-comments.jsx`, `src/design/files/`|files panel: marks (OMP_BROWSER's chip store), chip label, message text, stale check, the tree cut to the tab folder (`OMP_FILE_COMMENTS`); per-tab view and fetches; the panel and the commentable rows|
 |`src/app-live.jsx`|sole React root|
 |`src/design/`|UI components: `chat/`, `subagents/`, `ui/` (primitives, markdown), `settings/` (Settings page: controls, page, custom rows, shortcuts editor), `tweaks/` (`use-tweaks.js`: tweak storage), `git/` (git browser), `layout/` (CSS partials via `_index.css`)|
 |`src/app/settings-schema.js`, `src/app/settings-tab.js`, `src/design/settings/`|Settings page sections/rows/search (`OMP_SETTINGS`), the Settings app tab's state (`OMP_SETTINGS_TAB`), custom rows via `OMP_SETTINGS_ROWS` (`docs/architecture/settings.md`)|

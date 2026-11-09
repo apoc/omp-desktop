@@ -42,6 +42,7 @@
     { id: "desktop.settings.open",   label: "Open settings",           group: "View",    scope: "global",   defaultKeys: ["ctrl+,", "super+,"] },
     { id: "desktop.sidebar.toggle",  label: "Toggle project sidebar",  group: "View",    scope: "global",   defaultKeys: ["ctrl+b", "super+b"] },
     { id: "desktop.browser.toggle",  label: "Toggle browser panel",    group: "View",    scope: "global",   defaultKeys: ["ctrl+shift+b", "shift+super+b"], fromGuest: true },
+    { id: "desktop.files.toggle",    label: "Toggle files panel",      group: "View",    scope: "global",   defaultKeys: ["ctrl+shift+m", "shift+super+m"], fromGuest: true },
     { id: "desktop.tab.new",         label: "New tab",                 group: "Tabs",    scope: "global",   defaultKeys: ["ctrl+t", "super+t"] },
     { id: "desktop.tab.close",       label: "Close tab",               group: "Tabs",    scope: "global",   defaultKeys: ["ctrl+w", "super+w"] },
     { id: "desktop.tab.next",        label: "Next tab",                group: "Tabs",    scope: "global",   defaultKeys: ["ctrl+tab"], fromGuest: true },

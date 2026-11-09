@@ -32,6 +32,20 @@ pub struct StatusView {
     pub changed: u32,
     /// More than [`MAX_FILES`] files: unchanged ones beyond it were dropped.
     pub truncated: bool,
+    /// The folder the status was asked for, relative to the work dir
+    /// (`/`-separated, `""` for the work dir itself): where a tab's folder
+    /// sits in `tree` (the files panel shows only that part). `None` when
+    /// either path can't be resolved.
+    pub folder: Option<String>,
+}
+
+/// `path` relative to `work_dir`, both resolved on disk, `/`-separated.
+fn folder_in(work_dir: &Path, path: &Path) -> Option<String> {
+    let root = std::fs::canonicalize(work_dir).ok()?;
+    let dir = std::fs::canonicalize(path).ok()?;
+    let rest = dir.strip_prefix(&root).ok()?;
+    let parts: Option<Vec<&str>> = rest.components().map(|c| c.as_os_str().to_str()).collect();
+    Some(parts?.join("/"))
 }
 
 /// What one status item says about one path, layer-independent.
@@ -193,6 +207,18 @@ fn listed<'a>(
     (files, false)
 }
 
+/// Whether the work-dir-relative `path` lies under `prefix` (`"<folder>/"`),
+/// without ASCII case where the file system ignores it, as the files panel
+/// matches the folder.
+fn under(path: &str, prefix: &str) -> bool {
+    if cfg!(any(windows, target_os = "macos")) {
+        path.get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+    } else {
+        path.starts_with(prefix)
+    }
+}
+
 /// `git_browser_status(path)`.
 pub fn status(path: &Path) -> Result<StatusView, String> {
     let (_gate, repo, work_dir) = open(path)?;
@@ -201,12 +227,26 @@ pub fn status(path: &Path) -> Result<StatusView, String> {
         .index_or_empty()
         .map_err(fail("failed to read index"))?;
 
-    let (files, truncated) = listed(
-        changes.kinds,
+    // The asked-for folder's files are listed before the rest, so in a repo
+    // over the cap the cap drops other folders' unchanged files first: the
+    // files panel cuts the tree to that folder.
+    let folder = folder_in(&work_dir, path);
+    let prefix = folder
+        .as_deref()
+        .filter(|f| !f.is_empty())
+        .map(|f| format!("{f}/"));
+    let inside = |p: &str| prefix.as_deref().is_some_and(|pre| under(p, pre));
+    let tracked = || {
         index
             .entries()
             .iter()
-            .map(|e| e.path(&index).to_str_lossy()),
+            .map(|e| e.path(&index).to_str_lossy())
+    };
+    let (files, truncated) = listed(
+        changes.kinds,
+        tracked()
+            .filter(|p| inside(p))
+            .chain(tracked().filter(|p| !inside(p))),
         MAX_FILES,
     );
     let tree = fold(files);
@@ -231,6 +271,7 @@ pub fn status(path: &Path) -> Result<StatusView, String> {
         changed: tree.changed,
         tree,
         truncated,
+        folder,
     })
 }
 
@@ -312,7 +353,7 @@ pub(super) fn fold(files: impl IntoIterator<Item = (String, Option<StatusKind>)>
 
 #[cfg(test)]
 mod tests {
-    use super::{fold, listed, merge, status, Event, StatusKind, TreeNode};
+    use super::{fold, listed, merge, status, under, Event, StatusKind, TreeNode};
     use crate::git_browser::fixture;
     use std::borrow::Cow;
     use std::collections::BTreeMap;
@@ -403,6 +444,18 @@ mod tests {
         assert_eq!(
             files.keys().map(String::as_str).collect::<Vec<_>>(),
             ["a.txt", "b.txt", "y.txt", "z.txt"]
+        );
+    }
+
+    #[test]
+    fn under_matches_whole_folder_names_only() {
+        assert!(under("pkg/app/src/x.rs", "pkg/app/"));
+        assert!(!under("pkg/apple/x.rs", "pkg/app/"));
+        assert!(!under("pkg/app", "pkg/app/"));
+        assert_eq!(
+            under("Pkg/App/x.rs", "pkg/app/"),
+            cfg!(any(windows, target_os = "macos")),
+            "case is ignored only where the file system ignores it"
         );
     }
 
@@ -526,6 +579,7 @@ mod tests {
         let view = status(&repo.path().join("sub")).expect("status");
         assert_eq!(view.repo.head, None);
         assert_eq!(view.repo.branch.as_deref(), Some("main"));
+        assert_eq!(view.folder.as_deref(), Some("sub"));
         assert_eq!(status_of(&view.tree, "sub/a.txt"), Some(StatusKind::Added));
         assert_eq!(
             status_of(&view.tree, "sub/b.txt"),
@@ -542,6 +596,7 @@ mod tests {
         repo.commit("two", 1_700_000_100);
         repo.git(&["checkout", "-q", "--detach", &first]);
         let view = status(repo.path()).expect("status");
+        assert_eq!(view.folder.as_deref(), Some(""));
         assert_eq!(view.repo.branch, None);
         assert_eq!(view.repo.head.as_deref(), Some(first.as_str()));
     }

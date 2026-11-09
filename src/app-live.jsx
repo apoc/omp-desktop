@@ -25,11 +25,12 @@ const {
   TWEAK_DEFAULTS, NULL_MODEL, EMPTY_PROJECT, DEFAULT_PROFILE_ID,
   INTENT_FRAMING, APPROVAL_PROMPT,
   useBridgeSnapshot, useThemeEffect, useSubagentManager, useUpdater, useConversationTree, useGoalMode, useTerminal, TerminalPanels, timeNow,
-  useKeymap, useKeymapDispatch, useBrowser, BrowserDock, MarkdownLinkContext: _AL_MdLinkCtx,
+  useKeymap, useKeymapDispatch, useBrowser, BrowserDock, FilesPanel, useFileComments, MarkdownLinkContext: _AL_MdLinkCtx,
   usePaneWidths, ResizeHandle, useRemote, usePrAutomation, PrAutomationCard,
 } = window;
 const { routeSubmit: _routeSubmit } = window.OMP_SLASH;
 const { mergeIntoMessage: _mergeBrowserChips, browserCommand: _browserCommand, MIN_WIDTH: _AL_BROWSER_MIN } = window.OMP_BROWSER;
+const { mergeIntoMessage: _mergeFileMarks } = window.OMP_FILE_COMMENTS;
 const { recentRows, groupKey, moveGroup, moveMember, shiftGroup } = window.OMP_PROJECT_NAV;
 const {
   entryOf, updateEntry, pruneEntries, seedEntries,
@@ -238,13 +239,15 @@ function App() {
     fn => setPlans(m => updateEntry(m, planKey, PLAN_IDLE, fn)), [planKey]);
   const handleAnnotate = React.useCallback(
     (idx, value) => updatePlan(p => annotatePlan(p, idx, value)), [updatePlan]);
-  // "rail" (the idle entry, also with no tab open), "tree" or "browser".
+  // "rail" (the idle entry, also with no tab open), "tree", "browser" or "files".
   const side = entryOf(sides, planKey, "rail");
   const setSide = React.useCallback(
     next => setSides(m => updateEntry(m, planKey, "rail", () => next)), [planKey]);
   const toggleSide = kind => setSide(side === kind ? "rail" : kind);
   const setBrowserOpen = React.useCallback(
     on => setSides(m => updateEntry(m, planKey, "rail", s => (on ? "browser" : s === "browser" ? "rail" : s))), [planKey]);
+  const setFilesOpen = React.useCallback(
+    on => setSides(m => updateEntry(m, planKey, "rail", s => (on ? "files" : s === "files" ? "rail" : s))), [planKey]);
   const tabCollapseOverrides = entryOf(collapseOverrides, planKey, NO_COLLAPSE_OVERRIDES);
   const handleToggleCollapse = React.useCallback(
     (id, collapsed) => setCollapseOverrides(m => updateEntry(m, planKey, NO_COLLAPSE_OVERRIDES, o => ({ ...o, [id]: !collapsed }))),
@@ -263,10 +266,11 @@ function App() {
     target => setPreview({ key: planKey, target }), [planKey]);
   const closePreview = React.useCallback(() => setPreview(null), []);
   const previewToGit = React.useCallback(path => { setPreview(null); handleOpenFile(path); }, [handleOpenFile]);
-  // The git browser refetches when this count rises; counted only while it
-  // is open, and handed over as a number so streaming frames that finish no
-  // edit leave the memoised browser alone.
+  // The git browser and the files panel refetch when this count rises;
+  // counted only while one is open, and handed over as a number so
+  // streaming frames that finish no edit leave the memoised browser alone.
   const gitEdits = React.useMemo(() => (gitOpen ? _gitFinishedEdits(messages) : 0), [gitOpen, messages]);
+  const filesEdits = React.useMemo(() => (side === "files" ? _gitFinishedEdits(messages) : 0), [side, messages]);
   // Collapse all / Expand all: one toggle per block in this tab, replacing
   // the tab's earlier ones; later blocks follow the modes again.
   const handleCollapseAll = (collapsed) => setCollapseOverrides(m => updateEntry(m, planKey, NO_COLLAPSE_OVERRIDES,
@@ -426,18 +430,30 @@ function App() {
   const browser = useBrowser({
     bridge, activeSessionId: activeProject.id, sessionIds, open: side === "browser", setOpen: setBrowserOpen, tweaks: t, setTweak,
   });
+  // The files panel (app/use-file-comments.jsx): per-tab explain / comment
+  // marks on project files, sent with the next message like the browser's
+  // annotation chips.
+  const files = useFileComments({
+    bridge, tabId: activeProject.id, sessionIds, open: side === "files", setOpen: setFilesOpen,
+    project: activeProject, edits: filesEdits,
+  });
+  const filesOpenAt = files.openAt;
+  const previewToFiles = React.useCallback(
+    (path, range) => { setPreview(null); filesOpenAt({ path, range }); }, [filesOpenAt]);
   // Clicks on links in the agent's markdown: a project file opens the
-  // preview (Ctrl/⌘-click: the git browser); anything else goes on to the
-  // browser panel's localhost handler. Without this a relative link would
-  // navigate the webview, which navigation_guard.rs silently blocks.
+  // preview (Ctrl/⌘-click: the git browser, Alt-click: the files panel);
+  // anything else goes on to the browser panel's localhost handler.
+  // Without this a relative link would navigate the webview, which
+  // navigation_guard.rs silently blocks.
   const browserLinkClick = browser.onChatClick;
   const handleChatLinkClick = React.useCallback(e => {
     const file = _fpLinkClick(e, gitProject);
     if (!file) { browserLinkClick?.(e); return; }
     e.preventDefault();
     if (file.git) handleOpenFile(file.target.path);
+    else if (file.files) filesOpenAt(file.target);
     else handlePreviewFile(file.target);
-  }, [browserLinkClick, gitProject, handleOpenFile, handlePreviewFile]);
+  }, [browserLinkClick, gitProject, handleOpenFile, handlePreviewFile, filesOpenAt]);
   const stageRef = React.useRef(null);
   // A chip click scrolls the panel to the annotated element — but only
   // when the panel is open and still on the page the chip was picked from
@@ -487,25 +503,30 @@ function App() {
   const routeOf = (msg, followUp) => _routeSubmit(data.commands, msg, {
     goalMode: goalUi.mode, followUp, streaming, connected: Boolean(bridge?.isConnected),
   });
-  // The tab's browser annotations go out with a submit like the rest of the
-  // draft: taken at once (chips added since stay for the next message) and
-  // merged after the typed text and images (OMP_BROWSER.mergeIntoMessage:
-  // image cap, page data fenced and neutralised, so the merge never turns a
-  // message into a command). A command takes none: they wait for the next
-  // message. Returns the merge plus the chips taken (`chips`), which a
-  // failed goal start hands back with its draft.
-  const takeBrowserChips = (text, images, route) => {
+  // The tab's browser annotations and file marks go out with a submit like
+  // the rest of the draft: taken at once (those added since stay for the
+  // next message) and merged after the typed text and images
+  // (OMP_BROWSER.mergeIntoMessage: image cap, page data fenced and
+  // neutralised; then OMP_FILE_COMMENTS.mergeIntoMessage: one location
+  // block per mark), so the merge never turns a message into a command. A
+  // command takes none: they wait for the next message. Returns the merge
+  // plus what was taken (`chips`, `marks`), which a failed goal start hands
+  // back with its draft.
+  const takeChips = (text, images, route) => {
     const chips = route.isCmd ? [] : browser.chips;
+    const marks = route.isCmd ? [] : files.marks;
     if (chips.length) browser.takeChips(chips.map(c => c.id));
-    return { ..._mergeBrowserChips(text, images ?? [], chips), chips };
+    if (marks.length) files.takeMarks(marks.map(m => m.id));
+    const merged = _mergeBrowserChips(text, images ?? [], chips);
+    return { ...merged, text: _mergeFileMarks(merged.text, marks), chips, marks };
   };
   const startGoal = (msg, images, route) => {
-    const out = takeBrowserChips(msg, images, route);
-    goalUi.start({ text: msg, images, chips: out.chips }, out);
+    const out = takeChips(msg, images, route);
+    goalUi.start({ text: msg, images, chips: out.chips, marks: out.marks }, out);
   };
   const handleSend = (text, images) => {
     const hasAnnotations = Object.keys(plan.annotations).length > 0;
-    if (!text.trim() && !hasAnnotations && !(images && images.length > 0) && !browser.chips.length) return;
+    if (!text.trim() && !hasAnnotations && !(images && images.length > 0) && !browser.chips.length && !files.marks.length) return;
     let msg = text.trim();
     // A slash command (typed by hand, or inserted by picking a non-desktop
     // entry from the `/` popup or the ⌘K bridge) must reach omp with its
@@ -550,9 +571,9 @@ function App() {
         msg = INTENT_FRAMING(text.trim()).trimEnd();
       }
     }
-    // Browser annotations join the message last, after plan framing, so only
-    // what was typed is framed.
-    const out = takeBrowserChips(msg, images, route);
+    // Browser annotations and file marks join the message last, after plan
+    // framing, so only what was typed is framed.
+    const out = takeChips(msg, images, route);
     if (route.via === "steer") bridge?.steer(out.text, out.images);
     else if (route.via === "prompt") bridge.send(out.text, out.images);
     else setMessages(prev => [...prev, { kind: "user", time: timeNow(), text: out.text, images: out.images }]);
@@ -597,7 +618,7 @@ function App() {
   // after the composer's own trim and can reintroduce leading/trailing
   // whitespace from the raw pasted content. In goal mode the follow-up
   // chord starts the goal too, like Enter (handleSend). The tab's browser
-  // annotations ride along as they do with a send.
+  // annotations and file marks ride along as they do with a send.
   const handleFollowUp = (text, images) => {
     const msg = text.trim();
     const route = routeOf(msg, true);
@@ -605,7 +626,7 @@ function App() {
       startGoal(msg, images, route);
       return;
     }
-    const out = takeBrowserChips(msg, images, route);
+    const out = takeChips(msg, images, route);
     bridge?.followUp(out.text, out.images);
   };
   // Queue strip actions: resolve `true` once omp edited its queue.
@@ -657,11 +678,12 @@ function App() {
   const goalUi = useGoalMode({
     bridge, tabId: planKey, sessionIds, goal, planMode: plan.mode, profileId: activeProfileId,
     runState: activeProject.runState,
-    // The chips go back to the tab they were taken from whatever tab is
-    // shown; the text only into the composer of that tab still shown.
-    onRestoreDraft: ({ text, images, chips }, { tabId, shown }) => {
+    // The chips and marks go back to the tab they were taken from whatever
+    // tab is shown; the text only into the composer of that tab still shown.
+    onRestoreDraft: ({ text, images, chips, marks }, { tabId, shown }) => {
       if (shown) setPromptInsert({ text, images, nonce: Date.now() });
       browser.restoreChips(chips ?? [], tabId);
+      files.restoreMarks(marks ?? [], tabId);
     },
   });
 
@@ -876,6 +898,7 @@ function App() {
     "desktop.chat.expandAll":  () => handleCollapseAll(false),
     "desktop.terminal.toggle": () => terminal.toggle(planKey),
     "desktop.browser.toggle":  () => toggleSide("browser"),
+    "desktop.files.toggle":    () => toggleSide("files"),
   };
 
   // Profile switch applies to the active tab only: its omp process is
@@ -917,11 +940,14 @@ function App() {
 
   // Resizable columns beside the chat (#41): which are shown, and their
   // widths as CSS variables on `.workspace`. Browser full view hides the
-  // chat and the split pane (layout/browser.css): only the sidebar is left.
+  // chat and the split pane (layout/browser.css), files full view the chat,
+  // the split pane and the column's handle (layout/files.css): only the
+  // sidebar is left.
   const workspaceRef = React.useRef(null);
   const browserFull = side === "browser" && browser.fullView;
-  const splitShown = showSplit && !browserFull;
-  const sideRail = side === "tree" ? "tree" : side !== "browser" && showRail ? "rail" : null;
+  const filesFull = side === "files" && files.fullView;
+  const splitShown = showSplit && !browserFull && !filesFull;
+  const sideRail = side === "tree" || side === "files" ? side : side !== "browser" && showRail ? "rail" : null;
   const panes = usePaneWidths({
     tweaks: t, setTweak, workspaceRef,
     open: [showSidebar && "sidebar", splitShown && "split", sideRail].filter(Boolean),
@@ -985,6 +1011,10 @@ function App() {
               annotate: browser.annotate, canAnnotate: browser.state.status === "running", onAnnotate: browser.setAnnotate,
               fullView: browser.fullView, onFullView: browser.setFullView,
             }}
+            files={{
+              open: side === "files", onToggle: () => toggleSide("files"),
+              fullView: files.fullView, onFullView: files.setFullView,
+            }}
             terminal={{ open: _TERM_entryOf(terminal.state, planKey).open, onToggle: () => terminal.toggle(planKey) }}
             onGit={() => setGitOpen({ path: null })}
             approvals={{ cell: approvalCell, onOpen: () => setRulesOpen(true) }}
@@ -1029,7 +1059,7 @@ function App() {
               />
             )}
             {showSidebar && <ResizeHandle className="at-sidebar" {...panes.handle("sidebar")} />}
-            <div ref={stageRef} className={`stage ${side === "browser" ? `with-browser${browserFull ? " browser-full" : ""}` : sideRail ? `with-${sideRail}` : ""}`}>
+            <div ref={stageRef} className={`stage ${side === "browser" ? `with-browser${browserFull ? " browser-full" : ""}` : sideRail ? `with-${sideRail}${filesFull ? " files-full" : ""}` : ""}`}>
               <main className="session" onFocusCapture={prAutomation.onConversationFocus}>
                 {noTab ? (
                   <EmptyWorkspace notes={workspaceNotes} screen={t.startScreen} paused={stab.active} />
@@ -1105,6 +1135,9 @@ function App() {
                     browserChips={browser.chips}
                     onRemoveBrowserChip={browser.removeChip}
                     onBrowserChipClick={handleBrowserChipClick}
+                    fileChips={files.marks}
+                    onRemoveFileChip={files.removeMark}
+                    onFileChipClick={mark => filesOpenAt({ path: mark.path, range: { from: mark.from, to: mark.to } })}
                     submitKey={t.submitKey}
                     pasteCollapseLines={t.pasteCollapseLines}
                   />
@@ -1130,6 +1163,8 @@ function App() {
 
               {side === "browser" ? (
                 <BrowserDock ui={browser} stageRef={stageRef} room={panes.browserRoom} />
+              ) : side === "files" ? (
+                <FilesPanel key={planKey} ui={files} canSendNow={!goalUi.mode} onSendNow={() => handleSend("", [])} onOpenGit={handleOpenFile} />
               ) : side === "tree" ? (
                 <ConversationTree
                   model={convTree.model} currentFile={convTree.currentFile} error={convTree.error}
@@ -1235,7 +1270,7 @@ function App() {
       )}
 
       {preview && preview.key === planKey && (
-        <FilePreview target={preview.target} onClose={closePreview} onOpenGit={previewToGit} />
+        <FilePreview target={preview.target} onClose={closePreview} onOpenGit={previewToGit} onComment={previewToFiles} />
       )}
 
       {rulesOpen && (

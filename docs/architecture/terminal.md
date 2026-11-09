@@ -181,7 +181,7 @@ The panel head shows `shellLabel(status.shell)`, the shell actually running. Set
 
 xterm's focus target is a hidden `<textarea>`, and the global keymap listens on `window` and ignores events with `defaultPrevented`. xterm consumes (and prevents) the keys it handles, so those never reach the keymap; `attachCustomKeyEventHandler` (installed by `createXterm`, `app/terminal-xterm.js`) returns `false` for a keydown that `OMP_KEYMAP.guestShouldBypass` (`app/keymap.js`) accepts, which hands it back to the page. The browser panel's page uses the same function, so both guests leave the same keys to the app. The decision follows the **resolved keymap**, not a fixed list: the chord is normalised with `OMP_KEYMAP.chordFromEvent` like the keymap itself and looked up with `OMP_KEYMAP.lookup`, so a rebinding in Settings → Shortcuts applies inside the terminal too. A chord goes to the app iff it resolves to a `global`-scope action and
 
-- the action is marked `fromGuest` in `KEYMAP_ACTIONS` (`app/keymap.js`): `desktop.terminal.toggle` (the chord that opened the panel also closes it, whatever it is bound to), `desktop.browser.toggle` and `desktop.tab.next` / `desktop.tab.prev`; or
+- the action is marked `fromGuest` in `KEYMAP_ACTIONS` (`app/keymap.js`): `desktop.terminal.toggle` (the chord that opened the panel also closes it, whatever it is bound to), `desktop.browser.toggle`, `desktop.files.toggle` and `desktop.tab.next` / `desktop.tab.prev`; or
 - the chord has the `super` modifier (the macOS ⌘ forms of new/close tab, command bridge, history, sidebar, shortcuts, settings, toggle); or
 - off macOS, it has both `ctrl` and `shift` (`ctrl+shift+p`, `ctrl+shift+pageup`, … — no shell binds these).
 

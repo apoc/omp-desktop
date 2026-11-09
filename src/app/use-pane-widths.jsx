@@ -5,8 +5,8 @@
    the px of a column that sizes itself (the browser panel's minimum),
    `workspaceRef` the `.workspace` row the sidebar and the stage share.
    `style` carries the widths as CSS variables (`--w-sidebar`, `--w-split`,
-   `--w-rail`, `--w-tree`; layout/stage.css, sidebar.css, tree.css,
-   browser.css), `handle(name)` the ResizeHandle props of one pane, and
+   `--w-rail`, `--w-tree`, `--w-files`; layout/stage.css, sidebar.css,
+   tree.css, files.css, browser.css), `handle(name)` the ResizeHandle props of one pane, and
    `reset()` sets every pane (the browser panel's too) back to its default,
    `browserRoom` is the stage less the split pane (the browser dock's room).
    A drag shows its width locally and saves the tweak once, on release
@@ -24,6 +24,7 @@ const _PW_UI = {
   split: { tweak: "splitWidth", label: "resize subagent pane", edge: "left" },
   rail: { tweak: "railWidth", label: "resize ambient rail", edge: "left" },
   tree: { tweak: "treeWidth", label: "resize conversation tree", edge: "left" },
+  files: { tweak: "filesWidth", label: "resize files panel", edge: "left" },
 };
 const _PW_RESET = { browserWidth: 0 };
 for (const { tweak } of Object.values(_PW_UI)) _PW_RESET[tweak] = 0;

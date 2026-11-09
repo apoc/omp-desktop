@@ -1,7 +1,7 @@
 /* ═════════════════════════════════════════════════════════════════════
    design/settings/rows-layout.jsx — custom Settings rows of Layout and
    Rail (window.OMP_SETTINGS_ROWS):
-     widths   the saved column widths (sidebar/rail/tree/split/browser,
+     widths   the saved column widths (sidebar/rail/tree/files/split/browser,
               `default` while a column has none) and "Reset all widths"
               (usePaneWidths' `reset`, the browser panel's width included)
      widgets  one switch per enabled widget plugin (`widget:<id>` tweaks via

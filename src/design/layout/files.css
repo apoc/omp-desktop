@@ -1,0 +1,125 @@
+/* Files panel — design/files/ (docs/architecture/file-comments.md): the git
+   browser's files pane beside the file preview's rows, with explain and
+   comment marks. Explain is cyan, comment lilac, a pick amber. ────────── */
+
+/* ── Stage: the panel takes the side column ─────────────────────────── */
+.stage.with-files { grid-template-columns: minmax(0, 1fr) var(--w-files, 760px); }
+.window.is-split .stage.with-files { grid-template-columns: minmax(0, 1fr) var(--w-split, 320px) var(--w-files, 760px); }
+/* Full view: the panel is the only column. */
+.stage.with-files.files-full,
+.window.is-split .stage.with-files.files-full { grid-template-columns: minmax(0, 1fr); }
+.stage.files-full > :not(.fc-panel):not(.st-host) { display: none; }
+
+.fc-panel {
+  position: relative; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column;
+  background: var(--bg-window);
+  border-left: 1px solid var(--line);
+}
+.fc-split { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(180px, 32%) minmax(0, 1fr); }
+.fc-split.no-tree { grid-template-columns: minmax(0, 1fr); }
+.fc-split > .gitb-files { border-right: 1px solid var(--line); }
+.fc-view { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.fc-spacer { flex: 1; }
+
+/* ── Tree additions (git/file-tree.jsx's optional props) ────────────── */
+.gitb-commented + .gitb-toggle { margin-left: 0; }
+.fc-split .gitb-pane-head { overflow: hidden; }
+.fc-split .gitb-toggle { white-space: nowrap; flex: none; }
+.gitb-toggle.gitb-commented { color: var(--lilac); }
+.gitb-toggle.gitb-commented.on { background: color-mix(in oklab, var(--lilac) 14%, transparent); }
+.gitb-badge {
+  flex: none; padding: 0 5px; border-radius: 7px;
+  font-size: 10px; line-height: 14px; font-weight: 600;
+  color: var(--lilac); background: color-mix(in oklab, var(--lilac) 20%, transparent);
+}
+
+/* ── File bar ───────────────────────────────────────────────────────── */
+.fc-bar {
+  flex: none; display: flex; align-items: center; gap: 4px;
+  height: 36px; padding: 0 6px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--d-text-xs);
+}
+.fc-bar .chip { white-space: nowrap; }
+.fc-tree-btn.on { color: var(--accent); }
+.fc-crumb { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-3); padding: 0 4px; }
+.fc-crumb b { color: var(--fg); font-weight: 500; }
+
+/* ── Code: the preview's rows plus a marker column ──────────────────── */
+.fc-body { flex: 1; min-height: 0; overflow: auto; background: var(--bg-input); }
+.fc-lines { position: relative; }
+.fc-lines .fp-line { grid-template-columns: 22px 48px 1fr; }
+.fc-lines .fp-ln { cursor: pointer; }
+.fc-mark { display: flex; align-items: center; justify-content: center; user-select: none; cursor: pointer; }
+.fc-num {
+  min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px;
+  font: 600 10px/15px var(--font-mono); text-align: center;
+}
+.fc-num.comment { background: var(--lilac); color: #140b2e; }
+.fc-num.explain { background: var(--cyan); color: #06232a; }
+.fp-line.has-comment { background: color-mix(in oklab, var(--lilac) 9%, transparent); }
+.fp-line.has-comment .fp-ln { color: var(--lilac); box-shadow: inset -2px 0 0 color-mix(in oklab, var(--lilac) 60%, transparent); }
+.fp-line.has-explain { background: color-mix(in oklab, var(--cyan) 8%, transparent); }
+.fp-line.has-explain .fp-ln { color: var(--cyan); box-shadow: inset -2px 0 0 color-mix(in oklab, var(--cyan) 60%, transparent); }
+.fp-line.is-picking { background: color-mix(in oklab, var(--amber) 13%, transparent); }
+.fp-line.is-picking .fp-ln { color: var(--amber); box-shadow: inset -2px 0 0 var(--amber); }
+
+/* The pick's popup: the dropdown chrome (chrome.css .browser-popover). */
+.fc-pop {
+  position: absolute; z-index: 5;
+  display: flex; gap: 2px; padding: 3px;
+  background: var(--bg-elevated); border: 1px solid var(--line-bright); border-radius: var(--r-2);
+  box-shadow: var(--shadow-pop);
+  font-family: var(--font-sans); white-space: nowrap;
+}
+.fc-pop .btn { height: 22px; font-size: var(--d-text-xs); }
+.fc-pop .btn.fc-pop-explain { color: var(--cyan); }
+
+/* A mark's card under its last line; sans text inside the mono rows. */
+.fc-card {
+  margin: 4px 16px 6px 70px; padding: 6px 8px 7px 10px; max-width: 560px;
+  border-radius: 6px; white-space: normal; font-family: var(--font-sans);
+  background: color-mix(in oklab, var(--lilac) 10%, var(--bg-elevated));
+  border: 1px solid color-mix(in oklab, var(--lilac) 28%, var(--line));
+}
+.fc-card.explain {
+  display: flex; align-items: center; gap: 6px; width: max-content; max-width: 560px; padding: 3px 4px 3px 10px;
+  background: color-mix(in oklab, var(--cyan) 9%, var(--bg-elevated));
+  border-color: color-mix(in oklab, var(--cyan) 30%, var(--line));
+}
+.fc-card-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.fc-card-ref { flex: none; font-size: var(--d-text-xs); color: var(--lilac); }
+.fc-card.explain .fc-card-ref { color: var(--cyan); }
+.fc-card-sel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--d-text-xs); color: var(--fg-3); max-width: 260px; }
+.fc-card-kind { display: inline-flex; align-items: center; gap: 4px; font-size: var(--d-text-xs); color: var(--fg-2); }
+.fc-card-stale { flex: none; padding: 0 6px; font-size: 10px; }
+.fc-card-btn { height: 20px; padding: 0 5px; }
+.fc-card-text { margin-top: 3px; font-size: var(--d-text-sm); color: var(--fg); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* The comment form: the plan comment form (overlays.css), placed. */
+.fc-form-wrap { margin: 4px 16px 8px 70px; max-width: 560px; white-space: normal; font-family: var(--font-sans); }
+.fc-form-wrap .plan-comment-form { margin-top: 0; }
+.fc-form-wrap .kbd { margin-left: 2px; }
+/* A text selection across marks takes only code: cards, the form and the
+   popup are out of it (they sit between the rows), over `.selectable *`. */
+.fc-lines .fc-card, .fc-lines .fc-card *, .fc-lines .fc-form-wrap, .fc-lines .fc-form-wrap *,
+.fc-lines .fc-pop, .fc-lines .fc-pop *, .fc-lines .fc-mark, .fc-lines .fc-mark * { user-select: none; }
+/* Focusable only so a pick's Esc is the panel's: no ring. */
+.fc-lines:focus { outline: none; }
+.fc-lines .fc-form-wrap textarea { user-select: text; }
+
+/* ── Footer ─────────────────────────────────────────────────────────── */
+.fc-foot {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-top: 1px solid var(--line);
+  font-size: var(--d-text-xs); color: var(--fg-3);
+}
+.fc-foot-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fc-foot-text b { color: var(--fg-2); font-weight: 500; }
+.fc-foot .btn { height: 24px; white-space: nowrap; }
+.fc-foot .btn:disabled { opacity: .4; cursor: default; }
+.fc-foot .btn:disabled:hover { background: transparent; color: var(--fg-3); }
+
+/* The file preview's way in (chat/file-preview.jsx). */
+.fp-head .btn.fp-comment { color: var(--lilac); border-color: color-mix(in oklab, var(--lilac) 40%, var(--line)); }

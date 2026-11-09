@@ -17,6 +17,9 @@ const _CMP_SEND_HINTS = {
   "enter":      { send: "↵", newline: "⇧↵" },
   "ctrl+enter": { send: window.OMP_KEYMAP?.detectMac?.() ? "⌘↵" : "Ctrl+↵", newline: "↵" },
 };
+// The files panel's marks as composer chips (app/file-comments.js).
+const _CMP_fileIcon = (mark) => (mark.kind === "explain" ? "sparkle" : "edit");
+const _CMP_filePath = (mark) => window.OMP_FILE_COMMENTS.location(mark);
 
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` (display
 // logic lives there so toolbar.jsx's ⌘K/history hints can reuse it too,
@@ -36,7 +39,7 @@ function hintKeyFor(actionId, fallback) {
 // ── The composer (input + plan/steer modes + send) ────────────────────
 // `submitKey` ("enter" | "ctrl+enter") and `pasteCollapseLines` come from the
 // tweaks (Settings › Composer); the defaults match TWEAK_DEFAULTS.
-function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, planBlocked = "", goalMode = false, goalTint = false, onToggleGoal, goalBlocked = "", goalStrip = null, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued, onSendQueuedNow, browserChips = [], onRemoveBrowserChip, onBrowserChipClick, submitKey = "enter", pasteCollapseLines = 5, liveVoice, liveError, onLiveAction, codexLogin = null, voiceSpectrum = null, dictation, dictationError, onDictationAction, dictationCompleted, onAckDictation }) {
+function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, planBlocked = "", goalMode = false, goalTint = false, onToggleGoal, goalBlocked = "", goalStrip = null, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued, onSendQueuedNow, browserChips = [], onRemoveBrowserChip, onBrowserChipClick, fileChips = [], onRemoveFileChip, onFileChipClick, submitKey = "enter", pasteCollapseLines = 5, liveVoice, liveError, onLiveAction, codexLogin = null, voiceSpectrum = null, dictation, dictationError, onDictationAction, dictationCompleted, onAckDictation }) {
   // Drafts are per tab (issue #28). The composer stays mounted across tab
   // switches and keeps one draft per session id (app/session-ui.js
   // DRAFT_IDLE): text, pending image attachments (sent alongside the next
@@ -51,11 +54,11 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   const draft = draftEntryOf(drafts, sessionId, DRAFT_IDLE);
   const { text, attachments, pendingImages } = draft;
   // What the draft can send. A goal needs its objective as text; a steer
-  // (mid-turn) can be images or browser annotation chips alone — app-live
-  // merges the chips into the message; a plain send can also be plan
-  // annotations alone.
+  // (mid-turn) can be images, browser annotation chips or file marks alone
+  // — app-live merges the chips and marks into the message; a plain send
+  // can also be plan annotations alone.
   const hasText = !!text.trim();
-  const steerable = goalMode ? hasText : hasText || attachments.length > 0 || browserChips.length > 0;
+  const steerable = goalMode ? hasText : hasText || attachments.length > 0 || browserChips.length > 0 || fileChips.length > 0;
   const sendable = steerable || (!goalMode && planMode && annotationCount > 0);
   const updateDraft = (id, fn) => setDrafts(m => updateDraftEntry(m, id, DRAFT_IDLE, fn));
   // Any text edit ends a prompt-history recall; only the recall step itself
@@ -647,6 +650,15 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
         dropped={window.OMP_BROWSER.droppedScreenshots(attachments.length, browserChips)}
         onRemove={onRemoveBrowserChip}
         onChipClick={onBrowserChipClick} />
+
+      <BrowserChips
+        chips={fileChips}
+        onRemove={onRemoveFileChip}
+        onChipClick={onFileChipClick}
+        iconOf={_CMP_fileIcon}
+        labelOf={mark => window.OMP_FILE_COMMENTS.chipLabel(mark, OMP_TR("explain"))}
+        titleOf={_CMP_filePath}
+        removeLabel={OMP_TR("remove comment")} />
 
       {attachments.length > 0 && (
         <div className="attach-strip">

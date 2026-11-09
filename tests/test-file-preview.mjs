@@ -117,15 +117,17 @@ check("inProject: a root of / holds every absolute path", () => {
   assert.equal(P.inProject("/etc/hosts", "/"), true);
 });
 
-check("linkClick: a primary click on an in-project file link, Ctrl/⌘ for git", () => {
+check("linkClick: a primary click on an in-project file link, Ctrl/⌘ for git, Alt for the files panel", () => {
   const click = (href, extra = {}) => ({
     button: 0, defaultPrevented: false,
     target: { closest: (sel) => (sel === ".md-content a[href]" && href != null ? { getAttribute: () => href } : null) },
     ...extra,
   });
-  assert.deepEqual(P.linkClick(click("src/a.js#L3"), "/p"), { target: { path: "src/a.js", range: { from: 3, to: 3 } }, git: false });
+  assert.deepEqual(P.linkClick(click("src/a.js#L3"), "/p"), { target: { path: "src/a.js", range: { from: 3, to: 3 } }, git: false, files: false });
   assert.equal(P.linkClick(click("src/a.js", { ctrlKey: true }), "/p").git, true);
   assert.equal(P.linkClick(click("src/a.js", { metaKey: true }), "/p").git, true);
+  assert.equal(P.linkClick(click("src/a.js", { altKey: true }), "/p").files, true);
+  assert.equal(P.linkClick(click("src/a.js", { altKey: true, ctrlKey: true }), "/p").files, false, "Ctrl wins: the git browser");
   assert.equal(P.linkClick(click("src/a.js"), null), null, "a tab without a folder");
   assert.equal(P.linkClick(click("../x.js"), "/p"), null, "outside the project");
   assert.equal(P.linkClick(click("https://x.dev/"), "/p"), null, "a web link goes on");

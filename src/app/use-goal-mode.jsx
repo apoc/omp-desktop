@@ -8,10 +8,10 @@
    `goal` is the active tab's `{known, goal}` from the bridge snapshot;
    `runState` its run state (app/turn-status.js). `onRestoreDraft(draft,
    { tabId, shown })` hands back an objective omp refused (`{ text, images,
-   chips }`, as `start` got it) to the tab it was typed in: `shown` says
-   whether that tab is still the one on screen, so its text can go back into
-   the composer; the chips (taken from that tab's browser) go back to it
-   either way. */
+   chips, marks }`, as `start` got it) to the tab it was typed in: `shown`
+   says whether that tab is still the one on screen, so its text can go back
+   into the composer; the chips (taken from that tab's browser) and the file
+   marks (its files panel) go back to it either way. */
 
 const { GoalStrip: _UG_GoalStrip } = window;
 const { entryOf: _UG_entryOf, updateEntry: _UG_updateEntry, pruneEntries: _UG_pruneEntries } = window.OMP_SESSION_UI;
@@ -91,10 +91,10 @@ function useGoalMode({ bridge, tabId, sessionIds, goal, planMode, profileId, run
    *  omp does not start on its own, the first prompt (OMP_BRIDGE.goalStart).
    *  Leaves goal mode on success; on a refusal keeps it, shows omp's
    *  reason in the strip and hands the draft back. `typed` is the draft as
-   *  the user wrote it (`{ text, images, chips? }`): `text` becomes the
-   *  goal's objective. `out` is what the first prompt delivers (`{ text,
+   *  the user wrote it (`{ text, images, chips?, marks? }`): `text` becomes
+   *  the goal's objective. `out` is what the first prompt delivers (`{ text,
    *  images }`: the typed text and images with the tab's browser
-   *  annotations merged in); it defaults to `typed`. */
+   *  annotations and file marks merged in); it defaults to `typed`. */
   const start = async (typed, out = typed) => {
     const id = tabId;
     const budget = draft.budget;

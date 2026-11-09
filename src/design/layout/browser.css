@@ -170,7 +170,7 @@
 /* Full view: the panel is the only column. */
 .stage.with-browser.browser-full,
 .window.is-split .stage.with-browser.browser-full { grid-template-columns: minmax(0, 1fr); }
-.stage.browser-full > :not(.browser-dock) { display: none; }
+.stage.browser-full > :not(.browser-dock):not(.st-host) { display: none; }
 .browser-dock { position: relative; display: flex; min-width: 0; min-height: 0; }
 .browser-dock > .browser-panel { flex: 1; }
 
