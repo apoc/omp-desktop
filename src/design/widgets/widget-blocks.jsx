@@ -160,6 +160,7 @@ function WidgetBlock({ block, onInsert, insertCfg }) {
 // plugins snapshot (a `widgets_state` refetch gives `insertCfg` a new
 // identity). `onInsert(text, action)`: `action` from insertAction.
 const WidgetBlocks = React.memo(function WidgetBlocks({ blocks, onInsert, insertCfg }) {
+  window.OMP_I18N.useLocale();
   return <>{blocks.map((b, i) => <WidgetBlock key={i} block={b} onInsert={onInsert} insertCfg={insertCfg} />)}</>;
 });
 

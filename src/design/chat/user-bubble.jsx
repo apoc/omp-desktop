@@ -2,6 +2,7 @@
 const { ImageThumbs: _UB_ImageThumbs } = window;
 
 function UserBubble({ msg, idx, highlighted }) {
+  window.OMP_I18N.useLocale();
   return (
     <div className={`row user fade-up${highlighted ? " mm-hot" : ""}`} data-msg-idx={idx}>
       <div className="user-bubble selectable">

@@ -56,6 +56,12 @@
 
   let requested = "auto"; // "auto" or the code the setting asked for
   let locale = "en";      // resolved: a registered code, or "en"
+  const listeners = new Set();
+  const subscribe = (listener) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  };
+  const getLocale = () => locale;
 
   /** The locale `request` would show ("auto" follows the OS language). */
   function resolve(request) {
@@ -128,6 +134,9 @@
     locale = next;
     const doc = window.document;
     if (doc && doc.documentElement) doc.documentElement.lang = next;
+    if (changed) {
+      for (const listener of listeners) listener();
+    }
     if (changed && typeof window.dispatchEvent === "function") {
       try {
         window.dispatchEvent(new CustomEvent("i18nchange", { detail: next }));
@@ -136,6 +145,13 @@
       }
     }
     return next;
+  }
+
+  /** React subscription for memoized components: a component whose props do
+   *  not change still has to repaint when the language does, so components
+   *  that render OMP_TR text call OMP_I18N.useLocale(). */
+  function useLocale() {
+    return React.useSyncExternalStore(subscribe, getLocale);
   }
 
   function storedLocale() {
@@ -150,7 +166,7 @@
   }
 
   const api = {
-    t, plural, add, set, resolve,
+    t, plural, add, set, resolve, useLocale,
     get locale() { return locale; },
     get requested() { return requested; },
     get available() { return ["en", ...CODES.filter(code => code !== "en")]; },

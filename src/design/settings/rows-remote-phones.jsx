@@ -92,7 +92,7 @@ function _SRR_Device({ device, onRename, onRevoke }) {
   return (
     <div className="st-rem-dev">
       <_SRR_Field value={device.name} label={OMP_TR("Device name")} mono={false} width={220} onCommit={text => text.trim() && onRename(device.id, text.trim())} />
-      <span className="st-rem-sub">{device.connected ? "connected" : "offline"}{device.pushSubscribed ? " · push" : ""}</span>
+      <span className="st-rem-sub">{device.connected ? OMP_TR("connected") : OMP_TR("offline")}{device.pushSubscribed ? ` · ${OMP_TR("push")}` : ""}</span>
       <div className="st-btns" style={{ marginLeft: "auto" }}>
         {asking ? (
           <>

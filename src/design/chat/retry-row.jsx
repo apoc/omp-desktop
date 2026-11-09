@@ -19,6 +19,7 @@ function _RR_span(ms) {
 }
 
 const RetryRow = React.memo(function RetryRow({ msg, idx, highlighted, onStop }) {
+  window.OMP_I18N.useLocale();
   const [now, setNow] = React.useState(() => Date.now());
   React.useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);

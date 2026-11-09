@@ -29,7 +29,7 @@ function ApprovalModeSeg({ label, options, value, disabled, onPick }) {
           disabled={disabled}
           onClick={() => { if (o.value !== value) onPick(o.value); }}
         >
-          {o.label}
+          {OMP_TR(o.label)}
         </button>
       ))}
     </div>
@@ -139,7 +139,7 @@ function ApprovalModeSection({ view, activeProject, sessions, query }) {
       ))}
       {shown && (
         <div className={`mode-note${shown.warn ? " warn" : ""}`}>
-          {path ? "this project: " : "new tabs: "}<b>{shown.label}</b> — {shown.blurb}
+          {path ? OMP_TR("this project:") : OMP_TR("new tabs:")}<b>{OMP_TR(shown.label)}</b> — {OMP_TR(shown.blurb)}
         </div>
       )}
       <ApprovalModeApplyLine result={result} busy={busy} hasProject={projects.length > 0} sessions={sessions ?? []} />

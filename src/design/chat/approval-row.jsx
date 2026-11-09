@@ -10,6 +10,7 @@ const { Icon: _AR_Icon, TOOL_META: _AR_TOOL_META } = window;
 const { rowView: _AR_rowView } = window.OMP_APPROVAL;
 
 const ApprovalRow = React.memo(function ApprovalRow({ msg, idx, highlighted }) {
+  window.OMP_I18N.useLocale();
   const [open, setOpen] = React.useState(false);
   const { color, icon, label } = _AR_TOOL_META.approval;
   const view = _AR_rowView(msg);

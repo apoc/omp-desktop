@@ -616,7 +616,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
               onMouseDown={(e) => { e.preventDefault(); execCmd(c); }}>
               <span className="slash-glyph">{c.icon}</span>
               <span className="slash-name mono" style={{ color: "var(--accent)" }}>/{c.name}</span>
-              <span className="slash-hint" style={{ color: "var(--fg-3)" }} title={OMP_TR(c.hint)}>{OMP_TR(c.hint)}</span>
+              <span className="slash-hint" style={{ color: "var(--fg-3)" }} title={isDesktop(c) ? OMP_TR(c.hint) : c.hint}>{isDesktop(c) ? OMP_TR(c.hint) : c.hint}</span>
               <span className="chip muted" style={{ marginLeft: "auto", flex: "none" }}>{OMP_TR(c.group)}</span>
             </button>
           ))}
@@ -998,7 +998,7 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, pro
                     }}>
                     <span className="bridge-glyph">{c.icon}</span>
                     <span className="bridge-cmd-name mono" style={{ color: "var(--accent)" }}>/{c.name}</span>
-                    <span className="bridge-cmd-hint" style={{ color: "var(--fg-3)" }} title={OMP_TR(c.hint)}>{OMP_TR(c.hint)}</span>
+                    <span className="bridge-cmd-hint" style={{ color: "var(--fg-3)" }} title={isDesktop(c) ? OMP_TR(c.hint) : c.hint}>{isDesktop(c) ? OMP_TR(c.hint) : c.hint}</span>
                     {isModel && (
                       <span className="mono" style={{ color: "var(--fg-4)", marginLeft: "auto" }}>
                         {activeModelName}

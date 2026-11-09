@@ -25,6 +25,7 @@ function _SKE_labelFor(id) {
 function _SKE_matches(action, lq) {
   if (!lq) return true;
   if (action.label.toLowerCase().includes(lq)) return true;
+  if (OMP_TR(action.label).toLowerCase().includes(lq)) return true;
   if (action.id.toLowerCase().includes(lq)) return true;
   return window.OMP_KEYMAP.keysFor(action.id).some(c => _SKE_fmt(c).toLowerCase().includes(lq));
 }

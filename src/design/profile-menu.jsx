@@ -17,6 +17,7 @@ function ProfileMenu({
   profiles = [], activeId = DEFAULT_PROFILE_ID, startupId = DEFAULT_PROFILE_ID,
   onSelect, onCreate, onRename, onDelete, onSetStartup,
 }) {
+  window.OMP_I18N.useLocale();
   const [open,  setOpen]  = React.useState(false);
   const [mode,  setMode]  = React.useState(null);   // null | "create" | "rename"
   const [draft, setDraft] = React.useState("");

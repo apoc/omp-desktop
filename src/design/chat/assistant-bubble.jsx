@@ -85,6 +85,7 @@ function _AB_Retries({ retries: r }) {
 // `thoughtCollapsed`: true/false when the thinking has a toggle, undefined
 // when it is too short to collapse (app/chat-collapse.js).
 function AssistantBubble({ msg, idx, highlighted, annotable, annotations, onAnnotate, thoughtCollapsed, onToggleCollapse }) {
+  window.OMP_I18N.useLocale();
   // A failed request has no text of its own; its copy is the provider's error.
   const copyText = msg.streaming ? "" : (_messageText(msg) || msg.failure?.raw || "");
   return (

@@ -99,6 +99,7 @@ function _SP_Group({ name, src, rows, ctx, query }) {
 /** `ctx.active === false` (page kept mounted behind a project tab, keeping
  *  its search and scroll): keys are left alone. */
 function SettingsPage({ ctx }) {
+  window.OMP_I18N.useLocale();
   const S = window.OMP_SETTINGS;
   const { t } = ctx;
   const active = ctx.active !== false;

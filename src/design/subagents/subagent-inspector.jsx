@@ -111,6 +111,7 @@ const saBlocks = content => (typeof content === "string" ? [{ type: "text", text
 // results on every tick is pure waste. `onRefresh` is recreated per render
 // but always loads the same agent (the inspector is keyed by agent id).
 const SaTranscript = React.memo(function SaTranscript({ transcript, onRefresh }) {
+  window.OMP_I18N.useLocale();
   const messages = transcript?.messages ?? [];
   const loading = !transcript || transcript.status === "loading";
   if (loading && messages.length === 0) {
@@ -121,7 +122,7 @@ const SaTranscript = React.memo(function SaTranscript({ transcript, onRefresh })
       <div className="sa-block-k">
         {messages.length} {OMP_TR("messages")}
         <button className="btn ghost" style={{ marginLeft: "auto", height: 18, padding: "0 6px" }} onClick={onRefresh} disabled={loading}>
-          <_SAI_Icon name="refresh" size={10} /> {loading ? "loading…" : "refresh"}
+          <_SAI_Icon name="refresh" size={10} /> {loading ? OMP_TR("loading…") : OMP_TR("refresh")}
         </button>
       </div>
       {transcript.status === "error" && <div className="sa-empty" style={{ color: "var(--rose)" }}>{transcript.error}</div>}

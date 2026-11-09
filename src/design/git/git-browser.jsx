@@ -11,6 +11,7 @@ const { Icon: _GB_Icon, GitFileTree: _GB_Tree, GitFileView: _GB_View, GitHistory
 // Memoised: App re-renders on every streamed frame, and none of them touch
 // these props (`edits` is a count, not the transcript).
 const GitBrowser = React.memo(function GitBrowser({ bridge, onClose, initialPath, branch, edits }) {
+  window.OMP_I18N.useLocale();
   const g = window.useGitBrowser({ bridge, initialPath, branch, edits });
   const rootRef = React.useRef(null);
 

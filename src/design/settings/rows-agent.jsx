@@ -45,7 +45,7 @@ function _SRA_GoalContinue({ row, ctx, query }) {
   const profileId = ctx.goal?.profileId ?? null;
   const cont = window.useGoalContinuation(ctx.bridge, profileId, true);
   const name = profileId ? _SRA_profileName(ctx, profileId) : null;
-  const scope = name ? ` Applies to profile “${name}” (omp's config); its running tabs pick it up without a restart.` : "";
+  const scope = name ? OMP_TR(" Applies to profile “{name}” (omp's config); its running tabs pick it up without a restart.", { name }) : "";
   let control;
   if (cont.value !== null) {
     control = <Toggle value={cont.value} label={row.label} onChange={v => { if (!cont.busy) cont.set(v); }} />;

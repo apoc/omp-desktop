@@ -19,9 +19,8 @@ function PrChecks({ checks, onOpen }) {
   const ciLabel = ci.state === "queued" ? OMP_TR("{n} queued", { n: ci.count.queued })
     : ci.state === "failure" ? OMP_TR("{n} failed", { n: ci.count.failure })
     : OMP_TR(ci.label);
-  const spoken = `${ci.done} of ${ci.total} checks finished` +
-    (ci.count.failure ? `, ${ci.count.failure} failed` : "") +
-    (ci.count.running ? `, ${ci.count.running} running` : "");
+  const spoken = OMP_TR("{done} of {total} checks finished, {failed} failed, {running} running",
+    { done: ci.done, total: ci.total, failed: ci.count.failure, running: ci.count.running });
   return (
     <div className={`pr-ci is-${ci.state}`}>
       <button

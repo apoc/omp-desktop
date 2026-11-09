@@ -13,6 +13,7 @@ const { approvalInfo: _AskApprovalInfo } = window.OMP_APPROVAL;
 // `submitKey` ("enter" | "ctrl+enter", the tweak) is the editor textarea's
 // send chord (constants.js isSubmitKey); the single-line input keeps Enter.
 function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm, onCancelAsk, onGrant, hasProjectPath, submitKey = "enter" }) {
+  window.OMP_I18N.useLocale();
   const [draft, setDraft] = React.useState(msg.method === "editor" ? (msg.prefill ?? "") : "");
   const done = msg.answered || msg.cancelled;
   const method = msg.method ?? "select";

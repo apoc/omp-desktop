@@ -185,6 +185,7 @@ function treeTags(row, model, now, since, currentFile, onOpenTip) {
 
 // Memoized: the pane re-renders with App on every bridge update.
 const TreeRow = React.memo(function TreeRow({ row, model, now, since, selected, currentFile, onSelect, onOpenTip }) {
+  window.OMP_I18N.useLocale();
   const tags = treeTags(row, model, now, since, currentFile, onOpenTip);
   const height = tags.length ? TREE_ROW_H_TAGGED : TREE_ROW_H;
   return (
@@ -204,6 +205,7 @@ const TreeRow = React.memo(function TreeRow({ row, model, now, since, selected, 
 });
 
 const TreeCompaction = React.memo(function TreeCompaction({ row, now }) {
+  window.OMP_I18N.useLocale();
   return (
     <div className="tree-compaction">
       <span>{OMP_TR("context compacted ·")} {TreeFmt.when(row.ts, now)}</span>

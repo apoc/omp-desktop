@@ -93,8 +93,9 @@ function UpdateModal({ updater, busyTabs }) {
               )}
               {update.canInstall && busyTabs > 0 && !inFlight && (
                 <div className="update-hint mono">
-                  {busyTabs === 1 ? "1 tab is" : `${busyTabs} tabs are`} {OMP_TR("still working — restarting interrupts")}
-                  {busyTabs === 1 ? " it" : " them"} {OMP_TR("(unfinished turns and background jobs are lost).")}
+                  {busyTabs === 1
+                    ? OMP_TR("1 tab is still working — restarting interrupts it (unfinished turns and background jobs are lost).")
+                    : OMP_TR("{n} tabs are still working — restarting interrupts them (unfinished turns and background jobs are lost).", { n: busyTabs })}
                 </div>
               )}
               {inFlight && (

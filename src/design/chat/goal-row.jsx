@@ -10,6 +10,7 @@ const { rowView: _GR_rowView } = window.OMP_GOAL;
 const _GR_COLORS = { active: _GR_TOOL_META.goal.color, paused: "var(--fg-3)", limit: "var(--amber)", done: "var(--lime)" };
 
 const GoalRow = React.memo(function GoalRow({ msg, idx, highlighted }) {
+  window.OMP_I18N.useLocale();
   const view = _GR_rowView(msg);
   const color = _GR_COLORS[view.tone] ?? _GR_COLORS.paused;
   if (msg.event === "continue") {

@@ -194,6 +194,7 @@ function TaskPanel({ subagents, onInspect }) {
 // too short to collapse (app/chat-collapse.js). Collapsed, the body keeps a
 // few lines in view: bash its last ones, everything else its first.
 function ToolCard({ msg, idx, highlighted, onInspectSubagent, onOpenFile, onPreviewFile, projectRoot, collapsed, onToggleCollapse }) {
+  window.OMP_I18N.useLocale();
   const meta    = _TC_TOOL_META[msg.tool] || { color: "var(--fg-3)", icon: "circle", label: msg.tool };
   const running = msg.status === "running";
   const bashLines = collapsed && msg.output ? _TC_bashPreview(msg.output) : msg.output;

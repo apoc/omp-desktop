@@ -24,6 +24,7 @@ function _BM_place(trigger) {
 // still opens, but no row switches, as the switch would change the files
 // under it.
 function BranchMenu({ branch, bridge, locked = false }) {
+  window.OMP_I18N.useLocale();
   // Where the open menu sits (placed once, when it opens); null = closed.
   const [place, setPlace] = React.useState(null);
   const open = place !== null;

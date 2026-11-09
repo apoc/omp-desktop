@@ -23,7 +23,7 @@ function TreeSummary({ model }) {
         <div>{OMP_TR("The provider reports no cache lifetime, so cache status and prices are unknown.")}</div>
       ) : (<>
         <div>
-          <b className="lime">{c.warm + c.expiring}</b> {OMP_TR("of")} {c.total} {OMP_TR("prompts can be re-asked at cache-read price")}
+          {OMP_TR("{warm} of {total} prompts can be re-asked at cache-read price", { warm: c.warm + c.expiring, total: c.total })}
           {c.partial > 0 && <>, <b className="cyan">{c.partial}</b> {OMP_TR("partly cached")}</>}.
         </div>
         <div className="tree-legend mono">

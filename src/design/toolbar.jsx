@@ -43,10 +43,12 @@ function ApprovalModeButton({ cell, onClick }) {
   const targetColor = cell.warn ? "var(--amber)" : undefined;
   return (
     <ToolButton icon={cell.warn ? "warn" : "check"} color={targetColor} onClick={onClick}
-      title={cell.pending ? `approvals — switches to ${cell.target} when the agent finishes its turn` : "approvals"}>
+      title={cell.pending
+        ? OMP_TR("approvals — switches to {target} when the agent finishes its turn", { target: OMP_TR(cell.target) })
+        : OMP_TR("approvals")}>
       <span className="tb-end-label tb-mode" style={{ color: targetColor }}>
-        {cell.pending && <span style={{ color: "var(--fg-4)" }}>{cell.running} ⇢ </span>}
-        {cell.target}
+        {cell.pending && <span style={{ color: "var(--fg-4)" }}>{OMP_TR(cell.running)} ⇢ </span>}
+        {OMP_TR(cell.target)}
       </span>
     </ToolButton>
   );

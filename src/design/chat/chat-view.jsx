@@ -23,6 +23,7 @@ const _CV_AssistantBubble_M = React.memo(_CV_AssistantBubble);
 const _CV_AskBubble_M       = React.memo(_CV_AskBubble);
 
 const CompactRow = React.memo(function CompactRow({ msg }) {
+  window.OMP_I18N.useLocale();
   const [open, setOpen] = React.useState(false);
   const pending  = msg.status === "pending";
   const error    = msg.status === "error";
@@ -84,6 +85,7 @@ const CompactRow = React.memo(function CompactRow({ msg }) {
 // result woke it for, so the job is named above it. Live-only, like tool
 // cards — get_messages' merge keeps it in place.
 const JobRow = React.memo(function JobRow({ msg, idx, highlighted }) {
+  window.OMP_I18N.useLocale();
   const { color, icon, label } = _CV_TOOL_META.job;
   return (
     <div className={`row tool fade-up${highlighted ? " mm-hot" : ""}`} data-msg-idx={idx}>
