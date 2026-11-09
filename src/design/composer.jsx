@@ -750,13 +750,13 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
         <ThinkingMenu key={sessionId} model={currentModel} level={thinking}
           cycleHint={cycleThinkingHint} onLoad={onLoadThinkingLevels} onSet={onSetThinking} />
         <button className={`composer-pill ${planMode ? "on" : ""}`} onClick={onTogglePlan}
-          disabled={!!planBlocked && !planMode} title={planBlocked && !planMode ? planBlocked : undefined}>
+          disabled={!!planBlocked && !planMode} title={planBlocked && !planMode ? OMP_TR(planBlocked) : undefined}>
           <Icon name="plan" size={11} color={planMode ? "var(--amber)" : "var(--fg-3)"} />
           <span style={{ color: planMode ? "var(--amber)" : "var(--fg-2)" }}>{OMP_TR("plan mode")}</span>
         </button>
         <button className={`composer-pill goal-pill${goalMode ? " on" : ""}`} onClick={onToggleGoal}
           disabled={!!goalBlocked && !goalMode}
-          title={goalBlocked && !goalMode ? goalBlocked : "goal mode: your next message becomes a goal the agent works toward"}>
+          title={goalBlocked && !goalMode ? OMP_TR(goalBlocked) : OMP_TR("goal mode: your next message becomes a goal the agent works toward")}>
           <Icon name="goal" size={11} color={goalMode ? "var(--lilac)" : "var(--fg-3)"} />
           <span style={{ color: goalMode ? "var(--lilac)" : "var(--fg-2)" }}>{OMP_TR("goal")}</span>
         </button>

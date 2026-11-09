@@ -16,10 +16,12 @@ const { Icon: _TB_Icon, ProfileMenu: _TB_ProfileMenu } = window;
 function _tbChord(actionId) {
   return window.OMP_KEYMAP ? window.OMP_KEYMAP.hintFor(actionId) : "";
 }
-// `label (chord)`, or just the label while the action is unbound.
+// `label (chord)`, or just the label while the action is unbound. The label
+// is dictionary text (window chrome), the chord is a key binding.
 function _tbTip(label, actionId) {
   const chord = _tbChord(actionId);
-  return chord ? `${label} (${chord})` : label;
+  const text = OMP_TR(label);
+  return chord ? `${text} (${chord})` : text;
 }
 
 // A `.btn ghost` at toolbar size. `pressed` undefined: a plain button;
@@ -100,7 +102,7 @@ function Toolbar({ nav, rail, subagents, tree, browser, terminal, onGit, approva
 
       <div className="tb-end">
         <ApprovalModeButton cell={approvals.cell} onClick={approvals.onOpen} />
-        <ToolButton icon="command" title={commands ? `command bridge (${commands})` : "command bridge"} onClick={onCommands}>
+        <ToolButton icon="command" title={commands ? `${OMP_TR("command bridge")} (${commands})` : OMP_TR("command bridge")} onClick={onCommands}>
           <span className="tb-end-label">{OMP_TR("bridge")}</span>
           {commands && <span className="kbd tb-end-label">{commands}</span>}
         </ToolButton>

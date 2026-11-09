@@ -59,8 +59,8 @@ function SaStatusChip({ agent }) {
   const label = agent.unknownOutcome ? "ended" : SA_STATUS_LABEL[agent.status] ?? agent.status;
   const tone = agent.unknownOutcome ? "muted" : SA_STATUS_CHIP[agent.status] ?? "muted";
   return (
-    <span className={`chip ${tone}`} title={agent.unknownOutcome ? "finished while this tab was in the background" : undefined}>
-      <SaDot status={agent.status} /> {label}
+    <span className={`chip ${tone}`} title={agent.unknownOutcome ? OMP_TR("finished while this tab was in the background") : undefined}>
+      <SaDot status={agent.status} /> {OMP_TR(label)}
     </span>
   );
 }
@@ -71,7 +71,7 @@ function SaContextTube({ progress }) {
   if (!used || !total) return null;
   const pct = Math.min(100, (used / total) * 100);
   return (
-    <span className="status-bar-tube sa-tube" title={`context ${window.formatTokens(used)} / ${window.formatTokens(total)}`}>
+    <span className="status-bar-tube sa-tube" title={OMP_TR("context {used} / {total}", { used: window.formatTokens(used), total: window.formatTokens(total) })}>
       <span className="status-bar-fill" style={{ width: `${pct}%` }} />
     </span>
   );

@@ -17,7 +17,7 @@ const GoalRow = React.memo(function GoalRow({ msg, idx, highlighted }) {
     return (
       <div className={`goal-cont fade-up${highlighted ? " mm-hot" : ""}`} data-msg-idx={idx}>
         <span className="goal-cont-tag">{OMP_TR("goal")}</span>
-        {view.title}
+        {OMP_TR(view.title)}
       </div>
     );
   }
@@ -37,8 +37,8 @@ const GoalRow = React.memo(function GoalRow({ msg, idx, highlighted }) {
             borderColor: `color-mix(in oklab, ${color} 30%, var(--line))`,
           }}>{_GR_TOOL_META.goal.label}</span>
           <span className="tool-title goal-row-title" title={view.detail ?? undefined}>
-            {view.title}
-            {view.detail && <span className="goal-row-detail"> · {view.detail}</span>}
+            {OMP_TR(view.title)}
+            {view.detail && <span className="goal-row-detail"> · {OMP_TR(view.detail)}</span>}
           </span>
           <div className="tool-card-spacer" />
           {view.chips.map(c => <span key={c} className="chip muted mono goal-row-chip">{c}</span>)}

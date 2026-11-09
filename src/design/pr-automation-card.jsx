@@ -126,8 +126,8 @@ function PrAutomationCard({ automation, available = true, bridge }) {
               <span
                 className={`pr-changes-dot${error ? " error" : ""}`}
                 role="status"
-                aria-label={error || automation.status}
-                title={OMP_TR("Auto-fix · {status}", { status: error || automation.status })}
+                aria-label={OMP_TR(error || automation.status)}
+                title={OMP_TR("Auto-fix · {status}", { status: OMP_TR(error || automation.status) })}
               />
             )}
             {pr.checks.length > 0 && (

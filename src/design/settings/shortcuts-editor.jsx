@@ -60,7 +60,7 @@ function _SKE_Row({ action, chords, src, recording, rowError, conflict, disabled
       </Row>
       {(rowError || conflict) && (
         <div className="st-kb-warn">
-          {rowError || <>also bound to &ldquo;{_SKE_labelFor(conflict.actions[0])}&rdquo; — that binding wins</>}
+          {rowError || <>{OMP_TR("also bound to “")}{_SKE_labelFor(conflict.actions[0])}{OMP_TR("” — that binding wins")}</>}
         </div>
       )}
     </>

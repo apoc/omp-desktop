@@ -28,7 +28,7 @@ function TreeSummary({ model }) {
         </div>
         <div className="tree-legend mono">
           <span><i className="lg warm" />{OMP_TR("cached")}</span>
-          <span><i className="lg expiring" />&lt; 10 min</span>
+          <span><i className="lg expiring" />{OMP_TR("< 10 min")}</span>
           <span><i className="lg partial" />{OMP_TR("partly cached")}</span>
           <span><i className="lg cold" />{OMP_TR("cold")}</span>
           <span className="muted">{OMP_TR("price = re-ask now")}</span>

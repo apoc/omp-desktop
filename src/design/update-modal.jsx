@@ -85,7 +85,7 @@ function UpdateModal({ updater, busyTabs }) {
                 </span>
               </div>
               {update.notes && <pre className="update-notes selectable">{update.notes}</pre>}
-              {error && <div className="update-error mono">{error}</div>}
+              {error && <div className="update-error mono">{OMP_TR(error)}</div>}
               {!update.canInstall && (
                 <div className="update-hint mono">
                   {OMP_TR("This installation is managed outside the app (system package or source build) — download the new version from the release page.")}
@@ -127,7 +127,7 @@ function UpdateModal({ updater, busyTabs }) {
                   <_UpdIcon name="external" size={11} /> {OMP_TR("release page")}
                 </button>
                 <button className="btn primary" onClick={updater.install} disabled={!U.canStartInstall(state)}>
-                  install &amp; restart
+                  {OMP_TR("install & restart")}
                 </button>
               </>
             ) : (

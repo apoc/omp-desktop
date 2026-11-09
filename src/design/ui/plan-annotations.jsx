@@ -29,7 +29,7 @@ const CommentForm = ({ block, initial, onSave, onCancel }) => {
     <div className="plan-comment-form">
       <div className="plan-comment-form-quote mono">{block.raw.split("\n")[0].trim().slice(0, 80)}{block.raw.length > 80 ? "…" : ""}</div>
       <textarea ref={ref} className="plan-comment-form-area"
-        value={text} placeholder="your comment…"
+        value={text} placeholder={OMP_TR("your comment…")}
         onChange={e => setText(e.target.value)}
         onKeyDown={e => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onSave(text.trim()); }

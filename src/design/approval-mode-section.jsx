@@ -44,12 +44,12 @@ function ApprovalModeApplyLine({ result, busy, hasProject, sessions }) {
     return (
       <div className="mode-apply">
         {hasProject
-          ? "A change restarts omp in that project's open tabs; the conversation continues. A tab whose agent is working switches when its turn ends."
-          : "Applies to new tabs and to open tabs of projects without their own setting."}
+          ? OMP_TR("A change restarts omp in that project's open tabs; the conversation continues. A tab whose agent is working switches when its turn ends.")
+          : OMP_TR("Applies to new tabs and to open tabs of projects without their own setting.")}
       </div>
     );
   }
-  if (!result.ok) return <div className="mode-apply error">{result.error || "the change could not be saved"}</div>;
+  if (!result.ok) return <div className="mode-apply error">{result.error || OMP_TR("the change could not be saved")}</div>;
   const n = result.restarted.length;
   const names = result.deferred
     .map(id => sessions.find(s => s.id === id)?.name)
@@ -62,7 +62,7 @@ function ApprovalModeApplyLine({ result, busy, hasProject, sessions }) {
         <>
           {n > 0 && " "}
           <b>{names.join(", ")}</b>
-          {names.length === 1 ? " is working and switches when its turn ends." : " are working and switch when their turns end."}
+          {names.length === 1 ? OMP_TR(" is working and switches when its turn ends.") : OMP_TR(" are working and switch when their turns end.")}
         </>
       )}
     </div>

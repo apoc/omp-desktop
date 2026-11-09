@@ -108,7 +108,7 @@ function PrAutomationMenu({
         {OMP_TR("Fix CI and review feedback. May commit, push and resolve addressed threads; tool approvals still apply.")}
       </p>
       <p className="pr-changes-menu-status" role="status">
-        {automation.status}
+        {OMP_TR(automation.status)}
       </p>
       <p className="pr-changes-menu-note">
         {OMP_TR("This tab only. Stop also turns Auto-fix off.")}

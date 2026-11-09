@@ -63,8 +63,8 @@ function ApprovalRulesPanel({ onClose, activeProject, sessions, approvalModes })
           {!loading && rules.length === 0 && (
             <div className="panel-empty mono">
               {activeProject
-                ? "no standing rules yet — grant one from an \"Allow tool\" prompt"
-                : "open a tab to see its session and project rules"}
+                ? OMP_TR("no standing rules yet — grant one from an \"Allow tool\" prompt")
+                : OMP_TR("open a tab to see its session and project rules")}
             </div>
           )}
           {rules.length > 0 && <div className="rules-list">{rules.map((rule, i) => (

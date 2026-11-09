@@ -81,7 +81,7 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
       <span className="tab-name" title={group.path}>{group.name}</span>
       <span className="tab-count">{group.tabs.length}</span>
       {profile && (
-        <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
+        <span className="chip muted tab-profile" title={`${OMP_TR("profile:")} ${profile}`}>{profile}</span>
       )}
       <button ref={triggerRef} className="tab-group-trigger"
         title={OMP_TR("conversations in this project")}
@@ -91,7 +91,7 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
       </button>
       {/* Old WebKit reports a middle click as `click` with button 1 (see the
           root): it must not close anything, as on the rest of the chip. */}
-      <button className="tab-close" title={`close conversation "${closeTarget.name}"`}
+      <button className="tab-close" title={OMP_TR("close conversation \"{name}\"", { name: closeTarget.name })}
         onClick={e => { e.stopPropagation(); if (e.button !== 1) onClose?.(closeTarget.id); }}>
         <Icon name="close" size={9} />
       </button>

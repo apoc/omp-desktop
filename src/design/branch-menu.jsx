@@ -50,7 +50,7 @@ function BranchMenu({ branch, bridge, locked = false }) {
     let live = true;
     bridge.gitBranches().then(res => {
       if (!live) return;
-      setList(!res ? { error: "this tab has no project folder" } : res.ok ? { branches: res.value } : { error: res.error });
+      setList(!res ? { error: OMP_TR("this tab has no project folder") } : res.ok ? { branches: res.value } : { error: res.error });
     });
     inputRef.current?.focus();
     // The menu is placed once: a resize would leave it off the pill.
@@ -102,7 +102,7 @@ function BranchMenu({ branch, bridge, locked = false }) {
   return (
     <>
       <button ref={triggerRef} className="status-cell btn ghost branch-pill" aria-haspopup="menu" aria-expanded={open}
-        title={locked ? "branches (no switching while the agent works)" : "switch branch"}
+        title={locked ? OMP_TR("branches (no switching while the agent works)") : OMP_TR("switch branch")}
         onClick={() => (open ? close() : setPlace(_BM_place(triggerRef.current)))}>
         <_BM_Icon name="branch" size={11} color="var(--fg-3)" />
         <span className="mono">{branch}</span>

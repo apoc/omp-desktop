@@ -112,7 +112,10 @@ function SettingsPage({ ctx }) {
   const idx = Math.max(0, sections.findIndex(s => s.id === ctx.section));
   const section = sections[idx];
   const q = query.trim();
-  const hits = React.useMemo(() => S.search(q, t), [S, q, t]);
+  // The locale is a dependency of the search: a language switch changes
+  // what matches (both labels and descriptions are indexed in both).
+  const locale = window.OMP_I18N.locale;
+  const hits = React.useMemo(() => S.search(q, t), [S, q, t, locale]);
   const counts = React.useMemo(
     () => (q ? hits.bySection : Object.fromEntries(sections.map(s => [s.id, S.modifiedCount(s.id, t, ctx.keyOpts)]))),
     [S, q, hits, sections, t, ctx.keyOpts]);

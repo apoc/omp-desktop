@@ -74,7 +74,7 @@ function BrowserPopover({ pick, page, failed, onSave, onCancel }) {
         autoFocus
         rows={3}
         value={text}
-        placeholder="comment — Enter saves, Shift+Enter new line, Esc cancels"
+        placeholder={OMP_TR("comment — Enter saves, Shift+Enter new line, Esc cancels")}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={onKeyDown}
       />
@@ -97,7 +97,7 @@ function BrowserPanel({ ui }) {
       <div className="browser-body">
         {state.loading && <div className="browser-loading" />}
         <div className={`browser-view${ui.annotate ? " annotating" : ""}`} ref={ui.viewRef}>
-          <textarea className="browser-sink" ref={ui.sinkRef} aria-label="page keyboard input" tabIndex={0}
+          <textarea className="browser-sink" ref={ui.sinkRef} aria-label={OMP_TR("page keyboard input")} tabIndex={0}
             autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
           <canvas className="browser-canvas" ref={ui.canvasRef} />
           {marked.map((c) => (

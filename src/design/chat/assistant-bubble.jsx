@@ -60,7 +60,7 @@ function _AB_Failure({ failure: f }) {
         )}
         {where && <span className="chip muted mono">{where}</span>}
       </div>
-      <div className="ass-failure-msg selectable">{f.headline}</div>
+      <div className="ass-failure-msg selectable">{OMP_TR(f.headline)}</div>
       {f.raw !== f.headline && (
         <details className="ass-failure-raw">
           <summary>{OMP_TR("provider response")}</summary>

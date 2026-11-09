@@ -37,11 +37,11 @@ function SubagentControls({ agentId, running, onSteer, onStop, submitKey = "ente
     try {
       await onSteer(agentId, text);
       setDraft(""); // read-only while sending, so this is still the text that went out
-      setNote({ err: false, text: "Sent. The agent reads it at its next step." });
+      setNote({ err: false, text: OMP_TR("Sent. The agent reads it at its next step.") });
     } catch (e) {
       // A timeout is not a refusal: omp may still deliver the message.
       setNote(e?.timedOut
-        ? { err: false, text: "No answer from omp yet; the message may still arrive." }
+        ? { err: false, text: OMP_TR("No answer from omp yet; the message may still arrive.") }
         : { err: true, text: String(e?.message ?? e) });
     } finally {
       setSending(false);
@@ -57,7 +57,7 @@ function SubagentControls({ agentId, running, onSteer, onStop, submitKey = "ente
     let stopped = false;
     try {
       stopped = await onStop(agentId);
-      setNote({ err: false, text: stopped ? "Stopped." : "It was no longer running." });
+      setNote({ err: false, text: stopped ? OMP_TR("Stopped.") : OMP_TR("It was no longer running.") });
     } catch (e) {
       setNote({ err: true, text: String(e?.message ?? e) });
     }
@@ -77,7 +77,7 @@ function SubagentControls({ agentId, running, onSteer, onStop, submitKey = "ente
       else e.target.blur?.();
     }}>
       <textarea ref={inputRef} className="sa-ctl-input" rows={2} value={draft} readOnly={sending}
-        placeholder="Message this agent…" aria-label={`message ${agentId}`}
+        placeholder={OMP_TR("Message this agent…")} aria-label={OMP_TR("message {id}", { id: agentId })}
         onChange={e => { setDraft(e.target.value); setNote(null); }}
         onKeyDown={e => {
           if (running && window.isSubmitKey(e, submitKey)) { e.preventDefault(); send(); }

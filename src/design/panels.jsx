@@ -52,7 +52,7 @@ function PlanKanban({ kanban, planMeta, onClose, onAbort }) {
             </div>
             {planMeta?.ask && (
               <div className="plan-ask selectable">
-                <span className="mono" style={{ color: "var(--fg-4)" }}>ask &nbsp;</span>
+                <span className="mono" style={{ color: "var(--fg-4)" }}>{OMP_TR("ask")} &nbsp;</span>
                 <span style={{ color: "var(--fg-2)" }}>{planMeta.ask}</span>
               </div>
             )}
