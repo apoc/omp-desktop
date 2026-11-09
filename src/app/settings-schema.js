@@ -200,7 +200,7 @@
     { id: "shortcuts", icon: "command", title: "Shortcuts", blurb: "Every app action and its chords. A change to one of omp's own bindings is saved as a desktop override.", groups: [
       { name: "Keyboard shortcuts", src: "keybindings.json", rows: [
         custom("shortcuts", "Key bindings", "Rebind an action, add a second chord or reset it to its default.", "keys hotkeys keybindings chord rebind shortcut",
-          { moreKw: () => (window.OMP_KEYMAP?.KEYMAP_ACTIONS ?? []).map(a => `${a.label} ${a.id}`).join(" ") }),
+          { moreKw: () => (window.OMP_KEYMAP?.KEYMAP_ACTIONS ?? []).map(a => `${tr(a.label)} ${a.id}`).join(" ") }),
       ] },
     ] },
   ];

@@ -85,6 +85,22 @@ check("auto follows the OS language", () => {
   assert.equal(I.set("auto"), "en");                // no fr dictionary
 });
 
+check("languagechange re-resolves auto but keeps an explicit choice", () => {
+  const handlers = {};
+  const w = load("app/i18n.js", makeWindow({
+    addEventListener: (type, fn) => { handlers[type] = fn; },
+  }));
+  w.OMP_I18N.add("zh", { Hi: "嗨" });
+  assert.equal(w.OMP_I18N.locale, "en");
+  w.navigator.language = "zh-CN";
+  handlers.languagechange();
+  assert.equal(w.OMP_I18N.locale, "zh");            // auto follows the webview
+  w.OMP_I18N.set("en");
+  w.navigator.language = "zh-CN";
+  handlers.languagechange();
+  assert.equal(w.OMP_I18N.locale, "en");            // explicit choice stays
+});
+
 check("plural picks the English form without a dictionary entry", () => {
   I.set("en");
   assert.equal(I.plural(1, "one apple", "{n} apples"), "one apple");

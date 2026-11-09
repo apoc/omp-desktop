@@ -207,7 +207,7 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
           )}
           {msg.cancelled && (
             <span className="chip" style={{ color: "var(--fg-4)", borderColor: "var(--line-bright)" }}>
-              {msg.closedByOmp ? "closed by omp" : "cancelled"}
+              {msg.closedByOmp ? OMP_TR("closed by omp") : OMP_TR("cancelled")}
             </span>
           )}
         </div>

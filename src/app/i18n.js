@@ -184,4 +184,12 @@
   window.OMP_TR = t;
 
   set(storedLocale());
+
+  // The webview can report a new preferred language at runtime; with
+  // "auto" that means a new locale (an explicit choice is left alone).
+  if (typeof window.addEventListener === "function") {
+    window.addEventListener("languagechange", () => {
+      if (requested === "auto") set("auto");
+    });
+  }
 })();

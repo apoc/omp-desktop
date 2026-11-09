@@ -37,7 +37,7 @@ function _TC_ReadBody({ msg, projectRoot, onPreviewFile }) {
         {previewable ? (
           <button type="button" className="diff-path" onClick={() => onPreviewFile(target)} title={OMP_TR("Preview the file")}>{msg.target}</button>
         ) : (
-          <span className="fp-path-outside" title={target ? "Outside the project: no preview" : undefined}>{msg.target}</span>
+          <span className="fp-path-outside" title={target ? OMP_TR("Outside the project: no preview") : undefined}>{msg.target}</span>
         )}
         {msg.summary && <span style={{ color: "var(--fg-4)" }}>· {msg.summary}</span>}
       </div>

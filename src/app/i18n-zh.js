@@ -899,5 +899,8 @@ window.OMP_I18N.add("zh", {
   "Stop the attempt in flight, as Esc does": "停止进行中的尝试（同 Esc）",
   "Stop retrying": "停止重试",
   "Stop": "停止",
+  "closed by omp": "由 omp 关闭",
+  "cancelled": "已取消",
+  "Outside the project: no preview": "项目之外：无法预览",
 });
 
