@@ -37,11 +37,11 @@ function SubagentControls({ agentId, running, onSteer, onStop, submitKey = "ente
     try {
       await onSteer(agentId, text);
       setDraft(""); // read-only while sending, so this is still the text that went out
-      setNote({ err: false, text: "Sent. The agent reads it at its next step." });
+      setNote({ err: false, text: OMP_TR("Sent. The agent reads it at its next step.") });
     } catch (e) {
       // A timeout is not a refusal: omp may still deliver the message.
       setNote(e?.timedOut
-        ? { err: false, text: "No answer from omp yet; the message may still arrive." }
+        ? { err: false, text: OMP_TR("No answer from omp yet; the message may still arrive.") }
         : { err: true, text: String(e?.message ?? e) });
     } finally {
       setSending(false);
@@ -57,7 +57,7 @@ function SubagentControls({ agentId, running, onSteer, onStop, submitKey = "ente
     let stopped = false;
     try {
       stopped = await onStop(agentId);
-      setNote({ err: false, text: stopped ? "Stopped." : "It was no longer running." });
+      setNote({ err: false, text: stopped ? OMP_TR("Stopped.") : OMP_TR("It was no longer running.") });
     } catch (e) {
       setNote({ err: true, text: String(e?.message ?? e) });
     }
@@ -77,23 +77,23 @@ function SubagentControls({ agentId, running, onSteer, onStop, submitKey = "ente
       else e.target.blur?.();
     }}>
       <textarea ref={inputRef} className="sa-ctl-input" rows={2} value={draft} readOnly={sending}
-        placeholder="Message this agent…" aria-label={`message ${agentId}`}
+        placeholder={OMP_TR("Message this agent…")} aria-label={OMP_TR("message {id}", { id: agentId })}
         onChange={e => { setDraft(e.target.value); setNote(null); }}
         onKeyDown={e => {
           if (running && window.isSubmitKey(e, submitKey)) { e.preventDefault(); send(); }
         }} />
       {note && <div className={`sa-ctl-note${note.err ? " err" : ""}`}>{note.text}</div>}
-      {!running && !sending && <div className="sa-ctl-note">The agent is no longer running; this text was not sent.</div>}
+      {!running && !sending && <div className="sa-ctl-note">{OMP_TR("The agent is no longer running; this text was not sent.")}</div>}
       {running && stopPhase === "confirm" && (
         <div className="sa-ctl-row confirm">
-          <span className="sa-ctl-ask">Stop this agent? The parent gets an aborted result.</span>
-          <button autoFocus className="btn ghost outlined" onClick={endConfirm}>keep running</button>
-          <button className="btn danger" onClick={stop}><_SAC_Icon name="stop" size={10} /> stop</button>
+          <span className="sa-ctl-ask">{OMP_TR("Stop this agent? The parent gets an aborted result.")}</span>
+          <button autoFocus className="btn ghost outlined" onClick={endConfirm}>{OMP_TR("keep running")}</button>
+          <button className="btn danger" onClick={stop}><_SAC_Icon name="stop" size={10} /> {OMP_TR("stop")}</button>
         </div>
       )}
       {running && stopPhase !== "confirm" && (
         <div className="sa-ctl-row">
-          <button className="btn ghost outlined" onClick={() => setStopPhase("confirm")} disabled={stopPhase === "stopping"} title="stop this agent">
+          <button className="btn ghost outlined" onClick={() => setStopPhase("confirm")} disabled={stopPhase === "stopping"} title={OMP_TR("stop this agent")}>
             <_SAC_Icon name="stop" size={10} /> {stopPhase === "stopping" ? "stopping…" : "stop"}
           </button>
           <div style={{ flex: 1 }} />

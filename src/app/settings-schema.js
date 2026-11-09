@@ -45,6 +45,10 @@
 
   const SECTIONS = [
     { id: "appearance", icon: "sparkle", title: "Appearance", blurb: "Colour theme, accent, start screen, density and text size of the whole window.", groups: [
+      { name: "Language", rows: [
+        tweak("locale", "seg", "Language", "The language of the app's own interface. Messages from omp — replies, tool output, questions — stay as omp writes them.", "language locale english chinese",
+          { options: opts(["auto", "en", "zh"], { auto: "Follow system", en: "English", zh: "中文" }) }),
+      ] },
       { name: "Theme", rows: [
         tweak("theme", "themes", "Theme", "Picking a theme also resets the accent to the theme's own.", "dark light colour color aurora phosphor daylight"),
         tweak("accent", "swatches", "Accent", "Focus rings, the active tab, links and the assistant's marks.", "color colour highlight"),
@@ -196,7 +200,7 @@
     { id: "shortcuts", icon: "command", title: "Shortcuts", blurb: "Every app action and its chords. A change to one of omp's own bindings is saved as a desktop override.", groups: [
       { name: "Keyboard shortcuts", src: "keybindings.json", rows: [
         custom("shortcuts", "Key bindings", "Rebind an action, add a second chord or reset it to its default.", "keys hotkeys keybindings chord rebind shortcut",
-          { moreKw: () => (window.OMP_KEYMAP?.KEYMAP_ACTIONS ?? []).map(a => `${a.label} ${a.id}`).join(" ") }),
+          { moreKw: () => (window.OMP_KEYMAP?.KEYMAP_ACTIONS ?? []).map(a => `${a.label} ${tr(a.label)} ${a.id}`).join(" ") }),
       ] },
     ] },
   ];
@@ -292,8 +296,13 @@
   // `moreKw`: keywords known only at runtime (the shortcut action names).
   // Custom rows show `label` and `desc` too, plus runtime text of their own;
   // `version` shows runtime text as its desc, `shortcuts` only its editor.
+  // Labels, descriptions and action names are indexed in both the source
+  // language and the current one (app/i18n.js, loaded before this file), so
+  // a query in either language finds them.
+  const tr = (s) => window.OMP_I18N.t(s);
   const searchText = (row) =>
-    `${row.label} ${(row.desc ?? "").replace(/`/g, "")} ${row.kw ?? ""} ${row.moreKw?.() ?? ""}`.toLowerCase();
+    (`${row.label} ${(row.desc ?? "").replace(/`/g, "")} ${row.kw ?? ""} ${row.moreKw?.() ?? ""} ` +
+     `${tr(row.label ?? "")} ${tr(row.desc ?? "").replace(/`/g, "")}`).toLowerCase();
 
   /** Visible rows whose label, desc or keywords contain the query,
    *  case-insensitive, grouped by section › group in page order. */

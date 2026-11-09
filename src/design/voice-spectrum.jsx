@@ -116,7 +116,7 @@ function VoiceSpectrum({ source }) {
     return () => { cancelAnimationFrame(raf); resize.disconnect(); };
   }, [source]);
   return (
-    <div className="voice-spectrum" role="img" aria-label="Microphone spectrum">
+    <div className="voice-spectrum" role="img" aria-label={OMP_TR("Microphone spectrum")}>
       <canvas ref={canvasRef} />
     </div>
   );

@@ -72,23 +72,23 @@ function PrAutomationMenu({
       className="pr-changes-menu"
       style={style}
       role="menu"
-      aria-label={`Pull request #${pr.number}`}
+      aria-label={OMP_TR("Pull request #{n}", { n: pr.number })}
       onKeyDown={(e) =>
         window.menuKeyNav(e, popRef.current, '[role^="menuitem"]', onClose)
       }
     >
       <button role="menuitem" onClick={() => onOpen("")}>
-        Open on GitHub
+        {OMP_TR("Open on GitHub")}
       </button>
       <button role="menuitem" onClick={onCopy}>
-        Copy link
+        {OMP_TR("Copy link")}
       </button>
       <div className="pr-changes-separator" role="separator" />
       <button role="menuitem" onClick={() => onOpen("/files")}>
-        View changes
+        {OMP_TR("View changes")}
       </button>
       <button role="menuitem" onClick={() => onOpen("#discussion_bucket")}>
-        Open review comments
+        {OMP_TR("Open review comments")}
       </button>
       <div className="pr-changes-separator" role="separator" />
       <button
@@ -102,17 +102,16 @@ function PrAutomationMenu({
         <span className="pr-changes-checkbox" aria-hidden="true">
           {automation.enabled && <window.Icon name="check" size={10} />}
         </span>
-        Auto-fix
+        {OMP_TR("Auto-fix")}
       </button>
       <p id={descriptionId} className="pr-changes-menu-note">
-        Fix CI and review feedback. May commit, push and resolve addressed
-        threads; tool approvals still apply.
+        {OMP_TR("Fix CI and review feedback. May commit, push and resolve addressed threads; tool approvals still apply.")}
       </p>
       <p className="pr-changes-menu-status" role="status">
-        {automation.status}
+        {OMP_TR(automation.status)}
       </p>
       <p className="pr-changes-menu-note">
-        This tab only. Stop also turns Auto-fix off.
+        {OMP_TR("This tab only. Stop also turns Auto-fix off.")}
       </p>
       {error && (
         <p className="pr-changes-error" role="alert">

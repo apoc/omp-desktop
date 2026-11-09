@@ -15,32 +15,32 @@ function LiveVoicePanel({ voice, error, onAction, dictationActive, codexLogin = 
   const output = window.OMP_LIVE_VOICE.meterLevel(voice?.output);
   const resume = window.OMP_LIVE_VOICE.liveButton(voice, dictationActive, codexLogin);
   return (
-    <section className="live-voice" aria-label="Live voice">
+    <section className="live-voice" aria-label={OMP_TR("Live voice")}>
       <div className="live-voice-head">
-        <span className="live-voice-title">live voice</span>
-        <span className="live-voice-phase" role="status">{phase}</span>
+        <span className="live-voice-title">{OMP_TR("live voice")}</span>
+        <span className="live-voice-phase" role="status">{OMP_TR(phase)}</span>
         {active && <>
-          <label>mic <meter min="-60" max="0" high="-6" optimum="-20" value={input.value} aria-label="Microphone level" aria-valuetext={`${input.text} RMS`} /></label>
-          <label>speaker <meter min="-60" max="0" high="-6" optimum="-20" value={output.value} aria-label="Speaker level" aria-valuetext={`${output.text} RMS`} /></label>
+          <label>{OMP_TR("mic")} <meter min="-60" max="0" high="-6" optimum="-20" value={input.value} aria-label={OMP_TR("Microphone level")} aria-valuetext={`${input.text} RMS`} /></label>
+          <label>{OMP_TR("speaker")} <meter min="-60" max="0" high="-6" optimum="-20" value={output.value} aria-label={OMP_TR("Speaker level")} aria-valuetext={`${output.text} RMS`} /></label>
         </>}
         <span className="live-voice-spacer" />
         {active ? <>
           <button className="btn outlined" onClick={() => onAction(voice.muted ? "unmute" : "mute")}
             disabled={phase === "connecting" || phase === "stopping"}
-            aria-pressed={!!voice.muted}>{voice.muted ? "unmute" : "mute"}</button>
+            aria-pressed={!!voice.muted}>{voice.muted ? OMP_TR("unmute") : OMP_TR("mute")}</button>
           <button className="btn outlined" onClick={() => onAction("pause")}
-            disabled={phase === "connecting" || phase === "stopping"} aria-label="Pause live conversation">pause</button>
+            disabled={phase === "connecting" || phase === "stopping"} aria-label={OMP_TR("Pause live conversation")}>{OMP_TR("pause")}</button>
           <button className="btn outlined" onClick={() => onAction("stop")}
-            disabled={phase === "stopping"} aria-label={phase === "connecting" ? "Cancel live conversation" : "End live conversation"}>{phase === "connecting" ? "cancel" : "end"}</button>
+            disabled={phase === "stopping"} aria-label={phase === "connecting" ? OMP_TR("Cancel live conversation") : OMP_TR("End live conversation")}>{phase === "connecting" ? OMP_TR("cancel") : OMP_TR("end")}</button>
         </> : paused ? <>
           <button className="btn outlined" onClick={() => onAction("resume")}
-            disabled={resume.disabled} aria-label="Resume live conversation" title={resume.label}>resume</button>
+            disabled={resume.disabled} aria-label={OMP_TR("Resume live conversation")} title={resume.label}>{OMP_TR("resume")}</button>
           <button className="btn outlined" onClick={() => onAction("stop")}
-            aria-label="End live conversation">end</button>
+            aria-label={OMP_TR("End live conversation")}>{OMP_TR("end")}</button>
         </> : null}
       </div>
-      {(error || voice?.error) && <div className="live-voice-error" role="alert">{error || voice.error}</div>}
-      {transcripts.length > 0 && <ol ref={captionsRef} className="live-voice-captions" aria-label="Live voice captions">
+      {(error || voice?.error) && <div className="live-voice-error" role="alert">{OMP_TR(error || voice.error)}</div>}
+      {transcripts.length > 0 && <ol ref={captionsRef} className="live-voice-captions" aria-label={OMP_TR("Live voice captions")}>
         {transcripts.map(item => <li key={`${item.role}-${item.turn}`}>
           <span className="live-voice-role">{item.role === "user" ? "you" : "assistant"}</span>
           <span>{item.text}</span>{!item.final && <span className="live-voice-interim">…</span>}
@@ -78,9 +78,9 @@ function VoiceModeButton({ live, dictation, codexLogin = null, onLiveAction, onD
 function DictationPanel({ dictation, error, onAction }) {
   if (!dictation?.active && !dictation?.error && !error) return null;
   const phase = dictation?.phase ?? "idle";
-  return <section className="live-voice" aria-label="Voice to text">
+  return <section className="live-voice" aria-label={OMP_TR("Voice to text")}>
     <div className="live-voice-head">
-      <span className="live-voice-title">voice to text</span>
+      <span className="live-voice-title">{OMP_TR("voice to text")}</span>
       <span className="live-voice-phase" role="status">{phase === "stopping" ? "transcribing" : phase}</span>
       <span className="live-voice-spacer" />
       {dictation?.active && <button className="btn outlined" onClick={() => onAction("stop")} disabled={phase === "stopping"}>
@@ -88,7 +88,7 @@ function DictationPanel({ dictation, error, onAction }) {
       </button>}
     </div>
     {(error || dictation?.error) && <div className="live-voice-error" role="alert">{error || dictation.error}</div>}
-    {dictation?.active && dictation.text && <div className="dictation-preview" aria-label="Dictation preview">{dictation.text}</div>}
+    {dictation?.active && dictation.text && <div className="dictation-preview" aria-label={OMP_TR("Dictation preview")}>{dictation.text}</div>}
   </section>;
 }
 

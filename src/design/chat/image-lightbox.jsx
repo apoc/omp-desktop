@@ -151,7 +151,7 @@ function ImageLightbox({ images, index, onIndex, onClose, thumbFor }) {
       className={`lightbox${closing ? " is-closing" : ""}`}
       role="dialog"
       aria-modal="true"
-      aria-label="Attached image"
+      aria-label={OMP_TR("Attached image")}
       tabIndex={-1}
       onClick={close}
     >
@@ -164,15 +164,15 @@ function ImageLightbox({ images, index, onIndex, onClose, thumbFor }) {
         style={imgStyle}
         onLoad={(e) => readNatural(e.currentTarget)}
       />
-      <button className="lightbox-btn lightbox-close" title="Close (Esc)" onClick={(e) => { e.stopPropagation(); close(); }}>
+      <button className="lightbox-btn lightbox-close" title={OMP_TR("Close (Esc)")} onClick={(e) => { e.stopPropagation(); close(); }}>
         <_LB_Icon name="close" size={14} />
       </button>
       {count > 1 && (
         <React.Fragment>
-          <button className="lightbox-btn lightbox-prev" title="Previous (←)" onClick={nav(-1)}>
+          <button className="lightbox-btn lightbox-prev" title={OMP_TR("Previous (←)")} onClick={nav(-1)}>
             <_LB_Icon name="chevR" size={16} />
           </button>
-          <button className="lightbox-btn lightbox-next" title="Next (→)" onClick={nav(1)}>
+          <button className="lightbox-btn lightbox-next" title={OMP_TR("Next (→)")} onClick={nav(1)}>
             <_LB_Icon name="chevR" size={16} />
           </button>
           <div className="lightbox-count mono">{index + 1} / {count}</div>
@@ -201,7 +201,7 @@ function ImageThumbs({ images, className, alt }) {
             key={i}
             type="button"
             className="user-image-btn"
-            title="View image"
+            title={OMP_TR("View image")}
             onClick={() => setOpenIdx(i)}
           >
             {/* Hidden, not removed, while it is the one enlarged: the

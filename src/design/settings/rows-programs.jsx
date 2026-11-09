@@ -34,9 +34,9 @@ function _SRP_Shell({ row, ctx, query }) {
   const { SettingsRow: Row, PathPicker, usePathSetting } = window;
   const { settings, error, save, pick } = usePathSetting(ctx.bridge, _SRP_SHELL);
   const { label, rows } = window.OMP_TERMINAL.shellMenu(settings);
-  const fallback = settings?.defaultShell ? ` Here: \`${settings.defaultShell}\`.` : "";
+  const fallback = settings?.defaultShell ? ` ${OMP_TR("Here:")} \`${settings.defaultShell}\`.` : "";
   return (
-    <Row label={row.label} query={query} desc={`${row.desc}${fallback}`}
+    <Row label={row.label} query={query} desc={`${window.OMP_I18N.t(row.desc)}${fallback}`}
       resettable={!!settings?.shell} onReset={() => save("")}>
       <PathPicker name="shell" label={label} rows={rows} disabled={!settings} error={error}
         title={settings ? (settings.shell || `default: ${settings.defaultShell}`) : undefined}
@@ -60,7 +60,9 @@ function _SRP_TerminalHeight({ row, ctx, query, modified, onReset }) {
 function _SRP_chromiumTitle(settings) {
   if (!settings) return undefined;
   if (settings.path) return settings.path;
-  return settings.automatic ? `automatic: ${settings.automatic}` : "automatic: no Chromium-based browser found";
+  return settings.automatic
+    ? OMP_TR("automatic: {name}", { name: settings.automatic })
+    : OMP_TR("automatic: no Chromium-based browser found");
 }
 
 function _SRP_Chromium({ row, ctx, query }) {

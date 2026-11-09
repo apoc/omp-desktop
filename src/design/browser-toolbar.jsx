@@ -17,7 +17,7 @@ function BrowserTabs({ ui }) {
             <div key={t.targetId} className={`tab${t.active ? " active" : ""}`} title={t.url || name}
               onClick={() => ui.activateTab(t.targetId)}>
               <button type="button" className="tab-name" aria-current={t.active ? "page" : undefined}>{name}</button>
-              <button type="button" className="tab-close" aria-label={`close ${name}`}
+              <button type="button" className="tab-close" aria-label={OMP_TR("close {name}", { name })}
                 onClick={(e) => { e.stopPropagation(); ui.closeTab(t.targetId); }}>
                 <_BT_Icon name="close" size={9} />
               </button>
@@ -25,7 +25,7 @@ function BrowserTabs({ ui }) {
           );
         })}
       </div>
-      <button type="button" className="tab-add" title="new tab" aria-label="new tab" onClick={() => ui.newTab()}>
+      <button type="button" className="tab-add" title={OMP_TR("new tab")} aria-label={OMP_TR("new tab")} onClick={() => ui.newTab()}>
         <_BT_Icon name="plus" size={11} />
       </button>
     </div>
@@ -57,13 +57,13 @@ function BrowserToolbar({ ui }) {
     <>
       <BrowserTabs ui={ui} />
       <div className="browser-bar">
-        <button className="btn icon ghost" title="back" aria-label="back" disabled={!state.canBack} onClick={() => ui.history(-1)}>
+        <button className="btn icon ghost" title={OMP_TR("back")} aria-label={OMP_TR("back")} disabled={!state.canBack} onClick={() => ui.history(-1)}>
           <_BT_Icon name="back" size={11} />
         </button>
-        <button className="btn icon ghost" title="forward" aria-label="forward" disabled={!state.canForward} onClick={() => ui.history(1)}>
+        <button className="btn icon ghost" title={OMP_TR("forward")} aria-label={OMP_TR("forward")} disabled={!state.canForward} onClick={() => ui.history(1)}>
           <_BT_Icon name="arrow" size={11} />
         </button>
-        <button className="btn icon ghost" title="reload" aria-label="reload" disabled={!state.url} onClick={() => ui.navigate(state.url)}>
+        <button className="btn icon ghost" title={OMP_TR("reload")} aria-label={OMP_TR("reload")} disabled={!state.url} onClick={() => ui.navigate(state.url)}>
           <_BT_Icon name="refresh" size={11} />
         </button>
         <form className={`browser-address${shake ? " shake" : ""}`} onSubmit={submit} onAnimationEnd={() => setShake(false)}>
@@ -71,7 +71,7 @@ function BrowserToolbar({ ui }) {
             name="address"
             className="mono"
             value={draft ?? state.url}
-            placeholder="address or localhost:3000"
+            placeholder={OMP_TR("address or localhost:3000")}
             spellCheck={false}
             autoComplete="off"
             onChange={(e) => setDraft(e.target.value)}

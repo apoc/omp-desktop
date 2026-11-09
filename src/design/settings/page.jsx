@@ -83,8 +83,8 @@ function _SP_Group({ name, src, rows, ctx, query }) {
   return (
     <>
       <div className="st-grp-name">
-        {name}
-        {src && <span className="st-src" title="Saved by the app in this file, not in the window's local storage">{src}</span>}
+        {OMP_TR(name)}
+        {src && <span className="st-src" title={OMP_TR("Saved by the app in this file, not in the window's local storage")}>{src}</span>}
       </div>
       <div className="st-grp">
         {rows.map(r => <_SP_AnyRow key={r.id} row={r} ctx={ctx} query={query} />)}
@@ -96,6 +96,7 @@ function _SP_Group({ name, src, rows, ctx, query }) {
 /** `ctx.active === false` (page kept mounted behind a project tab, keeping
  *  its search and scroll): keys are left alone. */
 function SettingsPage({ ctx }) {
+  window.OMP_I18N.useLocale();
   const S = window.OMP_SETTINGS;
   const { t } = ctx;
   const active = ctx.active !== false;
@@ -108,7 +109,10 @@ function SettingsPage({ ctx }) {
   const idx = Math.max(0, sections.findIndex(s => s.id === ctx.section));
   const section = sections[idx];
   const q = query.trim();
-  const hits = React.useMemo(() => S.search(q, t), [S, q, t]);
+  // The locale is a dependency of the search: a language switch changes
+  // what matches (both labels and descriptions are indexed in both).
+  const locale = window.OMP_I18N.locale;
+  const hits = React.useMemo(() => S.search(q, t), [S, q, t, locale]);
   const counts = React.useMemo(
     () => (q ? hits.bySection : Object.fromEntries(sections.map(s => [s.id, S.modifiedCount(s.id, t, ctx.keyOpts)]))),
     [S, q, hits, sections, t, ctx.keyOpts]);
@@ -174,12 +178,12 @@ function SettingsPage({ ctx }) {
     body = (
       <>
         <div className="st-head">
-          <div className="st-kicker">search · {hits.total} setting{hits.total === 1 ? "" : "s"}</div>
+          <div className="st-kicker">{window.OMP_I18N.plural(hits.total, "search · {n} setting", "search · {n} settings", { n: hits.total })}</div>
           <div className="st-h1">“{q}”</div>
         </div>
-        {hits.groups.length === 0 && <div className="st-empty">No setting matches “{q}”.</div>}
+        {hits.groups.length === 0 && <div className="st-empty">{OMP_TR("No setting matches “{q}”.", { q })}</div>}
         {hits.groups.map(g => (
-          <_SP_Group key={`${g.sectionId}/${g.groupName}`} name={`${g.sectionTitle} › ${g.groupName}`}
+          <_SP_Group key={`${g.sectionId}/${g.groupName}`} name={`${OMP_TR(g.sectionTitle)} › ${OMP_TR(g.groupName)}`}
             src={g.src} rows={g.rows} ctx={ctx} query={q} />
         ))}
       </>
@@ -188,9 +192,9 @@ function SettingsPage({ ctx }) {
     body = (
       <>
         <div className="st-head">
-          <div className="st-kicker">{String(idx + 1).padStart(2, "0")} · {section.title}</div>
-          <div className="st-h1">{section.title}</div>
-          <p className="st-blurb">{section.blurb}</p>
+          <div className="st-kicker">{String(idx + 1).padStart(2, "0")} · {OMP_TR(section.title)}</div>
+          <div className="st-h1">{OMP_TR(section.title)}</div>
+          <p className="st-blurb">{OMP_TR(section.blurb)}</p>
         </div>
         {section.groups.map(g => {
           const rows = g.rows.filter(r => S.visible(r, t));
@@ -201,13 +205,13 @@ function SettingsPage({ ctx }) {
   }
 
   return (
-    <div className="settings" role="region" aria-label="Settings" ref={rootRef}>
+    <div className="settings" role="region" aria-label={OMP_TR("Settings")} ref={rootRef}>
       <div className="st-top">
         <div className="st-inner">
           <label className="st-search">
             <_SP_Icon name="search" size={14} />
-            <input ref={searchRef} type="text" placeholder="Search settings" value={query} autoComplete="off"
-              spellCheck={false} aria-label="Search settings" onChange={e => setQuery(e.target.value)} />
+            <input ref={searchRef} type="text" placeholder={OMP_TR("Search settings")} value={query} autoComplete="off"
+              spellCheck={false} aria-label={OMP_TR("Search settings")} onChange={e => setQuery(e.target.value)} />
             <span className="st-kbd">{_SP_IS_MAC ? "⌘F" : "Ctrl+F"}</span>
           </label>
           <_SP_Strip sections={sections} active={section.id} counts={counts} searching={!!q} onSelect={select} />
@@ -218,13 +222,13 @@ function SettingsPage({ ctx }) {
       </div>
       <div className="st-foot">
         <div className="st-inner">
-          <span>changes apply at once</span>
+          <span>{OMP_TR("changes apply at once")}</span>
           <span className="st-sp" />
           <button type="button" disabled={!canReset} onClick={() => ctx.setTweak(resetEdits)}>
-            reset {q ? "matches" : section.title.toLowerCase()} to defaults
+            {OMP_TR("reset {what} to defaults", { what: q ? OMP_TR("matches") : OMP_TR(section.title).toLowerCase() })}
           </button>
-          <span><span className="st-kbd">←</span> <span className="st-kbd">→</span> sections</span>
-          {closeHint && <span><span className="st-kbd">{closeHint}</span> close tab</span>}
+          <span><span className="st-kbd">←</span> <span className="st-kbd">→</span> {OMP_TR("sections")}</span>
+          {closeHint && <span><span className="st-kbd">{closeHint}</span> {OMP_TR("close tab")}</span>}
         </div>
       </div>
     </div>

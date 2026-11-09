@@ -46,13 +46,13 @@ function WidgetCard({ title, run, onRefresh, onInsert, insertCfg, source, attent
         <span className="mono wdg-title">{title}</span>
         {meta ? <span className="chip muted mono wdg-meta">{meta}</span> : <span className="wdg-meta" />}
         {attention && (
-          <button className="btn icon ghost wdg-ack" title="Acknowledge" aria-label="Acknowledge"
+          <button className="btn icon ghost wdg-ack" title={OMP_TR("Acknowledge")} aria-label={OMP_TR("Acknowledge")}
             onClick={(e) => { e.stopPropagation(); onAck?.(); }}>
             <_WC_Icon name="check" size={10} />
           </button>
         )}
         {onRefresh && (
-          <button className="btn icon ghost" title="refresh" aria-label={`refresh ${title}`} disabled={state === "running"} onClick={onRefresh}>
+          <button className="btn icon ghost" title={OMP_TR("refresh")} aria-label={`refresh ${title}`} disabled={state === "running"} onClick={onRefresh}>
             <_WC_Icon name="refresh" size={10} />
           </button>
         )}
@@ -60,16 +60,16 @@ function WidgetCard({ title, run, onRefresh, onInsert, insertCfg, source, attent
       {state === "error" && (
         <>
           <div className="wdg-error selectable">{run.error}</div>
-          {run.lastOkAt != null && <div className="wdg-note mono">last ok {_wcTime(run.lastOkAt)}</div>}
+          {run.lastOkAt != null && <div className="wdg-note mono">{OMP_TR("last ok")} {_wcTime(run.lastOkAt)}</div>}
         </>
       )}
       {(state === "ok" || stale) && widget && (
         <>
           <_WC_Blocks blocks={widget.blocks} onInsert={onInsert} insertCfg={insertCfg} />
-          {widget.skipped > 0 && <div className="wdg-note mono">{widget.skipped} unsupported block{widget.skipped > 1 ? "s" : ""}</div>}
+          {widget.skipped > 0 && <div className="wdg-note mono">{window.OMP_I18N.plural(widget.skipped, "{n} unsupported block", "{n} unsupported blocks", { n: widget.skipped })}</div>}
         </>
       )}
-      {state === "idle" && <div className="wdg-note mono">not run yet</div>}
+      {state === "idle" && <div className="wdg-note mono">{OMP_TR("not run yet")}</div>}
     </div>
   );
 }

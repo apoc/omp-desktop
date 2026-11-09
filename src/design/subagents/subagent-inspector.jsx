@@ -23,12 +23,12 @@ function SaActivity({ agent: a, now }) {
   const recent = p?.recentTools ?? [];
   return (
     <>
-      {a.description && <div><div className="sa-block-k">task</div><div className="sa-desc">{a.description}</div></div>}
-      {a.assignment && <div><div className="sa-block-k">assignment</div><pre className="sa-assign selectable">{a.assignment}</pre></div>}
+      {a.description && <div><div className="sa-block-k">{OMP_TR("task")}</div><div className="sa-desc">{a.description}</div></div>}
+      {a.assignment && <div><div className="sa-block-k">{OMP_TR("assignment")}</div><pre className="sa-assign selectable">{a.assignment}</pre></div>}
 
       {a.status === "running" && p?.currentTool && (
         <div className="card sa-now">
-          <div className="sa-block-k"><span className="dot live" /> now</div>
+          <div className="sa-block-k"><span className="dot live" /> {OMP_TR("now")}</div>
           <div className="sa-now-row">
             <_SAI_ToolChip tool={p.currentTool} running />
             <span className="sa-args">{p.currentToolArgs}</span>
@@ -49,15 +49,15 @@ function SaActivity({ agent: a, now }) {
         <SaMetric k="model" v={_SAI_model(p?.resolvedModel)} />
         {p?.contextTokens && p?.contextWindow ? (
           <div className="sa-ctx">
-            <span>context</span><_SAI_Tube progress={p} />
+            <span>{OMP_TR("context")}</span><_SAI_Tube progress={p} />
             <span>{window.formatTokens(p.contextTokens)} / {window.formatTokens(p.contextWindow)}</span>
           </div>
         ) : null}
       </div>
 
       <div>
-        <div className="sa-block-k">recent tools</div>
-        {recent.length === 0 ? <div className="sa-empty">No tool calls yet.</div> : (
+        <div className="sa-block-k">{OMP_TR("recent tools")}</div>
+        {recent.length === 0 ? <div className="sa-empty">{OMP_TR("No tool calls yet.")}</div> : (
           <div className="sa-timeline">
             {recent.map(r => (
               <div key={`${r.endMs}:${r.tool}:${r.args}`} className="sa-tl-row">
@@ -83,15 +83,15 @@ function SaOutput({ agent: a, level }) {
   return (
     <>
       <div>
-        <div className="sa-block-k">recent output</div>
-        {lines.length === 0 ? <div className="sa-empty">No output yet.</div> : (
+        <div className="sa-block-k">{OMP_TR("recent output")}</div>
+        {lines.length === 0 ? <div className="sa-empty">{OMP_TR("No output yet.")}</div> : (
           <div className="sa-out selectable">
             {lines.map((l, i) => <div key={i} className="ta-stream-line">{l || "\u00a0"}</div>)}
           </div>
         )}
       </div>
       <div>
-        <div className="sa-block-k">event stream <span className={`chip muted mono sa-level ${level}`}>{level}</span></div>
+        <div className="sa-block-k">{OMP_TR("event stream")} <span className={`chip muted mono sa-level ${level}`}>{level}</span></div>
         {a.stream.length === 0 ? (
           <div className="sa-empty">{level === "events" ? "Waiting for events…" : "Events stream while an agent is inspected."}</div>
         ) : (
@@ -111,17 +111,18 @@ const saBlocks = content => (typeof content === "string" ? [{ type: "text", text
 // results on every tick is pure waste. `onRefresh` is recreated per render
 // but always loads the same agent (the inspector is keyed by agent id).
 const SaTranscript = React.memo(function SaTranscript({ transcript, onRefresh }) {
+  window.OMP_I18N.useLocale();
   const messages = transcript?.messages ?? [];
   const loading = !transcript || transcript.status === "loading";
   if (loading && messages.length === 0) {
-    return <div className="sa-empty"><span className="shimmer-text">loading transcript…</span></div>;
+    return <div className="sa-empty"><span className="shimmer-text">{OMP_TR("loading transcript…")}</span></div>;
   }
   return (
     <div>
       <div className="sa-block-k">
-        {messages.length} messages
+        {messages.length} {OMP_TR("messages")}
         <button className="btn ghost" style={{ marginLeft: "auto", height: 18, padding: "0 6px" }} onClick={onRefresh} disabled={loading}>
-          <_SAI_Icon name="refresh" size={10} /> {loading ? "loading…" : "refresh"}
+          <_SAI_Icon name="refresh" size={10} /> {loading ? OMP_TR("loading…") : OMP_TR("refresh")}
         </button>
       </div>
       {transcript.status === "error" && <div className="sa-empty" style={{ color: "var(--rose)" }}>{transcript.error}</div>}
@@ -171,7 +172,7 @@ function SubagentInspector({ agent, callId, now, level, transcript, onBack, onLo
   return (
     <div className="sa-insp" style={_SAI_hue(agent)}>
       <div className="sa-insp-head">
-        <button className="btn icon ghost" onClick={onBack} title="back to all agents"><_SAI_Icon name="back" size={11} /></button>
+        <button className="btn icon ghost" onClick={onBack} title={OMP_TR("back to all agents")}><_SAI_Icon name="back" size={11} /></button>
         <_SAI_Glyph agent={agent} />
         <div className="sa-insp-title">
           <span className="sa-name">{agent.id}</span>
@@ -196,7 +197,7 @@ function SubagentInspector({ agent, callId, now, level, transcript, onBack, onLo
       <div className="sa-insp-foot">
         {callId && (
           <button className="btn ghost outlined" onClick={() => onJumpToCall(callId)}>
-            <_SAI_Icon name="arrowUp" size={10} /> task call
+            <_SAI_Icon name="arrowUp" size={10} /> {OMP_TR("task call")}
           </button>
         )}
         <button className="btn ghost outlined" onClick={() => copy("uri", `agent://${agent.id}`)} title={`agent://${agent.id}`}>

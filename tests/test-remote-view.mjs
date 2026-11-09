@@ -620,7 +620,12 @@ function remoteRows() {
     useCallback: fn => fn,
   };
   const window = { Icon: {} };
-  const scope = { window, React };
+  // app/i18n.js globals: in the browser they are window properties, so the
+  // rows' bare OMP_TR(...) resolves; a vm context needs them in scope.
+  const i18n = { t: (s) => s, plural: (n, one, other) => (n === 1 ? one : other) };
+  window.OMP_I18N = i18n;
+  window.OMP_TR = i18n.t;
+  const scope = { window, React, OMP_TR: i18n.t, OMP_I18N: i18n };
   for (const file of ["rows-remote-shared.jsx", "rows-remote-server.jsx", "rows-remote-phones.jsx"]) {
     const { code } = Babel.transform(source(`src/design/settings/${file}`), { presets: ["react"] });
     runInNewContext(code, scope);

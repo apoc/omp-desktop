@@ -38,24 +38,24 @@ function GitFileTree({
   return (
     <div className="gitb-pane gitb-files">
       <div className="gitb-pane-head">
-        <span className="gitb-pane-title">files</span>
+        <span className="gitb-pane-title">{OMP_TR("files")}</span>
         {commit && (
-          <span className="gitb-pane-sub mono" title={commit.id}>{commit.short} · {commit.files} file{commit.files === 1 ? "" : "s"}</span>
+          <span className="gitb-pane-sub mono" title={commit.id}>{commit.short} · {window.OMP_I18N.plural(commit.files, "{n} file", "{n} files", { n: commit.files })}</span>
         )}
         {onChangedOnly && (
           <button type="button" className={`btn ghost gitb-toggle ${changedOnly ? "on" : ""}`}
             onClick={() => onChangedOnly(!changedOnly)} title={changedOnly ? "show every file" : "show changed files only"}
             aria-pressed={changedOnly}>
             <_GT_Icon name="diff2" size={11} />
-            <span>{changedCount} changed</span>
+            <span>{changedCount} {OMP_TR("changed")}</span>
           </button>
         )}
       </div>
       <div className="gitb-filter">
         <_GT_Icon name="search" size={11} color="var(--fg-4)" />
         <input className="gitb-filter-input mono" value={filter} onChange={e => onFilter(e.target.value)}
-          placeholder="filter files" spellCheck={false} />
-        {filter && <button type="button" className="btn ghost icon" onClick={() => onFilter("")} aria-label="clear filter"><_GT_Icon name="close" size={10} /></button>}
+          placeholder={OMP_TR("filter files")} spellCheck={false} />
+        {filter && <button type="button" className="btn ghost icon" onClick={() => onFilter("")} aria-label={OMP_TR("clear filter")}><_GT_Icon name="close" size={10} /></button>}
       </div>
       <div className="gitb-tree" role="tree">
         {empty && <div className={`gitb-empty ${error ? "gitb-error" : ""}`}>{empty}</div>}
@@ -78,12 +78,12 @@ function GitFileTree({
               <span className="gitb-row-name" style={meta ? { color: meta.color } : undefined}>
                 {flat ? node.path : node.name}
               </span>
-              {node.dir && node.changed > 0 && !changedOnly && <span className="gitb-dot" title={`${node.changed} changed`} />}
+              {node.dir && node.changed > 0 && !changedOnly && <span className="gitb-dot" title={OMP_TR("{n} changed", { n: node.changed })} />}
               {meta && <span className="gitb-mark mono" style={{ color: meta.color }} title={meta.title}>{meta.label}</span>}
             </div>
           );
         })}
-        {!error && root && truncated && <div className="gitb-empty">list truncated — too many files to show them all</div>}
+        {!error && root && truncated && <div className="gitb-empty">{OMP_TR("list truncated — too many files to show them all")}</div>}
       </div>
     </div>
   );

@@ -24,6 +24,7 @@ function _BM_place(trigger) {
 // still opens, but no row switches, as the switch would change the files
 // under it.
 function BranchMenu({ branch, bridge, locked = false }) {
+  window.OMP_I18N.useLocale();
   // Where the open menu sits (placed once, when it opens); null = closed.
   const [place, setPlace] = React.useState(null);
   const open = place !== null;
@@ -49,7 +50,7 @@ function BranchMenu({ branch, bridge, locked = false }) {
     let live = true;
     bridge.gitBranches().then(res => {
       if (!live) return;
-      setList(!res ? { error: "this tab has no project folder" } : res.ok ? { branches: res.value } : { error: res.error });
+      setList(!res ? { error: OMP_TR("this tab has no project folder") } : res.ok ? { branches: res.value } : { error: res.error });
     });
     inputRef.current?.focus();
     // The menu is placed once: a resize would leave it off the pill.
@@ -101,35 +102,35 @@ function BranchMenu({ branch, bridge, locked = false }) {
   return (
     <>
       <button ref={triggerRef} className="status-cell btn ghost branch-pill" aria-haspopup="menu" aria-expanded={open}
-        title={locked ? "branches (no switching while the agent works)" : "switch branch"}
+        title={locked ? OMP_TR("branches (no switching while the agent works)") : OMP_TR("switch branch")}
         onClick={() => (open ? close() : setPlace(_BM_place(triggerRef.current)))}>
         <_BM_Icon name="branch" size={11} color="var(--fg-3)" />
         <span className="mono">{branch}</span>
       </button>
       {open && ReactDOM.createPortal(
         <div ref={popRef} className={`branch-pop${busy ? " busy" : ""}${locked ? " locked" : ""}`} style={place}
-          role="menu" aria-label="switch branch" onKeyDown={onPopKey}>
+          role="menu" aria-label={OMP_TR("switch branch")} onKeyDown={onPopKey}>
           <div className="branch-pop-filter">
             <_BM_Icon name="search" size={11} color="var(--fg-4)" />
-            <input ref={inputRef} className="mono" value={query} placeholder="filter branches"
-              aria-label="filter branches" spellCheck={false}
+            <input ref={inputRef} className="mono" value={query} placeholder={OMP_TR("filter branches")}
+              aria-label={OMP_TR("filter branches")} spellCheck={false}
               onChange={e => setQuery(e.target.value)} onKeyDown={onInputKey} />
           </div>
           <div className="branch-pop-list">
             {!list ? (
-              <div className="branch-pop-note">loading…</div>
+              <div className="branch-pop-note">{OMP_TR("loading…")}</div>
             ) : list.error ? (
-              <div className="branch-pop-note error">could not list the branches: {list.error}</div>
+              <div className="branch-pop-note error">{OMP_TR("could not list the branches:")} {list.error}</div>
             ) : (<>
-              {rows.local.length > 0 && <div className="branch-pop-head mono" role="none">local</div>}
+              {rows.local.length > 0 && <div className="branch-pop-head mono" role="none">{OMP_TR("local")}</div>}
               {rows.local.map(row)}
-              {rows.remote.length > 0 && <div className="branch-pop-head mono" role="none">remote</div>}
+              {rows.remote.length > 0 && <div className="branch-pop-head mono" role="none">{OMP_TR("remote")}</div>}
               {rows.remote.map(row)}
-              {!first && <div className="branch-pop-note">{query.trim() ? "no branch matches" : "no other branches"}</div>}
-              {rows.hidden > 0 && <div className="branch-pop-note">{rows.hidden} more — narrow the filter</div>}
+              {!first && <div className="branch-pop-note">{query.trim() ? OMP_TR("no branch matches") : OMP_TR("no other branches")}</div>}
+              {rows.hidden > 0 && <div className="branch-pop-note">{rows.hidden} {OMP_TR("more — narrow the filter")}</div>}
             </>)}
           </div>
-          {locked && <div className="branch-pop-note" role="status">the agent is working — switch branches once it's idle</div>}
+          {locked && <div className="branch-pop-note" role="status">{OMP_TR("the agent is working — switch branches once it's idle")}</div>}
           {error && <div className="branch-pop-note error" role="alert">{error}</div>}
         </div>,
         document.body,

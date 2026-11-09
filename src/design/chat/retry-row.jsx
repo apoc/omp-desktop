@@ -13,10 +13,13 @@ const _RR_CLOCK = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digi
 /** `7 s`, `2 min 5 s`; never negative. */
 function _RR_span(ms) {
   const s = Math.max(0, Math.ceil(ms / 1000));
-  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
+  return s < 60
+    ? `${s} ${OMP_TR("s")}`
+    : `${Math.floor(s / 60)} ${OMP_TR("min")} ${s % 60} ${OMP_TR("s")}`;
 }
 
 const RetryRow = React.memo(function RetryRow({ msg, idx, highlighted, onStop }) {
+  window.OMP_I18N.useLocale();
   const [now, setNow] = React.useState(() => Date.now());
   React.useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -30,16 +33,19 @@ const RetryRow = React.memo(function RetryRow({ msg, idx, highlighted, onStop })
   const waiting = msg.phase === "waiting";
   const f = msg.failure;
   const where = [f?.provider, f?.model].filter(Boolean).join(" · ");
-  const title = msg.maxAttempts ? `Retrying · attempt ${msg.attempt} of ${msg.maxAttempts}` : `Retrying · attempt ${msg.attempt}`;
+  const title = msg.maxAttempts
+    ? OMP_TR("Retrying · attempt {n} of {max}", { n: msg.attempt, max: msg.maxAttempts })
+    : OMP_TR("Retrying · attempt {n}", { n: msg.attempt });
   const status = waiting
-    ? `next try in ${_RR_span(msg.since + msg.delayMs - now)}`
-    : `sent ${_RR_span(now - msg.since)} ago, waiting for the provider`;
-  const failed = `failed ${msg.failed} time${msg.failed === 1 ? "" : "s"} since ${_RR_CLOCK.format(new Date(msg.firstFailedAt))}`;
+    ? OMP_TR("next try in {span}", { span: _RR_span(msg.since + msg.delayMs - now) })
+    : OMP_TR("sent {span} ago, waiting for the provider", { span: _RR_span(now - msg.since) });
+  const failed = window.OMP_I18N.plural(msg.failed, "failed {n} time since {time}", "failed {n} times since {time}",
+    { n: msg.failed, time: _RR_CLOCK.format(new Date(msg.firstFailedAt)) });
 
   const stopNow = async () => {
     setStop({ busy: true, error: null });
     const res = await onStop?.();
-    if (res && !res.ok) setStop({ busy: false, error: res.error ?? "could not stop" });
+    if (res && !res.ok) setStop({ busy: false, error: res.error ?? OMP_TR("could not stop") });
   };
 
   return (
@@ -66,8 +72,8 @@ const RetryRow = React.memo(function RetryRow({ msg, idx, highlighted, onStop })
           <div className="retry-foot">
             <span className="retry-status mono">{status} · {failed}</span>
             <button type="button" className="btn outlined retry-stop" disabled={stop.busy} onClick={stopNow}
-              title={waiting ? "Stop retrying: the run ends on the last failure" : "Stop the attempt in flight, as Esc does"}>
-              {waiting ? "Stop retrying" : "Stop"}
+              title={waiting ? OMP_TR("Stop retrying: the run ends on the last failure") : OMP_TR("Stop the attempt in flight, as Esc does")}>
+              {waiting ? OMP_TR("Stop retrying") : OMP_TR("Stop")}
             </button>
           </div>
           {stop.error && <div className="retry-stop-error">{stop.error}</div>}

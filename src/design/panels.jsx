@@ -52,12 +52,12 @@ function PlanKanban({ kanban, planMeta, onClose, onAbort }) {
             </div>
             {planMeta?.ask && (
               <div className="plan-ask selectable">
-                <span className="mono" style={{ color: "var(--fg-4)" }}>ask &nbsp;</span>
+                <span className="mono" style={{ color: "var(--fg-4)" }}>{OMP_TR("ask")} &nbsp;</span>
                 <span style={{ color: "var(--fg-2)" }}>{planMeta.ask}</span>
               </div>
             )}
           </div>
-          <button className="btn ghost icon" onClick={onClose} title="close (esc)">
+          <button className="btn ghost icon" onClick={onClose} title={OMP_TR("close (esc)")}>
             <Icon name="close" size={11} />
           </button>
         </div>
@@ -65,7 +65,7 @@ function PlanKanban({ kanban, planMeta, onClose, onAbort }) {
         {/* Risks */}
         {planMeta?.risks?.length > 0 && (
           <div className="plan-risks">
-            <span className="mono" style={{ color: "var(--amber)" }}>risks</span>
+            <span className="mono" style={{ color: "var(--amber)" }}>{OMP_TR("risks")}</span>
             {planMeta.risks.map((r, i) => (
               <span key={i} className="chip" style={{
                 color: `var(--${r.tone})`,
@@ -90,7 +90,7 @@ function PlanKanban({ kanban, planMeta, onClose, onAbort }) {
               ))
             : (
               <div style={{ padding: "32px 24px", color: "var(--fg-4)", fontFamily: "var(--font-mono)", fontSize: "var(--d-text-sm)" }}>
-                waiting for agent to write tasks…
+                {OMP_TR("waiting for agent to write tasks…")}
               </div>
             )
           }
@@ -100,20 +100,20 @@ function PlanKanban({ kanban, planMeta, onClose, onAbort }) {
         <div className="kanban-foot mono">
           {phase === "running" && (
             <>
-              <span style={{ color: "var(--fg-4)" }}>agent is executing the plan</span>
+              <span style={{ color: "var(--fg-4)" }}>{OMP_TR("agent is executing the plan")}</span>
               <div style={{ flex: 1 }} />
               <button className="btn danger" onClick={onAbort}>
-                <Icon name="stop" size={10} /> abort
+                <Icon name="stop" size={10} /> {OMP_TR("abort")}
               </button>
             </>
           )}
           {phase === "done" && (
             <>
               <span style={{ color: "var(--accent)" }}>
-                plan complete · {done}/{total} tasks shipped
+                {OMP_TR("plan complete ·")} {done}/{total} {OMP_TR("tasks shipped")}
               </span>
               <div style={{ flex: 1 }} />
-              <button className="btn primary" onClick={onClose}>close</button>
+              <button className="btn primary" onClick={onClose}>{OMP_TR("close")}</button>
             </>
           )}
         </div>
@@ -185,8 +185,8 @@ function KanbanCard({ task, idx, mode }) {
       {mode === "running" && task.status === "in_progress" && (
         <div className="kcard-live mono">
           <span className="dot live" />
-          <span style={{ color: "var(--cyan)" }}>agent is here</span>
-          <span className="shimmer-text" style={{ marginLeft: "auto" }}>writing patch…</span>
+          <span style={{ color: "var(--cyan)" }}>{OMP_TR("agent is here")}</span>
+          <span className="shimmer-text" style={{ marginLeft: "auto" }}>{OMP_TR("writing patch…")}</span>
         </div>
       )}
     </div>

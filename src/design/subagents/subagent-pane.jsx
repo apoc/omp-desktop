@@ -54,7 +54,7 @@ function SaSwimlanes({ agents, now, onSelect }) {
         );
       })}
       <div className="sa-lane-axis">
-        <span>-{Math.round(span / 1000)}s</span><span>-{Math.round(span / 2000)}s</span><span>now</span>
+        <span>-{Math.round(span / 1000)}{OMP_TR("s")}</span><span>-{Math.round(span / 2000)}{OMP_TR("s")}</span><span>{OMP_TR("now")}</span>
       </div>
     </div>
   );
@@ -91,7 +91,7 @@ function SaAgentRow({ agent: a, depth, now, onSelect }) {
       )}
       {failure && <div className="sa-row-err" title={failure}>{failure}</div>}
       <div className="sa-row-foot">
-        <span>{p?.toolCount ?? 0} tools</span>
+        <span>{p?.toolCount ?? 0} {OMP_TR("tools")}</span>
         <span>{window.formatTokens(p?.tokens ?? 0)} tok</span>
         <span>{_SAP.fmtCost(p?.cost ?? 0)}</span>
         <_SAP_Tube progress={p} />
@@ -117,10 +117,10 @@ function SubagentPane({
     <aside className="split sa-pane">
       <div className="split-head">
         <_SAP_Icon name="agent" size={12} color="var(--cyan)" />
-        <span className="mono" style={{ color: "var(--cyan)" }}>subagents</span>
-        <span className="mono" style={{ color: "var(--fg-4)", whiteSpace: "nowrap" }}>· {t.live}/{t.total} live</span>
+        <span className="mono" style={{ color: "var(--cyan)" }}>{OMP_TR("subagents")}</span>
+        <span className="mono" style={{ color: "var(--fg-4)", whiteSpace: "nowrap" }}>· {t.live}/{t.total} {OMP_TR("live")}</span>
         <div style={{ flex: 1 }} />
-        <span className={`chip muted mono sa-level ${level}`} title="RPC subagent subscription level">{level}</span>
+        <span className={`chip muted mono sa-level ${level}`} title={OMP_TR("RPC subagent subscription level")}>{level}</span>
       </div>
 
       {selected ? (
@@ -132,15 +132,15 @@ function SubagentPane({
         <div className="sa-pane-body">
           {t.total === 0 ? (
             <div className="sa-empty" style={{ padding: "24px 8px", textAlign: "center" }}>
-              No subagents in this session yet.<br />They appear here the moment a <span className="mono">task</span> call spawns them.
+              {OMP_TR("No subagents in this session yet.")}<br />{OMP_TR("They appear here the moment a")} <span className="mono">{OMP_TR("task")}</span> {OMP_TR("call spawns them.")}
             </div>
           ) : (
             <>
               <div className="sa-stats">
-                <div className="sa-stat"><span className="sa-stat-k">tokens</span><span className="sa-stat-v">{window.formatTokens(t.tokens)}</span></div>
-                <div className="sa-stat"><span className="sa-stat-k">cost</span><span className="sa-stat-v">{_SAP.fmtCost(t.cost)}</span></div>
-                <div className="sa-stat"><span className="sa-stat-k">tools</span><span className="sa-stat-v">{t.tools}</span></div>
-                <div className="sa-stat"><span className="sa-stat-k">requests</span><span className="sa-stat-v">{t.requests}</span></div>
+                <div className="sa-stat"><span className="sa-stat-k">{OMP_TR("tokens")}</span><span className="sa-stat-v">{window.formatTokens(t.tokens)}</span></div>
+                <div className="sa-stat"><span className="sa-stat-k">{OMP_TR("cost")}</span><span className="sa-stat-v">{_SAP.fmtCost(t.cost)}</span></div>
+                <div className="sa-stat"><span className="sa-stat-k">{OMP_TR("tools")}</span><span className="sa-stat-v">{t.tools}</span></div>
+                <div className="sa-stat"><span className="sa-stat-k">{OMP_TR("requests")}</span><span className="sa-stat-v">{t.requests}</span></div>
               </div>
               <SaSwimlanes agents={all} now={now} onSelect={onSelect} />
               <div className="sa-filters">
@@ -151,15 +151,15 @@ function SubagentPane({
                   </button>
                 ))}
               </div>
-              {groups.length === 0 && <div className="sa-empty">Nothing matches this filter.</div>}
+              {groups.length === 0 && <div className="sa-empty">{OMP_TR("Nothing matches this filter.")}</div>}
               {groups.map(g => (
                 <section key={g.callId ?? "none"} className="sa-group">
                   <button className="sa-group-head" onClick={() => g.callId && onJumpToCall(g.callId)} disabled={!g.callId}>
                     <_SAP_Icon name="agent" size={10} color="var(--fg-4)" />
-                    <span className="mono">task</span>
-                    <span className="mono sa-muted">{g.callId ? g.callId.slice(-6) : "detached"}</span>
-                    <span>· {g.rows.length} agent{g.rows.length === 1 ? "" : "s"}</span>
-                    {g.callId && <span className="sa-jump mono">jump to call ↗</span>}
+                    <span className="mono">{OMP_TR("task")}</span>
+                    <span className="mono sa-muted">{g.callId ? g.callId.slice(-6) : OMP_TR("detached")}</span>
+                    <span>· {window.OMP_I18N.plural(g.rows.length, "{n} agent", "{n} agents", { n: g.rows.length })}</span>
+                    {g.callId && <span className="sa-jump mono">{OMP_TR("jump to call ↗")}</span>}
                   </button>
                   {g.rows.map(r => <SaAgentRow key={r.agent.id} agent={r.agent} depth={r.depth} now={now} onSelect={onSelect} />)}
                 </section>

@@ -20,18 +20,18 @@ function TreeSummary({ model }) {
   return (
     <div className="tree-summary">
       {unknown ? (
-        <div>The provider reports no cache lifetime, so cache status and prices are unknown.</div>
+        <div>{OMP_TR("The provider reports no cache lifetime, so cache status and prices are unknown.")}</div>
       ) : (<>
         <div>
-          <b className="lime">{c.warm + c.expiring}</b> of {c.total} prompts can be re-asked at cache-read price
-          {c.partial > 0 && <>, <b className="cyan">{c.partial}</b> partly cached</>}.
+          {OMP_TR("{warm} of {total} prompts can be re-asked at cache-read price", { warm: c.warm + c.expiring, total: c.total })}
+          {c.partial > 0 && <>, <b className="cyan">{c.partial}</b> {OMP_TR("partly cached")}</>}.
         </div>
         <div className="tree-legend mono">
-          <span><i className="lg warm" />cached</span>
-          <span><i className="lg expiring" />&lt; 10 min</span>
-          <span><i className="lg partial" />partly cached</span>
-          <span><i className="lg cold" />cold</span>
-          <span className="muted">price = re-ask now</span>
+          <span><i className="lg warm" />{OMP_TR("cached")}</span>
+          <span><i className="lg expiring" />{OMP_TR("< 10 min")}</span>
+          <span><i className="lg partial" />{OMP_TR("partly cached")}</span>
+          <span><i className="lg cold" />{OMP_TR("cold")}</span>
+          <span className="muted">{OMP_TR("price = re-ask now")}</span>
         </div>
       </>)}
     </div>
@@ -74,10 +74,10 @@ function ConversationTree({
   return (
     <aside className="tree-drawer">
       <div className="tree-head">
-        <span className="tree-title">conversation tree</span>
+        <span className="tree-title">{OMP_TR("conversation tree")}</span>
         {model && (
           <span className="chip muted mono">
-            {model.counts.total} prompts
+            {model.counts.total} {OMP_TR("prompts")}
             {branches > 1 ? ` · ${branches} branches` : ""}
             {compactions > 0 ? ` · ${compactions} compactions` : ""}
           </span>

@@ -40,26 +40,26 @@ function PrAutomationCard({ automation, available = true, bridge }) {
   };
   const copyLink = async () => {
     if (await window.copyText(pr.url)) close();
-    else setActionError("Could not copy the PR link.");
+    else setActionError(OMP_TR("Could not copy the PR link."));
   };
   const error = automation.error || automation.discoveryError;
   const summary = !available
-    ? "Open a connected project tab to see its pull request."
+    ? OMP_TR("Open a connected project tab to see its pull request.")
     : automation.loading
-      ? "Updating the current branch's pull request…"
+      ? OMP_TR("Updating the current branch's pull request…")
       : error
-        ? "Could not update pull request."
-        : "No open pull request for the current branch.";
+        ? OMP_TR("Could not update pull request.")
+        : OMP_TR("No open pull request for the current branch.");
 
   return (
-    <section className="rail-card glass pr-changes" aria-label="Changes">
+    <section className="rail-card glass pr-changes" aria-label={OMP_TR("Changes")}>
       <div className="pr-changes-head">
         <button
           className="pr-changes-heading"
           aria-expanded={!collapsed}
           onClick={() => setCollapsed((v) => !v)}
         >
-          Changes <window.Icon name={collapsed ? "chevR" : "chev"} size={11} />
+          {OMP_TR("Changes")} <window.Icon name={collapsed ? "chevR" : "chev"} size={11} />
         </button>
       </div>
       {!collapsed &&
@@ -69,7 +69,7 @@ function PrAutomationCard({ automation, available = true, bridge }) {
               className={`pr-changes-icon${pr.isDraft ? " draft" : ""}`}
               role="img"
               aria-label={
-                pr.isDraft ? "Draft pull request" : "Open pull request"
+                pr.isDraft ? OMP_TR("Draft pull request") : OMP_TR("Open pull request")
               }
             >
               <svg
@@ -98,7 +98,7 @@ function PrAutomationCard({ automation, available = true, bridge }) {
               ref={triggerRef}
               className={`pr-changes-more${menuOpen ? " active" : ""}`}
               onClick={openMenu}
-              aria-label={`Actions for pull request #${pr.number}`}
+              aria-label={OMP_TR("Actions for pull request #{n}", { n: pr.number })}
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               aria-controls={menuOpen ? menuId : undefined}
@@ -126,8 +126,8 @@ function PrAutomationCard({ automation, available = true, bridge }) {
               <span
                 className={`pr-changes-dot${error ? " error" : ""}`}
                 role="status"
-                aria-label={error || automation.status}
-                title={`Auto-fix · ${error || automation.status}`}
+                aria-label={OMP_TR(error || automation.status)}
+                title={OMP_TR("Auto-fix · {status}", { status: OMP_TR(error || automation.status) })}
               />
             )}
             {pr.checks.length > 0 && (
@@ -152,7 +152,7 @@ function PrAutomationCard({ automation, available = true, bridge }) {
       )}
       {!collapsed && !pr && automation.enabled && (
         <button className="pr-changes-disable" onClick={automation.toggle}>
-          Turn off Auto-fix
+          {OMP_TR("Turn off Auto-fix")}
         </button>
       )}
       {actionError && !menuOpen && (

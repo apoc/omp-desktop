@@ -58,22 +58,22 @@ function UpdateModal({ updater, busyTabs }) {
       <div className="update-panel" ref={panelRef} tabIndex={-1} onClick={e => e.stopPropagation()}>
         <div className="update-head">
           <_UpdIcon name="arrowUp" size={13} color="var(--accent)" />
-          <span className="mono" style={{ color: "var(--fg-2)" }}>updates · OMP Desktop {version ? `v${version}` : ""}</span>
-          <button className="btn icon ghost" style={{ marginLeft: "auto" }} title="check again"
+          <span className="mono" style={{ color: "var(--fg-2)" }}>{OMP_TR("updates · OMP Desktop")} {version ? `v${version}` : ""}</span>
+          <button className="btn icon ghost" style={{ marginLeft: "auto" }} title={OMP_TR("check again")}
             onClick={updater.check} disabled={U.isBusy(state)}>
             <_UpdIcon name="refresh" size={11} />
           </button>
           {!inFlight && (
-            <button className="btn icon ghost" onClick={close} title="close">
+            <button className="btn icon ghost" onClick={close} title={OMP_TR("close")}>
               <_UpdIcon name="close" size={11} />
             </button>
           )}
         </div>
 
         <div className="update-body">
-          {phase === "idle" && <div className="panel-empty mono">not checked yet</div>}
-          {phase === "checking" && !update && <div className="panel-empty mono">checking for updates…</div>}
-          {phase === "uptodate" && <div className="panel-empty mono">you're on the latest version</div>}
+          {phase === "idle" && <div className="panel-empty mono">{OMP_TR("not checked yet")}</div>}
+          {phase === "checking" && !update && <div className="panel-empty mono">{OMP_TR("checking for updates…")}</div>}
+          {phase === "uptodate" && <div className="panel-empty mono">{OMP_TR("you're on the latest version")}</div>}
           {phase === "error" && <div className="panel-empty mono update-error">{error}</div>}
 
           {update && (
@@ -81,21 +81,21 @@ function UpdateModal({ updater, busyTabs }) {
               <div className="update-title">
                 <span className="mono" style={{ color: "var(--accent)" }}>v{update.version}</span>
                 <span className="mono" style={{ color: "var(--fg-4)" }}>
-                  available{update.date ? ` · ${update.date.slice(0, 10)}` : ""}
+                  {OMP_TR("available")}{update.date ? ` · ${update.date.slice(0, 10)}` : ""}
                 </span>
               </div>
               {update.notes && <pre className="update-notes selectable">{update.notes}</pre>}
-              {error && <div className="update-error mono">{error}</div>}
+              {error && <div className="update-error mono">{OMP_TR(error)}</div>}
               {!update.canInstall && (
                 <div className="update-hint mono">
-                  This installation is managed outside the app (system package or source build) —
-                  download the new version from the release page.
+                  {OMP_TR("This installation is managed outside the app (system package or source build) — download the new version from the release page.")}
                 </div>
               )}
               {update.canInstall && busyTabs > 0 && !inFlight && (
                 <div className="update-hint mono">
-                  {busyTabs === 1 ? "1 tab is" : `${busyTabs} tabs are`} still working — restarting interrupts
-                  {busyTabs === 1 ? " it" : " them"} (unfinished turns and background jobs are lost).
+                  {busyTabs === 1
+                    ? OMP_TR("1 tab is still working — restarting interrupts it (unfinished turns and background jobs are lost).")
+                    : OMP_TR("{n} tabs are still working — restarting interrupts them (unfinished turns and background jobs are lost).", { n: busyTabs })}
                 </div>
               )}
               {inFlight && (
@@ -118,21 +118,21 @@ function UpdateModal({ updater, busyTabs }) {
 
         {update && !inFlight && (
           <div className="update-foot">
-            <button className="btn ghost" onClick={updater.skip} title="hide the notice until a newer version">skip this version</button>
+            <button className="btn ghost" onClick={updater.skip} title={OMP_TR("hide the notice until a newer version")}>{OMP_TR("skip this version")}</button>
             <div style={{ flex: 1 }} />
-            <button className="btn ghost" onClick={close}>later</button>
+            <button className="btn ghost" onClick={close}>{OMP_TR("later")}</button>
             {update.canInstall ? (
               <>
                 <button className="btn outlined" onClick={updater.openRelease}>
-                  <_UpdIcon name="external" size={11} /> release page
+                  <_UpdIcon name="external" size={11} /> {OMP_TR("release page")}
                 </button>
                 <button className="btn primary" onClick={updater.install} disabled={!U.canStartInstall(state)}>
-                  install &amp; restart
+                  {OMP_TR("install & restart")}
                 </button>
               </>
             ) : (
               <button className="btn primary" onClick={updater.openRelease}>
-                <_UpdIcon name="external" size={11} /> open release page
+                <_UpdIcon name="external" size={11} /> {OMP_TR("open release page")}
               </button>
             )}
           </div>

@@ -5,6 +5,8 @@
 // Wrapped in an IIFE so `useTweaks` doesn't leak into document scope.
 (function () {
 
+// app/i18n.js reads the stored `locale` from this key before React mounts
+// (its TWEAKS_KEY): rename both together.
 const STORAGE_KEY = "omp-desktop:tweaks";
 
 function _load(defaults) {

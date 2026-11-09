@@ -48,7 +48,7 @@ function RenameField({ value, onCommit, onClose }) {
     <input ref={inputRef}
       className="rename-field"
       value={draft}
-      aria-label="conversation name"
+      aria-label={OMP_TR("conversation name")}
       spellCheck={false}
       onChange={e => setDraft(e.target.value)}
       onClick={stop} onDoubleClick={stop} onAuxClick={stop}

@@ -16,7 +16,7 @@ function DiffPaths({ msg, onOpenFile }) {
       {paths.map((p, i) => (
         <React.Fragment key={i}>
           {i > 0 && ", "}
-          <button type="button" className="diff-path" onClick={() => onOpenFile?.(p)} title="open in the git browser">{p}</button>
+          <button type="button" className="diff-path" onClick={() => onOpenFile?.(p)} title={OMP_TR("open in the git browser")}>{p}</button>
         </React.Fragment>
       ))}
     </span>
@@ -35,13 +35,13 @@ function _TC_ReadBody({ msg, projectRoot, onPreviewFile }) {
       <div className="tool-foot mono">
         <span style={{ color: "var(--fg-3)" }}>↳</span>
         {previewable ? (
-          <button type="button" className="diff-path" onClick={() => onPreviewFile(target)} title="Preview the file">{msg.target}</button>
+          <button type="button" className="diff-path" onClick={() => onPreviewFile(target)} title={OMP_TR("Preview the file")}>{msg.target}</button>
         ) : (
-          <span className="fp-path-outside" title={target ? "Outside the project: no preview" : undefined}>{msg.target}</span>
+          <span className="fp-path-outside" title={target ? OMP_TR("Outside the project: no preview") : undefined}>{msg.target}</span>
         )}
         {msg.summary && <span style={{ color: "var(--fg-4)" }}>· {msg.summary}</span>}
       </div>
-      <_TC_Thumbs images={msg.images} className="tool-images" alt="image the agent read" />
+      <_TC_Thumbs images={msg.images} className="tool-images" alt={OMP_TR("image the agent read")} />
     </React.Fragment>
   );
 }
@@ -80,7 +80,7 @@ function ScrubbableDiff({ msg, onOpenFile }) {
           <span style={{ color: "var(--diff-add-fg)" }}>+{msg.adds}</span>
           <span style={{ color: "var(--diff-rm-fg)" }}>−{msg.rems}</span>
         </span>
-        <_TC_Copy className="diff-copy" label="Copy diff" text={msg.diffText} />
+        <_TC_Copy className="diff-copy" label={OMP_TR("Copy diff")} text={msg.diffText} />
       </div>
       <div className="diff-body mono">
         <div className="diff-lines">
@@ -100,7 +100,7 @@ function ScrubbableDiff({ msg, onOpenFile }) {
         </div>
       </div>
       <div className="diff-track-wrap">
-        <span className="mono" style={{ color: "var(--fg-4)", fontSize: "var(--d-text-xs)" }}>scrub</span>
+        <span className="mono" style={{ color: "var(--fg-4)", fontSize: "var(--d-text-xs)" }}>{OMP_TR("scrub")}</span>
         <div className="diff-track" ref={trackRef}
           onMouseMove={onScrub} onMouseLeave={() => setHover(null)}>
           <div className="diff-track-base" />
@@ -168,7 +168,7 @@ function TaskAgentRow({ sa, onInspect }) {
           {hasBody && <_TC_Icon name={isOpen ? "chev" : "chevR"} size={10} color="var(--fg-4)" />}
         </button>
         {onInspect && sa.id && (
-          <button className="btn icon ghost ta-inspect" title="inspect in subagent manager" onClick={() => onInspect(sa.id)}>
+          <button className="btn icon ghost ta-inspect" title={OMP_TR("inspect in subagent manager")} onClick={() => onInspect(sa.id)}>
             <_TC_Icon name="focus" size={11} />
           </button>
         )}
@@ -194,6 +194,7 @@ function TaskPanel({ subagents, onInspect }) {
 // too short to collapse (app/chat-collapse.js). Collapsed, the body keeps a
 // few lines in view: bash its last ones, everything else its first.
 function ToolCard({ msg, idx, highlighted, onInspectSubagent, onOpenFile, onPreviewFile, projectRoot, collapsed, onToggleCollapse }) {
+  window.OMP_I18N.useLocale();
   const meta    = _TC_TOOL_META[msg.tool] || { color: "var(--fg-3)", icon: "circle", label: msg.tool };
   const running = msg.status === "running";
   const bashLines = collapsed && msg.output ? _TC_bashPreview(msg.output) : msg.output;
@@ -214,11 +215,11 @@ function ToolCard({ msg, idx, highlighted, onInspectSubagent, onOpenFile, onPrev
           <div className="tool-card-spacer" />
           {running ? (
             <span className="chip accent" style={{ animation: "pulseDot 1.4s infinite" }}>
-              <span className="dot live" /> running
+              <span className="dot live" /> {OMP_TR("running")}
             </span>
           ) : (
             <span className="chip muted">
-              <span className="mono">{msg.duration}ms</span>
+              <span className="mono">{msg.duration}{OMP_TR("ms")}</span>
             </span>
           )}
           <span className="chip muted mono">{msg.time}</span>
@@ -234,7 +235,7 @@ function ToolCard({ msg, idx, highlighted, onInspectSubagent, onOpenFile, onPrev
                 <div key={i} className={`search-row ${p.hot ? "hot" : ""}`}>
                   <_TC_Icon name="file" size={11} color={p.hot ? "var(--accent)" : "var(--fg-3)"} />
                   <span className="mono" style={{ color: p.hot ? "var(--fg)" : "var(--fg-2)" }}>{p.file}</span>
-                  <span className="mono" style={{ color: "var(--fg-4)", marginLeft: "auto" }}>{p.hits} hits</span>
+                  <span className="mono" style={{ color: "var(--fg-4)", marginLeft: "auto" }}>{p.hits} {OMP_TR("hits")}</span>
                 </div>
               ))}
             </div>
@@ -257,13 +258,13 @@ function ToolCard({ msg, idx, highlighted, onInspectSubagent, onOpenFile, onPrev
               <DiffPaths msg={msg} onOpenFile={onOpenFile} />
               <span style={{ color: "var(--diff-add-fg)", marginLeft: 8 }} className="mono">+{msg.adds || 0}</span>
               <span style={{ color: "var(--diff-rm-fg)", marginLeft: 4 }} className="mono">−{msg.rems || 0}</span>
-              {running && <span className="shimmer-text" style={{ marginLeft: "auto" }}>writing patch…</span>}
+              {running && <span className="shimmer-text" style={{ marginLeft: "auto" }}>{OMP_TR("writing patch…")}</span>}
             </div>
           )}
 
           {msg.tool === "bash" && bashLines && (
             // Copies the whole output, not just the lines shown.
-            <_TC_CopyHost label="Copy output" text={msg.outputText}>
+            <_TC_CopyHost label={OMP_TR("Copy output")} text={msg.outputText}>
               <pre className="tool-bash mono selectable">
                 {bashLines.map((l, i) => (
                   <div key={i} style={{ color: `var(--${l.color})` }}>{l.line}</div>

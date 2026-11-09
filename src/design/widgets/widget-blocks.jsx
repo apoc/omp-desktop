@@ -75,7 +75,7 @@ function WidgetList({ block, onInsert, insertCfg }) {
       <div className="wdg-list">
         {shown.map((it, i) => <WidgetItem key={i} item={it} now={now} onInsert={onInsert} insertCfg={insertCfg} />)}
         {shown.length < items.length && (
-          <button className="btn ghost wdg-more" onClick={() => setExpanded(true)}>+{items.length - shown.length} more</button>
+          <button className="btn ghost wdg-more" onClick={() => setExpanded(true)}>+{items.length - shown.length} {OMP_TR("more")}</button>
         )}
       </div>
     </>
@@ -160,6 +160,7 @@ function WidgetBlock({ block, onInsert, insertCfg }) {
 // plugins snapshot (a `widgets_state` refetch gives `insertCfg` a new
 // identity). `onInsert(text, action)`: `action` from insertAction.
 const WidgetBlocks = React.memo(function WidgetBlocks({ blocks, onInsert, insertCfg }) {
+  window.OMP_I18N.useLocale();
   return <>{blocks.map((b, i) => <WidgetBlock key={i} block={b} onInsert={onInsert} insertCfg={insertCfg} />)}</>;
 });
 

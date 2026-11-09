@@ -29,7 +29,7 @@ const CommentForm = ({ block, initial, onSave, onCancel }) => {
     <div className="plan-comment-form">
       <div className="plan-comment-form-quote mono">{block.raw.split("\n")[0].trim().slice(0, 80)}{block.raw.length > 80 ? "…" : ""}</div>
       <textarea ref={ref} className="plan-comment-form-area"
-        value={text} placeholder="your comment…"
+        value={text} placeholder={OMP_TR("your comment…")}
         onChange={e => setText(e.target.value)}
         onKeyDown={e => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onSave(text.trim()); }
@@ -39,13 +39,13 @@ const CommentForm = ({ block, initial, onSave, onCancel }) => {
       <div className="plan-comment-form-foot">
         {initial && (
           <button className="btn ghost" style={{ color: "var(--rose)" }} onClick={() => onSave(null)}>
-            <_PA_Icon name="trash" size={9} /> remove
+            <_PA_Icon name="trash" size={9} /> {OMP_TR("remove")}
           </button>
         )}
         <div style={{ flex: 1 }} />
-        <button className="btn ghost" onClick={onCancel}>cancel</button>
+        <button className="btn ghost" onClick={onCancel}>{OMP_TR("cancel")}</button>
         <button className="btn outlined" onClick={() => onSave(text.trim())} disabled={!text.trim() && !initial}>
-          save <span className="kbd" style={{ marginLeft: 2 }}>⌘↵</span>
+          {OMP_TR("save")} <span className="kbd" style={{ marginLeft: 2 }}>⌘↵</span>
         </button>
       </div>
     </div>
@@ -59,7 +59,7 @@ const AnnotablePlan = ({ text, annotations, onAnnotate }) => {
 
   if (blocks.length === 0) return (
     <div className="md-content selectable" style={{ color: "var(--fg-4)", fontFamily: "var(--font-mono)", fontSize: "var(--d-text-sm)" }}>
-      (no plan content yet)
+      {OMP_TR("(no plan content yet)")}
     </div>
   );
 

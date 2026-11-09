@@ -26,16 +26,16 @@ function TreeCompare({ row, now }) {
   return (
     <div className="tree-compare">
       <div className="cmp now">
-        <div className="cmp-k">re-ask now</div>
+        <div className="cmp-k">{OMP_TR("re-ask now")}</div>
         <div className="cmp-v">{nowValue}</div>
         <div className="cmp-d">{treeNowDesc(row)}</div>
       </div>
       {later && (<>
-        <div className="cmp-arrow">after {F.when(row.until, now)} →</div>
+        <div className="cmp-arrow">{OMP_TR("after")} {F.when(row.until, now)} →</div>
         <div className="cmp later">
-          <div className="cmp-k">in {F.dur(row.until - now)}</div>
+          <div className="cmp-k">{OMP_TR("in")} {F.dur(row.until - now)}</div>
           <div className="cmp-v">{F.price(row.coldPrice)}</div>
-          <div className="cmp-d">writes {F.tokens(row.coldWriteTokens)} tokens again</div>
+          <div className="cmp-d">{OMP_TR("writes")} {F.tokens(row.coldWriteTokens)} {OMP_TR("tokens again")}</div>
         </div>
       </>)}
     </div>
@@ -53,8 +53,8 @@ function TreeDetail({ row, tips, now, since, streaming, onBranch, onFork, onOpen
     setError(null);
     try {
       const res = await action();
-      if (res?.cancelled) setError("Cancelled by omp.");
-      else if (res && res.ok === false) setError(res.error || "omp refused the request.");
+      if (res?.cancelled) setError(OMP_TR("Cancelled by omp."));
+      else if (res && res.ok === false) setError(res.error || OMP_TR("omp refused the request."));
     } catch (e) {
       setError(String(e?.message ?? e));
     } finally {
@@ -73,7 +73,7 @@ function TreeDetail({ row, tips, now, since, streaming, onBranch, onFork, onOpen
   return (
     <div className={`tree-detail s-${row.state}`}>
       <div className="tree-detail-title">
-        Re-ask “{title}” <span className="tree-time mono">{F.when(row.ts, now)}</span>
+        {OMP_TR("Re-ask “")}{title}” <span className="tree-time mono">{F.when(row.ts, now)}</span>
       </div>
       <TreeCompare row={row} now={now} />
       {row.staleProcess && <div className="tree-note">{F.staleNote(since, now)}</div>}
@@ -82,20 +82,20 @@ function TreeDetail({ row, tips, now, since, streaming, onBranch, onFork, onOpen
           <button className="btn primary" disabled={blocked}
             title={wait ?? "Start a new session before this prompt and put the prompt back in the composer."}
             onClick={() => run(() => onBranch(row.id))}>
-            <_TD_Icon name="branch" size={11} /> Branch here
+            <_TD_Icon name="branch" size={11} /> {OMP_TR("Branch here")}
           </button>
         )}
         {row.inCurrent && row.forkEntryId && (
           <button className="btn outlined" disabled={blocked}
             title={wait ?? "Continue in a new session file that keeps this prompt and its reply."}
             onClick={() => run(() => onFork(row.forkEntryId))}>
-            Fork after the reply
+            {OMP_TR("Fork after the reply")}
           </button>
         )}
         {row.openFile && (
           <button className="btn outlined" disabled={busy} title={TREE_OPEN_TITLE}
             onClick={() => run(() => onOpenFile(row.openFile))}>
-            Open in new tab{openPrice ? ` · cold ${openPrice}` : ""}
+            {OMP_TR("Open in new tab")}{openPrice ? ` · cold ${openPrice}` : ""}
           </button>
         )}
       </div>

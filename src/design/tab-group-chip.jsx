@@ -81,17 +81,17 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
       <span className="tab-name" title={group.path}>{group.name}</span>
       <span className="tab-count">{group.tabs.length}</span>
       {profile && (
-        <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
+        <span className="chip muted tab-profile" title={`${OMP_TR("profile:")} ${profile}`}>{profile}</span>
       )}
       <button ref={triggerRef} className="tab-group-trigger"
-        title="conversations in this project"
+        title={OMP_TR("conversations in this project")}
         aria-haspopup="menu" aria-expanded={open}
         onClick={e => { e.stopPropagation(); if (open) close(); else setOpen(true); }}>
         <Icon name="chev" size={9} />
       </button>
       {/* Old WebKit reports a middle click as `click` with button 1 (see the
           root): it must not close anything, as on the rest of the chip. */}
-      <button className="tab-close" title={`close conversation "${closeTarget.name}"`}
+      <button className="tab-close" title={OMP_TR("close conversation \"{name}\"", { name: closeTarget.name })}
         onClick={e => { e.stopPropagation(); if (e.button !== 1) onClose?.(closeTarget.id); }}>
         <Icon name="close" size={9} />
       </button>
@@ -116,14 +116,14 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
                 </button>
               )}
               {onRename && renaming !== t.id && (
-                <button className="tab-close" title="rename conversation"
+                <button className="tab-close" title={OMP_TR("rename conversation")}
                   onClick={() => { onSelect(t.id); setRenaming(t.id); }}>
                   <Icon name="edit" size={9} />
                 </button>
               )}
               {/* Stays open: the rest of the group is still listed, and when
                   fewer than two tabs remain the whole chip unmounts. */}
-              <button className="tab-close" title="close tab" onClick={() => onClose?.(t.id)}>
+              <button className="tab-close" title={OMP_TR("close tab")} onClick={() => onClose?.(t.id)}>
                 <Icon name="close" size={9} />
               </button>
             </div>
@@ -132,7 +132,7 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
           <button className="tab-group-item" role="menuitem"
             onClick={() => { onNewInProject?.(group.path, group.profile); close(); }}>
             <span className="tab-group-dot"><Icon name="plus" size={10} /></span>
-            <span className="tab-name">new conversation</span>
+            <span className="tab-name">{OMP_TR("new conversation")}</span>
           </button>
         </div>
       )}

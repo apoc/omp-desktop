@@ -50,6 +50,16 @@
   <script src="highlight.min.js"></script>
   <script src="app/marked-setup.js"></script>
 
+  <!-- i18n: app/i18n.js is a dependency-free IIFE defining window.OMP_I18N
+       and the call-site shorthand window.OMP_TR; app/i18n-<code>.js
+       registers one dictionary. Both must load before every module that
+       calls OMP_TR (settings-schema.js searches translated labels too), and
+       before any Babel file that does — the string is looked up at render
+       time, the global at call time. Read the stored `locale` tweak at
+       init so the first paint is already in the chosen language. -->
+  <script src="app/i18n.js"></script>
+  <script src="app/i18n-zh.js"></script>
+
   <!-- App constants. Dependency-free IIFE, loaded before the design
        components: profile-menu.jsx, chrome.jsx and thinking-menu.jsx
        destructure DEFAULT_PROFILE_ID / THINKING_LEVELS at top level,

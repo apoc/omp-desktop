@@ -14,10 +14,10 @@ function _SRR_parsePort(text) {
 }
 
 function _SRR_statusText(status) {
-  if (!status) return "reading status…";
+  if (!status) return OMP_TR("reading status…");
   if (status.error) return status.error;
-  if (status.listening) return `listening on ${status.url ?? status.ip ?? ""}`;
-  return status.enabled ? "starting…" : "off";
+  if (status.listening) return OMP_TR("listening on {where}", { where: status.url ?? status.ip ?? "" });
+  return status.enabled ? OMP_TR("starting…") : OMP_TR("off");
 }
 
 function _SRR_Server({ row, ctx, query }) {
@@ -29,27 +29,27 @@ function _SRR_Server({ row, ctx, query }) {
   return (
     <Row label={row.label} desc={row.desc} query={query} stack>
       <div className="st-rem">
-        <_SRR_Line label="Enable">
-          <Toggle value={!!s?.enabled} label="Enable remote access" onChange={v => apply({ enabled: v })} />
+        <_SRR_Line label={OMP_TR("Enable")}>
+          <Toggle value={!!s?.enabled} label={OMP_TR("Enable remote access")} onChange={v => apply({ enabled: v })} />
         </_SRR_Line>
-        <_SRR_Line label="Interface">
-          <select className="st-rem-input" value={s?.interface ?? ""} disabled={!s} aria-label="Network interface"
+        <_SRR_Line label={OMP_TR("Interface")}>
+          <select className="st-rem-input" value={s?.interface ?? ""} disabled={!s} aria-label={OMP_TR("Network interface")}
             onChange={e => apply({ interface: e.target.value || null })}>
-            <option value="">choose…</option>
-            {s?.interface && !known && <option value={s.interface}>{s.interface} (not found)</option>}
+            <option value="">{OMP_TR("choose…")}</option>
+            {s?.interface && !known && <option value={s.interface}>{s.interface} {OMP_TR("(not found)")}</option>}
             {ifaces.map(i => <option key={i.name} value={i.name}>{i.name} · {i.ip}</option>)}
           </select>
         </_SRR_Line>
-        <_SRR_Line label="Port">
-          <_SRR_Field value={String(s?.port ?? "")} label="Port" width={90} disabled={!s}
+        <_SRR_Line label={OMP_TR("Port")}>
+          <_SRR_Field value={String(s?.port ?? "")} label={OMP_TR("Port")} width={90} disabled={!s}
             onCommit={text => {
               const port = _SRR_parsePort(text);
               if (port === null) return false;
               apply({ port });
             }} />
         </_SRR_Line>
-        <_SRR_Line label="Host name">
-          <_SRR_Field value={s?.hostName ?? ""} label="Host name" placeholder="e.g. omp.home.lan" width={240} disabled={!s}
+        <_SRR_Line label={OMP_TR("Host name")}>
+          <_SRR_Field value={s?.hostName ?? ""} label={OMP_TR("Host name")} placeholder={OMP_TR("e.g. omp.home.lan")} width={240} disabled={!s}
             onCommit={text => apply({ hostName: text.trim() || null })} />
         </_SRR_Line>
         <div className={`st-rem-status${status?.error ? " err" : ""}`}>{_SRR_statusText(status)}</div>
@@ -73,27 +73,27 @@ function _SRR_Cert({ row, ctx, query }) {
   return (
     <Row label={row.label} desc={row.desc} query={query} stack>
       <div className="st-rem">
-        <_SRR_Line label="Source">
-          <Seg label="Certificate source" value={own ? "files" : "generated"}
+        <_SRR_Line label={OMP_TR("Source")}>
+          <Seg label={OMP_TR("Certificate source")} value={own ? "files" : "generated"}
             options={[{ value: "generated", label: "generated" }, { value: "files", label: "own files" }]}
             onChange={v => { if (v === "generated") { setDraftOwn(false); apply({ cert: { kind: "generated" } }); } else setDraftOwn(true); }} />
         </_SRR_Line>
         {own && (
           <>
-            <_SRR_Line label="Certificate (PEM)">
-              <input className="st-rem-input" type="text" value={files.cert} aria-label="Certificate file path" spellCheck={false}
+            <_SRR_Line label={OMP_TR("Certificate (PEM)")}>
+              <input className="st-rem-input" type="text" value={files.cert} aria-label={OMP_TR("Certificate file path")} spellCheck={false}
                 style={{ width: 320 }} onChange={e => setFiles(f => ({ ...f, cert: e.target.value }))} />
             </_SRR_Line>
-            <_SRR_Line label="Private key (PEM)">
-              <input className="st-rem-input" type="text" value={files.key} aria-label="Private key file path" spellCheck={false}
+            <_SRR_Line label={OMP_TR("Private key (PEM)")}>
+              <input className="st-rem-input" type="text" value={files.key} aria-label={OMP_TR("Private key file path")} spellCheck={false}
                 style={{ width: 320 }} onChange={e => setFiles(f => ({ ...f, key: e.target.value }))} />
             </_SRR_Line>
-            <div className="st-btns"><Btn onClick={saveFiles} disabled={!files.cert.trim() || !files.key.trim()}>Use these files</Btn></div>
+            <div className="st-btns"><Btn onClick={saveFiles} disabled={!files.cert.trim() || !files.key.trim()}>{OMP_TR("Use these files")}</Btn></div>
           </>
         )}
         {!own && (
           <div className="st-btns">
-            <Btn onClick={() => run(() => ctx.bridge.remoteRegenerateCert())} disabled={!s}>Regenerate</Btn>
+            <Btn onClick={() => run(() => ctx.bridge.remoteRegenerateCert())} disabled={!s}>{OMP_TR("Regenerate")}</Btn>
           </div>
         )}
         {status?.fingerprint && <_SRR_Line label="SHA-256"><span className="st-path">{status.fingerprint}</span></_SRR_Line>}

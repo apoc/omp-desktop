@@ -14,10 +14,11 @@
 
 const { KEYMAP_ACTIONS: _SKE_ACTIONS, formatChord: _SKE_fmt } = window.OMP_KEYMAP;
 
-/** `KEYMAP_ACTIONS` label lookup shared by the conflict-refusal message
- *  (record listener) and the row's own conflict warning. */
+/** `KEYMAP_ACTIONS` label lookup, translated, shared by the conflict-refusal
+ *  message (record listener) and the row's own conflict warning. */
 function _SKE_labelFor(id) {
-  return _SKE_ACTIONS.find(a => a.id === id)?.label ?? id;
+  const label = _SKE_ACTIONS.find(a => a.id === id)?.label;
+  return label ? OMP_TR(label) : id;
 }
 
 /** Whether `action` matches the lowercased filter `lq`: label, id or one
@@ -25,6 +26,7 @@ function _SKE_labelFor(id) {
 function _SKE_matches(action, lq) {
   if (!lq) return true;
   if (action.label.toLowerCase().includes(lq)) return true;
+  if (OMP_TR(action.label).toLowerCase().includes(lq)) return true;
   if (action.id.toLowerCase().includes(lq)) return true;
   return window.OMP_KEYMAP.keysFor(action.id).some(c => _SKE_fmt(c).toLowerCase().includes(lq));
 }
@@ -38,28 +40,28 @@ function _SKE_Row({ action, chords, src, recording, rowError, conflict, disabled
       <Row label={action.label} desc={`\`${action.id}\``} query={query} className="st-kb-row">
         <div className="st-kb-ctl">
           {recording
-            ? <span className="st-kb-recording mono" data-st-esc="">press a chord · esc cancels</span>
+            ? <span className="st-kb-recording mono" data-st-esc="">{OMP_TR("press a chord · esc cancels")}</span>
             : (
               <div className="st-chords">
                 {chords.length
                   ? chords.map(c => <span className="st-kbd" key={c}>{_SKE_fmt(c)}</span>)
-                  : <span className="st-kb-unbound mono">unbound</span>}
+                  : <span className="st-kb-unbound mono">{OMP_TR("unbound")}</span>}
               </div>
             )}
           <span className={`st-srcchip ${src}`}>{src}</span>
           <div className="st-kb-actions">
-            <button type="button" className="st-ghost" disabled={disabled} onClick={onRebind}>rebind</button>
-            <button type="button" className="st-ghost" disabled={disabled} onClick={onAddChord}>+ chord</button>
-            <button type="button" className="st-ghost" disabled={disabled} onClick={onClear}>clear</button>
+            <button type="button" className="st-ghost" disabled={disabled} onClick={onRebind}>{OMP_TR("rebind")}</button>
+            <button type="button" className="st-ghost" disabled={disabled} onClick={onAddChord}>{OMP_TR("+ chord")}</button>
+            <button type="button" className="st-ghost" disabled={disabled} onClick={onClear}>{OMP_TR("clear")}</button>
             {src === "desktop" && (
-              <button type="button" className="st-ghost" disabled={disabled} onClick={onReset}>reset</button>
+              <button type="button" className="st-ghost" disabled={disabled} onClick={onReset}>{OMP_TR("reset")}</button>
             )}
           </div>
         </div>
       </Row>
       {(rowError || conflict) && (
         <div className="st-kb-warn">
-          {rowError || <>also bound to &ldquo;{_SKE_labelFor(conflict.actions[0])}&rdquo; — that binding wins</>}
+          {rowError || OMP_TR("also bound to “{name}” — that binding wins", { name: _SKE_labelFor(conflict.actions[0]) })}
         </div>
       )}
     </>
@@ -135,7 +137,7 @@ function ShortcutsEditor({ ctx, query }) {
 
       const existing = window.OMP_KEYMAP.lookup(chord);
       if (existing && existing !== recordingId) {
-        setRowError({ id: recordingId, message: `${_SKE_fmt(chord)} is already bound to \u201c${_SKE_labelFor(existing)}\u201d — clear that binding first.` });
+        setRowError({ id: recordingId, message: OMP_TR("{chord} is already bound to “{name}” — clear that binding first.", { chord: _SKE_fmt(chord), name: _SKE_labelFor(existing) }) });
         setRecordingId(null);
         return;
       }
@@ -166,20 +168,19 @@ function ShortcutsEditor({ ctx, query }) {
   return (
     <div className="st-kb">
       <div className="st-kb-top">
-        <input className="st-kb-filter mono" placeholder="filter actions or chords…" value={filter}
-          aria-label="filter shortcuts" onChange={e => setFilter(e.target.value)} />
+        <input className="st-kb-filter mono" placeholder={OMP_TR("filter actions or chords…")} value={filter}
+          aria-label={OMP_TR("filter shortcuts")} onChange={e => setFilter(e.target.value)} />
       </div>
       {keymap.error && (
         <div className="st-kb-banner">
-          Shortcuts are running on omp config + defaults. Rebinding is disabled until the overlay file is
-          fixed or deleted: <span className="mono st-kb-path">{overlayPath}</span>
+          {OMP_TR("Shortcuts are running on omp config + defaults. Rebinding is disabled until the overlay file is fixed or deleted:")} <span className="mono st-kb-path">{overlayPath}</span>
         </div>
       )}
       {grouped.length === 0
-        ? <div className="st-kb-empty">no matching action</div>
+        ? <div className="st-kb-empty">{OMP_TR("no matching action")}</div>
         : grouped.map(group => (
           <div className="st-kb-group" key={group.name}>
-            <div className="st-kb-group-name">{group.name}</div>
+            <div className="st-kb-group-name">{OMP_TR(group.name)}</div>
             {group.actions.map(a => (
               <_SKE_Row
                 key={a.id}
@@ -200,9 +201,9 @@ function ShortcutsEditor({ ctx, query }) {
           </div>
         ))}
       <div className="st-kb-foot mono">
-        <span>desktop overrides → <span className="st-kb-path">{overlayPath}</span></span>
+        <span>{OMP_TR("desktop overrides →")} <span className="st-kb-path">{overlayPath}</span></span>
         <span>omp → <span className="st-kb-path">{ompPath}</span>
-          {inherited && <span className="st-kb-dim"> + inherits {inherited}</span>}
+          {inherited && <span className="st-kb-dim"> {OMP_TR("+ inherits")} {inherited}</span>}
         </span>
       </div>
     </div>

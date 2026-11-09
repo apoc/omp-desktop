@@ -26,18 +26,18 @@ function _SRR_PairDialog({ pair, active = true, onClose }) {
   const src = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(pair.svg)))}`;
   return (
     <div className="bridge-scrim" onClick={onClose} style={{ paddingTop: "12vh" }}>
-      <div className="st-rem-dialog" role="dialog" aria-label="Pair a phone" data-st-esc="" onClick={e => e.stopPropagation()}>
+      <div className="st-rem-dialog" role="dialog" aria-label={OMP_TR("Pair a phone")} data-st-esc="" onClick={e => e.stopPropagation()}>
         <div className="st-rem-dialog-head">
-          <span>Pair a phone</span>
-          <button type="button" className="st-ghost" onClick={onClose} title="close"><_SRR_Icon name="close" size={11} /></button>
+          <span>{OMP_TR("Pair a phone")}</span>
+          <button type="button" className="st-ghost" onClick={onClose} title={OMP_TR("close")}><_SRR_Icon name="close" size={11} /></button>
         </div>
         {left > 0 ? (
           <>
-            <img className="st-rem-qr" src={src} alt="Pairing QR code" width={240} height={240} />
+            <img className="st-rem-qr" src={src} alt={OMP_TR("Pairing QR code")} width={240} height={240} />
             <div className="st-path">{pair.url}</div>
-            <div className="st-rem-status">Scan with the phone camera · valid {left}s · one use</div>
+            <div className="st-rem-status">{OMP_TR("Scan with the phone camera · valid")} {left}{OMP_TR("s · one use")}</div>
           </>
-        ) : <div className="st-rem-status err">The code expired. Close this dialog and pair again.</div>}
+        ) : <div className="st-rem-status err">{OMP_TR("The code expired. Close this dialog and pair again.")}</div>}
       </div>
     </div>
   );
@@ -79,7 +79,7 @@ function _SRR_Pair({ row, ctx, query }) {
   return (
     <Row label={row.label} desc={row.desc} query={query}>
       <Btn accent onClick={start} disabled={!status?.listening || busy || !!pair}
-        title={status?.listening ? undefined : "Enable remote access first"}>Pair a phone…</Btn>
+        title={status?.listening ? undefined : "Enable remote access first"}>{OMP_TR("Pair a phone…")}</Btn>
       {pair && <_SRR_PairDialog pair={pair} active={ctx.active !== false} onClose={close} />}
       {error && <div className="st-row-error">{error}</div>}
     </Row>
@@ -91,15 +91,15 @@ function _SRR_Device({ device, onRename, onRevoke }) {
   const [asking, setAsking] = React.useState(false);
   return (
     <div className="st-rem-dev">
-      <_SRR_Field value={device.name} label="Device name" mono={false} width={220} onCommit={text => text.trim() && onRename(device.id, text.trim())} />
-      <span className="st-rem-sub">{device.connected ? "connected" : "offline"}{device.pushSubscribed ? " · push" : ""}</span>
+      <_SRR_Field value={device.name} label={OMP_TR("Device name")} mono={false} width={220} onCommit={text => text.trim() && onRename(device.id, text.trim())} />
+      <span className="st-rem-sub">{device.connected ? OMP_TR("connected") : OMP_TR("offline")}{device.pushSubscribed ? ` · ${OMP_TR("push")}` : ""}</span>
       <div className="st-btns" style={{ marginLeft: "auto" }}>
         {asking ? (
           <>
-            <Btn accent onClick={() => { setAsking(false); onRevoke(device.id); }}>Confirm revoke</Btn>
-            <Btn onClick={() => setAsking(false)}>Keep</Btn>
+            <Btn accent onClick={() => { setAsking(false); onRevoke(device.id); }}>{OMP_TR("Confirm revoke")}</Btn>
+            <Btn onClick={() => setAsking(false)}>{OMP_TR("Keep")}</Btn>
           </>
-        ) : <Btn onClick={() => setAsking(true)}>Revoke</Btn>}
+        ) : <Btn onClick={() => setAsking(true)}>{OMP_TR("Revoke")}</Btn>}
       </div>
     </div>
   );
@@ -112,7 +112,7 @@ function _SRR_Devices({ row, ctx, query }) {
   return (
     <Row label={row.label} desc={row.desc} query={query} stack>
       <div className="st-rem">
-        {devices.length === 0 && <div className="st-rem-status">No phone paired yet.</div>}
+        {devices.length === 0 && <div className="st-rem-status">{OMP_TR("No phone paired yet.")}</div>}
         {devices.map(d => (
           <_SRR_Device key={d.id} device={d}
             onRename={(id, name) => run(() => ctx.bridge.remoteDeviceRename(id, name))}
@@ -136,30 +136,30 @@ function _SRR_Push({ row, ctx, query }) {
   return (
     <Row label={row.label} desc={row.desc} query={query} stack>
       <div className="st-rem">
-        <_SRR_Line label="Enable push">
-          <Toggle value={!!push?.enabled} label="Enable push notifications"
+        <_SRR_Line label={OMP_TR("Enable push")}>
+          <Toggle value={!!push?.enabled} label={OMP_TR("Enable push notifications")}
             onChange={v => apply(base => ({ push: v ? { enabled: true, contact: (base.push?.contact || suggest).trim() } : { enabled: false } }))} />
         </_SRR_Line>
-        <_SRR_Line label="A question is waiting">
-          <Toggle value={!!push?.questions} label="Notify on questions" onChange={v => set({ questions: v })} />
+        <_SRR_Line label={OMP_TR("A question is waiting")}>
+          <Toggle value={!!push?.questions} label={OMP_TR("Notify on questions")} onChange={v => set({ questions: v })} />
         </_SRR_Line>
-        <_SRR_Line label="A turn finished">
-          <Toggle value={!!push?.finished} label="Notify on finished turns" onChange={v => set({ finished: v })} />
+        <_SRR_Line label={OMP_TR("A turn finished")}>
+          <Toggle value={!!push?.finished} label={OMP_TR("Notify on finished turns")} onChange={v => set({ finished: v })} />
         </_SRR_Line>
         {status?.lockDetection && (
-          <_SRR_Line label="Only while the desktop is locked">
-            <Toggle value={!!push?.onlyWhenLocked} label="Notify only while the desktop is locked" onChange={v => set({ onlyWhenLocked: v })} />
+          <_SRR_Line label={OMP_TR("Only while the desktop is locked")}>
+            <Toggle value={!!push?.onlyWhenLocked} label={OMP_TR("Notify only while the desktop is locked")} onChange={v => set({ onlyWhenLocked: v })} />
           </_SRR_Line>
         )}
-        <_SRR_Line label="Contact (VAPID)">
-          <_SRR_Field value={contact} label="Push contact" placeholder="you@example.com" width={240} disabled={!push}
+        <_SRR_Line label={OMP_TR("Contact (VAPID)")}>
+          <_SRR_Field value={contact} label={OMP_TR("Push contact")} placeholder="you@example.com" width={240} disabled={!push}
             onCommit={text => set({ contact: text.trim() })} />
         </_SRR_Line>
         {generated && (
-          <div className="st-rem-warn">Push needs a certificate the phone trusts. A generated certificate is not trusted by default; use your own files.</div>
+          <div className="st-rem-warn">{OMP_TR("Push needs a certificate the phone trusts. A generated certificate is not trusted by default; use your own files.")}</div>
         )}
         <div className="st-btns">
-          <Btn onClick={() => run(() => ctx.bridge.remotePushTest())} disabled={!push?.enabled}>Send test notification</Btn>
+          <Btn onClick={() => run(() => ctx.bridge.remotePushTest())} disabled={!push?.enabled}>{OMP_TR("Send test notification")}</Btn>
         </div>
         {status?.pushError && <div className="st-row-error">{status.pushError}</div>}
         {error && <div className="st-row-error">{error}</div>}

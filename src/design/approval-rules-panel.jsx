@@ -47,24 +47,24 @@ function ApprovalRulesPanel({ onClose, activeProject, sessions, approvalModes })
       <div className="rules-panel" onClick={e => e.stopPropagation()}>
         <div className="rules-head">
           <_RulesIcon name="check" size={13} color="var(--accent)" />
-          <span className="mono" style={{ color: "var(--fg-2)" }}>approvals</span>
-          <button className="btn icon ghost" style={{ marginLeft: "auto" }} onClick={refresh} title="refresh">
+          <span className="mono" style={{ color: "var(--fg-2)" }}>{OMP_TR("approvals")}</span>
+          <button className="btn icon ghost" style={{ marginLeft: "auto" }} onClick={refresh} title={OMP_TR("refresh")}>
             <_RulesIcon name="refresh" size={11} />
           </button>
-          <button className="btn icon ghost" onClick={onClose} title="close">
+          <button className="btn icon ghost" onClick={onClose} title={OMP_TR("close")}>
             <_RulesIcon name="close" size={11} />
           </button>
         </div>
         <div className="rules-body">
-          <div className="panel-sect-hd">tool approval mode</div>
+          <div className="panel-sect-hd">{OMP_TR("tool approval mode")}</div>
           <_RulesModeSection view={approvalModes} activeProject={activeProject} sessions={sessions} />
-          <div className="panel-sect-hd">standing rules</div>
-          {loading && rules.length === 0 && <div className="panel-empty mono">loading…</div>}
+          <div className="panel-sect-hd">{OMP_TR("standing rules")}</div>
+          {loading && rules.length === 0 && <div className="panel-empty mono">{OMP_TR("loading…")}</div>}
           {!loading && rules.length === 0 && (
             <div className="panel-empty mono">
               {activeProject
-                ? "no standing rules yet — grant one from an \"Allow tool\" prompt"
-                : "open a tab to see its session and project rules"}
+                ? OMP_TR("no standing rules yet — grant one from an \"Allow tool\" prompt")
+                : OMP_TR("open a tab to see its session and project rules")}
             </div>
           )}
           {rules.length > 0 && <div className="rules-list">{rules.map((rule, i) => (
@@ -85,7 +85,7 @@ function ApprovalRulesPanel({ onClose, activeProject, sessions, approvalModes })
               <button
                 className="btn icon ghost"
                 style={{ marginLeft: "auto" }}
-                title="revoke"
+                title={OMP_TR("revoke")}
                 onClick={() => handleRevoke(rule)}
               >
                 <_RulesIcon name="trash" size={10} />

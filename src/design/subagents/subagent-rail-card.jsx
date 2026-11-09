@@ -21,23 +21,23 @@ function SubagentRailCard({ agents, paneOpen, onOpen, onTogglePane }) {
     <div className="rail-card glass">
       <div className="rail-card-head">
         <_SAR_Icon name="agent" size={11} color="var(--cyan)" />
-        <span className="mono" style={{ color: "var(--fg-2)" }}>subagents</span>
+        <span className="mono" style={{ color: "var(--fg-2)" }}>{OMP_TR("subagents")}</span>
         {t.live > 0 ? (
-          <span className="chip accent mono" style={{ marginLeft: "auto" }}><span className="dot live" /> {t.live} live</span>
+          <span className="chip accent mono" style={{ marginLeft: "auto" }}><span className="dot live" /> {t.live} {OMP_TR("live")}</span>
         ) : (
-          <span className="chip muted mono" style={{ marginLeft: "auto" }}>{t.total ? `${t.total} ran` : "idle"}</span>
+          <span className="chip muted mono" style={{ marginLeft: "auto" }}>{t.total ? `${t.total} ${OMP_TR("ran")}` : OMP_TR("idle")}</span>
         )}
       </div>
 
       {t.total === 0 ? (
-        <div className="sa-empty">Agents spawned by <span className="mono">task</span> calls show up here, live.</div>
+        <div className="sa-empty">{OMP_TR("Agents spawned by")} <span className="mono">{OMP_TR("task")}</span> {OMP_TR("calls show up here, live.")}</div>
       ) : (
         <>
           <div className="sa-rail-stats mono">
             <span><b>{window.formatTokens(t.tokens)}</b> tok</span>
             <span><b>{_SAR.fmtCost(t.cost)}</b></span>
-            <span><b>{t.tools}</b> tools</span>
-            {t.failed > 0 && <span style={{ color: "var(--rose)" }}>{t.failed} failed</span>}
+            <span><b>{t.tools}</b> {OMP_TR("tools")}</span>
+            {t.failed > 0 && <span style={{ color: "var(--rose)" }}>{t.failed} {OMP_TR("failed")}</span>}
           </div>
           <div className="sa-rail-list">
             {rows.map(a => (
@@ -59,12 +59,12 @@ function SubagentRailCard({ agents, paneOpen, onOpen, onTogglePane }) {
               </button>
             ))}
           </div>
-          {hidden > 0 && <div className="sa-rail-more mono">+{hidden} more</div>}
+          {hidden > 0 && <div className="sa-rail-more mono">+{hidden} {OMP_TR("more")}</div>}
         </>
       )}
 
       <button className="btn ghost outlined sa-rail-open" onClick={onTogglePane}>
-        <_SAR_Icon name="split" size={11} /> {paneOpen ? "hide manager" : "open manager"}
+        <_SAR_Icon name="split" size={11} /> {paneOpen ? OMP_TR("hide manager") : OMP_TR("open manager")}
       </button>
     </div>
   );

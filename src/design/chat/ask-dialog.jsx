@@ -61,7 +61,7 @@ function AskQuestion({ q, qi, total, entry, onPick, onType, onEnter }) {
                   <span className="ask-row-text">
                     <span className="ask-row-label">
                       <span><_AD_Text text={o.label} /></span>
-                      {q.recommended === oi && <span className="chip warn">recommended</span>}
+                      {q.recommended === oi && <span className="chip warn">{OMP_TR("recommended")}</span>}
                     </span>
                     {o.description && <span className="ask-row-desc"><_AD_Text text={o.description} /></span>}
                   </span>
@@ -95,13 +95,13 @@ function AskSummary({ questions, answers }) {
               {q.header && <span className="chip warn">{q.header}</span>}
               <span className="ask-sum-q-text"><_AD_Text text={q.question.replace(/\s+/g, " ").trim()} /></span>
             </div>
-            {!a && <div className="ask-sum-a none">not answered</div>}
-            {a && picked.length === 0 && !a.customInput && <div className="ask-sum-a none">nothing picked</div>}
+            {!a && <div className="ask-sum-a none">{OMP_TR("not answered")}</div>}
+            {a && picked.length === 0 && !a.customInput && <div className="ask-sum-a none">{OMP_TR("nothing picked")}</div>}
             {picked.map((label, i) => (
               <div key={i} className="ask-sum-a"><_AD_Check /><span><_AD_Text text={label} /></span></div>
             ))}
             {a?.customInput && (
-              <div className="ask-sum-a"><_AD_Check /><span>{a.customInput}</span><span className="typed">typed</span></div>
+              <div className="ask-sum-a"><_AD_Check /><span>{a.customInput}</span><span className="typed">{OMP_TR("typed")}</span></div>
             )}
           </div>
         );
@@ -130,10 +130,10 @@ function AskDialog({ msg, onSubmit, onCancel }) {
     if (onClick) send(next); else update(next);
   };
   const progress = onClick
-    ? (canSend ? "Enter sends your answer" : "Click an option to answer")
+    ? OMP_TR(canSend ? "Enter sends your answer" : "Click an option to answer")
     : missing > 0
-      ? `${missing} question${missing === 1 ? "" : "s"} still need${missing === 1 ? "s" : ""} an answer`
-      : "Ready to send";
+      ? window.OMP_I18N.plural(missing, "{n} question still needs an answer", "{n} questions still need an answer", { n: missing })
+      : OMP_TR("Ready to send");
 
   // Bare Shift+Tab is a window shortcut (thinking level) even inside text
   // fields; here it has to move focus back through the dialog instead.
@@ -153,7 +153,7 @@ function AskDialog({ msg, onSubmit, onCancel }) {
       <div className="ask-dialog-foot">
         <span className={`ask-progress${!onClick && missing > 0 ? " incomplete" : ""}`}>{progress}</span>
         <span className="ask-foot-spacer" />
-        <button type="button" className="ask-opt" onClick={onCancel}>Cancel</button>
+        <button type="button" className="ask-opt" onClick={onCancel}>{OMP_TR("Cancel")}</button>
         {(!onClick || canSend) && (
           <button type="button" className="ask-submit" disabled={!canSend} onClick={() => send(draft)}>
             {questions.length > 1 ? "Submit answers" : "Submit"}

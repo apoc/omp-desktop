@@ -95,19 +95,19 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
           <input
             ref={inputRef}
             className="bridge-input mono"
-            placeholder="Search saved conversations by title, query, project…"
+            placeholder={OMP_TR("Search saved conversations by title, query, project…")}
             value={query}
             onChange={e => { setQuery(e.target.value); setActiveIdx(0); }}
           />
           {query && (
-            <button className="btn icon ghost" title="Clear search" onClick={() => setQuery("")}>
+            <button className="btn icon ghost" title={OMP_TR("Clear search")} onClick={() => setQuery("")}>
               <Icon name="close" size={10} color="var(--fg-4)" />
             </button>
           )}
-          <button className="btn icon ghost" title="Refresh from disk" onClick={fetchSessions}>
+          <button className="btn icon ghost" title={OMP_TR("Refresh from disk")} onClick={fetchSessions}>
             <Icon name="refresh" size={11} color={loading ? "var(--accent)" : "var(--fg-3)"} />
           </button>
-          <span className="kbd">esc</span>
+          <span className="kbd">{OMP_TR("esc")}</span>
         </div>
 
         {/* Scope bar: one chip per project, scrolling past ~2 rows */}
@@ -118,7 +118,7 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
           background: "var(--bg-surface)",
           fontSize: "var(--d-text-xs)",
         }}>
-          <span className="mono" style={{ color: "var(--fg-4)", marginRight: 4, lineHeight: "22px" }}>filter:</span>
+          <span className="mono" style={{ color: "var(--fg-4)", marginRight: 4, lineHeight: "22px" }}>{OMP_TR("filter:")}</span>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, flex: 1, minWidth: 0, maxHeight: 74, overflowY: "auto" }}>
             {/* key null = "all"; "*" cannot be the normPath of a cwd */}
             {[{ key: null, path: "", name: "All Projects", parent: "", sessions }, ...projects].map(p => (
@@ -140,7 +140,7 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
         {/* List Body */}
         <div ref={listRef} className="bridge-body" style={{ maxHeight: "56vh", padding: "6px 8px" }}>
           {loading && sessions.length === 0 && (
-            <div className="bridge-empty">Scanning disk for saved sessions…</div>
+            <div className="bridge-empty">{OMP_TR("Scanning disk for saved sessions…")}</div>
           )}
 
           {!loading && filtered.length === 0 && (
@@ -224,7 +224,7 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
                       onResume?.(s);
                       onClose();
                     }}>
-                    Resume ↵
+                    {OMP_TR("Resume ↵")}
                   </button>
                 </div>
 
@@ -246,9 +246,9 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
 
         {/* Footer */}
         <div className="bridge-foot mono" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span className="kbd">↑↓</span> navigate
-          <span className="kbd">↵</span> resume
-          <span className="kbd">esc</span> close
+          <span className="kbd">↑↓</span> {OMP_TR("navigate")}
+          <span className="kbd">↵</span> {OMP_TR("resume")}
+          <span className="kbd">{OMP_TR("esc")}</span> {OMP_TR("close")}
           <div style={{ flex: 1 }} />
           <span style={{ color: "var(--fg-4)" }}>~/.omp/agent/sessions</span>
         </div>

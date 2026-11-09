@@ -29,7 +29,7 @@ function ApprovalModeSeg({ label, options, value, disabled, onPick }) {
           disabled={disabled}
           onClick={() => { if (o.value !== value) onPick(o.value); }}
         >
-          {o.label}
+          {OMP_TR(o.label)}
         </button>
       ))}
     </div>
@@ -39,30 +39,30 @@ function ApprovalModeSeg({ label, options, value, disabled, onPick }) {
 // What the last change did: `result` is a set's `{ ok, error?, restarted,
 // deferred }`, null before any change in this editor.
 function ApprovalModeApplyLine({ result, busy, hasProject, sessions }) {
-  if (busy) return <div className="mode-apply"><span className="spin">⟳</span> restarting…</div>;
+  if (busy) return <div className="mode-apply"><span className="spin">⟳</span> {OMP_TR("restarting…")}</div>;
   if (!result) {
     return (
       <div className="mode-apply">
         {hasProject
-          ? "A change restarts omp in that project's open tabs; the conversation continues. A tab whose agent is working switches when its turn ends."
-          : "Applies to new tabs and to open tabs of projects without their own setting."}
+          ? OMP_TR("A change restarts omp in that project's open tabs; the conversation continues. A tab whose agent is working switches when its turn ends.")
+          : OMP_TR("Applies to new tabs and to open tabs of projects without their own setting.")}
       </div>
     );
   }
-  if (!result.ok) return <div className="mode-apply error">{result.error || "the change could not be saved"}</div>;
+  if (!result.ok) return <div className="mode-apply error">{result.error || OMP_TR("the change could not be saved")}</div>;
   const n = result.restarted.length;
   const names = result.deferred
     .map(id => sessions.find(s => s.id === id)?.name)
     .filter(Boolean);
   return (
     <div className="mode-apply">
-      {n > 0 && <><span className="spin">⟳</span>{n} tab{n === 1 ? "" : "s"} restarted with the new mode.</>}
-      {n === 0 && names.length === 0 && "Saved. No open tab needed a restart."}
+      {n > 0 && <><span className="spin">⟳</span>{window.OMP_I18N.plural(n, "{n} tab", "{n} tabs", { n })} {OMP_TR("restarted with the new mode.")}</>}
+      {n === 0 && names.length === 0 && OMP_TR("Saved. No open tab needed a restart.")}
       {names.length > 0 && (
         <>
           {n > 0 && " "}
           <b>{names.join(", ")}</b>
-          {names.length === 1 ? " is working and switches when its turn ends." : " are working and switch when their turns end."}
+          {names.length === 1 ? OMP_TR(" is working and switches when its turn ends.") : OMP_TR(" are working and switch when their turns end.")}
         </>
       )}
     </div>
@@ -103,9 +103,9 @@ function ApprovalModeSection({ view, activeProject, sessions, query }) {
   return (
     <div className="mode-sect">
       <div className="mode-row">
-        <div className="mode-lbl"><span>default for every project</span></div>
+        <div className="mode-lbl"><span>{OMP_TR("default for every project")}</span></div>
         <ApprovalModeSeg
-          label="default for every project"
+          label={OMP_TR("default for every project")}
           options={modeOptions}
           value={fallback}
           disabled={disabled}
@@ -130,7 +130,7 @@ function ApprovalModeSection({ view, activeProject, sessions, query }) {
             ? <span className="mode-rm" aria-hidden="true" />
             : (
               <button className="btn icon ghost mode-rm" disabled={disabled}
-                title="remove the override (inherit the default)" aria-label={`remove the override of ${p.path}`}
+                title={OMP_TR("remove the override (inherit the default)")} aria-label={OMP_TR("remove the override of {path}", { path: p.path })}
                 onClick={() => setProject(p.path, "default")}>
                 <_AMS_Icon name="close" size={10} />
               </button>
@@ -139,7 +139,7 @@ function ApprovalModeSection({ view, activeProject, sessions, query }) {
       ))}
       {shown && (
         <div className={`mode-note${shown.warn ? " warn" : ""}`}>
-          {path ? "this project: " : "new tabs: "}<b>{shown.label}</b> — {shown.blurb}
+          {path ? OMP_TR("this project:") : OMP_TR("new tabs:")}<b>{OMP_TR(shown.label)}</b> — {OMP_TR(shown.blurb)}
         </div>
       )}
       <ApprovalModeApplyLine result={result} busy={busy} hasProject={projects.length > 0} sessions={sessions ?? []} />
