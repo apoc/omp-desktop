@@ -72,8 +72,8 @@ const RetryRow = React.memo(function RetryRow({ msg, idx, highlighted, onStop })
           <div className="retry-foot">
             <span className="retry-status mono">{status} · {failed}</span>
             <button type="button" className="btn outlined retry-stop" disabled={stop.busy} onClick={stopNow}
-              title={waiting ? "Stop retrying: the run ends on the last failure" : "Stop the attempt in flight, as Esc does"}>
-              {waiting ? "Stop retrying" : "Stop"}
+              title={waiting ? OMP_TR("Stop retrying: the run ends on the last failure") : OMP_TR("Stop the attempt in flight, as Esc does")}>
+              {waiting ? OMP_TR("Stop retrying") : OMP_TR("Stop")}
             </button>
           </div>
           {stop.error && <div className="retry-stop-error">{stop.error}</div>}

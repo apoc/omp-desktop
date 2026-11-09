@@ -221,8 +221,8 @@ function ProfileMenu({
                 <button
                   className={`btn icon ghost profile-star ${isStartup ? "on" : ""}`}
                   title={isStartup
-                    ? `“${p.name}” is the default for new tabs`
-                    : `make “${p.name}” the default for new tabs`}
+                    ? OMP_TR("“{name}” is the default for new tabs", { name: p.name })
+                    : OMP_TR("make “{name}” the default for new tabs", { name: p.name })}
                   role="menuitemradio"
                   aria-checked={isStartup}
                   onClick={() => setStartup(p.id)}>
@@ -253,8 +253,8 @@ function ProfileMenu({
                     role="menuitem"
                     className={`btn icon ghost profile-del ${armed ? "armed" : ""}`}
                     title={armed
-                      ? "click again to remove from the list (keeps files on disk)"
-                      : `delete profile “${p.name}”`}
+                      ? OMP_TR("click again to remove from the list (keeps files on disk)")
+                      : OMP_TR("delete profile “{name}”", { name: p.name })}
                     onClick={() => remove(p.id)}>
                     {armed
                       ? <span className="profile-del-label mono">{OMP_TR("delete?")}</span>

@@ -18,6 +18,7 @@ function PrChecks({ checks, onOpen }) {
   if (!ci.total) return null;
   const ciLabel = ci.state === "queued" ? OMP_TR("{n} queued", { n: ci.count.queued })
     : ci.state === "failure" ? OMP_TR("{n} failed", { n: ci.count.failure })
+    : ci.state === "running" ? ci.label
     : OMP_TR(ci.label);
   const spoken = OMP_TR("{done} of {total} checks finished, {failed} failed, {running} running",
     { done: ci.done, total: ci.total, failed: ci.count.failure, running: ci.count.running });

@@ -126,7 +126,7 @@ function BranchMenu({ branch, bridge, locked = false }) {
               {rows.local.map(row)}
               {rows.remote.length > 0 && <div className="branch-pop-head mono" role="none">{OMP_TR("remote")}</div>}
               {rows.remote.map(row)}
-              {!first && <div className="branch-pop-note">{query.trim() ? "no branch matches" : "no other branches"}</div>}
+              {!first && <div className="branch-pop-note">{query.trim() ? OMP_TR("no branch matches") : OMP_TR("no other branches")}</div>}
               {rows.hidden > 0 && <div className="branch-pop-note">{rows.hidden} {OMP_TR("more — narrow the filter")}</div>}
             </>)}
           </div>

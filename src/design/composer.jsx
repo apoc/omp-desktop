@@ -713,7 +713,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
             {steerable && (
               <button className={`btn outlined${goalMode ? " goal-resume" : ""}`} onClick={send} disabled={pendingImages > 0}
                 style={goalMode ? undefined : { color: "var(--amber)", borderColor: "color-mix(in oklab, var(--amber) 40%, var(--line))" }}>
-                <Icon name={goalMode ? "goal" : "arrow"} size={10} color={goalMode ? "var(--lilac)" : "var(--amber)"} /> {goalMode ? "start goal" : "steer"}
+                <Icon name={goalMode ? "goal" : "arrow"} size={10} color={goalMode ? "var(--lilac)" : "var(--amber)"} /> {goalMode ? OMP_TR("start goal") : OMP_TR("steer")}
               </button>
             )}
             <button className="btn danger" onClick={onAbort}>
@@ -948,7 +948,7 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, pro
                   </span>
                   <span className="mono" style={{ color: "var(--fg-4)" }}>{p.id}</span>
                   <span className="chip muted" style={{ marginLeft: "auto" }}>
-                    {p.authenticated ? "logged in" : p.available ? "available" : "unavailable"}
+                    {p.authenticated ? OMP_TR("logged in") : p.available ? OMP_TR("available") : OMP_TR("unavailable")}
                   </span>
                 </button>
               ))}

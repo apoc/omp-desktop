@@ -112,22 +112,22 @@ function TreeMeter({ row, ttlMs, now }) {
     : row.prefixTokens > 0 ? `${TreeFmt.tokens(row.prefixTokens)} tok` : "—";
   let label, bar = null, priceClass;
   if (_CTR_isLive(row.state)) {
-    label = `${row.state === "warm" ? "cached" : "expires"} · ${TreeFmt.dur(left ?? 0)}`;
+    label = `${OMP_TR(row.state === "warm" ? "cached" : "expires")} · ${TreeFmt.dur(left ?? 0)}`;
     const pct = ttlMs ? Math.min(100, Math.max(3, ((left ?? 0) / ttlMs) * 100)) : 0;
     bar = <div className="cache-bar"><span style={{ width: `${pct}%` }} /></div>;
     priceClass = "read";
   } else if (row.state === "partial") {
     const total = row.readTokens + row.writeTokens;
     const pct = total > 0 ? Math.round((row.readTokens / total) * 100) : 0;
-    label = `${pct} % cached`;
+    label = OMP_TR("{n} % cached", { n: pct });
     bar = <div className="cache-bar split"><span style={{ width: `${pct}%` }} /></div>;
     priceClass = "part";
   } else if (row.state === "cold") {
     // A stale row carries its own "earlier process" tag; the meter stays short.
-    label = row.until != null ? `cold · since ${TreeFmt.when(row.until, now)}` : "cold";
+    label = row.until != null ? OMP_TR("cold · since {when}", { when: TreeFmt.when(row.until, now) }) : OMP_TR("cold");
     priceClass = "write";
   } else {
-    label = "cache unknown";
+    label = OMP_TR("cache unknown");
     priceClass = "";
   }
   return (
