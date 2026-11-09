@@ -4,15 +4,20 @@
    read lines tinted and scrolled to; images shown whole. Read-only, a
    snapshot taken when it opens.
 
-   Props: { target, onClose, onOpenGit }
+   Props: { target, onClose, onOpenGit, onComment }
      target    — { path, range } (app/file-preview.js readTarget/linkTarget)
      onClose   — Esc, the close button, a click on the scrim
      onOpenGit — path → the git browser on that file (the preview closes)
+     onComment — (path, range) → the files panel on that file and range
+                 (the preview closes); text files only
+
+   Also exports FILE_STATES and FileState (the non-text states), which the
+   files panel (design/files/) shows too.
    ═════════════════════════════════════════════════════════════════════ */
 const { Icon: _FP_Icon, CopyButton: _FP_Copy, useModalLayer: _FP_useModalLayer } = window;
 const {
-  language: _FP_language, splitHighlighted: _FP_split, clipLines: _FP_clip,
-  inRange: _FP_inRange, HIGHLIGHT_MAX_CHARS: _FP_HL_MAX, MAX_LINES: _FP_MAX_LINES, MAX_LINE_CHARS: _FP_MAX_LINE_CHARS,
+  highlightLines: _FP_highlight, clipLines: _FP_clip,
+  inRange: _FP_inRange, MAX_LINES: _FP_MAX_LINES, MAX_LINE_CHARS: _FP_MAX_LINE_CHARS,
 } = window.OMP_FILE_PREVIEW;
 const { formatBytes: _FP_size } = window.OMP_UPDATER;
 const { toDataUrl: _FP_toDataUrl } = window.OMP_IMAGES;
@@ -20,25 +25,9 @@ const { toDataUrl: _FP_toDataUrl } = window.OMP_IMAGES;
 // Lines kept above the first read line when scrolling to it.
 const _FP_LEAD_LINES = 4;
 
-const _FP_ENTITY = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
-const _FP_escape = (s) => s.replace(/[&<>]/g, (c) => _FP_ENTITY[c]);
-
-// One HTML string per line of `body` (already clipped, no final newline):
-// hljs output (escaped text plus its spans) when the language is known and
-// the file small enough, escaped text otherwise.
-function _FP_lines(path, body) {
-  const hljs = window.hljs;
-  const lang = hljs && body.length <= _FP_HL_MAX ? _FP_language(path, (n) => !!hljs.getLanguage(n)) : null;
-  if (lang) {
-    try { return _FP_split(hljs.highlight(body, { language: lang, ignoreIllegals: true }).value); }
-    catch (_) { /* plain below */ }
-  }
-  return _FP_escape(body).split("\n");
-}
-
 // The non-content kinds of Rust's `FilePreview` (TooLarge's text names the
 // size, below).
-const _FP_STATES = {
+const FILE_STATES = {
   Binary:   { title: "Binary file", sub: "There is no text preview for this file." },
   TooLarge: { title: "Too large to preview" },
   Missing:  { title: "File no longer exists", sub: "It was deleted or moved after the agent touched it." },
@@ -47,7 +36,7 @@ const _FP_STATES = {
 
 // Memoised: a re-render of the head (a copy click) must not rebuild every row.
 const _FP_TextBody = React.memo(function _FP_TextBody({ path, text, range }) {
-  const lines = React.useMemo(() => _FP_lines(path, text), [path, text]);
+  const lines = React.useMemo(() => _FP_highlight(path, text, window.hljs), [path, text]);
   const bodyRef = React.useRef(null);
   React.useLayoutEffect(() => {
     if (!range) return;
@@ -71,7 +60,7 @@ const _FP_TextBody = React.memo(function _FP_TextBody({ path, text, range }) {
   );
 });
 
-function _FP_State({ title, sub }) {
+function FileState({ title, sub }) {
   return (
     <div className="fp-state">
       <div>
@@ -82,7 +71,7 @@ function _FP_State({ title, sub }) {
   );
 }
 
-function FilePreview({ target, onClose, onOpenGit }) {
+function FilePreview({ target, onClose, onOpenGit, onComment }) {
   // null while loading; then the bridge's `{ok, value | error}`.
   const [res, setRes] = React.useState(null);
   const scrimRef = React.useRef(null);
@@ -119,7 +108,7 @@ function FilePreview({ target, onClose, onOpenGit }) {
   // Rust's project-relative path once known, the link's or card's before.
   const shownPath = value?.path ?? target.path;
   const slash = shownPath.search(/[^/\\]*$/);
-  const state = value && _FP_STATES[value.kind];
+  const state = value && FILE_STATES[value.kind];
   // A refused or unreadable path has nothing to open in the git browser.
   const openable = !res || (res.ok && value.kind !== "Outside");
   const clip = React.useMemo(() => (value?.kind === "Text" ? _FP_clip(value.text) : null), [value]);
@@ -129,10 +118,10 @@ function FilePreview({ target, onClose, onOpenGit }) {
 
   let body;
   if (!res) body = <div className="fp-state"><span className="shimmer-text">{OMP_TR("Loading…")}</span></div>;
-  else if (!res.ok) body = <_FP_State title={OMP_TR("Can't preview this file")} sub={res.error} />;
+  else if (!res.ok) body = <FileState title={OMP_TR("Can't preview this file")} sub={res.error} />;
   else if (state) {
     const sub = state.sub ? OMP_TR(state.sub) : OMP_TR("{size} is over the preview limit.", { size: _FP_size(value.size) });
-    body = <_FP_State title={OMP_TR(state.title)} sub={sub} />;
+    body = <FileState title={OMP_TR(state.title)} sub={sub} />;
   } else if (imgSrc) {
     body = (
       <div className="fp-img-wrap">
@@ -173,6 +162,12 @@ function FilePreview({ target, onClose, onOpenGit }) {
           )}
           <div className="fp-spacer" />
           <_FP_Copy className="fp-copy" label={OMP_TR("Copy the project-relative path")} text={shownPath} />
+          {onComment && value?.kind === "Text" && (
+            <button type="button" className="btn outlined fp-comment" onClick={() => onComment(shownPath, range ?? null)}
+              title={OMP_TR("Explain or comment lines of this file in the files panel")}>
+              <_FP_Icon name="edit" size={12} /> {OMP_TR("Comment in files panel")}
+            </button>
+          )}
           {openable && (
             <button type="button" className="btn outlined" onClick={() => onOpenGit(shownPath)} title={OMP_TR("Open in the git browser")}>
               <_FP_Icon name="branch" size={12} /> {OMP_TR("Open in git browser")}
@@ -189,4 +184,4 @@ function FilePreview({ target, onClose, onOpenGit }) {
   );
 }
 
-window.FilePreview = FilePreview;
+Object.assign(window, { FilePreview, FILE_STATES, FileState });

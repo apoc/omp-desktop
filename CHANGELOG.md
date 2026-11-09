@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - The app's own interface can speak Chinese: Settings → Appearance → Language, where `auto` follows the system language. Strings are keyed by their English source (`app/i18n.js`, `OMP_TR`), so a missing translation falls back to English instead of blanking out. The whole desktop chrome is translated — Settings and its search, window chrome, sidebar, composer, chat cards, modals, terminal and browser panels, keymap action labels and the desktop slash-command hints. omp's own text — replies, tool output, ask questions, model names — keeps its language. Contract: `docs/architecture/i18n.md`.
+- Files panel: a toolbar toggle (`Ctrl+Shift+M`) opens project files beside the chat, with the git browser's file tree and its filter box (a folder without git gets a search box instead). Pick lines on the line numbers or select text, then **explain** (mark it for an explanation) or **comment** (write what you want). Marks can span several files; each shows as a chip above the composer and they all go out with your next message as file locations (`path:from-to`), so the agent reads the lines itself — or send them on their own with "send now". The file preview's "Comment in files panel" and an Alt-click on a file link in a reply open a file there. A mark whose lines changed since is flagged. Details: `docs/architecture/file-comments.md`.
 
 ## [0.13.3] - 2026-11-04
 

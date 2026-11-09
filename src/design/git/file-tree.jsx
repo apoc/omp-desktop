@@ -4,7 +4,13 @@
    toggle hidden and the head names the commit. Changed-only shows every
    directory open, so a directory row is inert there (the shared expansion
    set is the full tree's). Row logic is app/git-browser.js
-   (OMP_GIT_BROWSER). */
+   (OMP_GIT_BROWSER).
+
+   The files panel (design/files/) mounts it too, with four optional props:
+   `badges` (Map path → count, a number after the file's name),
+   `commented` ({ count, on, onToggle }: a second head toggle), `searched`
+   (the root already holds the filter's hits: listed flat, unfiltered) and
+   `emptyText` (the message for an empty list). */
 
 const { Icon: _GT_Icon } = window;
 const { flatten: _GT_flatten, filterFiles: _GT_filterFiles } = window.OMP_GIT_BROWSER;
@@ -19,21 +25,22 @@ const GIT_STATUS_META = {
 
 function GitFileTree({
   root, error, expanded, onToggle, selected, onSelect, changedOnly, onChangedOnly,
-  filter, onFilter, changedCount, commit, truncated,
+  filter, onFilter, changedCount, commit, truncated, badges, commented, searched = false, emptyText,
 }) {
   const rows = React.useMemo(() => {
+    if (searched) return (root?.children ?? []).map(node => ({ node, depth: 0, flat: true }));
     // A name filter lists matching files flat: the tree would need every
     // ancestor expanded to show them, and the match is on the whole path.
     if (filter.trim()) return _GT_filterFiles(root, filter, changedOnly).map(node => ({ node, depth: 0, flat: true }));
     return _GT_flatten(root, expanded, changedOnly);
-  }, [root, expanded, changedOnly, filter]);
+  }, [root, expanded, changedOnly, filter, searched]);
 
   let empty = null;
   if (error) empty = error;
   // A failed status replaces the whole browser, so no root and no error
   // means still loading.
   else if (!root) empty = "loading…";
-  else if (rows.length === 0) empty = filter.trim() ? "no match" : changedOnly && !commit ? "no changes" : "no files";
+  else if (rows.length === 0) empty = emptyText ?? (filter.trim() ? "no match" : changedOnly && !commit ? "no changes" : "no files");
 
   return (
     <div className="gitb-pane gitb-files">
@@ -41,6 +48,14 @@ function GitFileTree({
         <span className="gitb-pane-title">{OMP_TR("files")}</span>
         {commit && (
           <span className="gitb-pane-sub mono" title={commit.id}>{commit.short} · {window.OMP_I18N.plural(commit.files, "{n} file", "{n} files", { n: commit.files })}</span>
+        )}
+        {commented && (
+          <button type="button" className={`btn ghost gitb-toggle gitb-commented ${commented.on ? "on" : ""}`}
+            onClick={() => commented.onToggle(!commented.on)} aria-pressed={commented.on}
+            title={commented.on ? OMP_TR("show every file") : OMP_TR("show commented files only")}>
+            <_GT_Icon name="edit" size={11} />
+            <span>{commented.count} {OMP_TR("commented")}</span>
+          </button>
         )}
         {onChangedOnly && (
           <button type="button" className={`btn ghost gitb-toggle ${changedOnly ? "on" : ""}`}
@@ -79,6 +94,7 @@ function GitFileTree({
                 {flat ? node.path : node.name}
               </span>
               {node.dir && node.changed > 0 && !changedOnly && <span className="gitb-dot" title={OMP_TR("{n} changed", { n: node.changed })} />}
+              {!node.dir && badges?.get(node.path) > 0 && <span className="gitb-badge mono">{badges.get(node.path)}</span>}
               {meta && <span className="gitb-mark mono" style={{ color: meta.color }} title={meta.title}>{meta.label}</span>}
             </div>
           );

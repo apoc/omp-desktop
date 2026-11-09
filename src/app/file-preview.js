@@ -94,14 +94,16 @@
   }
 
   /** A primary click on a file link in the agent's markdown (`.md-content
-   *  a`) that lies in the project at `root`: `{ target, git }`, else null.
-   *  `git` (Ctrl/⌘ held) means the git browser instead of the preview. */
+   *  a`) that lies in the project at `root`: `{ target, git, files }`, else
+   *  null. `git` (Ctrl/⌘ held) means the git browser instead of the
+   *  preview, `files` (Alt held) the files panel. */
   function linkClick(e, root) {
     if (!root || e.defaultPrevented || e.button !== 0) return null;
     const a = typeof e.target?.closest === "function" ? e.target.closest(".md-content a[href]") : null;
     const target = a && linkTarget(a.getAttribute("href"));
     if (!target || !inProject(target.path, root)) return null;
-    return { target, git: Boolean(e.ctrlKey || e.metaKey) };
+    const git = Boolean(e.ctrlKey || e.metaKey);
+    return { target, git, files: !git && Boolean(e.altKey) };
   }
 
   // Languages by extension where the extension is not itself an hljs alias.
@@ -160,13 +162,28 @@
     return { text: truncated ? kept.join("\n") : body, truncated, total: all.length };
   }
 
+  const ENTITY = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
+
+  /** One HTML string per line of `body` (already clipped, no final
+   *  newline): highlighted by `hljs` when the file's language is known and
+   *  the text is at most HIGHLIGHT_MAX_CHARS, escaped text otherwise. The
+   *  file preview's and the files panel's rows. */
+  function highlightLines(path, body, hljs) {
+    const lang = hljs && body.length <= HIGHLIGHT_MAX_CHARS ? language(path, (n) => !!hljs.getLanguage(n)) : null;
+    if (lang) {
+      try { return splitHighlighted(hljs.highlight(body, { language: lang, ignoreIllegals: true }).value); }
+      catch (_) { /* plain below */ }
+    }
+    return body.replace(/[&<>]/g, (c) => ENTITY[c]).split("\n");
+  }
+
   /** Whether line `n` is inside `range`. */
   function inRange(n, range) {
     return !!range && n >= range.from && n <= range.to;
   }
 
   window.OMP_FILE_PREVIEW = {
-    readTarget, linkTarget, linkClick, inProject, language, splitHighlighted, clipLines, inRange,
+    readTarget, linkTarget, linkClick, inProject, language, splitHighlighted, clipLines, highlightLines, inRange,
     HIGHLIGHT_MAX_CHARS, MAX_LINES, MAX_LINE_CHARS,
   };
 })();

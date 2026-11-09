@@ -1,6 +1,6 @@
 // app/layout-widths.js — widths of the resizable columns beside the chat
-// (#41): the project sidebar, the subagent split pane, the ambient rail and
-// the conversation tree. No DOM:
+// (#41): the project sidebar, the subagent split pane, the ambient rail,
+// the conversation tree and the files panel. No DOM:
 //   CHAT_MIN                     the chat column's minimum (also the browser
 //                                panel's, OMP_BROWSER.clampWidth)
 //   PANES                        per pane: min / max / default px
@@ -12,7 +12,7 @@
 //                                resize saves (the layout as shown)
 //   nudge(key, shift, edge, now)  a resize handle's keyboard step
 // A saved width is a tweak (`sidebarWidth`, `splitWidth`, `railWidth`,
-// `treeWidth`); 0 means the pane's default.
+// `treeWidth`, `filesWidth`); 0 means the pane's default.
 (function () {
   const CHAT_MIN = 420;
   // Below this window width the defaults are the narrower ones the stage
@@ -28,6 +28,7 @@
     split: { min: 240, max: 560, wide: 320, narrow: 280 },
     rail: { min: 240, max: 520, wide: 280, narrow: 240 },
     tree: { min: 320, max: 900, wide: 540, narrow: 540 },
+    files: { min: 420, max: 1600, wide: 760, narrow: 560 },
   };
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));

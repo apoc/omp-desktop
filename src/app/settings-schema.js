@@ -70,8 +70,8 @@
         tweak("defaultSide", "seg", "New tabs show", "What the side column of a newly opened tab starts with. The toolbar still switches it per tab.", "conversation tree default browser",
           { options: opts(["rail", "tree", "browser"]) }),
         tweak("sidebar", "toggle", "Project sidebar", "The list of projects and their tabs on the left. `Ctrl+B` toggles it.", "projects"),
-        custom("widths", "Column widths", "Drag a column edge to resize it, double-click the edge to reset one.", "width resize pane sidebar rail tree split browser",
-          { keys: ["sidebarWidth", "railWidth", "treeWidth", "splitWidth", "browserWidth"] }),
+        custom("widths", "Column widths", "Drag a column edge to resize it, double-click the edge to reset one.", "width resize pane sidebar rail tree files split browser",
+          { keys: ["sidebarWidth", "railWidth", "treeWidth", "filesWidth", "splitWidth", "browserWidth"] }),
       ] },
     ] },
     { id: "chat", icon: "thinking", title: "Chat", blurb: "How tool calls and thinking show up in the transcript.", groups: [

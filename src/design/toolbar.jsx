@@ -61,11 +61,12 @@ function ApprovalModeButton({ cell, onClick }) {
  * rail, subagents, terminal: { open, onToggle }
  * tree:     { open, onToggle, onRefresh, canRefresh }
  * browser:  { open, onToggle, annotate, canAnnotate, onAnnotate(on), fullView, onFullView(on) }
+ * files:    { open, onToggle, fullView, onFullView(on) }
  * approvals: { cell, onOpen }; onGit, onStats, onCommands
  * profile:  ProfileMenu's props (profiles, activeId, startupId, on…)
  * settings: { active, onOpen }
  */
-function Toolbar({ nav, rail, subagents, tree, browser, terminal, onGit, approvals, onStats, onCommands, profile, settings }) {
+function Toolbar({ nav, rail, subagents, tree, browser, files, terminal, onGit, approvals, onStats, onCommands, profile, settings }) {
   const commands = _tbChord("desktop.commands.open");
   return (
     <div className="toolbar" role="toolbar" aria-label={OMP_TR("app toolbar")}>
@@ -91,6 +92,13 @@ function Toolbar({ nav, rail, subagents, tree, browser, terminal, onGit, approva
               disabled={!browser.canAnnotate} onClick={() => browser.onAnnotate(!browser.annotate)} />
             <ToolButton icon="focus" title={OMP_TR("browser full view")} pressed={browser.fullView}
               onClick={() => browser.onFullView(!browser.fullView)} />
+          </span>
+        )}
+        <ToolButton icon="file" title={_tbTip("files panel", "desktop.files.toggle")} pressed={files.open} onClick={files.onToggle} />
+        {files.open && (
+          <span className="tb-sub" role="group" aria-label={OMP_TR("files panel")}>
+            <ToolButton icon="focus" title={OMP_TR("files panel full view")} pressed={files.fullView}
+              onClick={() => files.onFullView(!files.fullView)} />
           </span>
         )}
         <ToolButton icon="terminal" title={_tbTip("terminal", "desktop.terminal.toggle")} pressed={terminal.open} onClick={terminal.onToggle} />

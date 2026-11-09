@@ -38,7 +38,7 @@
 .st-path-error { color: var(--rose); font-size: var(--d-text-xs); overflow-wrap: anywhere; text-align: right; }
 
 /* ── Layout → Column widths ─────────────────────────────────────────── */
-.st-widths { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.st-widths { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
 .st-width { padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-input); }
 .st-width small { display: block; color: var(--fg-4); font-size: var(--d-text-xs); }
 .st-width b { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-weight: 500; font-size: var(--d-text-sm); color: var(--fg-2); }
