@@ -37,9 +37,9 @@ function QueueStrip({ queue, sending, canSendNow, onSendNow, onRemove, onPromote
     setNotice(null);
     let text = null;
     try {
-      if (!(await action(row))) text = "already delivered";
+      if (!(await action(row))) text = OMP_TR("already delivered");
     } catch (e) {
-      text = `failed: ${e?.message ?? e}`;
+      text = OMP_TR("failed: {error}", { error: e?.message ?? e });
     }
     setBusy(false);
     if (text) setNotice({ key: row.key, text });
@@ -48,10 +48,10 @@ function QueueStrip({ queue, sending, canSendNow, onSendNow, onRemove, onPromote
   return (
     <div className="queue-strip" role="list" aria-label={OMP_TR("queued messages")}>
       {rows.map(r => {
-        const note = r.sending ? "sending…" : notice?.key === r.key ? notice.text : null;
+        const note = r.sending ? OMP_TR("sending…") : notice?.key === r.key ? notice.text : null;
         return (
           <div className={`queue-row ${r.kind}${r.sending ? " sending" : ""}`} role="listitem" key={r.key}>
-            <span className="queue-kind">{_QS_KIND_LABEL[r.kind]}</span>
+            <span className="queue-kind">{OMP_TR(_QS_KIND_LABEL[r.kind])}</span>
             <span className="queue-text" title={r.text}>{r.text}</span>
             {note && <span className="queue-note">{note}</span>}
             {!r.sending && (<>

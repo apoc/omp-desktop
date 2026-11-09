@@ -14,10 +14,11 @@
 
 const { KEYMAP_ACTIONS: _SKE_ACTIONS, formatChord: _SKE_fmt } = window.OMP_KEYMAP;
 
-/** `KEYMAP_ACTIONS` label lookup shared by the conflict-refusal message
- *  (record listener) and the row's own conflict warning. */
+/** `KEYMAP_ACTIONS` label lookup, translated, shared by the conflict-refusal
+ *  message (record listener) and the row's own conflict warning. */
 function _SKE_labelFor(id) {
-  return _SKE_ACTIONS.find(a => a.id === id)?.label ?? id;
+  const label = _SKE_ACTIONS.find(a => a.id === id)?.label;
+  return label ? OMP_TR(label) : id;
 }
 
 /** Whether `action` matches the lowercased filter `lq`: label, id or one
@@ -60,7 +61,7 @@ function _SKE_Row({ action, chords, src, recording, rowError, conflict, disabled
       </Row>
       {(rowError || conflict) && (
         <div className="st-kb-warn">
-          {rowError || <>{OMP_TR("also bound to “")}{_SKE_labelFor(conflict.actions[0])}{OMP_TR("” — that binding wins")}</>}
+          {rowError || OMP_TR("also bound to “{name}” — that binding wins", { name: _SKE_labelFor(conflict.actions[0]) })}
         </div>
       )}
     </>
@@ -136,7 +137,7 @@ function ShortcutsEditor({ ctx, query }) {
 
       const existing = window.OMP_KEYMAP.lookup(chord);
       if (existing && existing !== recordingId) {
-        setRowError({ id: recordingId, message: `${_SKE_fmt(chord)} is already bound to \u201c${_SKE_labelFor(existing)}\u201d — clear that binding first.` });
+        setRowError({ id: recordingId, message: OMP_TR("{chord} is already bound to “{name}” — clear that binding first.", { chord: _SKE_fmt(chord), name: _SKE_labelFor(existing) }) });
         setRecordingId(null);
         return;
       }
@@ -201,7 +202,7 @@ function ShortcutsEditor({ ctx, query }) {
         ))}
       <div className="st-kb-foot mono">
         <span>{OMP_TR("desktop overrides →")} <span className="st-kb-path">{overlayPath}</span></span>
-        <span>{OMP_TR("omp →")} <span className="st-kb-path">{ompPath}</span>
+        <span>omp → <span className="st-kb-path">{ompPath}</span>
           {inherited && <span className="st-kb-dim"> {OMP_TR("+ inherits")} {inherited}</span>}
         </span>
       </div>

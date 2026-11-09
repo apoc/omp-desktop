@@ -79,7 +79,7 @@ function GitFileView({ path, file, error, commit, onStage, onDiscard }) {
           </span>
         )}
         {actions && <>
-          <button type="button" className="btn ghost gitb-act" onClick={onStage} title={OMP_TR("git add")}><_GV_Icon name="check" size={11} /> {OMP_TR("stage")}</button>
+          <button type="button" className="btn ghost gitb-act" onClick={onStage} title="git add"><_GV_Icon name="check" size={11} /> {OMP_TR("stage")}</button>
           <button type="button" className="btn ghost gitb-act danger" onClick={onDiscard} title={OMP_TR("restore from HEAD")}><_GV_Icon name="trash" size={11} /> {OMP_TR("discard")}</button>
         </>}
         {copyText && <_GV_Copy className="gitb-copy" label={OMP_TR("Copy diff")} text={copyText} />}

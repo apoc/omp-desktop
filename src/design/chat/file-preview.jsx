@@ -131,8 +131,8 @@ function FilePreview({ target, onClose, onOpenGit }) {
   if (!res) body = <div className="fp-state"><span className="shimmer-text">{OMP_TR("Loading…")}</span></div>;
   else if (!res.ok) body = <_FP_State title={OMP_TR("Can't preview this file")} sub={res.error} />;
   else if (state) {
-    const sub = state.sub ?? `${_FP_size(value.size)} is over the preview limit.`;
-    body = <_FP_State title={state.title} sub={sub} />;
+    const sub = state.sub ? OMP_TR(state.sub) : OMP_TR("{size} is over the preview limit.", { size: _FP_size(value.size) });
+    body = <_FP_State title={OMP_TR(state.title)} sub={sub} />;
   } else if (imgSrc) {
     body = (
       <div className="fp-img-wrap">

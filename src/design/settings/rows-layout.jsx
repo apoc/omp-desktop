@@ -29,7 +29,7 @@ function _SRL_Widths({ row, ctx, query, modified, onReset }) {
             <div key={key} className="st-width">
               <small>{key.replace(/Width$/, "")}</small>
               <b>
-                {px > 0 ? <>{Math.round(px)}<i> {OMP_TR("px")}</i></> : <span className="st-width-def">{_SRL_WIDTH_DEFAULT[key] ?? "default"}</span>}
+                {px > 0 ? <>{Math.round(px)}<i> px</i></> : <span className="st-width-def">{OMP_TR(_SRL_WIDTH_DEFAULT[key] ?? "default")}</span>}
                 {px > 0 && <span className="st-moddot" title={OMP_TR("Changed from default")} />}
               </b>
             </div>

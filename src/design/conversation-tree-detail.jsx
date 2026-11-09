@@ -53,8 +53,8 @@ function TreeDetail({ row, tips, now, since, streaming, onBranch, onFork, onOpen
     setError(null);
     try {
       const res = await action();
-      if (res?.cancelled) setError("Cancelled by omp.");
-      else if (res && res.ok === false) setError(res.error || "omp refused the request.");
+      if (res?.cancelled) setError(OMP_TR("Cancelled by omp."));
+      else if (res && res.ok === false) setError(res.error || OMP_TR("omp refused the request."));
     } catch (e) {
       setError(String(e?.message ?? e));
     } finally {

@@ -81,7 +81,7 @@ function ThinkingMenu({ model, level, cycleHint, onLoad, onSet }) {
                   {l === level && <_TM_Icon name="check" size={10} color="var(--accent)" />}
                 </span>
                 <span className="thinking-item-name mono">{l}</span>
-                {_TM_LEVELS[l] && <span className="thinking-item-hint">{_TM_LEVELS[l].hint}</span>}
+                {_TM_LEVELS[l] && <span className="thinking-item-hint">{OMP_TR(_TM_LEVELS[l].hint)}</span>}
               </button>
             ))}
             {shown.levels.length <= 1 && (

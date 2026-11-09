@@ -85,15 +85,11 @@
   /** Transcript note for a steer or follow-up omp refused. The message is
    *  gone from the composer, so the note carries it in a code block (which
    *  has a copy button) that its own text cannot close
-   *  (app/marked-setup.js `fenceCode`). */
+   *  (app/marked-setup.js `fenceCode`). The heading is in the interface
+   *  language at the time of the refusal (app/i18n.js, loaded first). */
   function failureNote(kind, error, text) {
-    const tr = (s, vars) => {
-      if (typeof window.OMP_TR === "function") return window.OMP_TR(s, vars);
-      return String(s).replace(/\{(\w+)\}/g, (whole, key) =>
-        (vars && Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key]) : whole));
-    };
-    const what = kind === "steering" ? tr("Steer") : tr("Follow-up");
-    const head = `**${tr("{what} not sent:", { what })}** ${error}`;
+    const what = kind === "steering" ? "Steer not sent:" : "Follow-up not sent:";
+    const head = `**${window.OMP_I18N.t(what)}** ${error}`;
     return text ? `${head}\n\n${window.OMP_MARKDOWN.fenceCode(text)}` : head;
   }
 

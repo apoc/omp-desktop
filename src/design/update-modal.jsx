@@ -79,7 +79,7 @@ function UpdateModal({ updater, busyTabs }) {
           {update && (
             <>
               <div className="update-title">
-                <span className="mono" style={{ color: "var(--accent)" }}>{OMP_TR("v")}{update.version}</span>
+                <span className="mono" style={{ color: "var(--accent)" }}>v{update.version}</span>
                 <span className="mono" style={{ color: "var(--fg-4)" }}>
                   {OMP_TR("available")}{update.date ? ` · ${update.date.slice(0, 10)}` : ""}
                 </span>

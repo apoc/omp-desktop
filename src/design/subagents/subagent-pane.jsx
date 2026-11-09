@@ -92,7 +92,7 @@ function SaAgentRow({ agent: a, depth, now, onSelect }) {
       {failure && <div className="sa-row-err" title={failure}>{failure}</div>}
       <div className="sa-row-foot">
         <span>{p?.toolCount ?? 0} {OMP_TR("tools")}</span>
-        <span>{window.formatTokens(p?.tokens ?? 0)} {OMP_TR("tok")}</span>
+        <span>{window.formatTokens(p?.tokens ?? 0)} tok</span>
         <span>{_SAP.fmtCost(p?.cost ?? 0)}</span>
         <_SAP_Tube progress={p} />
       </div>

@@ -250,7 +250,7 @@ function HistoryModal({ open, onClose, onResume, activeCwd }) {
           <span className="kbd">↵</span> {OMP_TR("resume")}
           <span className="kbd">{OMP_TR("esc")}</span> {OMP_TR("close")}
           <div style={{ flex: 1 }} />
-          <span style={{ color: "var(--fg-4)" }}>{OMP_TR("~/.omp/agent/sessions")}</span>
+          <span style={{ color: "var(--fg-4)" }}>~/.omp/agent/sessions</span>
         </div>
       </div>
     </div>

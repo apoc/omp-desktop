@@ -54,13 +54,13 @@ function _AB_Failure({ failure: f }) {
     <div className="ass-failure">
       <div className="ass-failure-head">
         <span className="ass-failure-title">{OMP_TR("request failed")}</span>
-        {f.httpStatus != null && <span className="chip danger mono">{OMP_TR("HTTP")} {f.httpStatus}</span>}
+        {f.httpStatus != null && <span className="chip danger mono">HTTP {f.httpStatus}</span>}
         {f.retryable && (
           <span className="chip warn" title={OMP_TR("omp already retried it; sending again later may work")}>{OMP_TR("temporary")}</span>
         )}
         {where && <span className="chip muted mono">{where}</span>}
       </div>
-      <div className="ass-failure-msg selectable">{OMP_TR(f.headline)}</div>
+      <div className="ass-failure-msg selectable">{f.headline}</div>
       {f.raw !== f.headline && (
         <details className="ass-failure-raw">
           <summary>{OMP_TR("provider response")}</summary>

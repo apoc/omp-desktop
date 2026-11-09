@@ -1,15 +1,17 @@
 /* ═════════════════════════════════════════════════════════════════════
    app/i18n-zh.js — Chinese (Simplified) dictionary for app/i18n.js.
 
-   Keys are the English source strings exactly as they appear in
-   app/settings-schema.js and the Settings page's controls (the English
-   string is the key, so nothing is extracted). Loaded right after
-   app/i18n.js; OMP_I18N.add() re-resolves the locale, so a stored
-   `locale: "zh"` applies from the first paint.
+   Keys are the English source strings exactly as the interface passes them
+   to OMP_TR / OMP_I18N.t, and the `other` form of OMP_I18N.plural (the
+   only form it looks up). Loaded right after app/i18n.js; OMP_I18N.add()
+   re-resolves the locale, so a stored `locale: "zh"` applies from the
+   first paint.
 
-   Add entries as surfaces call OMP_TR(). A settings row's label/desc and
-   the page chrome are covered by tests/test-i18n.mjs; runtime text that
-   comes from Rust (versions, saved paths, profile names) stays as is.
+   A key is context-free: one English word maps to one translation
+   everywhere, so a word with two meanings ("stage") needs two source
+   strings. tests/test-i18n.mjs fails on a wrapped literal or a desktop
+   string table entry without a key here; runtime text from omp or Rust
+   stays as is.
    ═════════════════════════════════════════════════════════════════════ */
 window.OMP_I18N.add("zh", {
   // ── Settings page chrome (design/settings/page.jsx, controls.jsx) ──
@@ -28,7 +30,6 @@ window.OMP_I18N.add("zh", {
   "sections": "分区",
   "close tab": "关闭标签页",
   "No setting matches “{q}”.": "没有设置匹配“{q}”。",
-  "search · {n} setting": "搜索 · {n} 项设置",
   "search · {n} settings": "搜索 · {n} 项设置",
   "{n} matching": "{n} 项匹配",
   "{n} changed from default": "{n} 项已更改",
@@ -257,7 +258,6 @@ window.OMP_I18N.add("zh", {
   "new profile…": "新建配置…",
   "profile · this tab": "配置 · 此标签页",
   "this tab": "此标签页",
-  "no project open.": "没有打开的项目。",
   "conversations in this project": "此项目中的对话",
   "history": "历史",
   "browse": "浏览",
@@ -342,7 +342,6 @@ window.OMP_I18N.add("zh", {
   "expand": "展开",
   "more": "更多",
   "more — narrow the filter": "更多——请缩小筛选范围",
-  "show more": "显示更多",
   "Jump to latest": "跳到最新",
   "compacting context…": "正在压缩上下文…",
   "compaction failed": "压缩失败",
@@ -413,7 +412,6 @@ window.OMP_I18N.add("zh", {
   "Cancel": "取消",
   "Confirm": "确认",
   "save": "保存",
-  "clear filter.": "清除筛选。",
   "s": "秒",
   "min": "分",
   "ms": "毫秒",
@@ -472,7 +470,6 @@ window.OMP_I18N.add("zh", {
   "tauri:": "tauri：",
 
   // ── Retry rows ──
-  "{n} failed attempt": "{n} 次失败尝试",
   "{n} failed attempts": "{n} 次失败尝试",
   "after {what}": "在{what}后",
   "omp retried the request by itself until it answered": "omp 自行重试了请求，直到收到回答",
@@ -482,7 +479,6 @@ window.OMP_I18N.add("zh", {
   "Retrying · attempt {n}": "重试中 · 第 {n} 次尝试",
   "next try in {span}": "将在 {span} 后重试",
   "sent {span} ago, waiting for the provider": "已在 {span} 前发送，正在等待提供方",
-  "failed {n} time since {time}": "自 {time} 起已失败 {n} 次",
   "failed {n} times since {time}": "自 {time} 起已失败 {n} 次",
   "could not stop": "无法停止",
   "omp already retried it; sending again later may work": "omp 已经重试过；稍后再次发送可能可行",
@@ -517,17 +513,14 @@ window.OMP_I18N.add("zh", {
   "remove the override (inherit the default)": "移除覆盖（继承默认值）",
   "restarted with the new mode.": "已用新模式重启。",
   "Saved. No open tab needed a restart.": "已保存。没有打开的标签页需要重启。",
-  "{n} tab": "{n} 个标签页",
   "{n} tabs": "{n} 个标签页",
   "still working — restarting interrupts": "仍在工作——重启会中断",
   "the agent is working — switch branches once it's idle": "智能体正在工作——空闲后再切换分支",
   "Open a tab to see its session and project rules.": "打开一个标签页以查看其会话和项目规则。",
   "No standing rules for this tab's session and project.": "此标签页的会话和项目没有长期规则。",
-  "{n} standing rule for this tab's session and project.": "此标签页的会话和项目有 {n} 条长期规则。",
   "{n} standing rules for this tab's session and project.": "此标签页的会话和项目有 {n} 条长期规则。",
   "Enter sends your answer": "Enter 发送你的回答",
   "Click an option to answer": "点击一个选项作答",
-  "{n} question still needs an answer": "还有 {n} 个问题需要回答",
   "{n} questions still need an answer": "还有 {n} 个问题需要回答",
   "Ready to send": "可以发送了",
 
@@ -537,7 +530,6 @@ window.OMP_I18N.add("zh", {
   "annotate the page": "标注页面",
   "remove annotation": "移除标注",
   "screenshot": "截图",
-  "{n} screenshot": "{n} 张截图",
   "{n} screenshots": "{n} 张截图",
   "over the {cap}-image limit, the extras are not attached": "超过 {cap} 张图片上限的部分不会附加",
   "Screenshot failed — annotation will be sent without image": "截图失败——将不带图片发送标注",
@@ -565,9 +557,7 @@ window.OMP_I18N.add("zh", {
   "no commits yet": "还没有提交",
   "restore from HEAD": "从 HEAD 恢复",
   "working tree clean": "工作区干净",
-  "{n} uncommitted change": "{n} 处未提交更改",
   "{n} uncommitted changes": "{n} 处未提交更改",
-  "{n} file": "{n} 个文件",
   "{n} files": "{n} 个文件",
   "Open on GitHub": "在 GitHub 打开",
   "Open review comments": "打开评审评论",
@@ -592,7 +582,6 @@ window.OMP_I18N.add("zh", {
   "▸ continue · cached": "▸ 继续 · 已缓存",
   "▸ continue · cold": "▸ 继续 · 冷启动",
   "▸ continue · partly cached": "▸ 继续 · 部分缓存",
-  "This provider reports no cache lifetime, so cache status and prices are unknown.": "此提供方未报告缓存有效期，因此缓存状态和价格未知。",
   "The provider reports no cache lifetime, so cache status and prices are unknown.": "提供方未报告缓存有效期，因此缓存状态和价格未知。",
   "omp re-marks every 15th prompt on each request, so the cache up to here stays alive while you work": "每次请求时 omp 会重新标记每第 15 条提示词，因此这段缓存在你工作时保持有效",
 
@@ -648,18 +637,15 @@ window.OMP_I18N.add("zh", {
 
   // ── Settings row runtime text ──
   "open kanban →": "打开看板 →",
-  "Another tab uses a different approval mode. Save to apply it here too.": "另一个标签页使用了不同的批准模式。保存后会一并应用到这里。",
   "checking…": "检查中…",
   "up to date": "已是最新",
   "downloading the update…": "正在下载更新…",
   "restarting…": "正在重启…",
   "the last check failed": "上次检查失败",
   "skipped": "已跳过",
-  "Clear skipped version": "清除跳过的版本",
   "unavailable": "不可用",
   "reading…": "读取中…",
   "Open": "打开",
-  "failed to save": "保存失败",
   "saved": "已保存",
   "menu": "菜单",
   "Reset all widths": "重置所有宽度",
@@ -677,7 +663,8 @@ window.OMP_I18N.add("zh", {
   "delete?": "删除？",
   "read-only": "只读",
   "remote phone": "远程手机",
-  "stage": "主区域",
+  "stage": "暂存",
+  "½ stage": "主区域的一半",
 
   // ── Remaining interface strings ──
   "agent is here": "智能体在此",
@@ -918,9 +905,8 @@ window.OMP_I18N.add("zh", {
   "This tab already has a goal. Drop it, or let it complete, to start another.": "此标签页已有目标。放弃或等待完成后才能开始新目标。",
   "Plan mode is off while this tab has a goal.": "此标签页有目标时无法使用计划模式。",
   "goal mode: your next message becomes a goal the agent works toward": "目标模式：你的下一条消息会成为智能体持续工作的目标",
-  "Steer": "引导消息",
-  "Follow-up": "跟进消息",
-  "{what} not sent:": "{what}未发送：",
+  "Steer not sent:": "引导消息未发送：",
+  "Follow-up not sent:": "跟进消息未发送：",
   "Auto-fix is off.": "自动修复已关闭。",
   "Paused after an error. Turn off and on to retry.": "出错后已暂停。关闭再开启以重试。",
   "Paused while another mode or project tab is active.": "其他模式或项目标签页处于活动状态时暂停。",
@@ -978,5 +964,38 @@ window.OMP_I18N.add("zh", {
   "Message this agent…": "给此智能体发消息…",
   "message {id}": "向 {id} 发消息",
   "your comment…": "你的注释…",
+  "{size} is over the preview limit.": "{size} 超出预览上限。",
+  "Binary file": "二进制文件",
+  "There is no text preview for this file.": "此文件没有文本预览。",
+  "Too large to preview": "文件过大，无法预览",
+  "File no longer exists": "文件已不存在",
+  "It was deleted or moved after the agent touched it.": "智能体处理后，它已被删除或移动。",
+  "Outside the project": "在项目之外",
+  "The preview reads only files inside this tab's project folder.": "预览只读取此标签页项目文件夹中的文件。",
+  "plan kanban": "计划看板",
+  "{n} comments": "{n} 条注释",
+  "{n} lines": "{n} 行",
+  "{n} agents": "{n} 个智能体",
+  "{n} unsupported blocks": "{n} 个不支持的块",
+  "Cancelled by omp.": "已被 omp 取消。",
+  "omp refused the request.": "omp 拒绝了该请求。",
+  "already delivered": "已送达",
+  "failed: {error}": "失败：{error}",
+  "sending…": "发送中…",
+  "follow-up": "跟进",
+  "also bound to “{name}” — that binding wins": "也绑定到“{name}”——该绑定优先",
+  "{chord} is already bound to “{name}” — clear that binding first.": "{chord} 已绑定到“{name}”——请先清除该绑定。",
+  "New tab": "新标签页",
+  "Close tab": "关闭标签页",
+  "cycle thinking level": "切换思考级别",
+  "write": "可写",
+  "no reasoning": "不推理",
+  "very brief reasoning (~1k tokens)": "极简推理（约 1k token）",
+  "light reasoning (~2k tokens)": "轻度推理（约 2k token）",
+  "moderate reasoning (~8k tokens)": "中等推理（约 8k token）",
+  "deep reasoning (~16k tokens)": "深度推理（约 16k token）",
+  "extended reasoning (~32k tokens)": "扩展推理（约 32k token）",
+  "maximum reasoning the model supports": "模型支持的最大推理",
+  "collapse": "折叠",
 });
 

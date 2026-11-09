@@ -34,7 +34,7 @@ function SubagentRailCard({ agents, paneOpen, onOpen, onTogglePane }) {
       ) : (
         <>
           <div className="sa-rail-stats mono">
-            <span><b>{window.formatTokens(t.tokens)}</b> {OMP_TR("tok")}</span>
+            <span><b>{window.formatTokens(t.tokens)}</b> tok</span>
             <span><b>{_SAR.fmtCost(t.cost)}</b></span>
             <span><b>{t.tools}</b> {OMP_TR("tools")}</span>
             {t.failed > 0 && <span style={{ color: "var(--rose)" }}>{t.failed} {OMP_TR("failed")}</span>}

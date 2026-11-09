@@ -12,9 +12,10 @@
 
    Call OMP_TR at render/call time and never cache the result: it follows
    OMP_I18N.set(). The requested locale is the `locale` tweak ("auto" = the
-   OS language); app-live.jsx applies it before the tree renders, and the
-   first paint already reads the stored tweak here, so switching or
-   relaunching never flashes English first.
+   OS language); app-live.jsx applies a change in a layout effect and
+   subscribes through useLocale(), so the tree repaints before the browser
+   paints, and the first paint already reads the stored tweak here, so
+   switching or relaunching never flashes English first.
 
    {name} in a source or translation is filled from the vars object
    (unknown placeholders stay as written). Plurals:
@@ -25,8 +26,9 @@
    Wrapped in an IIFE per the project rule for plain <script> tags.
    ═════════════════════════════════════════════════════════════════════ */
 (function () {
-  // tweaks/use-tweaks.js storage; read here so the first render already
-  // uses the chosen language (React has not mounted yet).
+  // tweaks/use-tweaks.js `STORAGE_KEY` (keep the two in sync); read here so
+  // the first render already uses the chosen language (React has not
+  // mounted yet).
   const TWEAKS_KEY = "omp-desktop:tweaks";
 
   const DICTS = Object.create(null); // locale code → { source: translation }
@@ -75,11 +77,17 @@
       (vars && Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key]) : whole));
   }
 
+  /** The current locale's entry for `source` (a string, a plural-category
+   *  object), or null. */
+  function lookup(source) {
+    const dict = DICTS[locale];
+    return dict && Object.prototype.hasOwnProperty.call(dict, source) ? dict[source] : null;
+  }
+
   /** `source` in the current locale, `{name}` filled from `vars`. */
   function t(source, vars) {
     if (typeof source !== "string") return source;
-    const dict = DICTS[locale];
-    const hit = dict && Object.prototype.hasOwnProperty.call(dict, source) ? dict[source] : null;
+    const hit = lookup(source);
     return fill(typeof hit === "string" ? hit : source, vars);
   }
 
@@ -104,8 +112,7 @@
   function plural(n, one, other, vars) {
     const count = Math.abs(Number(n));
     const all = Object.assign({}, vars, { n });
-    const dict = DICTS[locale];
-    const hit = dict && Object.prototype.hasOwnProperty.call(dict, other) ? dict[other] : null;
+    const hit = lookup(other);
     if (hit && typeof hit === "object") {
       const cat = pluralRules()?.select(count) ?? (count === 1 ? "one" : "other");
       const form = hit[cat] ?? hit.other ?? hit.one;
@@ -126,7 +133,7 @@
   }
 
   /** Follow `request` ("auto" = the OS language). Idempotent; returns the
-   *  resolved locale and dispatches `i18nchange` when it actually changes. */
+   *  resolved locale and notifies `useLocale` subscribers when it changes. */
   function set(request) {
     const next = resolve(request);
     const changed = next !== locale;
@@ -136,13 +143,6 @@
     if (doc && doc.documentElement) doc.documentElement.lang = next;
     if (changed) {
       for (const listener of listeners) listener();
-    }
-    if (changed && typeof window.dispatchEvent === "function") {
-      try {
-        window.dispatchEvent(new CustomEvent("i18nchange", { detail: next }));
-      } catch {
-        // No CustomEvent (test stubs): the locale still changed.
-      }
     }
     return next;
   }
@@ -166,15 +166,9 @@
   }
 
   const api = {
-    t, plural, add, set, resolve, useLocale,
+    t, plural, add, set, useLocale,
     get locale() { return locale; },
     get requested() { return requested; },
-    get available() { return ["en", ...CODES.filter(code => code !== "en")]; },
-    /** Whether the current locale's dictionary translates `source`. */
-    has(source) {
-      const dict = DICTS[locale];
-      return Boolean(dict && Object.prototype.hasOwnProperty.call(dict, source));
-    },
   };
 
   window.OMP_I18N = Object.freeze(api);

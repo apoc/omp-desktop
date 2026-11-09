@@ -51,7 +51,7 @@ function _SRP_TerminalHeight({ row, ctx, query, modified, onReset }) {
   return (
     <Row label={row.label} desc={row.desc} query={query}
       modified={modified} onReset={onReset}>
-      <span className="st-ro">{ctx.terminalHeight} {OMP_TR("px")}</span>
+      <span className="st-ro">{ctx.terminalHeight} px</span>
     </Row>
   );
 }

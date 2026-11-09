@@ -163,7 +163,7 @@ function TaskAgentRow({ sa, onInspect }) {
           {hint && <span className="ta-hint">· {hint}</span>}
           <div style={{ flex: 1 }} />
           {sa.toolCount  > 0 && <span className="chip muted mono ta-chip">{sa.toolCount}×</span>}
-          {sa.tokens     > 0 && <span className="chip muted mono ta-chip">{sa.tokens >= 1000 ? `${(sa.tokens/1000).toFixed(1)}k` : sa.tokens}{OMP_TR("t")}</span>}
+          {sa.tokens     > 0 && <span className="chip muted mono ta-chip">{sa.tokens >= 1000 ? `${(sa.tokens/1000).toFixed(1)}k` : sa.tokens}t</span>}
           {sa.durationMs > 0 && <span className="chip muted mono ta-chip">{sa.durationMs >= 1000 ? `${(sa.durationMs/1000).toFixed(1)}s` : `${sa.durationMs}ms`}</span>}
           {hasBody && <_TC_Icon name={isOpen ? "chev" : "chevR"} size={10} color="var(--fg-4)" />}
         </button>

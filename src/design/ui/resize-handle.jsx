@@ -33,7 +33,7 @@ function ResizeHandle({ edge, label, className = "", drag, value, min, max, onSi
       onDoubleClick={onReset}
       onKeyDown={onKeyDown}
     >
-      <span className="pane-resize-tip">{value} {OMP_TR("px")}</span>
+      <span className="pane-resize-tip">{value} px</span>
     </div>
   );
 }

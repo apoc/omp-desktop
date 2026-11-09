@@ -47,13 +47,15 @@ function App() {
   const data          = window.OMP_DATA;
   const bridge        = window.OMP_BRIDGE;
 
-  // Settings → Language drives the window language. Applied during render so
-  // a change repaints the whole tree in one pass (children render after this
-  // body); the initial value was already read from the same tweak store by
-  // app/i18n.js, so a relaunch or a stored choice never flashes English.
-  if (window.OMP_I18N.requested !== (t.locale ?? "auto")) {
-    window.OMP_I18N.set(t.locale ?? "auto");
-  }
+  // Settings → Language drives the window language. App subscribes to the
+  // locale, so a change (this tweak, or the OS language under "auto")
+  // repaints the whole tree; the layout effect applies a tweak change before
+  // the browser paints, and app/i18n.js already read the stored tweak at
+  // init, so a relaunch or a stored choice never flashes English. Applying
+  // it during render would update subscribed components mid-render.
+  window.OMP_I18N.useLocale();
+  const requestedLocale = t.locale ?? "auto";
+  React.useLayoutEffect(() => { window.OMP_I18N.set(requestedLocale); }, [requestedLocale]);
 
   // ── UI state ──────────────────────────────────────────────────────────────
   const [bridgeOpen,  setBridgeOpen]  = React.useState(false);

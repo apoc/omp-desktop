@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Regression script for src/app/i18n.js and the Settings coverage of
-// src/app/i18n-zh.js.
+// Regression script for src/app/i18n.js and the coverage of
+// src/app/i18n-zh.js: Settings text, every literal the interface wraps and
+// the desktop's own string tables.
 // Run: node tests/test-i18n.mjs  (or: npm run test:i18n)
 //
 // Both files are browser IIFEs writing to `window`; load them by evaluating
@@ -53,8 +54,7 @@ check("no dictionary: source strings and locale en", () => {
   assert.equal(I.t("Close tab"), "Close tab");
   assert.equal(I.t(""), "");
   assert.equal(I.t(42), 42);           // non-strings pass through (optional props)
-  assert.equal(I.has("Close tab"), false);
-  assert.deepEqual(I.available, ["en"]);
+  assert.equal(I.set("zh"), "en");     // nothing registered for zh yet
 });
 
 check("add + set translate and interpolate", () => {
@@ -65,8 +65,7 @@ check("add + set translate and interpolate", () => {
   assert.equal(I.t("Unknown"), "Unknown");          // missing entry → source
   assert.equal(I.t("Hello {name}", { name: "A" }), "你好 A");
   assert.equal(I.t("Hello {name}"), "你好 {name}");  // no vars → placeholder stays
-  assert.equal(I.has("Close tab"), true);
-  assert.deepEqual(I.available, ["en", "zh"]);
+  assert.equal(I.set("zh-Hans-CN"), "zh");          // registering made zh resolvable
 });
 
 check("locale tags match by full tag, primary subtag, case and separator", () => {
@@ -138,17 +137,28 @@ check("dictionary loaded after init re-resolves the stored locale", () => {
   assert.equal(w.OMP_TR("Settings"), "设置");
 });
 
-// ── shipped dictionary covers the Settings surface ──────────────────────
+// ── shipped dictionary covers the interface ─────────────────────────────
+// The zh entries as app/i18n-zh.js registers them.
+const ZH = {};
+load("app/i18n-zh.js", { OMP_I18N: { add: (code, strings) => { if (code === "zh") Object.assign(ZH, strings); } } });
+const hasZh = (s) => Object.prototype.hasOwnProperty.call(ZH, s);
+
+// Settings schema and the desktop's string tables, loaded in index.html order.
 const w2 = load("app/i18n.js", makeWindow());
 load("app/i18n-zh.js", w2);
 w2.OMP_I18N.set("zh");
-w2.TWEAK_DEFAULTS = { locale: "auto" };
-load("app/settings-schema.js", w2);
+for (const f of ["app/constants.js", "app/keymap.js", "app/slash-commands.js", "app/approval-mode.js", "app/settings-schema.js"]) load(f, w2);
 const S = w2.OMP_SETTINGS;
 
+/** Fails listing every string of `strings` without a zh entry. */
+function assertTranslated(strings) {
+  const missing = [...new Set(strings.filter(s => typeof s === "string" && s && !hasZh(s)))];
+  assert.deepEqual(missing, [], `missing zh entries:\n${missing.map(s => `  ${JSON.stringify(s)}`).join("\n")}`);
+}
+
 check("every Settings section, group, label and description is translated", () => {
-  const missing = [];
-  const want = (s) => { if (typeof s === "string" && s && !w2.OMP_I18N.has(s)) missing.push(s); };
+  const strings = [];
+  const want = (s) => strings.push(s);
   for (const section of S.SECTIONS) {
     want(section.title);
     want(section.blurb);
@@ -160,7 +170,7 @@ check("every Settings section, group, label and description is translated", () =
       }
     }
   }
-  assert.deepEqual(missing, [], `missing zh entries:\n${missing.map(s => `  ${JSON.stringify(s)}`).join("\n")}`);
+  assertTranslated(strings);
 });
 
 check("the dictionary never maps a string to an empty value", () => {
@@ -185,37 +195,58 @@ check("the language row is a locale tweak defaulting to auto", () => {
   assert.equal(S.clamp(row, "nope"), "auto");      // falls back to the default
 });
 
-// Strings that stay as written: paths, product and tool names, units, a
-// placeholder address. Everything else OMP_TR wraps must have an entry.
-const TECHNICAL = new Set([
-  "~/.omp/agent/sessions", "git", "git add", "HTTP", "OMP", "omp →",
-  "px", "t", "t/s", "tok", "v", "you@example.com", "SHA-256",
-]);
+check("the desktop's own string tables are translated", () => {
+  assertTranslated(w2.OMP_KEYMAP.KEYMAP_ACTIONS.flatMap(a => [a.label, a.group]));
+  assertTranslated(w2.OMP_SLASH.LOCAL_COMMANDS.flatMap(c => [c.hint, c.group]));
+  assertTranslated(w2.OMP_APPROVAL_MODE.MODES.flatMap(m => [m.label, m.blurb]));
+  assertTranslated(Object.values(w2.THINKING_LEVELS).map(l => l.hint));
+});
 
-check("every OMP_TR literal in design/*.jsx is translated (or technical)", () => {
+/** Source strings a translation call receives: the literal, or both
+ *  literal branches of a `cond ? "a" : "b"` argument. */
+function literals(node) {
+  if (!node) return [];
+  if (node.type === "StringLiteral") return [node.value];
+  if (node.type === "TemplateLiteral" && node.expressions.length === 0) return [node.quasis[0].value.cooked];
+  if (node.type === "ConditionalExpression") return [...literals(node.consequent), ...literals(node.alternate)];
+  return [];
+}
+
+/** `OMP_TR` / `window.OMP_TR` / `[window.]OMP_I18N.t` → the source argument
+ *  index; `OMP_I18N.plural(n, one, other)` → `other`, the dictionary key. */
+function keyArg(callee) {
+  const name = callee.type === "Identifier" ? callee.name
+    : callee.type === "MemberExpression" && !callee.computed ? callee.property.name : null;
+  const owner = callee.type === "MemberExpression" ? callee.object : null;
+  const ownerName = owner?.type === "Identifier" ? owner.name : owner?.type === "MemberExpression" ? owner.property.name : null;
+  if (name === "OMP_TR") return 0;
+  if (ownerName === "OMP_I18N" && name === "t") return 0;
+  if (ownerName === "OMP_I18N" && name === "plural") return 2;
+  return -1;
+}
+
+check("every literal the interface translates has an entry", () => {
   const missing = [];
-  const files = [];
+  const files = [join(root, "src/app-live.jsx")];
   (function walk(dir) {
     for (const name of readdirSync(dir)) {
       const p = join(dir, name);
       if (statSync(p).isDirectory()) walk(p);
-      else if (name.endsWith(".jsx")) files.push(p);
+      else if (/\.jsx?$/.test(name) && !name.startsWith("i18n")) files.push(p);
     }
   })(join(root, "src/design"));
+  for (const name of readdirSync(join(root, "src/app"))) {
+    if (/\.jsx?$/.test(name) && !name.startsWith("i18n")) files.push(join(root, "src/app", name));
+  }
   for (const file of files) {
-    const src = readFileSync(file, "utf8");
-    let ast;
-    try {
-      ast = Babel.transform(src, { parserOpts: { plugins: ["jsx"] }, ast: true, code: false }).ast;
-    } catch {
-      continue;
-    }
+    const rel = file.slice(root.length + 1);
+    // A file that does not parse would silently escape the check.
+    const { ast } = Babel.transform(readFileSync(file, "utf8"), { parserOpts: { plugins: ["jsx"] }, ast: true, code: false });
     (function walk(node) {
       if (!node || typeof node !== "object") return;
-      if (node.type === "CallExpression" && node.callee?.type === "Identifier" &&
-          node.callee.name === "OMP_TR" && node.arguments[0]?.type === "StringLiteral") {
-        const key = node.arguments[0].value;
-        if (!TECHNICAL.has(key) && !w2.OMP_I18N.has(key)) missing.push(`${key} (${file.slice(root.length + 1)})`);
+      if (node.type === "CallExpression") {
+        const i = keyArg(node.callee);
+        if (i >= 0) for (const key of literals(node.arguments[i])) if (!hasZh(key)) missing.push(`${key} (${rel})`);
       }
       for (const k in node) {
         const v = node[k];
@@ -224,7 +255,7 @@ check("every OMP_TR literal in design/*.jsx is translated (or technical)", () =>
       }
     })(ast.program);
   }
-  assert.deepEqual(missing, [], `add these to src/app/i18n-zh.js (or TECHNICAL):\n${missing.join("\n")}`);
+  assert.deepEqual(missing, [], `add these to src/app/i18n-zh.js:\n${missing.join("\n")}`);
 });
 
 console.log(`test-i18n: ${passed} checks passed`);

@@ -22,9 +22,6 @@ const {
 
 const _SP_IS_MAC = window.OMP_KEYMAP?.detectMac?.() ?? false;
 const _SP_FIELD = "input, textarea, select, [contenteditable='true'], [role='slider']";
-// Visible strings go through the dictionary (app/i18n.js); the English
-// source is the key, so a missing entry falls back to it.
-const _SP_TR = (s, vars) => (typeof s === "string" ? window.OMP_I18N.t(s, vars) : s);
 
 function _SP_TweakRow({ row, ctx, query }) {
   const S = window.OMP_SETTINGS;
@@ -86,8 +83,8 @@ function _SP_Group({ name, src, rows, ctx, query }) {
   return (
     <>
       <div className="st-grp-name">
-        {_SP_TR(name)}
-        {src && <span className="st-src" title={_SP_TR("Saved by the app in this file, not in the window's local storage")}>{src}</span>}
+        {OMP_TR(name)}
+        {src && <span className="st-src" title={OMP_TR("Saved by the app in this file, not in the window's local storage")}>{src}</span>}
       </div>
       <div className="st-grp">
         {rows.map(r => <_SP_AnyRow key={r.id} row={r} ctx={ctx} query={query} />)}
@@ -184,9 +181,9 @@ function SettingsPage({ ctx }) {
           <div className="st-kicker">{window.OMP_I18N.plural(hits.total, "search · {n} setting", "search · {n} settings", { n: hits.total })}</div>
           <div className="st-h1">“{q}”</div>
         </div>
-        {hits.groups.length === 0 && <div className="st-empty">{_SP_TR("No setting matches “{q}”.", { q })}</div>}
+        {hits.groups.length === 0 && <div className="st-empty">{OMP_TR("No setting matches “{q}”.", { q })}</div>}
         {hits.groups.map(g => (
-          <_SP_Group key={`${g.sectionId}/${g.groupName}`} name={`${_SP_TR(g.sectionTitle)} › ${_SP_TR(g.groupName)}`}
+          <_SP_Group key={`${g.sectionId}/${g.groupName}`} name={`${OMP_TR(g.sectionTitle)} › ${OMP_TR(g.groupName)}`}
             src={g.src} rows={g.rows} ctx={ctx} query={q} />
         ))}
       </>
@@ -195,9 +192,9 @@ function SettingsPage({ ctx }) {
     body = (
       <>
         <div className="st-head">
-          <div className="st-kicker">{String(idx + 1).padStart(2, "0")} · {_SP_TR(section.title)}</div>
-          <div className="st-h1">{_SP_TR(section.title)}</div>
-          <p className="st-blurb">{_SP_TR(section.blurb)}</p>
+          <div className="st-kicker">{String(idx + 1).padStart(2, "0")} · {OMP_TR(section.title)}</div>
+          <div className="st-h1">{OMP_TR(section.title)}</div>
+          <p className="st-blurb">{OMP_TR(section.blurb)}</p>
         </div>
         {section.groups.map(g => {
           const rows = g.rows.filter(r => S.visible(r, t));
@@ -208,13 +205,13 @@ function SettingsPage({ ctx }) {
   }
 
   return (
-    <div className="settings" role="region" aria-label={_SP_TR("Settings")} ref={rootRef}>
+    <div className="settings" role="region" aria-label={OMP_TR("Settings")} ref={rootRef}>
       <div className="st-top">
         <div className="st-inner">
           <label className="st-search">
             <_SP_Icon name="search" size={14} />
-            <input ref={searchRef} type="text" placeholder={_SP_TR("Search settings")} value={query} autoComplete="off"
-              spellCheck={false} aria-label={_SP_TR("Search settings")} onChange={e => setQuery(e.target.value)} />
+            <input ref={searchRef} type="text" placeholder={OMP_TR("Search settings")} value={query} autoComplete="off"
+              spellCheck={false} aria-label={OMP_TR("Search settings")} onChange={e => setQuery(e.target.value)} />
             <span className="st-kbd">{_SP_IS_MAC ? "⌘F" : "Ctrl+F"}</span>
           </label>
           <_SP_Strip sections={sections} active={section.id} counts={counts} searching={!!q} onSelect={select} />
@@ -225,13 +222,13 @@ function SettingsPage({ ctx }) {
       </div>
       <div className="st-foot">
         <div className="st-inner">
-          <span>{_SP_TR("changes apply at once")}</span>
+          <span>{OMP_TR("changes apply at once")}</span>
           <span className="st-sp" />
           <button type="button" disabled={!canReset} onClick={() => ctx.setTweak(resetEdits)}>
-            {_SP_TR("reset {what} to defaults", { what: q ? _SP_TR("matches") : _SP_TR(section.title).toLowerCase() })}
+            {OMP_TR("reset {what} to defaults", { what: q ? OMP_TR("matches") : OMP_TR(section.title).toLowerCase() })}
           </button>
-          <span><span className="st-kbd">←</span> <span className="st-kbd">→</span> {_SP_TR("sections")}</span>
-          {closeHint && <span><span className="st-kbd">{closeHint}</span> {_SP_TR("close tab")}</span>}
+          <span><span className="st-kbd">←</span> <span className="st-kbd">→</span> {OMP_TR("sections")}</span>
+          {closeHint && <span><span className="st-kbd">{closeHint}</span> {OMP_TR("close tab")}</span>}
         </div>
       </div>
     </div>

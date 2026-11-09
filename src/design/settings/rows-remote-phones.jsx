@@ -152,7 +152,7 @@ function _SRR_Push({ row, ctx, query }) {
           </_SRR_Line>
         )}
         <_SRR_Line label={OMP_TR("Contact (VAPID)")}>
-          <_SRR_Field value={contact} label={OMP_TR("Push contact")} placeholder={OMP_TR("you@example.com")} width={240} disabled={!push}
+          <_SRR_Field value={contact} label={OMP_TR("Push contact")} placeholder="you@example.com" width={240} disabled={!push}
             onCommit={text => set({ contact: text.trim() })} />
         </_SRR_Line>
         {generated && (

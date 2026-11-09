@@ -65,7 +65,7 @@ const GitBrowser = React.memo(function GitBrowser({ bridge, onClose, initialPath
       <div className="gitb" ref={rootRef} role="dialog" aria-modal="true" aria-label={OMP_TR("git browser")} tabIndex={-1}>
         <div className="gitb-head">
           <_GB_Icon name="branch" size={13} color="var(--accent)" />
-          <span className="gitb-title">{OMP_TR("git")}</span>
+          <span className="gitb-title">git</span>
           {repo && <span className="gitb-project">{repo.name}</span>}
           {headChip}{unbornChip}
           {repo && (repo.ahead || repo.behind) ? (

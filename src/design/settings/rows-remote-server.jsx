@@ -96,7 +96,7 @@ function _SRR_Cert({ row, ctx, query }) {
             <Btn onClick={() => run(() => ctx.bridge.remoteRegenerateCert())} disabled={!s}>{OMP_TR("Regenerate")}</Btn>
           </div>
         )}
-        {status?.fingerprint && <_SRR_Line label={OMP_TR("SHA-256")}><span className="st-path">{status.fingerprint}</span></_SRR_Line>}
+        {status?.fingerprint && <_SRR_Line label="SHA-256"><span className="st-path">{status.fingerprint}</span></_SRR_Line>}
         {error && <div className="st-row-error">{error}</div>}
       </div>
     </Row>

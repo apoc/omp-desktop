@@ -78,7 +78,7 @@ const ActivityRadar = ({ activity, tps }) => {
       </div>
       <div className="radar-foot">
         <span className="mono" style={{ color: "var(--fg-3)" }}>{OMP_TR("−60s")}</span>
-        <span className="mono" style={{ color: "var(--accent)" }}>{tps} {OMP_TR("t/s")}</span>
+        <span className="mono" style={{ color: "var(--accent)" }}>{tps} t/s</span>
         <span className="mono" style={{ color: "var(--fg-3)" }}>{OMP_TR("now")}</span>
       </div>
     </div>

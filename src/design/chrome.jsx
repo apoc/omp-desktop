@@ -9,10 +9,6 @@
 const { Icon, TokenGauge, ActivityRadar, Sparkline, TOOL_META, DEFAULT_PROFILE_ID, SubagentRailCard, TabGroupChip, TabRunDot, TabLabel, RenameField, BranchMenu } = window;
 const { groupTabs } = window.OMP_PROJECT_NAV;
 
-// The Settings app tab's own labels (app/i18n.js): the English source is the
-// key, so a missing entry falls back to it.
-const _CH_TR = (s, vars) => (typeof s === "string" ? window.OMP_I18N.t(s, vars) : s);
-
 // Thin wrappers around the shared `OMP_KEYMAP.hintFor`/`hintKeyFor` — same
 // guard and rationale as composer.jsx's copy (kept local rather than a
 // third file to import from; see composer.jsx's doc comment for why the
@@ -43,7 +39,7 @@ function WindowChrome({ project }) {
       <div className="chrome-title">
         {/* No tab: EMPTY_PROJECT's name is the app's own, so no "OMP ·" prefix. */}
         {project.id && <>
-          <span className="mono" style={{ color: "var(--fg-3)" }}>{OMP_TR("OMP")}</span>
+          <span className="mono" style={{ color: "var(--fg-3)" }}>OMP</span>
           <span className="mono" style={{ color: "var(--fg-5)" }}>·</span>
         </>}
         <span style={{ color: "var(--fg-2)" }}>{project.name}</span>
@@ -150,15 +146,15 @@ function TabBar({
           dragged; `changed` counts settings off their default. */}
       {settings?.open && (
         <div className={`tab app-tab ${settings.active ? "active" : ""}`}
-          title={`${_CH_TR("settings")} (${hintFor("desktop.settings.open", "Ctrl+,")})`}
+          title={`${OMP_TR("settings")} (${hintFor("desktop.settings.open", "Ctrl+,")})`}
           {...tabClickProps(onSelectSettings, onCloseSettings)}>
           <span className="tab-bar-mark" style={{ background: settings.active ? "var(--fg-3)" : "transparent" }} />
           <Icon name="cog" size={12} />
-          <span className="tab-name">{_CH_TR("Settings")}</span>
+          <span className="tab-name">{OMP_TR("Settings")}</span>
           {settings.changed > 0 && (
-            <span className="tab-count" title={_CH_TR("{n} changed from default", { n: settings.changed })}>{settings.changed}</span>
+            <span className="tab-count" title={OMP_TR("{n} changed from default", { n: settings.changed })}>{settings.changed}</span>
           )}
-          <button className="tab-close" title={`${_CH_TR("close")} (${hintFor("desktop.tab.close", "Ctrl+W")})`}
+          <button className="tab-close" title={`${OMP_TR("close")} (${hintFor("desktop.tab.close", "Ctrl+W")})`}
             onClick={e => { e.stopPropagation(); onCloseSettings?.(); }}>
             <Icon name="close" size={9} />
           </button>
@@ -201,10 +197,10 @@ function StatusBar({ ctx, todoDone, todoTotal, onTodo, updater, branch, tabId, b
       <span className="status-sep st-cost">·</span>
       <span className="status-cell st-cost mono"><span style={{ color: "var(--fg-3)" }}>{OMP_TR("cost")}</span> {ctx.cost}</span>
       <span className="status-sep st-tps">·</span>
-      <span className="status-cell st-tps mono"><span style={{ color: "var(--fg-3)" }}>{ctx.tokensPerSec}</span> {OMP_TR("t/s")}</span>
+      <span className="status-cell st-tps mono"><span style={{ color: "var(--fg-3)" }}>{ctx.tokensPerSec}</span> t/s</span>
       <span className="status-sep">·</span>
       <button className="status-cell btn ghost" onClick={onTodo}
-        title={todoChord ? `plan kanban (${todoChord})` : "plan kanban"}
+        title={todoChord ? `${OMP_TR("plan kanban")} (${todoChord})` : OMP_TR("plan kanban")}
         style={{ height: 20, padding: "0 6px" }}>
         <Icon name="plan" size={11} color="var(--accent)" />
         <span style={{ color: "var(--accent)" }}>{OMP_TR("todo")} {todoDone}/{todoTotal}</span>
@@ -213,7 +209,7 @@ function StatusBar({ ctx, todoDone, todoTotal, onTodo, updater, branch, tabId, b
       {updater.pillVersion && (
         <button className="btn outlined update-pill mono" onClick={updater.openModal}
           title={OMP_TR("OMP Desktop v{v} is available", { v: updater.pillVersion })}>
-          <Icon name="arrowUp" size={9} />{OMP_TR("v")}{updater.pillVersion}
+          <Icon name="arrowUp" size={9} />v{updater.pillVersion}
         </button>
       )}
       <button className="btn ghost app-version mono" onClick={updater.check} title={OMP_TR("check for updates")}>
@@ -347,7 +343,7 @@ function AmbientRail({
             <Sparkline values={sparkVals} width={210} height={28} />
             <div className="rail-spark-foot mono">
               <span style={{ color: "var(--fg-4)" }}>{OMP_TR("throughput")}</span>
-              <span style={{ color: "var(--accent)" }}>{ctx.tokensPerSec} {OMP_TR("t/s")}</span>
+              <span style={{ color: "var(--accent)" }}>{ctx.tokensPerSec} t/s</span>
             </div>
           </div>
         </div>

@@ -29,11 +29,14 @@ function ProjectSidebar({
       onCommit={name => onRenameTab(t.id, name)}
       onClose={() => setRenaming(null)} />
   );
-  const renameButton = t => (
-    <button className="psb-act" title={OMP_TR("rename conversation")} onClick={() => startRename(t.id)}>
-      <Icon name="edit" size={10} />
+  // A row's icon action (new conversation, rename, close, forget recent).
+  const actButton = (title, icon, size, onClick) => (
+    <button className="psb-act" title={title} onClick={onClick}>
+      <Icon name={icon} size={size} />
     </button>
   );
+  const renameButton = t => actButton(OMP_TR("rename conversation"), "edit", 10, () => startRename(t.id));
+  const closeButton = id => actButton(OMP_TR("close tab"), "close", 9, () => onCloseTab(id));
   const groups = groupTabs(tabs);
   // Drag to reorder (#40), the same lists as the tab bar's: projects (a
   // project's rows move as one block), and members within their project.
@@ -69,7 +72,7 @@ function ProjectSidebar({
               <div className={`psb-row psb-project ${containsActive && !expanded ? "active" : ""}`}>
                 {multi ? (
                   <button className={`psb-chev ${expanded ? "open" : ""}`}
-                    title={expanded ? "collapse" : "expand"} aria-expanded={expanded}
+                    title={expanded ? OMP_TR("collapse") : OMP_TR("expand")} aria-expanded={expanded}
                     onClick={e => { e.stopPropagation(); toggle(group.key); }}>
                     <Icon name="chevR" size={10} />
                   </button>
@@ -95,18 +98,9 @@ function ProjectSidebar({
                   </button>
                 )}
                 <span className="psb-actions">
-                  {group.path && (
-                    <button className="psb-act" title={OMP_TR("new conversation here")}
-                      onClick={() => onNewInProject(group.path, group.profile)}>
-                      <Icon name="plus" size={10} />
-                    </button>
-                  )}
+                  {group.path && actButton(OMP_TR("new conversation here"), "plus", 10, () => onNewInProject(group.path, group.profile))}
                   {!multi && !editing && renameButton(group.tabs[0])}
-                  {!multi && (
-                    <button className="psb-act" title={OMP_TR("close tab")} onClick={() => onCloseTab(group.tabs[0].id)}>
-                      <Icon name="close" size={9} />
-                    </button>
-                  )}
+                  {!multi && closeButton(group.tabs[0].id)}
                 </span>
               </div>
               {expanded && membersNewestFirst(group).map(t => (
@@ -123,9 +117,7 @@ function ProjectSidebar({
                   )}
                   <span className="psb-actions">
                     {renaming !== t.id && renameButton(t)}
-                    <button className="psb-act" title={OMP_TR("close tab")} onClick={() => onCloseTab(t.id)}>
-                      <Icon name="close" size={9} />
-                    </button>
+                    {closeButton(t.id)}
                   </span>
                 </div>
               ))}
@@ -146,9 +138,7 @@ function ProjectSidebar({
               </span>
             </button>
             <span className="psb-actions">
-              <button className="psb-act" title={OMP_TR("remove from recent")} onClick={() => onForgetRecent(r.path)}>
-                <Icon name="close" size={9} />
-              </button>
+              {actButton(OMP_TR("remove from recent"), "close", 9, () => onForgetRecent(r.path))}
             </span>
           </div>
         ))}

@@ -14,7 +14,8 @@ import { dirname, join } from "node:path";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const win = {};
 // The schema loads before the modules it reads bounds from: they are read late.
-for (const f of ["constants.js", "settings-schema.js", "accent.js", "chat-collapse.js", "prompt-history.js", "session-ui.js", "keymap.js", "backdrops.js"]) {
+// app/i18n.js precedes it (search indexes translated text), as in index.html.
+for (const f of ["i18n.js", "constants.js", "settings-schema.js", "accent.js", "chat-collapse.js", "prompt-history.js", "session-ui.js", "keymap.js", "backdrops.js"]) {
   // eslint-disable-next-line no-new-func
   new Function("window", readFileSync(join(root, "src/app", f), "utf8"))(win);
 }

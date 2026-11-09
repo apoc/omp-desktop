@@ -200,7 +200,7 @@
     { id: "shortcuts", icon: "command", title: "Shortcuts", blurb: "Every app action and its chords. A change to one of omp's own bindings is saved as a desktop override.", groups: [
       { name: "Keyboard shortcuts", src: "keybindings.json", rows: [
         custom("shortcuts", "Key bindings", "Rebind an action, add a second chord or reset it to its default.", "keys hotkeys keybindings chord rebind shortcut",
-          { moreKw: () => (window.OMP_KEYMAP?.KEYMAP_ACTIONS ?? []).map(a => `${tr(a.label)} ${a.id}`).join(" ") }),
+          { moreKw: () => (window.OMP_KEYMAP?.KEYMAP_ACTIONS ?? []).map(a => `${a.label} ${tr(a.label)} ${a.id}`).join(" ") }),
       ] },
     ] },
   ];
@@ -296,10 +296,10 @@
   // `moreKw`: keywords known only at runtime (the shortcut action names).
   // Custom rows show `label` and `desc` too, plus runtime text of their own;
   // `version` shows runtime text as its desc, `shortcuts` only its editor.
-  // Labels and descriptions are indexed in both the source language and the
-  // current one (app/i18n.js), so a Chinese query finds them too; a missing
-  // dictionary leaves the source text only.
-  const tr = (s) => (typeof window.OMP_TR === "function" ? window.OMP_TR(s) : s);
+  // Labels, descriptions and action names are indexed in both the source
+  // language and the current one (app/i18n.js, loaded before this file), so
+  // a query in either language finds them.
+  const tr = (s) => window.OMP_I18N.t(s);
   const searchText = (row) =>
     (`${row.label} ${(row.desc ?? "").replace(/`/g, "")} ${row.kw ?? ""} ${row.moreKw?.() ?? ""} ` +
      `${tr(row.label ?? "")} ${tr(row.desc ?? "").replace(/`/g, "")}`).toLowerCase();
