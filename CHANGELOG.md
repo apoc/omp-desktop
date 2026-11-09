@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-09
+
 ### Added
 
 - The app's own interface can speak Chinese: Settings → Appearance → Language, where `auto` follows the system language. Strings are keyed by their English source (`app/i18n.js`, `OMP_TR`), so a missing translation falls back to English instead of blanking out. The whole desktop chrome is translated — Settings and its search, window chrome, sidebar, composer, chat cards, modals, terminal and browser panels, keymap action labels and the desktop slash-command hints. omp's own text — replies, tool output, ask questions, model names — keeps its language. Contract: `docs/architecture/i18n.md`.
