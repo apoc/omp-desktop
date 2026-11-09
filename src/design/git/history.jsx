@@ -57,20 +57,20 @@ function GitHistory({ log, changedCount, selected, onSelect }) {
   const commits = rows.length - (rows[0]?.id === _GH_WORKTREE ? 1 : 0);
   const now = Date.now() / 1000;
   const worktreeLabel = changedCount
-    ? `${changedCount} uncommitted change${changedCount === 1 ? "" : "s"}`
-    : "working tree clean";
+    ? window.OMP_I18N.plural(changedCount, "{n} uncommitted change", "{n} uncommitted changes", { n: changedCount })
+    : OMP_TR("working tree clean");
 
   return (
     <div className="gitb-pane gitb-history">
       <div className="gitb-pane-head">
-        <span className="gitb-pane-title">history</span>
+        <span className="gitb-pane-title">{OMP_TR("history")}</span>
         {log && <span className="gitb-pane-sub" title={log.truncated ? "only the newest commits are listed" : undefined}>
-          all branches · {commits}{log.truncated ? "+" : ""}
+          {OMP_TR("all branches ·")} {commits}{log.truncated ? "+" : ""}
         </span>}
       </div>
       <div className="gitb-log">
-        {!log && <div className="gitb-empty">loading…</div>}
-        {log && rows.length === 0 && <div className="gitb-empty">no commits yet</div>}
+        {!log && <div className="gitb-empty">{OMP_TR("loading…")}</div>}
+        {log && rows.length === 0 && <div className="gitb-empty">{OMP_TR("no commits yet")}</div>}
         <div className="gitb-log-inner" style={{ height: rows.length * _GH_ROW }}>
           {rows.length > 0 && <_GH_Graph rows={rows} w={graphW} />}
           {rows.map((c, i) => {

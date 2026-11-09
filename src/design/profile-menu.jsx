@@ -172,7 +172,7 @@ function ProfileMenu({
       <button
         ref={triggerRef}
         className="btn ghost outlined profile-trigger"
-        title="omp profile for this tab (auth, sessions, settings)"
+        title={OMP_TR("omp profile for this tab (auth, sessions, settings)")}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => (open ? close() : setOpen(true))}>
@@ -183,7 +183,7 @@ function ProfileMenu({
 
       {open && (
         <div className="profile-pop" role="menu">
-          <div className="profile-pop-head mono" role="none">profile · this tab</div>
+          <div className="profile-pop-head mono" role="none">{OMP_TR("profile · this tab")}</div>
 
           {/* role="none" on every non-menuitem container: a generic element
               between role="menu" and its items breaks the owned-elements
@@ -256,7 +256,7 @@ function ProfileMenu({
                       : `delete profile “${p.name}”`}
                     onClick={() => remove(p.id)}>
                     {armed
-                      ? <span className="profile-del-label mono">delete?</span>
+                      ? <span className="profile-del-label mono">{OMP_TR("delete?")}</span>
                       : <Icon name="trash" size={10} />}
                   </button>
                 ) : (
@@ -285,10 +285,10 @@ function ProfileMenu({
                   if (isSubmitEnter(e)) { e.preventDefault(); commit(); }
                   if (e.key === "Escape") { e.stopPropagation(); cancelEdit(); }
                 }} />
-              <button className="btn icon ghost" title="save" onClick={commit}>
+              <button className="btn icon ghost" title={OMP_TR("save")} onClick={commit}>
                 <Icon name="check" size={10} />
               </button>
-              <button className="btn icon ghost" title="cancel" onClick={cancelEdit}>
+              <button className="btn icon ghost" title={OMP_TR("cancel")} onClick={cancelEdit}>
                 <Icon name="close" size={9} />
               </button>
             </div>
@@ -296,11 +296,11 @@ function ProfileMenu({
             <React.Fragment>
               <button role="menuitem" className="profile-item" onClick={() => startEdit("create")}>
                 <Icon name="plus" size={10} />
-                <span className="profile-item-name">new profile…</span>
+                <span className="profile-item-name">{OMP_TR("new profile…")}</span>
               </button>
               <button role="menuitem" className="profile-item" onClick={() => startEdit("rename")}>
                 <Icon name="edit" size={10} />
-                <span className="profile-item-name">rename “{active.name}”</span>
+                <span className="profile-item-name">{OMP_TR("rename “")}{active.name}”</span>
               </button>
             </React.Fragment>
           )}

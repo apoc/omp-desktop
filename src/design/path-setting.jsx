@@ -94,7 +94,7 @@ function PathPicker({ name, label, title, rows, disabled, error, save, pick }) {
       <button ref={triggerRef} type="button" className="st-sel"
         aria-haspopup="menu" aria-expanded={open} aria-label={name} disabled={disabled} title={title}
         onClick={() => (open ? close() : setOpen(true))}>
-        <span className="st-sel-v">{label}</span>
+        <span className="st-sel-v">{OMP_TR(label)}</span>
         <_PSet_Icon name="chev" size={10} color="var(--fg-4)" />
       </button>
       {/* `data-st-esc`: while open, the Settings page leaves Escape and the
@@ -108,8 +108,8 @@ function PathPicker({ name, label, title, rows, disabled, error, save, pick }) {
               <span className="st-menu-mark">
                 {r.checked && <_PSet_Icon name="check" size={10} color="var(--accent)" />}
               </span>
-              <span className="st-menu-name">{r.name}</span>
-              {r.hint && <span className="st-menu-hint">{r.hint}</span>}
+              <span className="st-menu-name">{OMP_TR(r.name)}</span>
+              {r.hint && <span className="st-menu-hint">{OMP_TR(r.hint)}</span>}
             </button>
           ))}
           {pick && (
@@ -118,8 +118,8 @@ function PathPicker({ name, label, title, rows, disabled, error, save, pick }) {
               <button type="button" className="st-menu-item" role="menuitem"
                 onClick={() => { close(); pick(); }}>
                 <span className="st-menu-mark" />
-                <span className="st-menu-name">other…</span>
-                <span className="st-menu-hint">browse</span>
+                <span className="st-menu-name">{OMP_TR("other…")}</span>
+                <span className="st-menu-hint">{OMP_TR("browse")}</span>
               </button>
             </>
           )}

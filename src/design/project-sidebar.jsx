@@ -30,7 +30,7 @@ function ProjectSidebar({
       onClose={() => setRenaming(null)} />
   );
   const renameButton = t => (
-    <button className="psb-act" title="rename conversation" onClick={() => startRename(t.id)}>
+    <button className="psb-act" title={OMP_TR("rename conversation")} onClick={() => startRename(t.id)}>
       <Icon name="edit" size={10} />
     </button>
   );
@@ -40,12 +40,12 @@ function ProjectSidebar({
   const reorder = window.useDragReorder(onReorder);
 
   return (
-    <aside className="project-sidebar" aria-label="projects">
-      <div className="psb-head">projects</div>
+    <aside className="project-sidebar" aria-label={OMP_TR("projects")}>
+      <div className="psb-head">{OMP_TR("projects")}</div>
 
       <div className="psb-scroll" onPointerDown={reorder.onPointerDown}>
-        <div className="psb-section">open</div>
-        {groups.length === 0 && <div className="psb-empty">no open tabs</div>}
+        <div className="psb-section">{OMP_TR("open tabs")}</div>
+        {groups.length === 0 && <div className="psb-empty">{OMP_TR("no open tabs")}</div>}
         {groups.map(group => {
           const multi = group.tabs.length > 1;
           const expanded = multi && !collapsed[group.key];
@@ -88,7 +88,7 @@ function ProjectSidebar({
                       ? <span className="psb-name">{group.name}</span>
                       : <TabLabel tab={group.tabs[0]} className="psb-name" />}
                     {profile && (
-                      <span className="chip muted tab-profile" title={`profile: ${profile}`}>{profile}</span>
+                      <span className="chip muted tab-profile" title={`${OMP_TR("profile:")} ${profile}`}>{profile}</span>
                     )}
                     <TabRunDot state={groupRunState(group.tabs)} />
                     {multi && <span className="tab-count psb-count">{group.tabs.length}</span>}
@@ -96,14 +96,14 @@ function ProjectSidebar({
                 )}
                 <span className="psb-actions">
                   {group.path && (
-                    <button className="psb-act" title="new conversation here"
+                    <button className="psb-act" title={OMP_TR("new conversation here")}
                       onClick={() => onNewInProject(group.path, group.profile)}>
                       <Icon name="plus" size={10} />
                     </button>
                   )}
                   {!multi && !editing && renameButton(group.tabs[0])}
                   {!multi && (
-                    <button className="psb-act" title="close tab" onClick={() => onCloseTab(group.tabs[0].id)}>
+                    <button className="psb-act" title={OMP_TR("close tab")} onClick={() => onCloseTab(group.tabs[0].id)}>
                       <Icon name="close" size={9} />
                     </button>
                   )}
@@ -123,7 +123,7 @@ function ProjectSidebar({
                   )}
                   <span className="psb-actions">
                     {renaming !== t.id && renameButton(t)}
-                    <button className="psb-act" title="close tab" onClick={() => onCloseTab(t.id)}>
+                    <button className="psb-act" title={OMP_TR("close tab")} onClick={() => onCloseTab(t.id)}>
                       <Icon name="close" size={9} />
                     </button>
                   </span>
@@ -133,8 +133,8 @@ function ProjectSidebar({
           );
         })}
 
-        <div className="psb-section">recent</div>
-        {recents.length === 0 && <div className="psb-empty">no recent projects</div>}
+        <div className="psb-section">{OMP_TR("recent")}</div>
+        {recents.length === 0 && <div className="psb-empty">{OMP_TR("no recent projects")}</div>}
         {recents.map(r => (
           <div key={r.path} className="psb-row psb-recent">
             <span className="psb-chev-spacer" />
@@ -146,7 +146,7 @@ function ProjectSidebar({
               </span>
             </button>
             <span className="psb-actions">
-              <button className="psb-act" title="remove from recent" onClick={() => onForgetRecent(r.path)}>
+              <button className="psb-act" title={OMP_TR("remove from recent")} onClick={() => onForgetRecent(r.path)}>
                 <Icon name="close" size={9} />
               </button>
             </span>
@@ -155,7 +155,7 @@ function ProjectSidebar({
       </div>
 
       <button className="psb-foot" onClick={onOpenFolder}>
-        <Icon name="plus" size={11} />open folder…
+        <Icon name="plus" size={11} />{OMP_TR("open folder…")}
       </button>
     </aside>
   );

@@ -39,7 +39,7 @@ const ApprovalRow = React.memo(function ApprovalRow({ msg, idx, highlighted }) {
             {view.summary && <span className="approval-row-summary"> · {view.summary}</span>}
           </span>
           <div className="tool-card-spacer" />
-          <span className="chip muted mono approval-row-chip" title="answered by one of your approval rules">rule</span>
+          <span className="chip muted mono approval-row-chip" title={OMP_TR("answered by one of your approval rules")}>{OMP_TR("rule")}</span>
           {view.expandable && <_AR_Icon name={open ? "chev" : "chevR"} size={10} color="var(--fg-4)" />}
         </div>
         {open && view.expandable && (

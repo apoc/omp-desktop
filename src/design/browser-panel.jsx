@@ -67,7 +67,7 @@ function BrowserPopover({ pick, page, failed, onSave, onCancel }) {
       </div>
       {failed && (
         <div className="browser-popover-note">
-          Screenshot failed — annotation will be sent without image
+          {OMP_TR("Screenshot failed — annotation will be sent without image")}
         </div>
       )}
       <textarea
@@ -92,7 +92,7 @@ function BrowserPanel({ ui }) {
   const retry = state.status === "stopped" || state.status === "error";
   const marked = page ? chips.filter((c) => c.pick.url === state.url) : [];
   return (
-    <section className="browser-panel" aria-label="browser">
+    <section className="browser-panel" aria-label={OMP_TR("browser")}>
       <_BP_Toolbar ui={ui} />
       <div className="browser-body">
         {state.loading && <div className="browser-loading" />}
@@ -116,7 +116,7 @@ function BrowserPanel({ ui }) {
             <div className={`browser-status ${state.status}${state.error ? " failed" : ""}${strip ? " strip" : ""}`}
               role={state.error ? "alert" : "status"}>
               <span>{message}</span>
-              {retry && <button className="btn" onClick={ui.restart}>reload</button>}
+              {retry && <button className="btn" onClick={ui.restart}>{OMP_TR("reload")}</button>}
             </div>
           )}
         </div>

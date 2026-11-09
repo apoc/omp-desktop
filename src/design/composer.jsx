@@ -597,9 +597,9 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
       {planMode && (
         <div className="plan-strip">
           <Icon name="plan" size={12} color="var(--amber)" />
-          <span style={{ color: "var(--amber)" }}>plan mode</span>
-          <span style={{ color: "var(--fg-3)" }}>· I'll draft before I write</span>
-          <button className="btn ghost" onClick={onTogglePlan} style={{ marginLeft: "auto", height: 22 }}>exit</button>
+          <span style={{ color: "var(--amber)" }}>{OMP_TR("plan mode")}</span>
+          <span style={{ color: "var(--fg-3)" }}>{OMP_TR("· I'll draft before I write")}</span>
+          <button className="btn ghost" onClick={onTogglePlan} style={{ marginLeft: "auto", height: 22 }}>{OMP_TR("exit")}</button>
         </div>
       )}
       {/* Goal mode (goal-strip.jsx): built by app-live.jsx, keyed by tab. */}
@@ -616,8 +616,8 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
               onMouseDown={(e) => { e.preventDefault(); execCmd(c); }}>
               <span className="slash-glyph">{c.icon}</span>
               <span className="slash-name mono" style={{ color: "var(--accent)" }}>/{c.name}</span>
-              <span className="slash-hint" style={{ color: "var(--fg-3)" }} title={c.hint}>{c.hint}</span>
-              <span className="chip muted" style={{ marginLeft: "auto", flex: "none" }}>{c.group}</span>
+              <span className="slash-hint" style={{ color: "var(--fg-3)" }} title={OMP_TR(c.hint)}>{OMP_TR(c.hint)}</span>
+              <span className="chip muted" style={{ marginLeft: "auto", flex: "none" }}>{OMP_TR(c.group)}</span>
             </button>
           ))}
         </div>
@@ -653,7 +653,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
           {attachments.map(a => (
             <div className="attach-chip" key={a.id}>
               <img className="attach-thumb" src={a.src} alt={a.name || "attached image"} />
-              <button className="attach-remove" title="remove" onClick={() => removeAttachment(a.id)}>
+              <button className="attach-remove" title={OMP_TR("remove")} onClick={() => removeAttachment(a.id)}>
                 <Icon name="close" size={9} />
               </button>
             </div>
@@ -667,7 +667,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
       {voiceSpectrum && <VoiceSpectrum source={voiceSpectrum} />}
 
       <div className="composer-row">
-        <button className="btn icon ghost" title="attach image" onClick={() => fileInputRef.current?.click()}>
+        <button className="btn icon ghost" title={OMP_TR("attach image")} onClick={() => fileInputRef.current?.click()}>
           <Icon name="image" size={13} />
         </button>
         <input
@@ -685,12 +685,12 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
             rows="1"
             placeholder={
               goalMode && !isStreaming
-                ? "describe the goal — the agent works toward it until it calls it done…"
+                ? OMP_TR("describe the goal — the agent works toward it until it calls it done…")
                 : planMode && !isStreaming
-                ? (microcopy?.planTip ?? "describe what to build, or give feedback on the plan…")
+                ? (microcopy?.planTip ? OMP_TR(microcopy.planTip) : OMP_TR("describe what to build, or give feedback on the plan…"))
                 : isStreaming
-                  ? microcopy?.streamingTip
-                  : (microcopy?.paletteTip ?? `what should we ship?  ·  / for commands${bridgeHint ? `  ·  ${bridgeHint} for the bridge` : ""}`)
+                  ? (microcopy?.streamingTip ? OMP_TR(microcopy.streamingTip) : undefined)
+                  : (microcopy?.paletteTip ? OMP_TR(microcopy.paletteTip) : `${OMP_TR("what should we ship?")}  ·  ${OMP_TR("/ for commands")}${bridgeHint ? `  ·  ${bridgeHint} ${OMP_TR("for the bridge")}` : ""}`)
             }
             value={text}
             onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart); }}
@@ -717,7 +717,7 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
               </button>
             )}
             <button className="btn danger" onClick={onAbort}>
-              <Icon name="stop" size={10} /> abort {abortHint && <span className="kbd">{abortHint}</span>}
+              <Icon name="stop" size={10} /> {OMP_TR("abort")} {abortHint && <span className="kbd">{abortHint}</span>}
             </button>
           </>
         ) : (
@@ -725,16 +725,16 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
             {planMode && (
               <button className="btn outlined" onClick={onApprove}
                 style={{ color: "var(--amber)", borderColor: "color-mix(in oklab, var(--amber) 40%, var(--line))" }}>
-                <Icon name="play" size={10} color="var(--amber)" /> approve
+                <Icon name="play" size={10} color="var(--amber)" /> {OMP_TR("approve")}
               </button>
             )}
             <button className={`btn primary${goalMode ? " goal-start" : ""}`} onClick={send}
               disabled={!sendable || pendingImages > 0}>
               {goalMode
-                ? "start goal"
+                ? OMP_TR("start goal")
                 : planMode
-                ? `send feedback${annotationCount > 0 ? ` · ${annotationCount} comment${annotationCount !== 1 ? "s" : ""}` : ""}`
-                : "send"}
+                ? `${OMP_TR("send feedback")}${annotationCount > 0 ? ` · ${window.OMP_I18N.plural(annotationCount, "{n} comment", "{n} comments", { n: annotationCount })}` : ""}`
+                : OMP_TR("send")}
               {" "}<Icon name="arrow" size={11} />
             </button>
           </>
@@ -752,29 +752,29 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
         <button className={`composer-pill ${planMode ? "on" : ""}`} onClick={onTogglePlan}
           disabled={!!planBlocked && !planMode} title={planBlocked && !planMode ? planBlocked : undefined}>
           <Icon name="plan" size={11} color={planMode ? "var(--amber)" : "var(--fg-3)"} />
-          <span style={{ color: planMode ? "var(--amber)" : "var(--fg-2)" }}>plan mode</span>
+          <span style={{ color: planMode ? "var(--amber)" : "var(--fg-2)" }}>{OMP_TR("plan mode")}</span>
         </button>
         <button className={`composer-pill goal-pill${goalMode ? " on" : ""}`} onClick={onToggleGoal}
           disabled={!!goalBlocked && !goalMode}
           title={goalBlocked && !goalMode ? goalBlocked : "goal mode: your next message becomes a goal the agent works toward"}>
           <Icon name="goal" size={11} color={goalMode ? "var(--lilac)" : "var(--fg-3)"} />
-          <span style={{ color: goalMode ? "var(--lilac)" : "var(--fg-2)" }}>goal</span>
+          <span style={{ color: goalMode ? "var(--lilac)" : "var(--fg-2)" }}>{OMP_TR("goal")}</span>
         </button>
         <div style={{ flex: 1 }} />
         {backgroundWork && (
-          <span className="composer-bg-note" title="omp reports background work (an async bash, task or eval job) whose result will wake the agent">
+          <span className="composer-bg-note" title={OMP_TR("omp reports background work (an async bash, task or eval job) whose result will wake the agent")}>
             <TabRunDot state="background" />
-            background job running · the agent resumes when it finishes
+            {OMP_TR("background job running · the agent resumes when it finishes")}
           </span>
         )}
         <span className="mono" style={{ color: "var(--fg-4)", fontSize: "var(--d-text-xs)" }}>
           {[
             ...(isStreaming && steerable
-              ? [goalMode ? `${sendHints.send} start goal` : `${sendHints.send} steer`]
-              : [goalMode ? `${sendHints.send} start goal` : `${sendHints.send} send`, `${sendHints.newline} newline`]),
+              ? [goalMode ? `${sendHints.send} ${OMP_TR("start goal")}` : `${sendHints.send} ${OMP_TR("steer")}`]
+              : [goalMode ? `${sendHints.send} ${OMP_TR("start goal")}` : `${sendHints.send} ${OMP_TR("send")}`, `${sendHints.newline} ${OMP_TR("newline")}`]),
             // Dropped entirely when unbound rather than showing a keyless
             // "abort" segment that advertises a shortcut that isn't there.
-            ...(abortHint ? [`${abortHint} abort`] : []),
+            ...(abortHint ? [`${abortHint} ${OMP_TR("abort")}`] : []),
           ].join(" · ")}
         </span>
       </div>
@@ -856,52 +856,52 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, pro
         <span style={{ color: m.id === currentModelId ? "var(--accent)" : "var(--fg)" }}>{m.name}</span>
         <span className="mono" style={{ color: "var(--fg-4)" }}>{m.id}</span>
         <span style={{ color: "var(--fg-3)" }}>· {m.note}</span>
-        <span className="chip muted" style={{ marginLeft: "auto" }}>{m.latency}ms</span>
+        <span className="chip muted" style={{ marginLeft: "auto" }}>{m.latency}{OMP_TR("ms")}</span>
       </button>
     );
     return (
       <div className="bridge-scrim" onClick={onClose}>
         <div className="bridge slide-in" onClick={(e) => e.stopPropagation()}>
           <div className="bridge-input-row">
-            <button className="btn icon ghost" title="back"
+            <button className="btn icon ghost" title={OMP_TR("back")}
               onClick={() => { setView("commands"); setQ(""); }}
               style={{ marginRight: 4 }}>
               <Icon name="chevR" size={12} color="var(--fg-3)"
                 style={{ transform: "rotate(180deg)", display: "block" }} />
             </button>
             <input ref={inputRef} className="bridge-input mono"
-              placeholder="filter models…" value={q}
+              placeholder={OMP_TR("filter models…")} value={q}
               onChange={(e) => setQ(e.target.value)} />
-            <span className="kbd">esc</span>
+            <span className="kbd">{OMP_TR("esc")}</span>
           </div>
           <div className="bridge-body">
             {recentHits.length > 0 && (
               <div className="bridge-group">
-                <div className="bridge-group-head mono">recently used</div>
+                <div className="bridge-group-head mono">{OMP_TR("recently used")}</div>
                 {recentHits.map((m) => modelRow(m, "recent"))}
               </div>
             )}
             <div className="bridge-group">
               <div className="bridge-group-head mono" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                all models
+                {OMP_TR("all models")}
                 <span style={{ color: "var(--fg-4)" }}>
-                  tauri:{window.__TAURI__ ? "✓" : "✗"}
-                  · connected:{window.OMP_BRIDGE?.isConnected ? "✓" : "✗"}
-                  · models:{window.OMP_DATA.models.length}
+                  {OMP_TR("tauri:")}{window.__TAURI__ ? "✓" : "✗"}
+                  {OMP_TR("· connected:")}{window.OMP_BRIDGE?.isConnected ? "✓" : "✗"}
+                  {OMP_TR("· models:")}{window.OMP_DATA.models.length}
                 </span>
                 <button className="btn ghost" style={{ marginLeft: "auto", height: 18, fontSize: "var(--d-text-xs)", padding: "0 6px" }}
                   onClick={() => window.OMP_BRIDGE?.refreshModels()}>
-                  refresh
+                  {OMP_TR("refresh")}
                 </button>
               </div>
               {modelHits.map((m) => modelRow(m, "all"))}
-              {modelHits.length === 0 && <div className="bridge-empty">no models found</div>}
+              {modelHits.length === 0 && <div className="bridge-empty">{OMP_TR("no models found")}</div>}
             </div>
           </div>
           <div className="bridge-foot mono">
-            <span className="kbd">↑↓</span> navigate
-            <span className="kbd">↵</span> switch
-            <span className="kbd">esc</span> back
+            <span className="kbd">↑↓</span> {OMP_TR("navigate")}
+            <span className="kbd">↵</span> {OMP_TR("switch")}
+            <span className="kbd">{OMP_TR("esc")}</span> {OMP_TR("back")}
           </div>
         </div>
       </div>
@@ -914,25 +914,25 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, pro
       <div className="bridge-scrim" onClick={onClose}>
         <div className="bridge slide-in" onClick={(e) => e.stopPropagation()}>
           <div className="bridge-input-row">
-            <button className="btn icon ghost" title="back"
+            <button className="btn icon ghost" title={OMP_TR("back")}
               onClick={() => { setView("commands"); setQ(""); }}
               style={{ marginRight: 4 }}>
               <Icon name="chevR" size={12} color="var(--fg-3)"
                 style={{ transform: "rotate(180deg)", display: "block" }} />
             </button>
             <span className="bridge-input mono" style={{ cursor: "default", lineHeight: "normal" }}>
-              login
+              {OMP_TR("login")}
             </span>
-            <span className="kbd">esc</span>
+            <span className="kbd">{OMP_TR("esc")}</span>
           </div>
           <div className="bridge-body">
             <div className="bridge-group">
-              <div className="bridge-group-head mono">select provider</div>
+              <div className="bridge-group-head mono">{OMP_TR("select provider")}</div>
               {loginProviders === null && (
-                <div className="bridge-empty" style={{ padding: "16px 32px" }}>loading providers…</div>
+                <div className="bridge-empty" style={{ padding: "16px 32px" }}>{OMP_TR("loading providers…")}</div>
               )}
               {loginProviders !== null && loginProviders.length === 0 && (
-                <div className="bridge-empty">no providers available</div>
+                <div className="bridge-empty">{OMP_TR("no providers available")}</div>
               )}
               {loginProviders !== null && loginProviders.map((p) => (
                 <button key={p.id}
@@ -955,8 +955,8 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, pro
             </div>
           </div>
           <div className="bridge-foot mono">
-            <span className="kbd">↵</span> authenticate
-            <span className="kbd">esc</span> back
+            <span className="kbd">↵</span> {OMP_TR("authenticate")}
+            <span className="kbd">{OMP_TR("esc")}</span> {OMP_TR("back")}
           </div>
         </div>
       </div>
@@ -976,14 +976,14 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, pro
         <div className="bridge-input-row">
           <Icon name="command" size={14} color="var(--accent)" />
           <input ref={inputRef} className="bridge-input mono"
-            placeholder="cross the bridge — type to filter…" value={q}
+            placeholder={OMP_TR("cross the bridge — type to filter…")} value={q}
             onChange={(e) => setQ(e.target.value)} />
-          <span className="kbd">esc</span>
+          <span className="kbd">{OMP_TR("esc")}</span>
         </div>
         <div className="bridge-body">
           {Object.entries(groups).map(([g, list]) => (
             <div key={g} className="bridge-group">
-              <div className="bridge-group-head mono">{g.toLowerCase()}</div>
+              <div className="bridge-group-head mono">{OMP_TR(g).toLowerCase()}</div>
               {list.map((c) => {
                 const isModel = c.name === "model";
                 const isLogin = c.name === "login";
@@ -998,7 +998,7 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, pro
                     }}>
                     <span className="bridge-glyph">{c.icon}</span>
                     <span className="bridge-cmd-name mono" style={{ color: "var(--accent)" }}>/{c.name}</span>
-                    <span className="bridge-cmd-hint" style={{ color: "var(--fg-3)" }} title={c.hint}>{c.hint}</span>
+                    <span className="bridge-cmd-hint" style={{ color: "var(--fg-3)" }} title={OMP_TR(c.hint)}>{OMP_TR(c.hint)}</span>
                     {isModel && (
                       <span className="mono" style={{ color: "var(--fg-4)", marginLeft: "auto" }}>
                         {activeModelName}
@@ -1012,14 +1012,14 @@ function CommandBridge({ open, onClose, onPick, onPickModel, currentModelId, pro
             </div>
           ))}
           {cmdHits.length === 0 && (
-            <div className="bridge-empty">no luck — try `plan`, `branch`, `model`…</div>
+            <div className="bridge-empty">{OMP_TR("no luck — try `plan`, `branch`, `model`…")}</div>
           )}
         </div>
         <div className="bridge-foot mono">
-          <span className="kbd">↑↓</span> navigate
-          <span className="kbd">↵</span> run
-          <span className="kbd">esc</span> close
-          <span style={{ marginLeft: "auto", color: "var(--fg-4)" }}>{window.OMP_DATA.microcopy.paletteTip}</span>
+          <span className="kbd">↑↓</span> {OMP_TR("navigate")}
+          <span className="kbd">↵</span> {OMP_TR("run")}
+          <span className="kbd">{OMP_TR("esc")}</span> {OMP_TR("close")}
+          <span style={{ marginLeft: "auto", color: "var(--fg-4)" }}>{OMP_TR(window.OMP_DATA.microcopy.paletteTip)}</span>
         </div>
       </div>
     </div>

@@ -29,19 +29,19 @@ function PasteStrip({ pastes, onExpand }) {
                 onClick={() => setOpenId(isOpen ? null : p.id)}
               >
                 <_PS_Icon name="file" size={11} color="var(--fg-3)" />
-                <span className="mono">paste #{p.id}</span>
-                <span className="paste-chip-meta">{p.lines} line{p.lines === 1 ? "" : "s"}</span>
+                <span className="mono">{OMP_TR("paste #")}{p.id}</span>
+                <span className="paste-chip-meta">{window.OMP_I18N.plural(p.lines, "{n} line", "{n} lines", { n: p.lines })}</span>
                 <_PS_Icon name={isOpen ? "chev" : "chevR"} size={10} color="var(--fg-4)" />
               </button>
-              <button className="paste-chip-expand" title="put the pasted text into the prompt to edit it" onClick={() => onExpand(p.id)}>
-                expand
+              <button className="paste-chip-expand" title={OMP_TR("put the pasted text into the prompt to edit it")} onClick={() => onExpand(p.id)}>
+                {OMP_TR("expand")}
               </button>
             </div>
           );
         })}
       </div>
       {open && (
-        <pre id="paste-preview" className="paste-preview mono selectable" tabIndex={0} aria-label={`paste #${open.id}`}>
+        <pre id="paste-preview" className="paste-preview mono selectable" tabIndex={0} aria-label={`${OMP_TR("paste #")}${open.id}`}>
           {open.text}
         </pre>
       )}

@@ -73,14 +73,14 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
             onClick={() => confirm(true)}
           >
             {confirmedYes && <_AskIcon name="check" size={10} color="var(--accent)" />}
-            Confirm
+            {OMP_TR("Confirm")}
           </button>
           <button
             className={`ask-opt${confirmedNo ? " selected" : ""}${done && !confirmedNo ? " dimmed" : ""}`}
             disabled={done}
             onClick={() => confirm(false)}
           >
-            Deny
+            {OMP_TR("Deny")}
           </button>
         </div>
       </>
@@ -101,8 +101,8 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
         />
         {!done && (
           <div className="ask-editor-actions">
-            <button className="ask-submit" onClick={() => submit(draft)}>Submit</button>
-            <button className="ask-opt" onClick={decline}>Cancel</button>
+            <button className="ask-submit" onClick={() => submit(draft)}>{OMP_TR("Submit")}</button>
+            <button className="ask-opt" onClick={decline}>{OMP_TR("Cancel")}</button>
           </div>
         )}
       </>
@@ -125,8 +125,8 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
           />
           {!done && (
             <>
-              {draft.trim() && <button className="ask-submit" onClick={() => submit(draft)}>Submit</button>}
-              <button className="ask-opt" onClick={decline}>Cancel</button>
+              {draft.trim() && <button className="ask-submit" onClick={() => submit(draft)}>{OMP_TR("Submit")}</button>}
+              <button className="ask-opt" onClick={decline}>{OMP_TR("Cancel")}</button>
             </>
           )}
         </div>
@@ -169,12 +169,12 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
           <div className="ask-approval-rules">
             <button className="ask-opt ask-remember" onClick={() => grant("session")}>
               <_AskIcon name="clock" size={10} />
-              Allow for this session
+              {OMP_TR("Allow for this session")}
             </button>
             {hasProjectPath && (
               <button className="ask-opt ask-remember" onClick={() => grant("project")}>
                 <_AskIcon name="folder" size={10} />
-                Always allow in this project
+                {OMP_TR("Always allow in this project")}
               </button>
             )}
           </div>
@@ -193,15 +193,15 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
       </div>
       <div className="ass-body">
         <div className="ass-meta">
-          <span className="mono" style={{ color: "var(--amber)" }}>Ask</span>
+          <span className="mono" style={{ color: "var(--amber)" }}>{OMP_TR("Ask")}</span>
           <span className="chip muted">{msg.time}</span>
           {dialogOpen && msg.questions.length > 1 && (
-            <span className="chip muted">{msg.questions.length} questions</span>
+            <span className="chip muted">{msg.questions.length} {OMP_TR("questions")}</span>
           )}
           {timeoutNote && <span className="chip warn">{timeoutNote}</span>}
           {msg.answered && (
             <span className="chip" style={{ color: "var(--accent)", borderColor: "color-mix(in oklab, var(--accent) 30%, var(--line))" }}>
-              answered
+              {OMP_TR("answered")}
             </span>
           )}
           {msg.cancelled && (

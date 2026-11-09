@@ -15,7 +15,7 @@ const GoalRow = React.memo(function GoalRow({ msg, idx, highlighted }) {
   if (msg.event === "continue") {
     return (
       <div className={`goal-cont fade-up${highlighted ? " mm-hot" : ""}`} data-msg-idx={idx}>
-        <span className="goal-cont-tag">goal</span>
+        <span className="goal-cont-tag">{OMP_TR("goal")}</span>
         {view.title}
       </div>
     );

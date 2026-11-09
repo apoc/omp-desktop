@@ -45,6 +45,10 @@
 
   const SECTIONS = [
     { id: "appearance", icon: "sparkle", title: "Appearance", blurb: "Colour theme, accent, start screen, density and text size of the whole window.", groups: [
+      { name: "Language", rows: [
+        tweak("locale", "seg", "Language", "The language of the app's own interface. Messages from omp — replies, tool output, questions — stay as omp writes them.", "language locale english chinese",
+          { options: opts(["auto", "en", "zh"], { auto: "Follow system", en: "English", zh: "中文" }) }),
+      ] },
       { name: "Theme", rows: [
         tweak("theme", "themes", "Theme", "Picking a theme also resets the accent to the theme's own.", "dark light colour color aurora phosphor daylight"),
         tweak("accent", "swatches", "Accent", "Focus rings, the active tab, links and the assistant's marks.", "color colour highlight"),
@@ -292,8 +296,13 @@
   // `moreKw`: keywords known only at runtime (the shortcut action names).
   // Custom rows show `label` and `desc` too, plus runtime text of their own;
   // `version` shows runtime text as its desc, `shortcuts` only its editor.
+  // Labels and descriptions are indexed in both the source language and the
+  // current one (app/i18n.js), so a Chinese query finds them too; a missing
+  // dictionary leaves the source text only.
+  const tr = (s) => (typeof window.OMP_TR === "function" ? window.OMP_TR(s) : s);
   const searchText = (row) =>
-    `${row.label} ${(row.desc ?? "").replace(/`/g, "")} ${row.kw ?? ""} ${row.moreKw?.() ?? ""}`.toLowerCase();
+    (`${row.label} ${(row.desc ?? "").replace(/`/g, "")} ${row.kw ?? ""} ${row.moreKw?.() ?? ""} ` +
+     `${tr(row.label ?? "")} ${tr(row.desc ?? "").replace(/`/g, "")}`).toLowerCase();
 
   /** Visible rows whose label, desc or keywords contain the query,
    *  case-insensitive, grouped by section › group in page order. */

@@ -34,14 +34,16 @@ function _SRAp_Rules({ row, ctx, query }) {
     ctx.bridge.listApprovalRules().then(rules => { if (live) setCount(Array.isArray(rules) ? rules.length : null); });
     return () => { live = false; };
   }, [ctx.bridge, project?.id]);
-  let lead = "Open a tab to see its session and project rules.";
+  let lead = OMP_TR("Open a tab to see its session and project rules.");
   if (project && count !== null) {
-    lead = `${count === 0 ? "No" : count} standing rule${count === 1 ? "" : "s"} for this tab's session and project.`;
+    lead = count === 0
+      ? OMP_TR("No standing rules for this tab's session and project.")
+      : window.OMP_I18N.plural(count, "{n} standing rule for this tab's session and project.", "{n} standing rules for this tab's session and project.", { n: count });
   }
   return (
-    <Row label={row.label} query={query} className="st-linkrow" desc={`${lead} ${row.desc}`}>
+    <Row label={row.label} query={query} className="st-linkrow" desc={`${lead} ${window.OMP_I18N.t(row.desc)}`}>
       <Button accent onClick={ctx.openApprovals}>
-        Manage rules <Icon name="external" size={11} />
+        {OMP_TR("Manage rules")} <Icon name="external" size={11} />
       </Button>
     </Row>
   );

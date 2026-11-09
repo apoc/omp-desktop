@@ -46,7 +46,7 @@ function QueueStrip({ queue, sending, canSendNow, onSendNow, onRemove, onPromote
   };
 
   return (
-    <div className="queue-strip" role="list" aria-label="queued messages">
+    <div className="queue-strip" role="list" aria-label={OMP_TR("queued messages")}>
       {rows.map(r => {
         const note = r.sending ? "sending…" : notice?.key === r.key ? notice.text : null;
         return (
@@ -57,25 +57,25 @@ function QueueStrip({ queue, sending, canSendNow, onSendNow, onRemove, onPromote
             {!r.sending && (<>
               {canSendNow && (
                 <button className={_QS_BTN} disabled={busy} onClick={() => run(r, onSendNow)}
-                  title="send now: stop the agent's current step (as Esc does) and deliver this message at once"
-                  aria-label="send now">
+                  title={OMP_TR("send now: stop the agent's current step (as Esc does) and deliver this message at once")}
+                  aria-label={OMP_TR("send now")}>
                   <_QS_Icon name="bolt" size={11} />
                 </button>
               )}
               {r.kind === "followUp" && (
                 <button className={_QS_BTN} disabled={busy} onClick={() => run(r, onPromote)}
-                  title="steer now: deliver at the agent's next step" aria-label="steer now">
+                  title={OMP_TR("steer now: deliver at the agent's next step")} aria-label={OMP_TR("steer now")}>
                   <_QS_Icon name="arrowUp" size={11} />
                 </button>
               )}
               {r.editable && (
                 <button className={_QS_BTN} disabled={busy} onClick={() => run(r, onEdit)}
-                  title="edit: take the text back into the prompt box" aria-label="edit">
+                  title={OMP_TR("edit: take the text back into the prompt box")} aria-label={OMP_TR("edit")}>
                   <_QS_Icon name="edit" size={11} />
                 </button>
               )}
               <button className={_QS_BTN} disabled={busy} onClick={() => run(r, onRemove)}
-                title="remove from the queue" aria-label="remove">
+                title={OMP_TR("remove from the queue")} aria-label={OMP_TR("remove")}>
                 <_QS_Icon name="close" size={10} />
               </button>
             </>)}

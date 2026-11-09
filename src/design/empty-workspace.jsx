@@ -15,7 +15,7 @@ const { MarkdownContent, Backdrop } = window;
 
 function EmptyWorkspace({ notes, screen, paused }) {
   return (
-    <div className="empty-ws" aria-label="no project open">
+    <div className="empty-ws" aria-label={OMP_TR("no project open")}>
       <Backdrop screen={screen} paused={paused} className="empty-ws-canvas" />
       {notes.length > 0 && (
         <div className="empty-ws-notes">

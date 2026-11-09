@@ -18,7 +18,9 @@
   // the panel instead of the system browser. (The Chromium path is a Rust
   // setting, browser.json — never a tweak.)
   // Settings page (#37): `defaultSide` is the side column a new tab starts
-  // with; `followOutput` pins the transcript to the newest message;
+  // with; `locale` is the interface language ("auto" = the OS language;
+  // app/i18n.js, Settings → Appearance → Language); `followOutput` pins the
+  // transcript to the newest message;
   // `terminalScrollback` is xterm's scrollback in lines; `submitKey` is
   // "enter" | "ctrl+enter" for multi-line fields; `pasteCollapseLines` is
   // the line count above which a paste becomes a chip; `restoreTabs`,
@@ -27,6 +29,7 @@
   // empty workspace's animated screen (OMP_BACKDROPS.SCREENS). Rows,
   // labels and bounds: app/settings-schema.js.
   const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+    "locale": "auto",
     "theme": "aurora",
     "startScreen": "latent",
     "density": "compact",

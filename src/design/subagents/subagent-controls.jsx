@@ -83,17 +83,17 @@ function SubagentControls({ agentId, running, onSteer, onStop, submitKey = "ente
           if (running && window.isSubmitKey(e, submitKey)) { e.preventDefault(); send(); }
         }} />
       {note && <div className={`sa-ctl-note${note.err ? " err" : ""}`}>{note.text}</div>}
-      {!running && !sending && <div className="sa-ctl-note">The agent is no longer running; this text was not sent.</div>}
+      {!running && !sending && <div className="sa-ctl-note">{OMP_TR("The agent is no longer running; this text was not sent.")}</div>}
       {running && stopPhase === "confirm" && (
         <div className="sa-ctl-row confirm">
-          <span className="sa-ctl-ask">Stop this agent? The parent gets an aborted result.</span>
-          <button autoFocus className="btn ghost outlined" onClick={endConfirm}>keep running</button>
-          <button className="btn danger" onClick={stop}><_SAC_Icon name="stop" size={10} /> stop</button>
+          <span className="sa-ctl-ask">{OMP_TR("Stop this agent? The parent gets an aborted result.")}</span>
+          <button autoFocus className="btn ghost outlined" onClick={endConfirm}>{OMP_TR("keep running")}</button>
+          <button className="btn danger" onClick={stop}><_SAC_Icon name="stop" size={10} /> {OMP_TR("stop")}</button>
         </div>
       )}
       {running && stopPhase !== "confirm" && (
         <div className="sa-ctl-row">
-          <button className="btn ghost outlined" onClick={() => setStopPhase("confirm")} disabled={stopPhase === "stopping"} title="stop this agent">
+          <button className="btn ghost outlined" onClick={() => setStopPhase("confirm")} disabled={stopPhase === "stopping"} title={OMP_TR("stop this agent")}>
             <_SAC_Icon name="stop" size={10} /> {stopPhase === "stopping" ? "stopping…" : "stop"}
           </button>
           <div style={{ flex: 1 }} />

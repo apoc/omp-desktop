@@ -21,7 +21,7 @@ function _SRA_StartupProfile({ row, ctx, query }) {
   const current = ctx.startupProfileId;
   const rows = ctx.profiles.map(p => ({
     name: p.name,
-    hint: p.id === DEFAULT_PROFILE_ID ? "built-in" : "",
+    hint: p.id === DEFAULT_PROFILE_ID ? OMP_TR("built-in") : "",
     path: "",
     value: p.id,
     checked: p.id === current,
@@ -29,7 +29,7 @@ function _SRA_StartupProfile({ row, ctx, query }) {
   const save = async (id) => {
     setError(null);
     const res = await ctx.onSetStartupProfile(id);
-    if (!res?.ok) setError(res?.error ?? "the profile could not be saved");
+    if (!res?.ok) setError(res?.error ?? OMP_TR("the profile could not be saved"));
   };
   return (
     <Row label={row.label} desc={row.desc} query={query}
@@ -50,11 +50,11 @@ function _SRA_GoalContinue({ row, ctx, query }) {
   if (cont.value !== null) {
     control = <Toggle value={cont.value} label={row.label} onChange={v => { if (!cont.busy) cont.set(v); }} />;
   } else {
-    control = <span className="st-ro">{cont.error ? "unavailable" : "reading…"}</span>;
+    control = <span className="st-ro">{cont.error ? OMP_TR("unavailable") : OMP_TR("reading…")}</span>;
   }
   return (
     <>
-      <Row label={row.label} query={query} desc={`${row.desc}${scope}`}>
+      <Row label={row.label} query={query} desc={`${window.OMP_I18N.t(row.desc)}${scope}`}>
         {control}
       </Row>
       {cont.error && <div className="st-row-error">{cont.error}</div>}

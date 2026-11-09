@@ -53,20 +53,20 @@ const CompactRow = React.memo(function CompactRow({ msg }) {
             borderColor: `color-mix(in oklab, ${COLOR} 30%, var(--line))`,
           }}>compact</span>
           <span className="tool-title">
-            {pending ? "compacting context\u2026"
-              : error   ? "compaction failed"
-              : (msg.shortSummary || "context compacted")}
+            {pending ? OMP_TR("compacting context\u2026")
+              : error   ? OMP_TR("compaction failed")
+              : (msg.shortSummary || OMP_TR("context compacted"))}
           </span>
           <div className="tool-card-spacer" />
           {pending && (
             <span className="chip accent" style={{ animation: "pulseDot 1.4s infinite" }}>
-              <span className="dot live" />{" "}running
+              <span className="dot live" />{" "}{OMP_TR("running")}
             </span>
           )}
           {!pending && !error && msg.tokensBefore != null && (
-            <span className="chip muted mono">{tok} before</span>
+            <span className="chip muted mono">{tok} {OMP_TR("before")}</span>
           )}
-          {error && <span className="chip" style={{ color: "var(--rose)" }}>failed</span>}
+          {error && <span className="chip" style={{ color: "var(--rose)" }}>{OMP_TR("failed")}</span>}
           {hasBody && <_CV_Icon name={open ? "chev" : "chevR"} size={10} color="var(--fg-4)" />}
         </div>
         {open && hasBody && (
@@ -101,7 +101,7 @@ const JobRow = React.memo(function JobRow({ msg, idx, highlighted }) {
             borderColor: `color-mix(in oklab, ${color} 30%, var(--line))`,
           }}>{label}</span>
           <span className="tool-title" title={msg.label ?? undefined}>
-            {msg.jobId} finished
+            {msg.jobId} {OMP_TR("finished")}
             {msg.label && <span className="job-label"> · {msg.label}</span>}
           </span>
           <div className="tool-card-spacer" />
@@ -246,7 +246,7 @@ function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, 
       {showJump && (
         <button type="button" className="chat-jump-latest" onClick={jumpToLatest}>
           <_CV_Icon name="chev" size={12} />
-          Jump to latest
+          {OMP_TR("Jump to latest")}
         </button>
       )}
     </div>

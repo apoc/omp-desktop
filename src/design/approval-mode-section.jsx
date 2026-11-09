@@ -39,7 +39,7 @@ function ApprovalModeSeg({ label, options, value, disabled, onPick }) {
 // What the last change did: `result` is a set's `{ ok, error?, restarted,
 // deferred }`, null before any change in this editor.
 function ApprovalModeApplyLine({ result, busy, hasProject, sessions }) {
-  if (busy) return <div className="mode-apply"><span className="spin">⟳</span> restarting…</div>;
+  if (busy) return <div className="mode-apply"><span className="spin">⟳</span> {OMP_TR("restarting…")}</div>;
   if (!result) {
     return (
       <div className="mode-apply">
@@ -56,8 +56,8 @@ function ApprovalModeApplyLine({ result, busy, hasProject, sessions }) {
     .filter(Boolean);
   return (
     <div className="mode-apply">
-      {n > 0 && <><span className="spin">⟳</span>{n} tab{n === 1 ? "" : "s"} restarted with the new mode.</>}
-      {n === 0 && names.length === 0 && "Saved. No open tab needed a restart."}
+      {n > 0 && <><span className="spin">⟳</span>{window.OMP_I18N.plural(n, "{n} tab", "{n} tabs", { n })} {OMP_TR("restarted with the new mode.")}</>}
+      {n === 0 && names.length === 0 && OMP_TR("Saved. No open tab needed a restart.")}
       {names.length > 0 && (
         <>
           {n > 0 && " "}
@@ -103,9 +103,9 @@ function ApprovalModeSection({ view, activeProject, sessions, query }) {
   return (
     <div className="mode-sect">
       <div className="mode-row">
-        <div className="mode-lbl"><span>default for every project</span></div>
+        <div className="mode-lbl"><span>{OMP_TR("default for every project")}</span></div>
         <ApprovalModeSeg
-          label="default for every project"
+          label={OMP_TR("default for every project")}
           options={modeOptions}
           value={fallback}
           disabled={disabled}
@@ -130,7 +130,7 @@ function ApprovalModeSection({ view, activeProject, sessions, query }) {
             ? <span className="mode-rm" aria-hidden="true" />
             : (
               <button className="btn icon ghost mode-rm" disabled={disabled}
-                title="remove the override (inherit the default)" aria-label={`remove the override of ${p.path}`}
+                title={OMP_TR("remove the override (inherit the default)")} aria-label={OMP_TR("remove the override of {path}", { path: p.path })}
                 onClick={() => setProject(p.path, "default")}>
                 <_AMS_Icon name="close" size={10} />
               </button>

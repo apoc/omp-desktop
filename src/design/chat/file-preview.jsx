@@ -128,8 +128,8 @@ function FilePreview({ target, onClose, onOpenGit }) {
   const range = target.range;
 
   let body;
-  if (!res) body = <div className="fp-state"><span className="shimmer-text">Loading…</span></div>;
-  else if (!res.ok) body = <_FP_State title="Can't preview this file" sub={res.error} />;
+  if (!res) body = <div className="fp-state"><span className="shimmer-text">{OMP_TR("Loading…")}</span></div>;
+  else if (!res.ok) body = <_FP_State title={OMP_TR("Can't preview this file")} sub={res.error} />;
   else if (state) {
     const sub = state.sub ?? `${_FP_size(value.size)} is over the preview limit.`;
     body = <_FP_State title={state.title} sub={sub} />;
@@ -147,7 +147,7 @@ function FilePreview({ target, onClose, onOpenGit }) {
       className="fp-scrim"
       role="dialog"
       aria-modal="true"
-      aria-label={`Preview of ${shownPath}`}
+      aria-label={OMP_TR("Preview of {path}", { path: shownPath })}
       tabIndex={-1}
       onMouseDown={(e) => { downOnScrim.current = e.target === e.currentTarget; }}
       onClick={(e) => {
@@ -161,9 +161,9 @@ function FilePreview({ target, onClose, onOpenGit }) {
           <span className="fp-crumb mono" title={shownPath}>
             {shownPath.slice(0, slash)}<b>{shownPath.slice(slash)}</b>
           </span>
-          {clip && <span className="chip muted mono">{clip.total} lines</span>}
+          {clip && <span className="chip muted mono">{clip.total} {OMP_TR("lines")}</span>}
           {clip?.truncated && (
-            <span className="chip warn mono" title={`Shown: the first ${_FP_MAX_LINES} lines, each cut at ${_FP_MAX_LINE_CHARS} characters`}>truncated</span>
+            <span className="chip warn mono" title={OMP_TR("Shown: the first {n} lines, each cut at {m} characters", { n: _FP_MAX_LINES, m: _FP_MAX_LINE_CHARS })}>{OMP_TR("truncated")}</span>
           )}
           {value && value.kind !== "Missing" && value.kind !== "Outside" && <span className="chip muted mono">{_FP_size(value.size)}</span>}
           {value?.kind === "Text" && range && (
@@ -172,13 +172,13 @@ function FilePreview({ target, onClose, onOpenGit }) {
             </span>
           )}
           <div className="fp-spacer" />
-          <_FP_Copy className="fp-copy" label="Copy the project-relative path" text={shownPath} />
+          <_FP_Copy className="fp-copy" label={OMP_TR("Copy the project-relative path")} text={shownPath} />
           {openable && (
-            <button type="button" className="btn outlined" onClick={() => onOpenGit(shownPath)} title="Open in the git browser">
-              <_FP_Icon name="branch" size={12} /> Open in git browser
+            <button type="button" className="btn outlined" onClick={() => onOpenGit(shownPath)} title={OMP_TR("Open in the git browser")}>
+              <_FP_Icon name="branch" size={12} /> {OMP_TR("Open in git browser")}
             </button>
           )}
-          <button type="button" className="btn ghost icon" onClick={onClose} title="Close (Esc)" aria-label="Close">
+          <button type="button" className="btn ghost icon" onClick={onClose} title={OMP_TR("Close (Esc)")} aria-label={OMP_TR("Close")}>
             <_FP_Icon name="close" size={12} />
           </button>
         </div>

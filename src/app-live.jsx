@@ -47,6 +47,14 @@ function App() {
   const data          = window.OMP_DATA;
   const bridge        = window.OMP_BRIDGE;
 
+  // Settings → Language drives the window language. Applied during render so
+  // a change repaints the whole tree in one pass (children render after this
+  // body); the initial value was already read from the same tweak store by
+  // app/i18n.js, so a relaunch or a stored choice never flashes English.
+  if (window.OMP_I18N.requested !== (t.locale ?? "auto")) {
+    window.OMP_I18N.set(t.locale ?? "auto");
+  }
+
   // ── UI state ──────────────────────────────────────────────────────────────
   const [bridgeOpen,  setBridgeOpen]  = React.useState(false);
   const [bridgeView,  setBridgeView]  = React.useState("commands");

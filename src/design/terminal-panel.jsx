@@ -39,8 +39,8 @@ function TerminalPanel({ entry, height, hidden, onHeight, mountRef, onContextMen
         {cwd && <span className="term-head-cwd" title={cwd}>{cwd}</span>}
         {_TP_isExited(entry) && (
           <span className="term-head-exited" title={entry.error ?? undefined}>
-            {entry.error != null ? "failed to start"
-              : `exited${entry.status.exitCode == null ? "" : ` (${entry.status.exitCode})`}`}
+            {entry.error != null ? OMP_TR("failed to start")
+              : `${OMP_TR("exited")}${entry.status.exitCode == null ? "" : ` (${entry.status.exitCode})`}`}
           </span>
         )}
       </div>

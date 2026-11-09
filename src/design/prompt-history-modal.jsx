@@ -48,16 +48,16 @@ function PromptHistoryModal({ open, entries, onClose, onPick }) {
       <div ref={containerRef} tabIndex={-1} className="bridge slide-in" onClick={e => e.stopPropagation()} style={{ width: "min(640px, calc(100vw - 32px))", maxHeight: "72vh", outline: "none" }}>
         <div className="bridge-input-row" style={{ padding: "12px 16px", gap: 10 }}>
           <Icon name="clock" size={16} color="var(--accent)" />
-          <span style={{ color: "var(--fg)", fontWeight: 550, flex: 1 }}>Prompt history</span>
+          <span style={{ color: "var(--fg)", fontWeight: 550, flex: 1 }}>{OMP_TR("Prompt history")}</span>
           <span className="mono" style={{ color: "var(--fg-4)", fontSize: "var(--d-text-xs)" }}>
             {entries.length} {entries.length === 1 ? "prompt" : "prompts"}
           </span>
-          <span className="kbd">esc</span>
+          <span className="kbd">{OMP_TR("esc")}</span>
         </div>
 
         <div ref={listRef} className="bridge-body" style={{ maxHeight: "56vh", padding: "6px 8px" }}>
           {entries.length === 0 && (
-            <div className="bridge-empty">No prompts sent in this tab yet.</div>
+            <div className="bridge-empty">{OMP_TR("No prompts sent in this tab yet.")}</div>
           )}
           {entries.map((text, idx) => {
             const isSelected = idx === clampedIdx;
@@ -88,9 +88,9 @@ function PromptHistoryModal({ open, entries, onClose, onPick }) {
         </div>
 
         <div className="bridge-foot mono" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span className="kbd">↑↓</span> navigate
-          <span className="kbd">↵</span> insert into composer
-          <span className="kbd">esc</span> close
+          <span className="kbd">↑↓</span> {OMP_TR("navigate")}
+          <span className="kbd">↵</span> {OMP_TR("insert into composer")}
+          <span className="kbd">{OMP_TR("esc")}</span> {OMP_TR("close")}
         </div>
       </div>
     </div>
