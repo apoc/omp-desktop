@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Linux: the installed `.desktop` entry (`.deb`, `.rpm`, AppImage) no longer carries the template's explanatory comments, and lists the app under Development instead of an empty category.
+
+### Changed
+
+- Building from source declares its minimum Rust version (`rust-version = "1.98"`), so an older toolchain fails with a clear "requires rustc 1.98" message instead of an unstable-feature error.
+
 ## [0.14.0] - 2026-11-09
 
 ### Added

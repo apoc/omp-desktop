@@ -129,10 +129,13 @@ impl Tap {
     /// The page a command is for: its session's, or the page-level
     /// connection's own.
     fn target_of(&self, command: &Envelope) -> Option<&str> {
-        command.session_id.as_ref().map(Str::as_str).map_or_else(
-            || self.page.as_deref(),
-            |session| self.sessions.get(session).and_then(Option::as_deref),
-        )
+        command
+            .session_id
+            .as_ref()
+            .map(Str::as_str)
+            .map_or(self.page.as_deref(), |session| {
+                self.sessions.get(session).and_then(Option::as_deref)
+            })
     }
 
     fn on_reply_or_event(&mut self, message: &Envelope) -> Result<(), &'static str> {
