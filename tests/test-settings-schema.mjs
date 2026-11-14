@@ -57,8 +57,15 @@ check("every tweak row names a TWEAK_DEFAULTS key whose default is valid", () =>
 
 check("custom rows name the renderers the page expects", () => {
   assert.deepEqual(S.rows().filter(r => r.kind === "custom").map(r => r.type).sort(),
-    ["approvalMode", "approvalRules", "chromium", "goalContinue", "remoteCert", "remoteDevices", "remotePair", "remotePush", "remoteServer", "shell", "shortcuts", "startupProfile", "terminalHeight", "version", "widgets", "widths"]);
+    ["approvalMode", "approvalRules", "chromium", "goalContinue", "projectAppearance", "remoteCert", "remoteDevices", "remotePair", "remotePush", "remoteServer", "shell", "shortcuts", "startupProfile", "terminalHeight", "version", "widgets", "widths"]);
   for (const r of S.rows().filter(r => r.kind === "custom")) for (const k of r.keys ?? []) assert.ok(k in D, k);
+});
+
+check("the projectAppearance row owns no tweak keys, so badges and section reset ignore every project entry", () => {
+  const r = S.rows().find(x => x.type === "projectAppearance");
+  const edited = vals({ projectAppearance: { "/a": { accent: "#112233" } } });
+  assert.equal(S.isModified(r, edited), false);
+  assert.equal("projectAppearance" in S.resetEdits("appearance", edited), false);
 });
 
 check("bounds come from the owning modules", () => {

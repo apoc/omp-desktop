@@ -35,6 +35,7 @@
     "density": "compact",
     "layout": "rail",
     "accent": "#8AF0C8",
+    "projectAppearance": {},
     "monoChat": false,
     "showContext": true,
     "showRadar": true,

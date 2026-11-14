@@ -47,7 +47,7 @@ const {
 
 const _UT_FONT_PX = 13;
 
-function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak }) {
+function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak, appearance }) {
   const [state, setState] = React.useState(_UT_EMPTY);
   const stateRef = React.useRef(state);
   stateRef.current = state;
@@ -320,7 +320,10 @@ function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak }) 
     for (const sid of [...recs.current.keys()]) if (!sessionIds.includes(sid)) dispose(sid);
   }, [idsKey, dispose]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Theme, font and scrollback follow the tweaks for every instance.
+  // Theme, font and scrollback follow the tweaks for every instance. The
+  // theme is read back from the CSS useThemeEffect just wrote, so it re-runs
+  // when the rendered project's resolved theme or accent changes (`appearance`
+  // falls back to the global tweaks, so it covers global edits too).
   React.useEffect(() => {
     for (const [sid, rec] of recs.current) {
       rec.term.options.theme = _UT_theme();
@@ -328,7 +331,7 @@ function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak }) 
       if (rec.term.options.scrollback !== scrollback) rec.term.options.scrollback = scrollback;
       fit(sid);
     }
-  }, [tweaks.theme, tweaks.accent, fontSize, scrollback, fit]);
+  }, [appearance.theme, appearance.accent, fontSize, scrollback, fit]);
 
   return { state, height, toggle, setHeight, mountFor, copySelection };
 }

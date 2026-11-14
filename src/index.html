@@ -134,6 +134,13 @@
        load before all of them. -->
   <script src="app/project-nav.js"></script>
 
+  <!-- Per-project appearance: theme/accent overrides keyed by project folder.
+       Depends on project-nav's normPath; app/use-bridge-snapshot.jsx,
+       design/project-sidebar.jsx and design/settings/rows-appearance.jsx
+       read it late-bound, so it must load before live.js and the settings
+       page. -->
+  <script src="app/project-appearance.js"></script>
+
   <!-- File preview (issue #39): which file and lines a read card or a chat
        link points at, project confinement, highlighted lines. IIFE that
        destructures window.OMP_MARKDOWN (app/marked-setup.js) and
@@ -513,6 +520,7 @@
        helpers at render time; page.jsx destructures the controls at top
        level. app-live.jsx destructures window.SettingsPage. -->
   <script type="text/babel" src="design/settings/controls.jsx"></script>
+  <script type="text/babel" src="design/settings/rows-appearance.jsx"></script>
   <script type="text/babel" src="design/settings/rows-layout.jsx"></script>
   <script type="text/babel" src="design/settings/rows-programs.jsx"></script>
   <script type="text/babel" src="design/settings/rows-agent.jsx"></script>

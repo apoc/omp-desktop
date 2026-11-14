@@ -11,7 +11,8 @@
 //     (design/settings/rows-*.jsx). `keys` / `keyPrefix` name the tweak keys
 //     the row owns, so its changes count in the badges and the section
 //     reset; Rust-backed rows (shell, chromium, profiles, approvals,
-//     keybindings) own none and never count.
+//     keybindings) and projectAppearance (edits one project's entry; its
+//     own dot and reset) own none and never count.
 // `desc` is schema-authored text; `backtick` segments render as code.
 // Bounds of collapseAfter / promptHistoryLimit / pasteCollapseLines and the
 // fold modes come from OMP_COLLAPSE / OMP_PROMPT_HISTORY / OMP_SESSION_UI,
@@ -52,6 +53,7 @@
       { name: "Theme", rows: [
         tweak("theme", "themes", "Theme", "Picking a theme also resets the accent to the theme's own.", "dark light colour color aurora phosphor daylight"),
         tweak("accent", "swatches", "Accent", "Focus rings, the active tab, links and the assistant's marks.", "color colour highlight"),
+        custom("projectAppearance", "Project colours", "Theme and accent for the rendered tab's project; other projects keep the global appearance above.", "per project folder palette brand sidebar"),
         tweak("startScreen", "screens", "Start screen", "The animated screen behind the logo while no tab is open. It follows the theme and accent.", "welcome backdrop empty animation matrix latent embedding next token sampling agent loop orbit forward pass neural attention transformer self-attention",
           { get options() { return screenOptions(); } }),
       ] },
