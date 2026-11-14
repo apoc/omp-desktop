@@ -967,7 +967,8 @@ mod tests {
     #[test]
     fn send_keeps_tracker_question_when_pipe_write_fails() {
         use crate::remote::tracker::tracker;
-        use std::process::{Command, Stdio};
+        use std::os::fd::OwnedFd;
+        use std::process::ChildStdin;
         use std::time::Instant;
 
         let bridge = AgentBridge::new();
@@ -979,20 +980,17 @@ mod tests {
             Instant::now(),
             &AtomicBool::new(true),
         );
-        let mut command = Command::new("true");
-        command.stdin(Stdio::piped());
-        // The exclusive gate keeps every other thread from forking while the
-        // pipe's read end exists: a child forked in that window would inherit
-        // it (CLOEXEC acts only at exec) and keep the pipe open, so the write
-        // below would land in the buffer instead of failing with EPIPE.
-        // `spawn_gate::spawn` would take the gate shared and wait on itself.
-        let (stdin, status) = {
+        // A pipe whose read end is already closed: the write fails with EPIPE.
+        // No child process is involved, so no concurrently forked child can
+        // inherit the read end and keep the pipe open (CLOEXEC acts only at
+        // exec). The exclusive gate keeps gated spawns away for the instant the
+        // read end exists.
+        let stdin = {
             let _gate = crate::spawn_gate::exclusive();
-            let mut child = command.spawn().unwrap();
-            let stdin = child.stdin.take().unwrap();
-            (stdin, child.wait().unwrap())
+            let (reader, writer) = std::io::pipe().unwrap();
+            drop(reader);
+            ChildStdin::from(OwnedFd::from(writer))
         };
-        assert!(status.success());
         bridge.sessions.lock().unwrap().insert(
             sid.into(),
             BridgeInner {
