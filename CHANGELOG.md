@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-14
+
 ### Added
 
 - A project can have its own theme and accent: Settings → Appearance → Project colours sets them for the rendered tab's folder, every other project keeps the global pair. The sidebar tints the project's folder glyph with its accent, and switching tabs applies that project's palette at once, terminal included. Stored as `projectAppearance` in the window's tweaks, keyed by the normalised project path.
