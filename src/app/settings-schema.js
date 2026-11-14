@@ -11,7 +11,8 @@
 //     (design/settings/rows-*.jsx). `keys` / `keyPrefix` name the tweak keys
 //     the row owns, so its changes count in the badges and the section
 //     reset; Rust-backed rows (shell, chromium, profiles, approvals,
-//     keybindings) own none and never count.
+//     keybindings) and projectAppearance (edits one project's entry; its
+//     own dot and reset) own none and never count.
 // `desc` is schema-authored text; `backtick` segments render as code.
 // Bounds of collapseAfter / promptHistoryLimit / pasteCollapseLines and the
 // fold modes come from OMP_COLLAPSE / OMP_PROMPT_HISTORY / OMP_SESSION_UI,
@@ -52,7 +53,7 @@
       { name: "Theme", rows: [
         tweak("theme", "themes", "Theme", "Picking a theme also resets the accent to the theme's own.", "dark light colour color aurora phosphor daylight"),
         tweak("accent", "swatches", "Accent", "Focus rings, the active tab, links and the assistant's marks.", "color colour highlight"),
-        custom("projectAppearance", "Project colours", "Theme and accent for the rendered tab's project; other projects keep the global appearance below.", "per project folder palette brand sidebar", { keys: ["projectAppearance"] }),
+        custom("projectAppearance", "Project colours", "Theme and accent for the rendered tab's project; other projects keep the global appearance above.", "per project folder palette brand sidebar"),
         tweak("startScreen", "screens", "Start screen", "The animated screen behind the logo while no tab is open. It follows the theme and accent.", "welcome backdrop empty animation matrix latent embedding next token sampling agent loop orbit forward pass neural attention transformer self-attention",
           { get options() { return screenOptions(); } }),
       ] },
@@ -241,17 +242,9 @@
   // Tweak keys a custom row owns that differ from their defaults. A
   // `keyPrefix` row counts only `opts.prefixKeys` when given: the keys it
   // renders a control for (a stored key of a removed plugin has no row).
-  // Same tweak value. Plain objects compare by JSON, so a fresh `{}` (after
-  // "Use global", or a storage round-trip) is not a change from the default.
-  function sameTweak(a, b) {
-    if (a === b) return true;
-    if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
-    return JSON.stringify(a) === JSON.stringify(b);
-  }
-
   function ownedChanged(row, values, opts) {
     const d = defaults();
-    const changed = (row.keys ?? []).filter(k => k in (values ?? {}) && !sameTweak(values[k], d[k]));
+    const changed = (row.keys ?? []).filter(k => k in (values ?? {}) && values[k] !== d[k]);
     if (row.keyPrefix) {
       for (const k of opts?.prefixKeys ?? Object.keys(values ?? {})) {
         if (k.startsWith(row.keyPrefix) && k in (values ?? {}) && values[k] !== row.prefixDefault) changed.push(k);

@@ -66,6 +66,17 @@
     return next;
   }
 
+  /** The patch for picking `themeId` in the Settings row: the theme with its
+   *  own accent (`themeAccentHex`, as the global Theme row resets the accent),
+   *  or both fields cleared for "" ("Global"). null when `themeId` is already
+   *  `currentTheme` (the stored one, "" for none): a repeat click changes
+   *  nothing, as on the global Theme row. */
+  function themePatch(themeId, themeAccentHex, currentTheme) {
+    const id = String(themeId ?? "").trim();
+    if (id === String(currentTheme ?? "").trim()) return null;
+    return id ? { theme: id, accent: themeAccentHex } : { theme: undefined, accent: undefined };
+  }
+
   /** What the window should render for `path`: the project's own values when
    *  set, the global ones otherwise. `themed` / `accented` say which half is
    *  the project's. */
@@ -79,5 +90,5 @@
     };
   }
 
-  window.OMP_PROJECT_APPEARANCE = { key, forProject, set, clear, resolve, isHex };
+  window.OMP_PROJECT_APPEARANCE = { key, forProject, set, clear, themePatch, resolve, isHex };
 })();

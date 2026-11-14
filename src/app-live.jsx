@@ -179,6 +179,8 @@ function App() {
   });
   useRemote({ bridge });
   useThemeEffect(t, activeProject.path);
+  // The rendered tab's palette, project override or global; terminals re-theme on it.
+  const appearance = window.OMP_PROJECT_APPEARANCE.resolve(t, activeProject.path);
   React.useEffect(() => {
     bridge?.setPromptHistoryLimit(t.promptHistoryLimit ?? window.OMP_PROMPT_HISTORY.DEFAULT_LIMIT);
   }, [bridge, t.promptHistoryLimit]);
@@ -417,7 +419,7 @@ function App() {
 
   // One shell per tab, in a panel above the composer (app/use-terminal.jsx).
   const terminal = useTerminal({
-    bridge, activeSessionId: planKey, sessionIds, tweaks: t, setTweak,
+    bridge, activeSessionId: planKey, sessionIds, tweaks: t, setTweak, appearance,
   });
 
   const subagentUi = useSubagentManager({

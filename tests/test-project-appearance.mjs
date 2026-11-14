@@ -38,6 +38,11 @@ check("key accepts a Windows drive root", () => {
   assert.deepEqual(A.set({}, "C:\\", { accent: "#112233" }), { "c:": { accent: "#112233" } });
 });
 
+check("key folds UNC paths of either separator to one lowercase key", () => {
+  assert.equal(A.key("//Server/Share/proj/"), "//server/share/proj");
+  assert.equal(A.key("\\\\Server\\Share\\proj"), "//server/share/proj");
+});
+
 check("key refuses relative and empty paths", () => {
   assert.equal(A.key(""), "");
   assert.equal(A.key("proj"), "");
@@ -78,6 +83,36 @@ check("clear removes one project and leaves the rest", () => {
   const map = { "/a": { theme: "aurora" }, "/b": { accent: "#112233" } };
   assert.deepEqual(A.clear(map, "/a/"), { "/b": { accent: "#112233" } });
   assert.equal(A.clear(map, "/c"), map);
+});
+
+check("themePatch with a theme replaces a stored accent with the theme's own", () => {
+  assert.deepEqual(A.themePatch(" phosphor ", "#33FF66", undefined), { theme: "phosphor", accent: "#33FF66" });
+  const next = A.set({ "/a": { accent: "#112233" } }, "/a", A.themePatch("phosphor", "#33FF66", undefined));
+  assert.deepEqual(next, { "/a": { theme: "phosphor", accent: "#33ff66" } });
+});
+
+check("themePatch with no theme clears both fields and drops the entry", () => {
+  assert.deepEqual(A.themePatch("", undefined, "phosphor"), { theme: undefined, accent: undefined });
+  const map = { "/a": { theme: "phosphor", accent: "#112233" }, "/b": { accent: "#445566" } };
+  assert.deepEqual(A.set(map, "/a", A.themePatch("", undefined, "phosphor")), { "/b": { accent: "#445566" } });
+  assert.deepEqual(A.set(map, "/a", A.themePatch(undefined, undefined, "phosphor")), { "/b": { accent: "#445566" } });
+});
+
+check("themePatch re-picking the stored theme is null, so a custom accent stays", () => {
+  // The row applies nothing for null: the entry keeps its custom accent.
+  assert.equal(A.themePatch("phosphor", "#33FF66", "phosphor"), null);
+  assert.equal(A.themePatch(" phosphor ", "#33FF66", "phosphor "), null);
+});
+
+check("themePatch re-picking Global with only an accent stored is null", () => {
+  assert.equal(A.themePatch("", undefined, undefined), null);
+  assert.equal(A.themePatch("", undefined, ""), null);
+});
+
+check("themePatch picking a different theme returns the patch", () => {
+  assert.deepEqual(A.themePatch("aurora", "#8AF0C8", "phosphor"), { theme: "aurora", accent: "#8AF0C8" });
+  const next = A.set({ "/a": { theme: "phosphor", accent: "#112233" } }, "/a", A.themePatch("aurora", "#8AF0C8", "phosphor"));
+  assert.deepEqual(next, { "/a": { theme: "aurora", accent: "#8af0c8" } });
 });
 
 check("resolve falls back to the global pair", () => {
