@@ -112,3 +112,8 @@
 }
 .st-rem-dialog-head { display: flex; align-items: center; justify-content: space-between; width: 100%; color: var(--fg-2); }
 .st-rem-qr { background: #fff; border-radius: 8px; padding: 8px; }
+
+/* Project colours (Settings → Appearance): the rendered project's theme and
+   accent, keyed by its folder (app/project-appearance.js). */
+.st-projapp { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.st-projapp-name { color: var(--fg-3); font-size: var(--d-text-sm); font-family: var(--font-mono); }

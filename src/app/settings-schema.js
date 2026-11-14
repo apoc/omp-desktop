@@ -52,6 +52,7 @@
       { name: "Theme", rows: [
         tweak("theme", "themes", "Theme", "Picking a theme also resets the accent to the theme's own.", "dark light colour color aurora phosphor daylight"),
         tweak("accent", "swatches", "Accent", "Focus rings, the active tab, links and the assistant's marks.", "color colour highlight"),
+        custom("projectAppearance", "Project colours", "Theme and accent for the rendered tab's project; other projects keep the global appearance below.", "per project folder palette brand sidebar", { keys: ["projectAppearance"] }),
         tweak("startScreen", "screens", "Start screen", "The animated screen behind the logo while no tab is open. It follows the theme and accent.", "welcome backdrop empty animation matrix latent embedding next token sampling agent loop orbit forward pass neural attention transformer self-attention",
           { get options() { return screenOptions(); } }),
       ] },

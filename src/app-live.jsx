@@ -166,6 +166,9 @@ function App() {
   const [approvalModes, setApprovalModes] = React.useState(null);
 
   // ── Cross-cutting effects ─────────────────────────────────────────────────
+  // The rendered tab's project. Derived before the effects because the theme
+  // effect needs its folder; the rest of the component reads it here too.
+  const activeProject = sessions.find(s => s.id === activeSessionId) ?? sessions[0] ?? EMPTY_PROJECT;
   useBridgeSnapshot(bridge, {
     setMessages, setStreaming, setCtx, setKanban, setPlanMeta,
     setModels, setActivity, setSparkline,
@@ -175,7 +178,7 @@ function App() {
     setPromptHistory, setSubagents, setSubagentTranscripts, setQueue, setQueueSending, setGoal, setExtWidgets, setLiveVoice, setDictation, setCodexLogin, setDictationCompleted,
   });
   useRemote({ bridge });
-  useThemeEffect(t);
+  useThemeEffect(t, activeProject.path);
   React.useEffect(() => {
     bridge?.setPromptHistoryLimit(t.promptHistoryLimit ?? window.OMP_PROMPT_HISTORY.DEFAULT_LIMIT);
   }, [bridge, t.promptHistoryLimit]);
@@ -216,7 +219,6 @@ function App() {
   const openBridge = view => { setBridgeView(view); setBridgeOpen(true); };
 
   // ── Derived values ────────────────────────────────────────────────────────
-  const activeProject = sessions.find(s => s.id === activeSessionId) ?? sessions[0] ?? EMPTY_PROJECT;
   // No tab open → `activeProject` is EMPTY_PROJECT (built-in profile), but
   // the bridge spawns the next tab into the empty workspace's pick or the
   // ticked startup profile (nothing to inherit from) — so showing the
@@ -1046,6 +1048,7 @@ function App() {
               <ProjectSidebar
                 tabs={sessions}
                 activeId={stab.active ? null : activeSessionId}
+                projectAppearances={t.projectAppearance}
                 recents={recentRows(recentProjects, sessions, activeProfileId)}
                 profileLabel={profileLabel}
                 onSelectTab={handleSelectTab}

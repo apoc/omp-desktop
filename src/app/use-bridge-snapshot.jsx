@@ -47,7 +47,7 @@ function useBridgeSnapshot(bridge, setters) {
   }, [bridge]);
 }
 
-function useThemeEffect(t) {
+function useThemeEffect(t, projectPath) {
   React.useEffect(() => {
     const root = document.documentElement;
     root.classList.remove("density-cozy", "density-compact", "density-dense");
@@ -57,9 +57,12 @@ function useThemeEffect(t) {
     // The accent override and its three derived tokens (app/accent.js), so
     // focus rings, glows and the xterm selection follow it. Cleared first:
     // an accent equal to the theme's own keeps the theme's hand-tuned set.
-    window.OMP_ACCENT.applyThemeTokens(root, t.theme, t.accent);
+    // A project's own theme/accent wins for the tab that is rendered
+    // (app/project-appearance.js); the global pair is the fallback.
+    const appearance = window.OMP_PROJECT_APPEARANCE.resolve(t, projectPath);
+    window.OMP_ACCENT.applyThemeTokens(root, appearance.theme, appearance.accent);
     if (t.fontSize) root.style.fontSize = `${t.fontSize}%`;
-  }, [t.theme, t.density, t.accent, t.monoChat, t.fontSize]);
+  }, [t.theme, t.accent, t.projectAppearance, projectPath, t.density, t.monoChat, t.fontSize]);
 }
 
 

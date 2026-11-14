@@ -13,7 +13,7 @@ const { Icon, TabRunDot, TabLabel, RenameField } = window;
 const { groupTabs, groupRunState, groupTarget, membersNewestFirst, basename, parentName } = window.OMP_PROJECT_NAV;
 
 function ProjectSidebar({
-  tabs, activeId, recents, profileLabel,
+  tabs, activeId, recents, profileLabel, projectAppearances,
   onSelectTab, onCloseTab, onRenameTab, onNewInProject, onOpenRecent, onForgetRecent, onOpenFolder, onReorder,
 }) {
   // Group keys the user folded. Not persisted: tab ids (and so pathless
@@ -55,7 +55,9 @@ function ProjectSidebar({
           const containsActive = group.tabs.some(t => t.id === activeId);
           const profile = profileLabel(group.profile);
           const editing = !multi && renaming === group.tabs[0].id;
-          const folderIcon = <Icon name="folder" size={11} color={containsActive ? "var(--accent)" : "var(--fg-4)"} />;
+          const appearance = window.OMP_PROJECT_APPEARANCE.forProject(projectAppearances, group.path);
+          const folderColor = appearance?.accent || (containsActive ? "var(--accent)" : "var(--fg-4)");
+          const folderIcon = <Icon name="folder" size={11} color={folderColor} />;
           // Single-tab cards show `folder · title` (#46), which ellipsizes.
           // The tooltip keeps the full title plus the folder path; multi-tab
           // project rows still tip the path (member rows tip each tab name).
