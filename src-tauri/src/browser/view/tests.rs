@@ -328,7 +328,7 @@ fn the_tab_title_follows_the_page() {
         return;
     };
     let titled = |title: &str| {
-        eventually(SECS_3, || {
+        eventually(NAVIGATION_STATE, || {
             seen.last_tabs()
                 .iter()
                 .any(|t| t.active && t.title == title)
