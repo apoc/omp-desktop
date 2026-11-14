@@ -61,6 +61,12 @@ check("custom rows name the renderers the page expects", () => {
   for (const r of S.rows().filter(r => r.kind === "custom")) for (const k of r.keys ?? []) assert.ok(k in D, k);
 });
 
+check("an empty projectAppearance is not a change from its default", () => {
+  const r = S.rows().find(x => x.type === "projectAppearance");
+  assert.equal(S.isModified(r, vals({ projectAppearance: {} })), false);
+  assert.equal(S.isModified(r, vals({ projectAppearance: { "/a": { accent: "#112233" } } })), true);
+});
+
 check("bounds come from the owning modules", () => {
   assert.equal(row("collapseAfter").min, win.OMP_COLLAPSE.MIN_AFTER);
   assert.equal(row("collapseAfter").max, win.OMP_COLLAPSE.MAX_AFTER);

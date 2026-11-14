@@ -8,7 +8,7 @@
    ═════════════════════════════════════════════════════════════════════ */
 
 /** The rendered tab's project, null with no tab (EMPTY_PROJECT has no path). */
-function _SRP_Project({ row, ctx, query, modified, onReset }) {
+function _SRP_Project({ row, ctx, query, modified }) {
   const { SettingsRow: Row, SettingsSeg: Seg, AccentSwatches, SettingsButton: Button } = window;
   const { t, setTweak, activeProject } = ctx;
   const { THEMES, ACCENTS, themeAccent } = window.OMP_SETTINGS;
@@ -27,14 +27,14 @@ function _SRP_Project({ row, ctx, query, modified, onReset }) {
   const clear = () => setTweak("projectAppearance", window.OMP_PROJECT_APPEARANCE.clear(t.projectAppearance, path));
   const themeOptions = [{ value: "", label: OMP_TR("Global") }, ...THEMES.map(th => ({ value: th.id, label: th.id }))];
   return (
-    <Row stack label={row.label} desc={row.desc} query={query} modified={modified} onReset={onReset}
+    <Row stack label={row.label} desc={row.desc} query={query} modified={modified}
       aside={override ? <Button onClick={clear}>{OMP_TR("Use global")}</Button> : null}>
       <div className="st-projapp">
         <span className="st-projapp-name" title={path}>{basename(path)}</span>
         <Seg label={row.label} value={override?.theme ?? ""} options={themeOptions}
           onChange={v => update({ theme: v || undefined })} />
         <AccentSwatches value={appearance.accent} themeAccent={themeAccent(appearance.theme)} colors={ACCENTS}
-          onChange={c => update({ accent: window.OMP_ACCENT.sameColor(c, themeAccent(appearance.theme)) ? undefined : c })} />
+          onChange={c => update({ accent: c })} />
       </div>
     </Row>
   );

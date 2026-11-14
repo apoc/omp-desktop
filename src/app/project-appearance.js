@@ -13,7 +13,7 @@
    *  Relative paths never become keys: tab paths are absolute by contract. */
   function key(path) {
     const p = normPath(path);
-    return p.startsWith("/") || /^[a-z]:\//i.test(p) || p.startsWith("//") ? p : "";
+    return p.startsWith("/") || /^[a-z]:(\/|$)/i.test(p) || p.startsWith("//") ? p : "";
   }
 
   /** The override for `path`, or null. */

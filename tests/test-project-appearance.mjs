@@ -33,6 +33,11 @@ check("key normalises separators, trailing slashes and Windows drive case", () =
   assert.equal(A.key("C:\\Work\\Site\\"), "c:/work/site");
 });
 
+check("key accepts a Windows drive root", () => {
+  assert.equal(A.key("C:\\"), "c:");
+  assert.deepEqual(A.set({}, "C:\\", { accent: "#112233" }), { "c:": { accent: "#112233" } });
+});
+
 check("key refuses relative and empty paths", () => {
   assert.equal(A.key(""), "");
   assert.equal(A.key("proj"), "");

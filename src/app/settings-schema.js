@@ -241,9 +241,17 @@
   // Tweak keys a custom row owns that differ from their defaults. A
   // `keyPrefix` row counts only `opts.prefixKeys` when given: the keys it
   // renders a control for (a stored key of a removed plugin has no row).
+  // Same tweak value. Plain objects compare by JSON, so a fresh `{}` (after
+  // "Use global", or a storage round-trip) is not a change from the default.
+  function sameTweak(a, b) {
+    if (a === b) return true;
+    if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
   function ownedChanged(row, values, opts) {
     const d = defaults();
-    const changed = (row.keys ?? []).filter(k => k in (values ?? {}) && values[k] !== d[k]);
+    const changed = (row.keys ?? []).filter(k => k in (values ?? {}) && !sameTweak(values[k], d[k]));
     if (row.keyPrefix) {
       for (const k of opts?.prefixKeys ?? Object.keys(values ?? {})) {
         if (k.startsWith(row.keyPrefix) && k in (values ?? {}) && values[k] !== row.prefixDefault) changed.push(k);
