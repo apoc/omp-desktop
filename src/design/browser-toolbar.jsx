@@ -80,6 +80,9 @@ function BrowserToolbar({ ui }) {
             onKeyDown={onKeyDown}
           />
         </form>
+        <button className="btn icon ghost" title={OMP_TR("close browser")} aria-label={OMP_TR("close browser")} onClick={ui.close}>
+          <_BT_Icon name="close" size={11} />
+        </button>
       </div>
     </>
   );

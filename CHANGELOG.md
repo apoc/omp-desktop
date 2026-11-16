@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The browser panel has its own close button again, at the right end of its control bar. The toolbar's browser toggle still closes it too.
+
 ## [0.15.0] - 2026-11-14
 
 ### Added
