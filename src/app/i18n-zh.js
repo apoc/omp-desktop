@@ -813,6 +813,7 @@ window.OMP_I18N.add("zh", {
   "Private key (PEM)": "私钥 (PEM)",
   "Push contact": "推送联系人",
   "resize browser panel": "调整浏览器面板大小",
+  "close browser": "关闭浏览器",
   "Source": "来源",
   "Plugin": "插件",
   "one card for all tabs": "所有标签页共用一张卡片",

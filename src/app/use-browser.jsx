@@ -171,6 +171,7 @@ function useBrowser({ bridge, activeSessionId, sessionIds, open: shown, setOpen,
     };
   }, [bridge, sid, open, setAnnotate, showAnnotate]);
 
+  const close = React.useCallback(() => setOpen(false), [setOpen]);
   // Show `url` (already normalised) in the panel, opening it first if needed.
   // While `browserOpenPanel` is still in flight the backend has no view to
   // navigate yet, so the URL is queued (latest wins) and the open flushes it.
@@ -241,7 +242,7 @@ function useBrowser({ bridge, activeSessionId, sessionIds, open: shown, setOpen,
   }), [bridge, sid, showAnnotate]);
 
   return {
-    open, openUrl, onChatClick, fullView, setFullView,
+    open, close, openUrl, onChatClick, fullView, setFullView,
     width: tweaks?.browserWidth ?? 0, // px; 0 = default (half the stage) — see OMP_BROWSER.clampWidth
     setWidth: (px) => setTweak("browserWidth", Math.round(px)),
     state, tabs, page, annotate, setAnnotate,
