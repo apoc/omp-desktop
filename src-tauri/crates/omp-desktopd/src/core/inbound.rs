@@ -7,7 +7,7 @@ use crate::scheduler::{Event, Now, ScheduleError};
 use crate::server::{ConnId, Inbound};
 use chrono::NaiveTime;
 use omp_desktop_core::persona_protocol::{
-    ClientMsg, ItemKind, NotifyKind, PersonaSettings, ServerMsg,
+    AskQuestionRef, ClientMsg, InboxItem, ItemKind, NotifyKind, PersonaSettings, ServerMsg,
 };
 use serde_json::value::RawValue;
 use serde_json::{json, Value};
@@ -161,16 +161,36 @@ impl Core {
         answer: Option<&str>,
         now: &Now,
     ) {
+        let response = if let Some(answer) = answer {
+            let Some(item) = self.inbox.open(id) else {
+                self.reply_err(conn, req, "no open inbox item with that id");
+                return;
+            };
+            if item.rpc_request_id.is_some() {
+                match Self::respond(item, answer) {
+                    Ok(frame) => Some(frame),
+                    Err(error) => {
+                        self.reply_err(conn, req, error);
+                        return;
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let Some(item) = self.inbox.resolve(id, answer.map(str::to_owned)) else {
             self.reply_err(conn, req, "no open inbox item with that id");
             return;
         };
-        if let Some(rpc) = item.rpc_request_id.as_deref() {
-            match answer {
-                Some(answer) => self.respond(rpc, &item.options, answer),
-                None => self.dismiss(rpc),
+        if let Some(frame) = response {
+            self.send_frame(&frame.to_string());
+        } else if answer.is_none() {
+            if let Some(rpc) = item.rpc_request_id.as_deref() {
+                self.dismiss(rpc);
             }
-        } else if item.kind == ItemKind::Decision {
+        } else if item.kind == ItemKind::Decision && item.rpc_request_id.is_none() {
             if let Some(answer) = answer {
                 let message = format!("[ompy decision] {}: {answer}", item.title);
                 self.send_prompt(&message);
@@ -191,24 +211,53 @@ impl Core {
         self.send_frame(&frame.to_string());
     }
 
-    /// Answer omp's request `rpc` with `answer`; confirm prompts get a
-    /// boolean.
-    fn respond(&self, rpc: &str, options: &[String], answer: &str) {
-        let confirm = options.len() == 2 && options[0] == "Confirm" && options[1] == "Deny";
-        let frame = if confirm {
-            json!({
+    /// Build the response shape belonging to the original omp request.
+    fn respond(item: &InboxItem, answer: &str) -> Result<Value, &'static str> {
+        let rpc = item
+            .rpc_request_id
+            .as_deref()
+            .ok_or("inbox item has no omp request id")?;
+        match item.request_method.as_deref() {
+            Some("confirm") => Ok(json!({
                 "type": "extension_ui_response",
                 "id": rpc,
                 "confirmed": answer == "Confirm",
-            })
-        } else {
-            json!({
+            })),
+            Some("ask") => {
+                let questions = item
+                    .ask_questions
+                    .as_deref()
+                    .filter(|questions| !questions.is_empty())
+                    .ok_or("ask request has no questions")?;
+                let answers = if questions.len() == 1 && !questions[0].multi {
+                    vec![ask_answer(&questions[0], answer)]
+                } else if questions.len() > 1 {
+                    let answers_per_question: Vec<String> = serde_json::from_str(answer)
+                        .map_err(|_| "ask answer must be a JSON array of per-question strings")?;
+                    if answers_per_question.len() != questions.len() {
+                        return Err("ask answer must contain one string per question");
+                    }
+                    questions
+                        .iter()
+                        .zip(&answers_per_question)
+                        .map(|(question, answer)| ask_answer(question, answer))
+                        .collect()
+                } else {
+                    return Err("multi-select ask answers are not supported");
+                };
+                Ok(json!({
+                    "type": "extension_ui_response",
+                    "id": rpc,
+                    "answers": answers,
+                }))
+            }
+            Some("select" | "input" | "editor") | None => Ok(json!({
                 "type": "extension_ui_response",
                 "id": rpc,
                 "value": answer,
-            })
-        };
-        self.send_frame(&frame.to_string());
+            })),
+            Some(_) => Err("unsupported omp request method"),
+        }
     }
 
     fn on_schedule(
@@ -303,6 +352,15 @@ impl Core {
                 }
             }
         }
+    }
+}
+
+/// Map one answer to an exact option label, or preserve it as custom input.
+fn ask_answer(question: &AskQuestionRef, answer: &str) -> Value {
+    if question.options.iter().any(|option| option == answer) {
+        json!({"id": question.id, "selectedOptions": [answer]})
+    } else {
+        json!({"id": question.id, "selectedOptions": [], "customInput": answer})
     }
 }
 

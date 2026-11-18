@@ -42,7 +42,7 @@ Assistant usage counts `input + output + cacheWrite`; `cacheRead` is excluded. T
 
 ## Inbox and session lifecycle
 
-The inbox retains settled items for 14 days and at most 200 items overall; open items are always kept. Decisions wait for an answer, while results and notices are informational.
+The inbox retains settled items for 14 days and at most 200 items overall; open items are always kept. Decisions wait for an answer, while results and notices are informational. Requests from omp retain their method so `select`, `input` and `editor` answers return `value`, `confirm` answers return `confirmed`, and `ask` answers return one structured answer per question. A single pick-one `ask` accepts either an exact option label or free text. For a multi-question `ask`, the inbox answer is a JSON array of per-question strings in question order, each mapped to an exact option label or `customInput`; malformed or wrong-length arrays are rejected and leave the item open.
 
 If omp exits or cannot spawn, restart backoff starts at 1 second and doubles to 5 minutes; a session that stayed up for at least 60 seconds resets the delay to 1 second. Open approvals and decisions bound to an omp RPC request expire on an unexpected stop and any bound items left by a previous process expire at startup, with a notice in the inbox.
 

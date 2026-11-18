@@ -2,7 +2,7 @@
 //! `inbox.json` with an atomic write after every change.
 
 use omp_desktop_core::json_store::write_atomic;
-use omp_desktop_core::persona_protocol::{InboxItem, ItemKind, ItemState};
+use omp_desktop_core::persona_protocol::{AskQuestionRef, InboxItem, ItemKind, ItemState};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::PathBuf;
@@ -120,6 +120,58 @@ impl Inbox {
         rpc_request_id: Option<String>,
         now_ms: i64,
     ) -> String {
+        self.push(
+            kind,
+            title,
+            body,
+            options,
+            urgent,
+            rpc_request_id,
+            None,
+            None,
+            now_ms,
+        )
+    }
+
+    /// Add an item bound to an omp UI request, retaining its response shape.
+    #[allow(clippy::too_many_arguments)] // One parameter per UI request field.
+    pub fn add_ui_request(
+        &mut self,
+        kind: ItemKind,
+        title: String,
+        body: Option<String>,
+        options: Vec<String>,
+        rpc_request_id: String,
+        request_method: String,
+        ask_questions: Option<Vec<AskQuestionRef>>,
+        now_ms: i64,
+    ) -> String {
+        self.push(
+            kind,
+            title,
+            body,
+            options,
+            false,
+            Some(rpc_request_id),
+            Some(request_method),
+            ask_questions,
+            now_ms,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // One parameter per `InboxItem` field.
+    fn push(
+        &mut self,
+        kind: ItemKind,
+        title: String,
+        body: Option<String>,
+        options: Vec<String>,
+        urgent: bool,
+        rpc_request_id: Option<String>,
+        request_method: Option<String>,
+        ask_questions: Option<Vec<AskQuestionRef>>,
+        now_ms: i64,
+    ) -> String {
         self.counter += 1;
         let id = format!("i-{now_ms}-{}", self.counter);
         self.items.push(InboxItem {
@@ -133,8 +185,18 @@ impl Inbox {
             state: ItemState::Open,
             answer: None,
             rpc_request_id,
+            request_method,
+            ask_questions,
         });
         id
+    }
+
+    /// Borrow an open item while its answer is validated.
+    #[must_use]
+    pub fn open(&self, id: &str) -> Option<&InboxItem> {
+        self.items
+            .iter()
+            .find(|item| item.id == id && item.state == ItemState::Open)
     }
 
     /// Mark `item` answered or dismissed, depending on `answer`, and return

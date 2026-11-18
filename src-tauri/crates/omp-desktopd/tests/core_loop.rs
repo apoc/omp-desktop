@@ -215,6 +215,104 @@ fn answering_approval_writes_response_and_unblocks() {
     wait_log(&h, r#""value":"Approve""#);
 }
 
+fn open_request(h: &Harness, prompt: &str, rpc_id: &str) -> InboxItem {
+    send(
+        h,
+        1,
+        ClientMsg::Rpc {
+            frame: serde_json::json!({"type": "prompt", "message": prompt}),
+        },
+    );
+    wait_until(h, |items| {
+        items.iter().any(|item| {
+            item.rpc_request_id.as_deref() == Some(rpc_id) && item.state == ItemState::Open
+        })
+    })
+    .into_iter()
+    .find(|item| item.rpc_request_id.as_deref() == Some(rpc_id))
+    .unwrap()
+}
+
+fn answer(h: &Harness, req: u64, id: &str, answer: &str) {
+    send(
+        h,
+        req,
+        ClientMsg::InboxResolve {
+            id: id.into(),
+            answer: Some(answer.into()),
+        },
+    );
+}
+
+#[test]
+fn ask_option_answer_uses_selected_options_and_renders_question() {
+    let h = start("ask-option", ClientKind::App);
+    let item = open_request(&h, "ask", "ask1");
+    assert!(item
+        .body
+        .as_deref()
+        .unwrap_or_default()
+        .contains("Deploy now?"));
+    answer(&h, 2, &item.id, "Yes");
+    assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: true, .. }));
+    wait_log(&h, r#""answers":[{"id":"q1","selectedOptions":["Yes"]}]"#);
+}
+
+#[test]
+fn ask_free_text_answer_uses_custom_input() {
+    let h = start("ask-custom", ClientKind::App);
+    let item = open_request(&h, "ask", "ask1");
+    answer(&h, 2, &item.id, "Not until tomorrow");
+    assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: true, .. }));
+    wait_log(&h, r#""customInput":"Not until tomorrow""#);
+}
+
+#[test]
+fn confirm_answer_uses_confirmed_boolean() {
+    let h = start("confirm", ClientKind::App);
+    let item = open_request(&h, "confirm", "confirm1");
+    answer(&h, 2, &item.id, "Confirm");
+    assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: true, .. }));
+    wait_log(&h, r#""id":"confirm1""#);
+    wait_log(&h, r#""confirmed":true"#);
+}
+
+#[test]
+fn confirm_labels_on_select_still_use_string_value() {
+    let h = start("select-confirm", ClientKind::App);
+    let item = open_request(&h, "select", "sel1");
+    answer(&h, 2, &item.id, "Confirm");
+    assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: true, .. }));
+    wait_log(&h, r#""id":"sel1""#);
+    wait_log(&h, r#""value":"Confirm""#);
+}
+
+#[test]
+fn multi_question_ask_accepts_ordered_json_answers() {
+    let h = start("multi-ask", ClientKind::App);
+    let item = open_request(&h, "multi-ask", "multi1");
+    answer(&h, 2, &item.id, r#"["Yes","Something else"]"#);
+    assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: true, .. }));
+    wait_log(&h, r#""answers":[{"id":"q1","selectedOptions":["Yes"]}"#);
+    wait_log(&h, r#""id":"q2""#);
+    wait_log(&h, r#""customInput":"Something else""#);
+}
+
+#[test]
+fn invalid_multi_question_answer_leaves_item_open() {
+    let h = start("multi-ask-invalid", ClientKind::App);
+    let item = open_request(&h, "multi-ask", "multi1");
+    let id = item.id;
+    answer(&h, 2, &id, "Yes");
+    assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: false, .. }));
+    assert!(inbox_items(&h)
+        .iter()
+        .any(|item| item.id == id && item.state == ItemState::Open));
+    assert!(!std::fs::read_to_string(&h.log)
+        .unwrap_or_default()
+        .contains(r#""id":"multi1","answers""#));
+}
+
 #[test]
 fn schedule_wake_validates_and_persists() {
     let h = start("sched", ClientKind::Extension);

@@ -148,6 +148,18 @@ pub enum ItemState {
     Expired,
 }
 
+/// The question data needed to turn an inbox answer back into an omp `ask`
+/// response. Option labels are kept exactly as omp supplied them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskQuestionRef {
+    pub id: String,
+    #[serde(default)]
+    pub multi: bool,
+    #[serde(default)]
+    pub options: Vec<String>,
+}
+
 /// One item in the persona's inbox.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -167,6 +179,12 @@ pub struct InboxItem {
     pub answer: Option<String>,
     /// The `rpc_request_id` of the omp request this item answers, if any.
     pub rpc_request_id: Option<String>,
+    /// omp's request method, which determines the response shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_method: Option<String>,
+    /// Original `ask` questions, retained for a later structured answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_questions: Option<Vec<AskQuestionRef>>,
 }
 
 /// Snapshot of the service's state, as reported to a [`ClientMsg::Status`].

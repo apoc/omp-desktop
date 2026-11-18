@@ -9,7 +9,7 @@
 use crate::budget::Usage;
 use omp_desktop_core::approval::{approval_request_id, approval_tool_name, RuleBook};
 use omp_desktop_core::persona_protocol::{
-    read_line_capped_with, ItemKind, LineRead, MAX_LINE_BYTES,
+    read_line_capped_with, AskQuestionRef, ItemKind, LineRead, MAX_LINE_BYTES,
 };
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -75,6 +75,10 @@ pub enum SessionEvent {
         body: Option<String>,
         /// Answers the human may pick from.
         options: Vec<String>,
+        /// omp's method, needed to construct the matching response shape.
+        method: String,
+        /// Original questions for an `ask` request.
+        ask_questions: Option<Vec<AskQuestionRef>>,
     },
     /// omp withdrew a request before it was answered.
     UiCancel {
@@ -198,22 +202,70 @@ fn classify(frame: &Value) -> Option<SessionEvent> {
                 return None;
             }
             let id = text("id")?;
-            let raw_title = text("title").unwrap_or_else(|| "Ompy has a question".into());
-            let (title, body) = match raw_title.split_once('\n') {
-                Some((head, rest)) => (head.to_owned(), Some(rest.to_owned())),
-                None => (raw_title, text("message")),
-            };
-            let options: Vec<String> = match method.as_str() {
-                "select" => frame
-                    .get("options")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect(),
-                "confirm" => vec!["Confirm".into(), "Deny".into()],
-                _ => Vec::new(),
+            let (title, body, options, ask_questions) = if method == "ask" {
+                let raw_questions = frame.get("questions")?.as_array()?;
+                if raw_questions.is_empty() {
+                    return None;
+                }
+                let mut questions = Vec::with_capacity(raw_questions.len());
+                let mut first_question = None;
+                let mut body = String::new();
+                for raw in raw_questions {
+                    let question_id = raw.get("id")?.as_str()?;
+                    let question = raw.get("question")?.as_str()?;
+                    let raw_options = raw.get("options")?.as_array()?;
+                    let mut options = Vec::with_capacity(raw_options.len());
+                    for option in raw_options {
+                        options.push(option.get("label")?.as_str()?.to_owned());
+                    }
+                    if first_question.is_none() {
+                        first_question = Some(question.to_owned());
+                    } else {
+                        body.push('\n');
+                    }
+                    body.push_str(question);
+                    for label in &options {
+                        body.push_str("\n- ");
+                        body.push_str(label);
+                    }
+                    questions.push(AskQuestionRef {
+                        id: question_id.to_owned(),
+                        multi: raw.get("multi").and_then(Value::as_bool).unwrap_or(false),
+                        options,
+                    });
+                }
+                let options = if questions.len() == 1 && !questions[0].multi {
+                    // The UI needs its own labels; the originals stay in the
+                    // question reference for the structured omp response.
+                    questions[0].options.clone()
+                } else {
+                    Vec::new()
+                };
+                let title = if questions.len() == 1 {
+                    first_question.unwrap_or_else(|| "Ompy has a question".into())
+                } else {
+                    format!("Ompy has {} questions", questions.len())
+                };
+                (title, Some(body), options, Some(questions))
+            } else {
+                let raw_title = text("title").unwrap_or_else(|| "Ompy has a question".into());
+                let (title, body) = match raw_title.split_once('\n') {
+                    Some((head, rest)) => (head.to_owned(), Some(rest.to_owned())),
+                    None => (raw_title, text("message")),
+                };
+                let options: Vec<String> = match method.as_str() {
+                    "select" => frame
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect(),
+                    "confirm" => vec!["Confirm".into(), "Deny".into()],
+                    _ => Vec::new(),
+                };
+                (title, body, options, None)
             };
             let kind = if approval_tool_name(frame).is_some() {
                 ItemKind::Approval
@@ -226,6 +278,8 @@ fn classify(frame: &Value) -> Option<SessionEvent> {
                 title,
                 body,
                 options,
+                method,
+                ask_questions,
             })
         }
         _ => None,

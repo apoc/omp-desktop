@@ -30,9 +30,28 @@ fn main() {
                 say(
                     r#"{"type":"message_end","message":{"role":"assistant","usage":{"input":100,"output":50,"cacheRead":999,"cacheWrite":10}}}"#,
                 );
-                say(
-                    r#"{"type":"extension_ui_request","id":"ap1","method":"select","title":"Allow tool: bash\nCommand: ls","options":["Approve","Deny"]}"#,
-                );
+                let prompt = v["message"].as_str().unwrap_or_default();
+                if prompt.contains("multi-ask") {
+                    say(
+                        r#"{"type":"extension_ui_request","id":"multi1","method":"ask","questions":[{"id":"q1","question":"First question?","options":[{"label":"Yes"},{"label":"No"}]},{"id":"q2","question":"Second question?","options":[{"label":"Red"},{"label":"Blue"}]}]}"#,
+                    );
+                } else if prompt.contains("ask") {
+                    say(
+                        r#"{"type":"extension_ui_request","id":"ask1","method":"ask","questions":[{"id":"q1","question":"Deploy now?","header":"Deployment","options":[{"label":"Yes","description":"Deploy it"},{"label":"No"}],"multi":false}]}"#,
+                    );
+                } else if prompt.contains("confirm") {
+                    say(
+                        r#"{"type":"extension_ui_request","id":"confirm1","method":"confirm","title":"Continue?","message":"Really continue?"}"#,
+                    );
+                } else if prompt.contains("select") {
+                    say(
+                        r#"{"type":"extension_ui_request","id":"sel1","method":"select","title":"Pick one","options":["Confirm","Deny"]}"#,
+                    );
+                } else {
+                    say(
+                        r#"{"type":"extension_ui_request","id":"ap1","method":"select","title":"Allow tool: bash\nCommand: ls","options":["Approve","Deny"]}"#,
+                    );
+                }
             }
             Some("longline") => {
                 // A line past the service's cap whose cut falls inside a

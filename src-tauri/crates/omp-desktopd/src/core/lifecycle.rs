@@ -157,9 +157,19 @@ impl Core {
                 title,
                 body,
                 options,
+                method,
+                ask_questions,
             } => {
-                self.inbox
-                    .add(kind, title, body, options, false, Some(id), now.utc_ms);
+                self.inbox.add_ui_request(
+                    kind,
+                    title,
+                    body,
+                    options,
+                    id,
+                    method,
+                    ask_questions,
+                    now.utc_ms,
+                );
                 self.scheduler.handle(Event::Blocked(true), now);
                 self.inbox_changed(now);
             }
