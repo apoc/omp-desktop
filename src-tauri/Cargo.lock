@@ -4038,6 +4038,7 @@ version = "0.15.0"
 dependencies = [
  "base64 0.22.1",
  "cpal",
+ "dirs",
  "gix",
  "interprocess",
  "libc",

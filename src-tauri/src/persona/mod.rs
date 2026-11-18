@@ -22,6 +22,10 @@ impl Persona {
     }
 }
 
+pub fn refresh_sidecar() -> Result<(), String> {
+    sidecar::refresh()
+}
+
 /// Queue one request and wait for the service's reply off Tauri's IPC thread:
 /// `Client::request` blocks up to 10 s.
 async fn request(persona: &State<'_, Persona>, body: ClientMsg) -> Result<(), String> {

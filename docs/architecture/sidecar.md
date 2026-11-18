@@ -12,14 +12,22 @@ The desktop app enables Ompy by running the persona service as an installed logi
 
 `src-tauri/binaries/` is gitignored: it holds build output, not sources. `src-tauri/tauri.dist.conf.json` declares `bundle.externalBin: ["binaries/omp-desktopd"]` and runs the script from `beforeBuildCommand` (after `scripts/build-frontend.mjs`), so `npm run build` and `release.yml` (both pass `--config src-tauri/tauri.dist.conf.json`) stage the right binary before the bundle is assembled. CI needs no extra step: the workflow's Rust toolchain builds the workspace member as part of the app build anyway.
 
-## Where the app finds it
+## Runtime installation and updates
 
-`persona::sidecar::path()` looks beside the running executable (`std::env::current_exe()`):
+`persona::sidecar::path()` locates the bundled source beside the running app executable (`std::env::current_exe()`):
 
 - **bundled** (`OMP Desktop.app/Contents/MacOS/`, the Windows install folder, the Linux `bin/`): `tauri build` copies the staged external binary into that directory under its plain name, `omp-desktopd[.exe]`, next to `omp-desktop[.exe]`;
 - **`tauri dev`**: the app runs from `src-tauri/target/debug/`, so the same lookup resolves `src-tauri/target/debug/omp-desktopd`. Build it once with `cargo build -p omp-desktopd` (or `cargo build --workspace`); `tauri dev` does not build the sidecar itself.
 
-The app only uses this path for the one-shot `install` / `uninstall` CLI calls behind the Persona enable switch; the socket connection then reaches the running service.
+Enabling Ompy does **not** register that bundle path: AppImage mount directories and macOS App Translocation paths disappear or change. The app atomically copies the binary through a temporary file in the destination directory (mode `0755` on Unix) into the stable per-user location, then runs `<stable copy> install`, so the login entry points at the copy:
+
+- Linux: `dirs::data_local_dir()/dev.ohMyPi.desktop/bin/omp-desktopd`, normally `~/.local/share/dev.ohMyPi.desktop/bin/omp-desktopd`;
+- macOS: `dirs::data_dir()/dev.ohMyPi.desktop/bin/omp-desktopd`, normally `~/Library/Application Support/dev.ohMyPi.desktop/bin/omp-desktopd`;
+- Windows: `dirs::data_local_dir()\dev.ohMyPi.desktop\bin\omp-desktopd.exe`, normally `%LOCALAPPDATA%\dev.ohMyPi.desktop\bin\omp-desktopd.exe`.
+
+On every app start a background thread compares an existing stable copy with the bundled binary by size and then SHA-256. If they differ, it atomically refreshes the copy. When `<stable copy> status` shows that the service is running, it then reruns `<stable copy> install`; install is idempotent and re-bootstraps the service with the refreshed executable. A disabled service is not started. If Windows locks a running executable, replacement fails with an explicit stop-and-retry error rather than deleting the active file non-atomically.
+
+Disabling Ompy runs `<stable copy> uninstall` and leaves the copy in place, dormant, for a later enable. The socket client always talks to the installed service, regardless of which one-shot CLI operation the app last ran.
 
 ## Signing
 

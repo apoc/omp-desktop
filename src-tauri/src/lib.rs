@@ -1461,6 +1461,18 @@ fn setup(app: &tauri::App) {
     // in remote-devices.json. Construction configures its pusher synchronously;
     // install it before Ompy's client can receive the startup inbox snapshot.
     remote::bridge::install(app, resolved_config_dir.clone());
+    // Refresh only an existing per-user copy; disabling Ompy leaves that copy
+    // dormant. Hashing and the idempotent service restart stay off the UI thread.
+    let refreshing = std::thread::Builder::new()
+        .name("persona-sidecar-refresh".into())
+        .spawn(|| {
+            if let Err(error) = persona::refresh_sidecar() {
+                eprintln!("[omp-desktop] persona sidecar not refreshed: {error}");
+            }
+        });
+    if let Err(error) = refreshing {
+        eprintln!("[omp-desktop] could not start persona sidecar refresh: {error}");
+    }
     // Ompy's socket client: reconnects in the background and re-emits the
     // service's status, inbox and relayed frames as `persona://` events.
     app.manage(persona::Persona::for_app(app.handle().clone()));
