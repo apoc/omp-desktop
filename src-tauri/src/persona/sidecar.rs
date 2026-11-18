@@ -1,7 +1,14 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The bundled `omp-desktopd`, beside the app executable.
+/// The persona service executable beside the app executable.
+///
+/// `tauri build` copies `bundle.externalBin` (`binaries/omp-desktopd-<triple>`,
+/// staged by `scripts/build-sidecar.mjs`) into the bundle next to the app
+/// binary under the plain name. `tauri dev` runs the app from
+/// `src-tauri/target/debug/`, so the same lookup resolves
+/// `target/debug/omp-desktopd` there; build it once with
+/// `cargo build -p omp-desktopd` (or `cargo build --workspace`).
 ///
 /// # Errors
 ///
@@ -72,6 +79,21 @@ mod tests {
             std::path::Path::new(r"C:\OMP Desktop\omp-desktopd.exe")
         } else {
             std::path::Path::new("/opt/OMP Desktop/omp-desktopd")
+        };
+        assert_eq!(super::path_from_exe(exe).unwrap(), expected);
+    }
+
+    #[test]
+    fn a_dev_build_finds_the_sidecar_beside_the_debug_binary() {
+        let exe = if cfg!(windows) {
+            std::path::Path::new(r"src-tauri\target\debug\omp-desktop.exe")
+        } else {
+            std::path::Path::new("src-tauri/target/debug/omp-desktop")
+        };
+        let expected = if cfg!(windows) {
+            std::path::Path::new(r"src-tauri\target\debug\omp-desktopd.exe")
+        } else {
+            std::path::Path::new("src-tauri/target/debug/omp-desktopd")
         };
         assert_eq!(super::path_from_exe(exe).unwrap(), expected);
     }

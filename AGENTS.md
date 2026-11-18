@@ -36,6 +36,7 @@ Feature internals (RPC frames, state machines, measured omp behaviour) live in `
 |`pr-automation.md`|Changes rail card: current-branch PR discovery (gix + trusted `gh`, GraphQL + head-filtered REST, fail-closed selection), CI line, read cadence and visibility gating, `ghMissing`/`retryable` errors, opt-in Auto-fix dispatch and feedback identities|`pr_automation/`, `app/pr-automation.js`, `app/use-pr-automation.jsx`, `design/pr-automation-*.jsx`, `design/pr-checks.jsx`, `live.js` `prAutomationSnapshot`/`prAutomationSend`|
 |`voice-spectrum.md`|composer microphone equalizer: Rust cpal capture + FFT bands, `voice://spectrum` frames, start/stop ordering, bar physics, platform permissions|`voice_spectrum/`, `app/voice-spectrum.js`, `app/use-voice-spectrum.jsx`, `design/voice-spectrum.jsx`|
 |`persona-daemon.md`|Ompy persona service: process model, files, socket protocol, wake rules, budget, inbox, lifecycle and known gaps|`crates/omp-desktopd/`, `crates/omp-desktop-core/src/persona_protocol.rs`|
+|`sidecar.md`|`omp-desktopd` bundled as a Tauri external binary: staging script, target triple, dev lookup, macOS signing|`scripts/build-sidecar.mjs`, `src-tauri/src/persona/sidecar.rs`, `src-tauri/tauri.dist.conf.json`|
 
 User-facing rail widget contract (`widgets.json`, approval, output schema v1, limits, trust model): `docs/widgets.md`. Keep it in sync with any change to those.
 
