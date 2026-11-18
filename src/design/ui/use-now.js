@@ -6,6 +6,8 @@
 // persona-strip.jsx and persona-inbox-card.jsx (so "in 12 min" stays true
 // while the window idles) and app/use-conversation-tree.jsx (its
 // warm → expiring → cold countdowns), which also bumps it after a fetch.
+// The subagent views (subagent-pane.jsx, subagent-rail-card.jsx) and the
+// rail widget list (widgets/widget-blocks.jsx) take just `[0]` from it.
 //
 // Wrapped in an IIFE so `useNow` doesn't leak into document scope.
 (function () {

@@ -348,9 +348,10 @@
   <script src="design/ui/use-list-nav.js"></script>
   <!-- A local clock ticking while active: persona-strip.jsx,
        persona-inbox-card.jsx and app/use-conversation-tree.jsx call
-       window.useNow at render time; app-live.jsx destructures
-       window.useConversationTree at top level, so this must precede all
-       of them. -->
+       window.useNow at render time, and so do subagent-pane.jsx,
+       subagent-rail-card.jsx and widgets/widget-blocks.jsx; app-live.jsx
+       destructures window.useConversationTree at top level, so this must
+       precede all of them. -->
   <script src="design/ui/use-now.js"></script>
   <!-- The column resize line (#41); destructures
        window.OMP_LAYOUT_WIDTHS at top level; browser-dock.jsx and
@@ -401,7 +402,7 @@
   <script type="text/babel" src="design/subagents/subagent-pane.jsx"></script>
   <script type="text/babel" src="design/subagents/subagent-rail-card.jsx"></script>
   <!-- Rail widget plugin cards (#49). widget-blocks.jsx destructures
-       window.Icon, window.useSaNow (subagent-bits.jsx) and window.OMP_WIDGETS;
+       window.Icon, window.useNow (ui/use-now.js) and window.OMP_WIDGETS;
        widget-card.jsx destructures window.Icon, window.OMP_WIDGETS and
        window.WidgetBlocks — order matters. -->
   <script type="text/babel" src="design/widgets/widget-blocks.jsx"></script>
