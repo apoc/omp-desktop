@@ -114,10 +114,21 @@ fn send(h: &Harness, req: u64, msg: ClientMsg) {
     .unwrap();
 }
 
+fn parse_msg(line: &[u8]) -> ServerMsg {
+    let value: serde_json::Value = serde_json::from_slice(line).unwrap();
+    if value["type"] == "rpc" {
+        return ServerMsg::Rpc {
+            seq: value["seq"].as_u64().unwrap(),
+            frame: serde_json::value::RawValue::from_string(value["frame"].to_string()).unwrap(),
+        };
+    }
+    serde_json::from_value(value).unwrap()
+}
+
 fn reply(h: &Harness, req: u64) -> ServerMsg {
     loop {
         let line = h.out.recv_timeout(Duration::from_secs(5)).unwrap();
-        match serde_json::from_slice::<ServerMsg>(&line).unwrap() {
+        match parse_msg(&line) {
             m @ ServerMsg::Reply { req: r, .. } if r == req => return m,
             _ => {}
         }
@@ -127,7 +138,7 @@ fn reply(h: &Harness, req: u64) -> ServerMsg {
 /// The next message the test connection receives.
 fn next_msg(h: &Harness) -> ServerMsg {
     let line = h.out.recv_timeout(Duration::from_secs(10)).unwrap();
-    serde_json::from_slice(&line).unwrap()
+    parse_msg(&line)
 }
 
 #[test]
@@ -319,6 +330,116 @@ fn answer(h: &Harness, req: u64, id: &str, answer: &str) {
             answer: Some(answer.into()),
         },
     );
+}
+
+#[test]
+fn attach_has_no_duplicate_frames() {
+    let h = start("attach-duplicates", ClientKind::App);
+    send(&h, 1, ClientMsg::WakeNow);
+    wait_log(&h, "[ompy wake] trigger: manual");
+    for req in 10..30 {
+        send(
+            &h,
+            req,
+            ClientMsg::Rpc {
+                frame: serde_json::json!({"type": "prompt", "message": "stream"}),
+            },
+        );
+    }
+    send(&h, 2, ClientMsg::Attach { after_seq: 0 });
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let mut seqs = Vec::new();
+    while let Ok(line) = h
+        .out
+        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+    {
+        if let ServerMsg::Rpc { seq, .. } = parse_msg(&line) {
+            seqs.push(seq);
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+    }
+    assert!(seqs.len() > 1, "test must observe streamed frames");
+    assert!(
+        seqs.windows(2).all(|pair| pair[0] < pair[1]),
+        "rpc sequence numbers must be strictly increasing: {seqs:?}"
+    );
+}
+
+#[test]
+fn attach_after_restart_replays_new_generation() {
+    let h = start("attach-restart", ClientKind::App);
+    send(&h, 1, ClientMsg::Status);
+    let first_generation = match reply(&h, 1) {
+        ServerMsg::Reply {
+            data: Some(data), ..
+        } => data["generation"].as_u64().unwrap(),
+        _ => panic!("status reply missing"),
+    };
+    send(&h, 2, ClientMsg::Attach { after_seq: 0 });
+    assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: true, .. }));
+    let last_seq = loop {
+        if let ServerMsg::Rpc { seq, .. } = next_msg(&h) {
+            break seq;
+        }
+    };
+    send(
+        &h,
+        3,
+        ClientMsg::Rpc {
+            frame: serde_json::json!({"type": "crash"}),
+        },
+    );
+    loop {
+        match next_msg(&h) {
+            ServerMsg::Status { status } if status.generation > first_generation => break,
+            _ => {}
+        }
+    }
+    send(
+        &h,
+        4,
+        ClientMsg::Attach {
+            after_seq: last_seq,
+        },
+    );
+    assert!(matches!(reply(&h, 4), ServerMsg::Reply { ok: true, .. }));
+    loop {
+        if let ServerMsg::Rpc { seq, .. } = next_msg(&h) {
+            assert!(seq > last_seq, "new generation reused sequence {seq}");
+            break;
+        }
+    }
+}
+
+#[test]
+fn secret_input_answer_not_persisted() {
+    let h = start("secret-input", ClientKind::App);
+    let item = open_request(&h, "secret", "s1");
+    assert!(item.secret);
+    answer(&h, 2, &item.id, "hunter2");
+    assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: true, .. }));
+    wait_log(&h, r#""value":"hunter2""#);
+    assert!(std::fs::read_to_string(&h.log)
+        .unwrap()
+        .lines()
+        .any(|line| line.contains(r#""id":"s1""#) && line.contains(r#""value":"hunter2""#)));
+    assert!(!std::fs::read_to_string(&h.paths.inbox)
+        .unwrap()
+        .contains("hunter2"));
+    while let Ok(line) = h.out.recv_timeout(Duration::from_millis(250)) {
+        if matches!(
+            serde_json::from_slice::<ServerMsg>(&line),
+            Ok(ServerMsg::Inbox { .. })
+        ) {
+            assert!(
+                !String::from_utf8(line).unwrap().contains("hunter2"),
+                "secret answer leaked in an inbox broadcast"
+            );
+        }
+    }
 }
 
 #[test]

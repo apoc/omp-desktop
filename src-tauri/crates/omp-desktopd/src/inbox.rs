@@ -129,6 +129,7 @@ impl Inbox {
             rpc_request_id,
             None,
             None,
+            false,
             now_ms,
         )
     }
@@ -144,6 +145,7 @@ impl Inbox {
         rpc_request_id: String,
         request_method: String,
         ask_questions: Option<Vec<AskQuestionRef>>,
+        secret: bool,
         now_ms: i64,
     ) -> String {
         self.push(
@@ -155,6 +157,7 @@ impl Inbox {
             Some(rpc_request_id),
             Some(request_method),
             ask_questions,
+            secret,
             now_ms,
         )
     }
@@ -170,6 +173,7 @@ impl Inbox {
         rpc_request_id: Option<String>,
         request_method: Option<String>,
         ask_questions: Option<Vec<AskQuestionRef>>,
+        secret: bool,
         now_ms: i64,
     ) -> String {
         self.counter += 1;
@@ -187,6 +191,7 @@ impl Inbox {
             rpc_request_id,
             request_method,
             ask_questions,
+            secret,
         });
         id
     }
@@ -207,7 +212,7 @@ impl Inbox {
         } else {
             ItemState::Dismissed
         };
-        item.answer = answer;
+        item.answer = if item.secret { None } else { answer };
         item.clone()
     }
 

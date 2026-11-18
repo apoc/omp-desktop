@@ -17,6 +17,7 @@ use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
@@ -107,6 +108,8 @@ pub enum SessionEvent {
         method: String,
         /// Original questions for an `ask` request.
         ask_questions: Option<Vec<AskQuestionRef>>,
+        /// Whether an `input` request's answer is secret.
+        secret: bool,
     },
     /// omp withdrew a request before it was answered.
     UiCancel {
@@ -156,7 +159,6 @@ struct ReplayRing {
     capacity: usize,
     max_bytes: usize,
     bytes: usize,
-    next_seq: u64,
     entries: VecDeque<(u64, Arc<str>)>,
 }
 
@@ -166,15 +168,12 @@ impl ReplayRing {
             capacity: capacity.max(1),
             max_bytes: max_bytes.max(1),
             bytes: 0,
-            next_seq: 1,
             entries: VecDeque::new(),
         }
     }
 
-    /// Stores `frame` under the next `seq` and returns that number.
-    fn push(&mut self, frame: Arc<str>) -> u64 {
-        let seq = self.next_seq;
-        self.next_seq += 1;
+    /// Stores `frame` under its core-owned `seq`.
+    fn push(&mut self, seq: u64, frame: Arc<str>) {
         self.bytes += frame.len();
         self.entries.push_back((seq, frame));
         while self.entries.len() > self.capacity
@@ -184,7 +183,6 @@ impl ReplayRing {
                 self.bytes -= evicted.len();
             }
         }
-        seq
     }
 
     /// The frames stored after `seq`, oldest first.
@@ -306,6 +304,7 @@ fn classify(frame: &Value) -> Option<SessionEvent> {
                 title,
                 body,
                 options,
+                secret: method == "input" && frame["secret"].as_bool() == Some(true),
                 method,
                 ask_questions,
             })
@@ -373,6 +372,7 @@ impl Session {
     pub fn spawn(
         l: &Launch,
         rules: Arc<RuleBook>,
+        next_seq: Arc<AtomicU64>,
         events: Sender<SessionEvent>,
     ) -> io::Result<Self> {
         let program = l.program.resolve()?;
@@ -428,7 +428,8 @@ impl Session {
                             }
                         }
                     }
-                    let seq = read_replay.lock().unwrap().push(Arc::clone(&raw));
+                    let seq = next_seq.fetch_add(1, Ordering::Relaxed) + 1;
+                    read_replay.lock().unwrap().push(seq, Arc::clone(&raw));
                     if let Some(usage) = Usage::from_message_end(frame) {
                         let _ = events.send(SessionEvent::Usage(usage));
                     }
@@ -531,10 +532,10 @@ mod tests {
     #[test]
     fn replay_ring_evicts_oldest_to_hold_the_byte_budget() {
         let mut ring = ReplayRing::new(10, 10);
-        assert_eq!(ring.push(Arc::from("aaaa")), 1);
-        assert_eq!(ring.push(Arc::from("bbbb")), 2);
+        ring.push(1, Arc::from("aaaa"));
+        ring.push(2, Arc::from("bbbb"));
         assert_eq!(ring.bytes, 8);
-        assert_eq!(ring.push(Arc::from("cccc")), 3);
+        ring.push(3, Arc::from("cccc"));
         assert_eq!(ring.bytes, 8, "oldest frame evicted to fit the budget");
         assert_eq!(
             ring.after(0)
@@ -551,7 +552,7 @@ mod tests {
             [3]
         );
         // The newest frame stays even when it alone exceeds the budget.
-        assert_eq!(ring.push(Arc::from("zzzzzzzzzzzz")), 4);
+        ring.push(4, Arc::from("zzzzzzzzzzzz"));
         assert_eq!(ring.bytes, 12);
         assert_eq!(ring.after(0).len(), 1);
     }
@@ -559,8 +560,8 @@ mod tests {
     #[test]
     fn replay_ring_also_holds_the_entry_count() {
         let mut ring = ReplayRing::new(2, 1 << 20);
-        for _ in 0..3 {
-            ring.push(Arc::from("frame"));
+        for seq in 1..=3 {
+            ring.push(seq, Arc::from("frame"));
         }
         assert_eq!(
             ring.after(0)

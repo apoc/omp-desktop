@@ -360,6 +360,9 @@ impl Core {
         for (seq, raw) in frames {
             if let Ok(frame) = RawValue::from_string(raw.to_string()) {
                 self.send_to(conn, &ServerMsg::Rpc { seq, frame });
+                if let Some(client) = self.conns.get_mut(&conn) {
+                    client.last_seq = seq;
+                }
             }
         }
     }

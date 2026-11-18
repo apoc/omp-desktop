@@ -31,7 +31,11 @@ fn main() {
                     r#"{"type":"message_end","message":{"role":"assistant","usage":{"input":100,"output":50,"cacheRead":999,"cacheWrite":10}}}"#,
                 );
                 let prompt = v["message"].as_str().unwrap_or_default();
-                if prompt.contains("multi-ask") {
+                if prompt.contains("secret") {
+                    say(
+                        r#"{"type":"extension_ui_request","id":"s1","method":"input","title":"Password","secret":true}"#,
+                    );
+                } else if prompt.contains("multi-ask") {
                     say(
                         r#"{"type":"extension_ui_request","id":"multi1","method":"ask","questions":[{"id":"q1","question":"First question?","options":[{"label":"Yes"},{"label":"No"}]},{"id":"q2","question":"Second question?","options":[{"label":"Red"},{"label":"Blue"}]}]}"#,
                     );

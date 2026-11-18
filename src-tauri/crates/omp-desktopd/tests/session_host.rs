@@ -3,6 +3,7 @@
 use omp_desktop_core::approval::{RuleBook, RuleScope};
 use omp_desktopd::session::{omp_args, Launch, Session, SessionEvent};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
@@ -47,7 +48,13 @@ fn args_match_spec() {
 fn prompt_yields_usage_and_approval_request() {
     let (l, _log) = launch("flow");
     let (tx, rx) = mpsc::channel();
-    let s = Session::spawn(&l, Arc::new(RuleBook::in_memory()), tx).unwrap();
+    let s = Session::spawn(
+        &l,
+        Arc::new(RuleBook::in_memory()),
+        Arc::new(AtomicU64::new(0)),
+        tx,
+    )
+    .unwrap();
     s.send(r#"{"type":"prompt","message":"wake"}"#).unwrap();
     assert!(matches!(
         next(&rx, |e| matches!(e, SessionEvent::TurnStarted)),
@@ -84,7 +91,7 @@ fn granted_rule_auto_approves_without_inbox_item() {
         .grant("ompy", Some(&l.home), "bash", RuleScope::Session)
         .unwrap();
     let (tx, rx) = mpsc::channel();
-    let s = Session::spawn(&l, rules, tx).unwrap();
+    let s = Session::spawn(&l, rules, Arc::new(AtomicU64::new(0)), tx).unwrap();
     s.send(r#"{"type":"prompt","message":"wake"}"#).unwrap();
     assert!(matches!(
         next(&rx, |e| matches!(
@@ -118,7 +125,13 @@ fn granted_rule_auto_approves_without_inbox_item() {
 fn too_long_line_does_not_end_the_session() {
     let (l, _log) = launch("longline");
     let (tx, rx) = mpsc::channel();
-    let s = Session::spawn(&l, Arc::new(RuleBook::in_memory()), tx).unwrap();
+    let s = Session::spawn(
+        &l,
+        Arc::new(RuleBook::in_memory()),
+        Arc::new(AtomicU64::new(0)),
+        tx,
+    )
+    .unwrap();
     s.send(r#"{"type":"longline"}"#).unwrap();
     // The fake emits a >16 MiB line whose cut falls inside a multi-byte
     // character, then `agent_start`, and stays alive.
@@ -144,7 +157,13 @@ fn too_long_line_does_not_end_the_session() {
 fn crash_reports_exit() {
     let (l, _) = launch("crash");
     let (tx, rx) = mpsc::channel();
-    let s = Session::spawn(&l, Arc::new(RuleBook::in_memory()), tx).unwrap();
+    let s = Session::spawn(
+        &l,
+        Arc::new(RuleBook::in_memory()),
+        Arc::new(AtomicU64::new(0)),
+        tx,
+    )
+    .unwrap();
     s.send(r#"{"type":"crash"}"#).unwrap();
     assert!(matches!(
         next(&rx, |e| matches!(e, SessionEvent::Exited { .. })),

@@ -108,6 +108,8 @@ struct Conn {
     out: Outbound,
     /// Whether the client asked for the live omp frames.
     attached: bool,
+    /// Last replayed or live frame sent to this client.
+    last_seq: u64,
     client: ClientKind,
 }
 
@@ -128,6 +130,7 @@ pub struct Core {
     spawn_error: Option<String>,
     started: bool,
     gen: u64,
+    next_seq: Arc<std::sync::atomic::AtomicU64>,
     backoff: Duration,
     last_spawn: Instant,
     tx: Option<Sender<CoreMsg>>,
@@ -202,6 +205,7 @@ impl Core {
             spawn_error: None,
             started: false,
             gen: 0,
+            next_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             backoff: RESTART_MIN,
             last_spawn: Instant::now(),
             tx: None,
@@ -218,6 +222,7 @@ impl Core {
     fn status_info(&self) -> StatusInfo {
         let state = self.state();
         StatusInfo {
+            generation: self.gen,
             state: state.as_str().to_owned(),
             error: state.error(),
             next_wake_ms: self.scheduler.next_deadline(),
@@ -390,6 +395,7 @@ impl Core {
                         Conn {
                             out,
                             attached: false,
+                            last_seq: 0,
                             client,
                         },
                     );
@@ -530,6 +536,7 @@ mod tests {
                 // A zero-byte budget refuses the very first message.
                 out: Outbound::new(out_tx, 0),
                 attached: false,
+                last_seq: 0,
                 client: ClientKind::App,
             },
         );

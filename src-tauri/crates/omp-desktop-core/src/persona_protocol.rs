@@ -185,12 +185,18 @@ pub struct InboxItem {
     /// Original `ask` questions, retained for a later structured answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask_questions: Option<Vec<AskQuestionRef>>,
+    /// Whether answers contain secrets and must never be persisted or broadcast.
+    #[serde(default)]
+    pub secret: bool,
 }
 
 /// Snapshot of the service's state, as reported to a [`ClientMsg::Status`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusInfo {
+    /// Current omp session generation.
+    #[serde(default)]
+    pub generation: u64,
     /// One of `running`, `paused`, `budget_exhausted`, `error`, `starting`.
     pub state: String,
     /// Last error, if `state` is `error`.

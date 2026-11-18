@@ -53,7 +53,12 @@ impl Core {
                     }
                 }
             });
-        match Session::spawn(&self.launch, Arc::clone(&self.rules), events_tx) {
+        match Session::spawn(
+            &self.launch,
+            Arc::clone(&self.rules),
+            Arc::clone(&self.next_seq),
+            events_tx,
+        ) {
             Ok(session) => {
                 self.session = Some(session);
                 self.last_spawn = std::time::Instant::now();
@@ -159,6 +164,7 @@ impl Core {
                 options,
                 method,
                 ask_questions,
+                secret,
             } => {
                 self.inbox.add_ui_request(
                     kind,
@@ -168,6 +174,7 @@ impl Core {
                     id,
                     method,
                     ask_questions,
+                    secret,
                     now.utc_ms,
                 );
                 self.scheduler.handle(Event::Blocked(true), now);
@@ -192,9 +199,14 @@ impl Core {
         let msg = ServerMsg::Rpc { seq, frame };
         let full: Vec<crate::server::ConnId> = self
             .conns
-            .iter()
-            .filter(|(_, conn)| conn.attached && !conn.out.send(&msg))
-            .map(|(id, _)| *id)
+            .iter_mut()
+            .filter_map(|(id, conn)| {
+                if !conn.attached || seq <= conn.last_seq {
+                    return None;
+                }
+                conn.last_seq = seq;
+                (!conn.out.send(&msg)).then_some(*id)
+            })
             .collect();
         self.drop_conns(full);
     }
