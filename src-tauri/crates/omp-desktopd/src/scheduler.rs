@@ -85,7 +85,6 @@ pub enum ScheduleError {
 }
 
 /// Decides when the persona wakes up. Pure state machine: see [`Event`].
-// The four holds are independent and each is toggled by its own `Event`.
 #[allow(clippy::struct_excessive_bools)] // Four independent holds, each toggled by its own Event.
 pub struct Scheduler {
     interval_ms: i64,
@@ -257,7 +256,7 @@ impl Scheduler {
         if self.scheduled.len() >= MAX_SCHEDULED {
             return Err(ScheduleError::TooMany);
         }
-        self.counter += 1;
+        self.counter = self.counter.saturating_add(1);
         let id = format!("w-{at_ms}-{}", self.counter);
         let pos = self.scheduled.partition_point(|s| s.at_ms <= at_ms);
         self.scheduled.insert(
@@ -542,6 +541,20 @@ mod tests {
         );
         blocked.handle(Event::Blocked(false), &wake);
         assert!(blocked.next_deadline().unwrap() <= wake.utc_ms);
+    }
+
+    #[test]
+    fn restored_max_counter_does_not_panic() {
+        let now = at(16, 9, 0);
+        let at_ms = now.utc_ms + 10 * MIN;
+        let restored = vec![Scheduled {
+            id: "w-1-18446744073709551615".into(),
+            at_ms,
+            note: "restored".into(),
+        }];
+        let mut s = Scheduler::new(&PersonaSettings::default(), restored, &now);
+        let id = s.add(at_ms, "new".into(), &now).unwrap();
+        assert_eq!(id, format!("w-{at_ms}-18446744073709551615"));
     }
 
     #[test]

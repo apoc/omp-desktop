@@ -248,7 +248,11 @@ pub fn read_line_capped_with<R: BufRead>(
     buf.clear();
     let mut too_long = false;
     loop {
-        let chunk = r.fill_buf()?;
+        let chunk = match r.fill_buf() {
+            Ok(chunk) => chunk,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
         if chunk.is_empty() {
             return Ok(if too_long {
                 LineRead::TooLong
@@ -368,6 +372,42 @@ mod tests {
             LineRead::Line
         ));
         assert_eq!(buf, br#"{"a":1}"#);
+    }
+
+    #[test]
+    fn capped_reader_retries_an_interrupted_fill_buf() {
+        struct InterruptOnce {
+            inner: Cursor<Vec<u8>>,
+            interrupted: bool,
+        }
+        impl io::Read for InterruptOnce {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                self.inner.read(buf)
+            }
+        }
+        impl BufRead for InterruptOnce {
+            fn fill_buf(&mut self) -> io::Result<&[u8]> {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(io::Error::from(io::ErrorKind::Interrupted));
+                }
+                self.inner.fill_buf()
+            }
+            fn consume(&mut self, amt: usize) {
+                self.inner.consume(amt);
+            }
+        }
+
+        let mut r = InterruptOnce {
+            inner: Cursor::new(b"hello\n".to_vec()),
+            interrupted: false,
+        };
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_line_capped_with(&mut r, &mut buf, 20).unwrap(),
+            LineRead::Line
+        ));
+        assert_eq!(buf, b"hello");
     }
 
     #[test]

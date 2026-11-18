@@ -113,7 +113,7 @@ impl Budget {
     /// Roll the counter over when `today` is a new day. Reports
     /// [`BudgetEvent::Reset`] only when the old day was not already `Ok`.
     pub fn roll(&mut self, today: NaiveDate) -> Option<BudgetEvent> {
-        if today == self.day {
+        if today <= self.day {
             return None;
         }
         let was = self.state();
@@ -196,6 +196,17 @@ mod tests {
         b.add(&u(1_000_000), d(16));
         assert_eq!(b.add(&u(10), d(17)), Some(BudgetEvent::Reset));
         assert_eq!((b.used, b.day, b.state()), (10, d(17), BudgetState::Ok));
+    }
+
+    #[test]
+    fn backward_clock_does_not_reset_budget() {
+        let mut b = Budget::new(1_000_000, d(17));
+        b.add(&u(1_000_000), d(17));
+        assert_eq!(b.roll(d(16)), None);
+        assert_eq!(
+            (b.day, b.used, b.state()),
+            (d(17), 1_000_000, BudgetState::Exhausted)
+        );
     }
 
     #[test]

@@ -11,6 +11,9 @@ use std::io::{self, BufReader, Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
+use std::time::Duration;
+
+const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub type ConnId = u64;
 pub type Outbound = Sender<ServerMsg>;
@@ -67,6 +70,14 @@ impl Server {
     /// on the socket, and [`StartError::Io`] when the socket cannot be bound
     /// or the accept thread cannot be started.
     pub fn start(paths: &Paths, to_core: Sender<CoreMsg>) -> Result<Self, StartError> {
+        Self::start_with_hello_timeout(paths, to_core, HELLO_TIMEOUT)
+    }
+
+    fn start_with_hello_timeout(
+        paths: &Paths,
+        to_core: Sender<CoreMsg>,
+        hello_timeout: Duration,
+    ) -> Result<Self, StartError> {
         ensure_private_dir(&paths.persona).map_err(|e| StartError::Io(e.to_string()))?;
         let name = socket_name(paths).map_err(|e| StartError::Io(e.to_string()))?;
         if Stream::connect(name.clone()).is_ok() {
@@ -87,11 +98,16 @@ impl Server {
         let accept = std::thread::Builder::new()
             .name("ompy-accept".into())
             .spawn(move || {
-                for conn in listener.incoming().flatten() {
-                    let to_core = to_core.clone();
-                    let _ = std::thread::Builder::new()
-                        .name("ompy-conn".into())
-                        .spawn(move || serve(conn, to_core));
+                for conn in listener.incoming() {
+                    match conn {
+                        Ok(conn) => {
+                            let to_core = to_core.clone();
+                            let _ = std::thread::Builder::new()
+                                .name("ompy-conn".into())
+                                .spawn(move || serve(conn, to_core, hello_timeout));
+                        }
+                        Err(_) => std::thread::sleep(Duration::from_millis(100)),
+                    }
                 }
             })
             .map_err(|e| StartError::Io(e.to_string()))?;
@@ -123,11 +139,16 @@ impl Write for Shared {
 }
 
 #[allow(clippy::needless_pass_by_value)] // Moved into the connection thread; a reference cannot cross that boundary.
-fn serve(conn: Stream, to_core: Sender<CoreMsg>) {
+fn serve(conn: Stream, to_core: Sender<CoreMsg>, hello_timeout: Duration) {
     let id = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
+    #[cfg(unix)]
+    if conn.set_recv_timeout(Some(hello_timeout)).is_err() {
+        return;
+    }
+    // Windows named-pipe streams do not support receive timeouts.
     let conn = Arc::new(conn);
     let mut reader = BufReader::new(Shared(Arc::clone(&conn)));
-    let mut writer = Shared(conn);
+    let mut writer = Shared(Arc::clone(&conn));
     let mut buf = Vec::new();
     // Handshake before the writer thread exists.
     let client = match read_line_capped(&mut reader, &mut buf) {
@@ -154,8 +175,16 @@ fn serve(conn: Stream, to_core: Sender<CoreMsg>) {
                 return;
             }
         },
+        Ok(LineRead::TooLong) => {
+            reply_err(&mut writer, None, "line too long");
+            return;
+        }
         _ => return,
     };
+    #[cfg(unix)]
+    if conn.set_recv_timeout(None).is_err() {
+        return;
+    }
     let (out_tx, out_rx) = mpsc::channel::<ServerMsg>();
     let _ = std::thread::Builder::new()
         .name("ompy-write".into())
@@ -206,7 +235,7 @@ mod tests {
     use super::*;
     use crate::paths::Paths;
     use interprocess::local_socket::Stream;
-    use omp_desktop_core::persona_protocol::{read_line_capped, LineRead};
+    use omp_desktop_core::persona_protocol::{read_line_capped, LineRead, MAX_LINE_BYTES};
     use std::io::{BufReader, Write};
     use std::sync::mpsc;
     use std::time::Duration;
@@ -273,6 +302,48 @@ mod tests {
         assert!(matches!(
             rx.recv_timeout(Duration::from_secs(2)).unwrap(),
             crate::core::CoreMsg::Inbound(_)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn silent_client_is_disconnected_after_hello_timeout() {
+        let p = temp_paths("silent");
+        let (tx, _rx) = mpsc::channel();
+        let _s = Server::start_with_hello_timeout(&p, tx, Duration::from_millis(50)).unwrap();
+        let s = Stream::connect(crate::paths::socket_name(&p).unwrap()).unwrap();
+        s.set_recv_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut r = BufReader::new(s);
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_line_capped(&mut r, &mut buf).unwrap(),
+            LineRead::Eof
+        ));
+    }
+
+    #[test]
+    fn oversized_hello_gets_an_error_before_close() {
+        let p = temp_paths("long-hello");
+        let (tx, _rx) = mpsc::channel();
+        let _s = Server::start(&p, tx).unwrap();
+        let s = Stream::connect(crate::paths::socket_name(&p).unwrap()).unwrap();
+        let mut r = BufReader::new(s);
+        let mut oversized = vec![b'x'; MAX_LINE_BYTES + 1];
+        oversized.push(b'\n');
+        r.get_mut().write_all(&oversized).unwrap();
+        let err = line(&mut r);
+        assert_eq!(
+            (
+                err["type"].as_str(),
+                err["ok"].as_bool(),
+                err["error"].as_str()
+            ),
+            (Some("reply"), Some(false), Some("line too long"))
+        );
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_line_capped(&mut r, &mut buf).unwrap(),
+            LineRead::Eof
         ));
     }
 
