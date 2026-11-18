@@ -1461,21 +1461,28 @@ fn setup(app: &tauri::App) {
     // in remote-devices.json. Construction configures its pusher synchronously;
     // install it before Ompy's client can receive the startup inbox snapshot.
     remote::bridge::install(app, resolved_config_dir.clone());
+    // Ompy's socket client: reconnects in the background and re-emits the
+    // service's status, inbox and relayed frames as `persona://` events.
+    // Created before the refresh thread so a failed refresh can report
+    // through the client's error snapshot instead of only stderr.
+    let persona = persona::Persona::for_app(app.handle().clone());
     // Refresh only an existing per-user copy; disabling Ompy leaves that copy
-    // dormant. Hashing and the idempotent service restart stay off the UI thread.
+    // dormant. Hashing and the idempotent service restart stay off the UI
+    // thread, and a failure reaches the status strip as `persona://error`
+    // (`kind: "refresh"`) as well as the log.
+    let reporter = persona.reporter();
     let refreshing = std::thread::Builder::new()
         .name("persona-sidecar-refresh".into())
-        .spawn(|| {
+        .spawn(move || {
             if let Err(error) = persona::refresh_sidecar() {
                 eprintln!("[omp-desktop] persona sidecar not refreshed: {error}");
+                reporter.report_error("refresh", &error);
             }
         });
     if let Err(error) = refreshing {
         eprintln!("[omp-desktop] could not start persona sidecar refresh: {error}");
     }
-    // Ompy's socket client: reconnects in the background and re-emits the
-    // service's status, inbox and relayed frames as `persona://` events.
-    app.manage(persona::Persona::for_app(app.handle().clone()));
+    app.manage(persona);
 
     // A cold start *is* how Windows and Linux file managers open a
     // folder, so the launch argv is the third delivery path into the

@@ -206,10 +206,14 @@ function App() {
   React.useEffect(() => {
     if (!bridge?.onPersona) return undefined;
     let live = true;
+    // A sidecar refresh failure is the app's own state, not the connection's:
+    // a live status clears connection errors only, so the update note stays
+    // until the app restarts.
+    const clearedByStatus = prev => (prev && prev.kind === "refresh" ? prev : null);
     const offStatus = bridge.onPersona("status", next => {
       if (!live) return;
       setPersonaStatus(next ?? null);
-      if (next) setPersonaError(null);
+      if (next) setPersonaError(clearedByStatus);
     });
     const offInbox = bridge.onPersona("inbox", items => {
       if (live) setPersonaInbox(Array.isArray(items) ? items : []);
@@ -220,7 +224,7 @@ function App() {
     Promise.resolve(bridge.personaStatus?.()).then(next => {
       if (!live) return;
       setPersonaStatus(next ?? null);
-      if (next) setPersonaError(null);
+      if (next) setPersonaError(clearedByStatus);
     }, () => {});
     Promise.resolve(bridge.personaInbox?.()).then(items => {
       if (live) setPersonaInbox(Array.isArray(items) ? items : []);

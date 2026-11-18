@@ -1,8 +1,9 @@
 use super::push::new_push_targets;
 use crate::agent::reader::{sanitize_line, LineEvent};
-use interprocess::local_socket::{prelude::*, Stream};
+use interprocess::local_socket::Stream;
 use interprocess::TryClone;
-use omp_desktop_core::persona_paths::{socket_name, Paths};
+use omp_desktop_core::persona_paths::Paths;
+use omp_desktop_core::persona_pipe_security::{connect_verified, PipeConnectError};
 use omp_desktop_core::persona_protocol::{
     encode_msg, read_line_capped, write_msg, ClientKind, ClientMsg, Envelope, InboxItem, LineRead,
     ServerMsg, StatusInfo, MAX_LINE_BYTES, PROTOCOL,
@@ -207,6 +208,15 @@ impl ClientHandle {
             .send(WorkerMsg::Reconnect)
             .map_err(|_| "persona client stopped".to_owned())
     }
+
+    /// Cache and emit an app-side failure (the sidecar refresh) the same way
+    /// the worker reports its own terminal errors.
+    pub(super) fn report_error(&self, kind: &str, message: &str) {
+        let _ = self.tx.send(WorkerMsg::ReportError {
+            kind: kind.to_owned(),
+            message: message.to_owned(),
+        });
+    }
 }
 
 impl Drop for Client {
@@ -221,6 +231,10 @@ enum WorkerMsg {
         response: Sender<Result<Value, String>>,
     },
     Reconnect,
+    ReportError {
+        kind: String,
+        message: String,
+    },
     Shutdown,
     Server {
         connection: u64,
@@ -295,6 +309,17 @@ impl Worker {
                     self.retry_at = Some(Instant::now());
                 }
                 WorkerMsg::Request { body, response } => self.request(body, response),
+                WorkerMsg::ReportError { kind, message } => {
+                    {
+                        let mut snapshot =
+                            self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+                        snapshot.error = Some(PersonaError {
+                            kind: kind.clone(), // event and cached snapshot each own a copy
+                            message: message.clone(),
+                        });
+                    }
+                    self.emitter.error(&kind, &message);
+                }
                 WorkerMsg::Server { connection, msg } => self.server_msg(connection, msg),
                 WorkerMsg::Closed { connection, reason } => {
                     if self.connection_id() == Some(connection) {
@@ -561,23 +586,15 @@ impl From<std::io::Error> for ConnectError {
 }
 
 fn connect(paths: &Paths, id: u64, tx: &Sender<WorkerMsg>) -> Result<Connection, ConnectError> {
-    let stream = Stream::connect(socket_name(paths)?)?;
-    #[cfg(windows)]
-    match omp_desktop_core::persona_pipe_security::probe_is_ours(&stream) {
-        Ok(true) => {}
-        Ok(false) => {
-            return Err(ConnectError::Terminal {
-                kind: "owner",
-                message: "another account owns the persona pipe".into(),
-            });
-        }
-        Err(error) => {
-            return Err(ConnectError::Terminal {
-                kind: "owner",
-                message: format!("cannot verify the persona pipe owner: {error}"),
-            });
-        }
-    }
+    // The shared helper verifies the Windows server's user before this
+    // function writes the hello: an unverified pipe never sees a request.
+    let stream = connect_verified(paths).map_err(|error| match error {
+        PipeConnectError::Unavailable(error) => ConnectError::Io(error.to_string()),
+        other => ConnectError::Terminal {
+            kind: "owner",
+            message: other.to_string(),
+        },
+    })?;
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
     write_msg(

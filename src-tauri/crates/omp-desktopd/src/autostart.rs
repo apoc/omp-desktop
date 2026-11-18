@@ -134,6 +134,19 @@ fn schtasks_missing(stderr: &str) -> bool {
     stderr.to_ascii_lowercase().contains("does not exist")
 }
 
+/// `schtasks /End` on a task with no running instance is a no-op for `stop`.
+#[allow(dead_code)] // also exercised by unit tests on other host platforms
+fn schtasks_not_running(stderr: &str) -> bool {
+    stderr.to_ascii_lowercase().contains("not running")
+}
+
+/// `systemctl stop` on wiped state reports the unit as not loaded.
+#[allow(dead_code)] // also exercised by unit tests on other host platforms
+fn systemctl_unit_missing(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("not loaded") || stderr.contains("not found")
+}
+
 fn run_tool(command: &mut Command) -> Result<(), String> {
     run_tool_or(command, |_, _| false)
 }
@@ -217,6 +230,24 @@ pub fn uninstall() -> Result<(), String> {
     removed
 }
 
+/// Unloads the agent without removing its plist; a job that is not loaded is
+/// not an error, so this is safe to call before a replacement.
+///
+/// # Errors
+///
+/// Returns an environment or platform-tool failure.
+#[cfg(target_os = "macos")]
+pub fn stop() -> Result<(), String> {
+    // SAFETY: getuid has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    run_tool_or(
+        Command::new("launchctl")
+            .arg("bootout")
+            .arg(format!("gui/{uid}/{LABEL}")),
+        launchctl_not_loaded,
+    )
+}
+
 /// Installs and starts the autostart entry for `exe`.
 ///
 /// # Errors
@@ -273,15 +304,29 @@ pub fn restart(exe: &Path) -> Result<(), String> {
     install(exe)
 }
 
-/// Ends the old task process before recreating and running the replacement.
+/// Ends any running instance, then recreates and runs the replacement.
 ///
 /// # Errors
 ///
 /// Returns file-system, environment or platform-tool failures.
 #[cfg(windows)]
 pub fn restart(exe: &Path) -> Result<(), String> {
-    let _ = run_tool(Command::new("schtasks").args(["/End", "/TN", TASK_NAME]));
+    stop()?;
     install(exe)
+}
+
+/// Ends the running task instance; a task that does not exist or is not
+/// running is not an error, so `stop` is idempotent.
+///
+/// # Errors
+///
+/// Returns platform-tool failures other than the two idempotent cases.
+#[cfg(windows)]
+pub fn stop() -> Result<(), String> {
+    run_tool_or(
+        Command::new("schtasks").args(["/End", "/TN", TASK_NAME]),
+        |_, stderr| schtasks_missing(stderr) || schtasks_not_running(stderr),
+    )
 }
 
 /// Stops and removes the autostart entry.
@@ -308,6 +353,19 @@ pub fn uninstall() -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// Stops the unit without disabling it; an absent unit is not an error.
+///
+/// # Errors
+///
+/// Returns environment or platform-tool failures.
+#[cfg(target_os = "linux")]
+pub fn stop() -> Result<(), String> {
+    run_tool_or(
+        Command::new("systemctl").args(["--user", "stop", "omp-desktopd.service"]),
+        |_, stderr| systemctl_unit_missing(stderr),
+    )
 }
 
 #[cfg(windows)]
@@ -439,6 +497,21 @@ mod tests {
         ));
         assert!(schtasks_missing("ERROR: Task DOES NOT EXIST."));
         assert!(!schtasks_missing("ERROR: Access is denied."));
+    }
+
+    #[test]
+    fn a_stopped_task_and_an_absent_unit_are_idempotent_stops() {
+        assert!(schtasks_not_running(
+            "ERROR: The operation cannot be performed for the specified task because the task is not running."
+        ));
+        assert!(!schtasks_not_running("ERROR: Access is denied."));
+        assert!(systemctl_unit_missing(
+            "Failed to stop omp-desktopd.service: Unit omp-desktopd.service not loaded."
+        ));
+        assert!(systemctl_unit_missing(
+            "Failed to stop omp-desktopd.service: Unit omp-desktopd.service not found."
+        ));
+        assert!(!systemctl_unit_missing("Failed to stop: Access denied"));
     }
 
     #[test]

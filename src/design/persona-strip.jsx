@@ -18,6 +18,7 @@ const _PS_TICK_MS = 30_000;
 const _PS_ERROR_TEXT = {
   protocol: "Update needed: the Ompy service and the app have different versions.",
   owner: "Another account owns the Ompy service name; Ompy stays off.",
+  refresh: "Ompy could not update its background service; restart OMP Desktop to retry.",
 };
 
 /** The pinned entry's glyph: a mint circle with two punched-out dots.

@@ -277,14 +277,18 @@ pub(super) fn uninstall() -> Result<(), String> {
 /// Refresh an installed copy after an app update, off the main thread.
 pub(super) fn refresh() -> Result<(), String> {
     let stable = stable_path()?;
-    refresh_with(&path()?, &stable, |program, command| {
+    refresh_with(&path()?, &stable, cfg!(windows), |program, command| {
         run_at(program, command).map(drop)
     })
 }
 
+/// `stop_first`: a running image cannot be replaced on Windows, so the task
+/// is ended before the copy and started again afterwards. Unix replaces the
+/// file under the running service and reloads it with `restart`.
 fn refresh_with(
     bundled: &Path,
     stable: &Path,
+    stop_first: bool,
     mut run: impl FnMut(&Path, &str) -> Result<(), String>,
 ) -> Result<(), String> {
     let parent = stable
@@ -299,8 +303,13 @@ fn refresh_with(
     if !needs_refresh(bundled, stable)? {
         return Ok(());
     }
-    // The bundle is trusted even when the pre-existing stable copy is not.
+    // Every command before the copy runs the trusted bundle, never a
+    // pre-planted stable executable.
     let running = run(bundled, "status").is_ok();
+    if stop_first {
+        // Idempotent: a missing or already stopped task is fine.
+        run(bundled, "stop")?;
+    }
     copy_verified(bundled, stable)?;
     if running {
         run(stable, "restart")?;
@@ -396,7 +405,7 @@ mod tests {
         std::fs::write(&bundled, b"bundle").unwrap();
         std::fs::write(&stable, b"attack").unwrap();
         let mut calls = Vec::new();
-        super::refresh_with(&bundled, &stable, |program, command| {
+        super::refresh_with(&bundled, &stable, false, |program, command| {
             calls.push((program.to_path_buf(), command.to_owned()));
             Ok(())
         })
@@ -420,13 +429,67 @@ mod tests {
         std::fs::write(&bundled, b"bundle").unwrap();
         std::fs::write(&stable, b"old").unwrap();
         let mut calls = Vec::new();
-        super::refresh_with(&bundled, &stable, |program, command| {
+        super::refresh_with(&bundled, &stable, false, |program, command| {
             calls.push((program.to_path_buf(), command.to_owned()));
             Err("not running".to_owned())
         })
         .unwrap();
         assert_eq!(calls, vec![(bundled, "status".to_owned())]);
         assert_eq!(std::fs::read(stable).unwrap(), b"bundle");
+    }
+
+    #[test]
+    fn refresh_stops_the_task_before_replacing_on_windows() {
+        let temp = crate::test_support::TempDir::new("persona-sidecar", "stop-first");
+        let bundled = temp.path().join("bundled");
+        let stable = super::stable_dir_from(temp.path()).join(super::executable_name());
+        std::fs::create_dir_all(stable.parent().unwrap()).unwrap();
+        std::fs::write(&bundled, b"bundle").unwrap();
+        std::fs::write(&stable, b"old").unwrap();
+        let mut calls = Vec::new();
+        super::refresh_with(&bundled, &stable, true, |program, command| {
+            // At `stop` time the running image is still the old copy: the
+            // stop must not come after the replacement.
+            if command == "stop" {
+                assert_eq!(std::fs::read(&stable).unwrap(), b"old");
+            }
+            calls.push((program.to_path_buf(), command.to_owned()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            calls,
+            vec![
+                (bundled.clone(), "status".to_owned()),
+                (bundled, "stop".to_owned()),
+                (stable.clone(), "restart".to_owned()),
+            ]
+        );
+        assert_eq!(std::fs::read(&stable).unwrap(), b"bundle");
+    }
+
+    #[test]
+    fn refresh_reports_a_failed_replacement_after_stopping() {
+        let temp = crate::test_support::TempDir::new("persona-sidecar", "stop-failed");
+        let bundled = temp.path().join("bundled");
+        let stable = super::stable_dir_from(temp.path()).join(super::executable_name());
+        // A directory at the executable path makes the final rename fail.
+        std::fs::create_dir_all(&stable).unwrap();
+        std::fs::write(&bundled, b"bundle").unwrap();
+        let mut calls = Vec::new();
+        let error = super::refresh_with(&bundled, &stable, true, |program, command| {
+            calls.push((program.to_path_buf(), command.to_owned()));
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(error.contains("cannot replace"), "{error}");
+        assert_eq!(
+            calls,
+            vec![
+                (bundled.clone(), "status".to_owned()),
+                (bundled, "stop".to_owned()),
+            ]
+        );
     }
 
     #[cfg(unix)]
@@ -517,7 +580,7 @@ mod tests {
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o775)).unwrap();
         }
         let mut calls = Vec::new();
-        super::refresh_with(&bundled, &stable, |program, command| {
+        super::refresh_with(&bundled, &stable, false, |program, command| {
             calls.push((program.to_path_buf(), command.to_owned()));
             Ok(())
         })
@@ -547,7 +610,7 @@ mod tests {
         std::fs::write(&stable, b"bundle").unwrap();
         std::fs::set_permissions(&stable, std::fs::Permissions::from_mode(0o777)).unwrap();
         let mut calls = Vec::new();
-        super::refresh_with(&bundled, &stable, |program, command| {
+        super::refresh_with(&bundled, &stable, false, |program, command| {
             calls.push((program.to_path_buf(), command.to_owned()));
             Ok(())
         })

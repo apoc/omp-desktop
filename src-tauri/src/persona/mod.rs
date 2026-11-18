@@ -20,6 +20,24 @@ impl Persona {
             client: Client::for_app(app),
         }
     }
+
+    /// A cloneable handle for the startup refresh thread, which reports its
+    /// failure through the client's error channel while Tauri owns the client.
+    pub fn reporter(&self) -> PersonaReporter {
+        PersonaReporter(self.client.handle())
+    }
+}
+
+/// Reports an app-side failure (the sidecar refresh) as `persona://error` and
+/// caches it for `persona_error`.
+pub struct PersonaReporter(client::ClientHandle);
+
+impl PersonaReporter {
+    /// Stores one error in the snapshot and emits it. A disconnected client
+    /// drops it, like every other message to a stopped worker.
+    pub fn report_error(&self, kind: &str, message: &str) {
+        self.0.report_error(kind, message);
+    }
 }
 
 pub fn refresh_sidecar() -> Result<(), String> {

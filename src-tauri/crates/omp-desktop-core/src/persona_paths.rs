@@ -87,6 +87,21 @@ pub fn ensure_private_dir(dir: &Path) -> io::Result<()> {
 #[cfg(windows)]
 pub use crate::persona_pipe_security::pipe_name;
 
+/// The Windows pipe name for `paths`: the per-user SID pipe, or the test pipe
+/// a Windows test suite set.
+///
+/// # Errors
+///
+/// Fails when the current user's SID cannot be read.
+#[cfg(windows)]
+pub(crate) fn windows_pipe_name(paths: &Paths) -> io::Result<String> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(name) = &paths.test_pipe_name {
+        return Ok(name.clone());
+    }
+    pipe_name()
+}
+
 /// The socket name for [`Paths::socket`]: a filesystem path on unix, a
 /// per-user namespaced pipe on Windows.
 ///
@@ -103,16 +118,7 @@ pub fn socket_name(paths: &Paths) -> io::Result<Name<'static>> {
     #[cfg(windows)]
     {
         use interprocess::local_socket::{GenericNamespaced, ToNsName};
-        #[cfg(not(any(test, feature = "test-support")))]
-        let _ = paths;
-        #[cfg(any(test, feature = "test-support"))]
-        let name = match &paths.test_pipe_name {
-            Some(name) => name.clone(),
-            None => pipe_name()?,
-        };
-        #[cfg(not(any(test, feature = "test-support")))]
-        let name = pipe_name()?;
-        name.to_ns_name::<GenericNamespaced>()
+        windows_pipe_name(paths)?.to_ns_name::<GenericNamespaced>()
     }
     #[cfg(not(any(unix, windows)))]
     {

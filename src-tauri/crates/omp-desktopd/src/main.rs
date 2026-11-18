@@ -1,5 +1,6 @@
 use omp_desktop_core::json_store::write_atomic;
-use omp_desktop_core::persona_paths::{ensure_private_dir, socket_name, Paths};
+use omp_desktop_core::persona_paths::{ensure_private_dir, Paths};
+use omp_desktop_core::persona_pipe_security::{connect_verified, PipeConnectError};
 use omp_desktop_core::persona_protocol::{read_line_capped, LineRead};
 use omp_desktopd::{
     core::Core,
@@ -24,9 +25,10 @@ fn main() -> ExitCode {
         "restart" => std::env::current_exe()
             .map_err(|e| e.to_string())
             .and_then(|exe| omp_desktopd::autostart::restart(&exe)),
+        "stop" => omp_desktopd::autostart::stop(),
         "uninstall" => omp_desktopd::autostart::uninstall(),
         other => Err(format!(
-            "unknown command `{other}`; use run, status, install, restart or uninstall"
+            "unknown command `{other}`; use run, status, install, restart, stop or uninstall"
         )),
     };
     match result {
@@ -132,12 +134,49 @@ fn status_data(reply: &serde_json::Value) -> Result<&serde_json::Value, String> 
     Ok(&reply["data"])
 }
 
-fn status() -> Result<(), String> {
-    use interprocess::local_socket::{prelude::*, Stream};
+/// How long `status` waits for the service: a hung or hostile server must
+/// not hold the refresh probe open.
+const STATUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-    let paths = Paths::resolve()?;
-    let stream = Stream::connect(socket_name(&paths).map_err(|e| e.to_string())?)
-        .map_err(|_| "not running".to_owned())?;
+fn status() -> Result<(), String> {
+    status_within(Paths::resolve()?, STATUS_TIMEOUT)
+}
+
+/// The bounded form of [`status`]: the connect, handshake and reply all run
+/// on a helper thread, so a service that accepts and then says nothing costs
+/// at most `timeout`.
+fn status_within(paths: Paths, timeout: std::time::Duration) -> Result<(), String> {
+    use std::sync::mpsc::{self, RecvTimeoutError};
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("omp-desktopd-status".into())
+        .spawn(move || {
+            let _ = tx.send(read_status(&paths));
+        })
+        .map_err(|e| format!("cannot start the status probe: {e}"))?;
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => Err(format!(
+            "the Ompy service did not answer within {} s",
+            timeout.as_secs()
+        )),
+        Err(RecvTimeoutError::Disconnected) => {
+            Err("the status probe stopped without an answer".to_owned())
+        }
+    }
+}
+
+/// "not running" for an absent service; the owner error text otherwise.
+fn connect_error_message(error: PipeConnectError) -> String {
+    match error {
+        PipeConnectError::Unavailable(_) => "not running".to_owned(),
+        other => other.to_string(),
+    }
+}
+
+fn read_status(paths: &Paths) -> Result<(), String> {
+    let stream = connect_verified(paths).map_err(connect_error_message)?;
     let mut reader = BufReader::new(stream);
     reader.get_mut().write_all(
         b"{\"req\":0,\"type\":\"hello\",\"protocol\":1,\"client\":\"app\"}\n{\"req\":1,\"type\":\"status\"}\n",
@@ -175,5 +214,34 @@ mod tests {
     fn successful_status_reply_returns_data() {
         let reply = json!({"type":"reply","req":1,"ok":true,"data":{"state":"running"}});
         assert_eq!(status_data(&reply), Ok(&json!({"state":"running"})));
+    }
+
+    #[test]
+    fn an_absent_service_reads_as_not_running() {
+        assert_eq!(
+            connect_error_message(PipeConnectError::Unavailable(std::io::Error::other(
+                "connection refused"
+            ))),
+            "not running"
+        );
+        assert_eq!(
+            connect_error_message(PipeConnectError::NotOurs),
+            "another account owns the persona pipe"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_gives_up_on_a_service_that_never_answers() {
+        // A unix socket path must fit `SUN_LEN` (104 bytes), so this uses a
+        // short /tmp base rather than the platform temp dir.
+        let base = std::path::Path::new("/tmp").join(format!("omp-status-{}", std::process::id()));
+        let paths = Paths::under(&base);
+        std::fs::create_dir_all(&paths.persona).unwrap();
+        // Bound but never accepted: `connect` succeeds, the read never returns.
+        let _listener = std::os::unix::net::UnixListener::bind(&paths.socket).unwrap();
+        let error = status_within(paths, std::time::Duration::from_millis(200)).unwrap_err();
+        assert!(error.contains("did not answer"), "{error}");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

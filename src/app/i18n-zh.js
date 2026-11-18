@@ -1060,6 +1060,7 @@ window.OMP_I18N.add("zh", {
   "Wake now": "立即唤醒",
   "Update needed: the Ompy service and the app have different versions.": "需要更新：Ompy 服务与应用的版本不一致。",
   "Another account owns the Ompy service name; Ompy stays off.": "另一个账户占用了 Ompy 服务名称；Ompy 保持关闭。",
+  "Ompy could not update its background service; restart OMP Desktop to retry.": "Ompy 无法更新其后台服务；请重启 OMP Desktop 重试。",
   "The Ompy service reported a problem: {error}": "Ompy 服务报告了问题：{error}",
   "{n} waiting for you": "{n} 项等待你处理",
   "Ompy, {n} waiting for you": "Ompy，{n} 项等待你处理",

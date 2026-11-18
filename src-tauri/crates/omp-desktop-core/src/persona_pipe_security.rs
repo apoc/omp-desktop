@@ -7,8 +7,85 @@
 //!
 //! A per-user name alone is not enough: any account may create
 //! `\\.\pipe\omp-desktopd-<victim SID>` before the service does.
-//! `probe_is_ours` (Windows only) therefore verifies the answering server's
-//! user before a successful probe is treated as "already running".
+//! `connect_verified` therefore verifies the answering server's user before a
+//! connection is handed back, so neither the app nor the `status` command
+//! writes a byte to a stranger's pipe.
+
+use interprocess::local_socket::Stream;
+use std::io;
+
+/// The Win32 path of the named pipe `name`, e.g.
+/// `\\.\pipe\omp-desktopd-S-1-5-21-...-1001`.
+#[must_use]
+pub fn pipe_path(name: &str) -> String {
+    format!(r"\\.\pipe\{name}")
+}
+
+/// Why [`connect_verified`] returned no connection.
+#[derive(Debug)]
+pub enum PipeConnectError {
+    /// Nothing answered on the socket or pipe.
+    Unavailable(io::Error),
+    /// A server answered, but it runs as another account.
+    NotOurs,
+    /// A server answered, but its owner could not be read.
+    Unverified(io::Error),
+}
+
+impl std::fmt::Display for PipeConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(error) => error.fmt(f),
+            Self::NotOurs => f.write_str("another account owns the persona pipe"),
+            Self::Unverified(error) => write!(f, "cannot verify the persona pipe owner: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for PipeConnectError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Unavailable(error) | Self::Unverified(error) => Some(error),
+            Self::NotOurs => None,
+        }
+    }
+}
+
+/// Connects to the persona service and, on Windows, proves that the answering
+/// server runs as the current user before returning.
+///
+/// The check happens before any byte is written, so another account's
+/// pre-created pipe never receives a request. The Windows client handle asks
+/// for identification-level impersonation only
+/// (`SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`), so even the verified
+/// server can do no more with the client's token than learn who it is.
+///
+/// # Errors
+///
+/// Returns [`PipeConnectError::Unavailable`] when nothing answers,
+/// [`PipeConnectError::NotOurs`] for another account's server, and
+/// [`PipeConnectError::Unverified`] when the owner cannot be determined.
+pub fn connect_verified(paths: &crate::persona_paths::Paths) -> Result<Stream, PipeConnectError> {
+    #[cfg(windows)]
+    {
+        imp::connect_verified(paths)
+    }
+    #[cfg(unix)]
+    {
+        use interprocess::local_socket::traits::Stream as _;
+
+        let name =
+            crate::persona_paths::socket_name(paths).map_err(PipeConnectError::Unavailable)?;
+        Stream::connect(name).map_err(PipeConnectError::Unavailable)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = paths;
+        Err(PipeConnectError::Unavailable(io::Error::other(
+            "local sockets are not supported here",
+        )))
+    }
+}
 
 /// The DACL for the persona pipe: full access for `sid` only, protected from
 /// inherited access control entries.
@@ -48,17 +125,25 @@ pub use imp::{current_user_sid, listener_security_descriptor, pipe_name, probe_i
 
 #[cfg(windows)]
 mod imp {
-    use super::{pipe_name_for, pipe_sddl, same_sid, token_user_storage};
+    use super::{
+        pipe_name_for, pipe_path, pipe_sddl, same_sid, token_user_storage, PipeConnectError,
+    };
     use interprocess::local_socket::Stream;
     use interprocess::os::windows::security_descriptor::SecurityDescriptor;
     use std::ffi::c_void;
     use std::io;
     use std::mem::size_of;
-    use std::os::windows::io::{AsHandle, AsRawHandle};
+    use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle};
     use std::ptr;
-    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, LocalFree, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    };
     use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
     use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
+    };
     use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -105,6 +190,59 @@ mod imp {
         let wide = widestring::U16CString::from_str(&sddl)
             .map_err(|_| io::Error::other("pipe DACL cannot be encoded"))?;
         SecurityDescriptor::deserialize(wide.as_ucstr())
+    }
+
+    /// Connects to the persona pipe and verifies its server before returning.
+    ///
+    /// # Errors
+    ///
+    /// See [`PipeConnectError`].
+    pub(super) fn connect_verified(
+        paths: &crate::persona_paths::Paths,
+    ) -> Result<Stream, PipeConnectError> {
+        let name = crate::persona_paths::windows_pipe_name(paths)
+            .map_err(PipeConnectError::Unavailable)?;
+        let stream = connect_client_pipe(&name).map_err(PipeConnectError::Unavailable)?;
+        match probe_is_ours(&stream) {
+            Ok(true) => Ok(stream),
+            Ok(false) => Err(PipeConnectError::NotOurs),
+            Err(error) => Err(PipeConnectError::Unverified(error)),
+        }
+    }
+
+    /// Opens the client end of the named pipe `name`.
+    ///
+    /// `CreateFileW` rather than interprocess's connector: only the raw call
+    /// carries an SQOS, and `SECURITY_IDENTIFICATION` limits the server to
+    /// learning who the client is instead of acting as it. The overlapped
+    /// flag keeps the wrapped stream's read mode what interprocess expects.
+    fn connect_client_pipe(name: &str) -> io::Result<Stream> {
+        let path = widestring::U16CString::from_str(&pipe_path(name))
+            .map_err(|_| io::Error::other("pipe name cannot be encoded"))?;
+        // SAFETY: `path` is a NUL-terminated local buffer and the trailing
+        // arguments are an unused security attribute and template handle.
+        let raw: windows_sys::Win32::Foundation::HANDLE = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                ptr::null_mut(),
+            )
+        };
+        if raw == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `CreateFileW` returned a valid handle that no one else
+        // owns; `OwnedHandle` closes it exactly once.
+        let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+        // The named-pipe stream is the only type interprocess lets a caller
+        // build from an owned handle; the local-socket enum wraps it.
+        let pipe = interprocess::os::windows::named_pipe::local_socket::Stream::try_from(handle)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        Ok(Stream::from(pipe))
     }
 
     /// Whether the server answering on `stream` runs as the current user.
@@ -248,5 +386,29 @@ mod tests {
             );
         }
         assert_eq!(token_user_storage(9).len(), 2);
+    }
+
+    #[test]
+    fn pipe_path_targets_the_local_named_pipe_namespace() {
+        assert_eq!(
+            pipe_path("omp-desktopd-S-1-5-21-1-2-3-1001"),
+            r"\\.\pipe\omp-desktopd-S-1-5-21-1-2-3-1001"
+        );
+    }
+
+    #[test]
+    fn connect_errors_carry_the_kind_the_app_reports() {
+        assert_eq!(
+            PipeConnectError::Unavailable(io::Error::other("connection refused")).to_string(),
+            "connection refused"
+        );
+        assert_eq!(
+            PipeConnectError::NotOurs.to_string(),
+            "another account owns the persona pipe"
+        );
+        assert_eq!(
+            PipeConnectError::Unverified(io::Error::other("access denied")).to_string(),
+            "cannot verify the persona pipe owner: access denied"
+        );
     }
 }
