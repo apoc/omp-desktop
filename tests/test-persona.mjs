@@ -241,6 +241,20 @@ check("answer_options_result_and_notice_have_none", () => {
   assert.deepEqual(P.answerOptions(item({ kind: "notice" })), []);
 });
 
+// ── cursorAfterStatus ────────────────────────────────────────────────────
+check("ompy_reattach_resets_cursor", () => {
+  assert.deepEqual(P.cursorAfterStatus(7, status({ generation: 7 }), 42),
+    { gen: 7, lastSeq: 42, reattach: false });
+  assert.deepEqual(P.cursorAfterStatus(7, status({ generation: 8 }), 42),
+    { gen: 8, lastSeq: 0, reattach: true });
+  assert.deepEqual(P.cursorAfterStatus(null, status({ generation: 42 }), 0),
+    { gen: 42, lastSeq: 0, reattach: true });
+  // Offline forgets the generation: the next status is a new connection and
+  // must not trust the old cursor (the sequence source may have restarted).
+  assert.deepEqual(P.cursorAfterStatus(7, null, 42),
+    { gen: null, lastSeq: 42, reattach: false });
+});
+
 check("the api is frozen", () => {
   assert.ok(Object.isFrozen(P));
 });

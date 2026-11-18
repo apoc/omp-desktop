@@ -166,10 +166,30 @@
     return [];
   }
 
+  /**
+   * The relay cursor after a `persona://status` frame. A new service
+   * generation (the process restarted, so the sequence source did) resets
+   * the cursor and asks for a fresh attach; the same generation keeps it.
+   * `null` status (disconnected) forgets the generation, so the next
+   * connection is treated as new — clients never trust a cursor across a
+   * socket. Returns `{ gen, lastSeq, reattach }`.
+   */
+  function cursorAfterStatus(prevGen, status, lastSeq) {
+    if (!status || typeof status !== "object") {
+      return { gen: null, lastSeq, reattach: false };
+    }
+    const gen = Number.isInteger(status.generation) ? status.generation : 0;
+    if (prevGen == null || gen !== prevGen) {
+      return { gen, lastSeq: 0, reattach: true };
+    }
+    return { gen: prevGen, lastSeq, reattach: false };
+  }
+
   window.OMP_PERSONA = Object.freeze({
     statusView,
     inboxView,
     validateSettings,
     answerOptions,
+    cursorAfterStatus,
   });
 })();

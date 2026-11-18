@@ -27,6 +27,10 @@
   const LIVE = window.OMP_LIVE_VOICE;
   const DICTATION = LIVE.DICTATION;
   const { tsOf, mergeTranscript } = window.OMP_TRANSCRIPT;
+  const PERSONA = window.OMP_PERSONA;
+  // The Ompy tab's fixed session id: one hosted omp process owned by the
+  // persona service, not one of this app's spawned tabs.
+  const PERSONA_SESSION_ID = "ompy";
 
   // ── Safe defaults so design components never crash on missing fields ──────
   const DEFAULT_DATA = {
@@ -157,6 +161,13 @@
   // under different profiles simultaneously, so changing a tab's profile
   // respawns only that tab (see switchSessionProfile).
   const sessionRegistry = new Map();
+  // Ompy's hosted session is a tab in the same list: it exists for the life
+  // of the window, pinned first (`_sessionsView`), never saved (`_layoutNow`)
+  // and never closed (`closeSession`). Its transcript arrives over the
+  // persona relay while it is the active tab.
+  sessionRegistry.set(PERSONA_SESSION_ID, {
+    id: PERSONA_SESSION_ID, name: "Ompy", path: null, kind: "persona", pinned: true,
+  });
   const sessionSnapshots = new Map(); // id -> saved state + volatile vars
   const respawnVoice = new Map(); // same-conversation voice awaiting a fresh process activation
   const gitListeners = new Map();  // session_id → Tauri unlisten fn for git://branch/{id}
@@ -428,7 +439,11 @@
   // Active tab reads live state; background tabs read their cached snapshot
   // (never activated yet = "idle" defaults).
   function _sessionsView() {
-    return [...sessionRegistry.values()].map(s => ({
+    const entries = [...sessionRegistry.values()];
+    // Pinned entries (the Ompy tab) stay first whatever order drag-reorder
+    // wrote into the registry.
+    const ordered = [...entries.filter(s => s.pinned), ...entries.filter(s => !s.pinned)];
+    return ordered.map(s => ({
       ...s,
       runState: runStateCached(
         s.id === activeSessionId
@@ -755,7 +770,10 @@
   }
 
   function _layoutNow() {
-    return window.OMP_PROJECT_NAV.tabLayout([...sessionRegistry.values()], activeSessionId);
+    // Ompy is the window's own tab, not part of the saved workspace: it is
+    // never written to `open-tabs.json` and so never spawned on restore.
+    const tabs = [...sessionRegistry.values()].filter(s => s.kind !== "persona");
+    return window.OMP_PROJECT_NAV.tabLayout(tabs, activeSessionId);
   }
 
   /** Write the open-tab layout if it changed since the last one (see
@@ -949,6 +967,52 @@
     return true;
   }
 
+  // ── Ompy persona relay ────────────────────────────────────────────────────
+  // The service generation the Ompy tab's cursor belongs to (`null` = never
+  // seen, or disconnected — the next status is then a new connection). The
+  // service numbers its relay frames per process; a restart starts over, so
+  // a new generation invalidates both the cursor and the transcript built
+  // from the previous omp session (OMP_PERSONA.cursorAfterStatus).
+  let _personaGen = null;
+
+  function _personaAttach(afterSeq) {
+    return _invokeSafe("persona_attach", { afterSeq }, null);
+  }
+
+  function _personaDetach() {
+    return _invokeSafe("persona_detach", undefined, null);
+  }
+
+  /** Feed one `persona://status` frame (or the boot fetch) into the tab's
+   *  relay cursor. On a new generation/connection the saved Ompy snapshot
+   *  and — when it is the active tab — its live state are dropped, then the
+   *  active tab re-attaches from 0: the new relay replays the hosted
+   *  session, so nothing is duplicated or silently swallowed by the old
+   *  `lastSeq`. */
+  function _onPersonaStatus(status) {
+    const next = PERSONA.cursorAfterStatus(_personaGen, status, lastSeq);
+    _personaGen = next.gen;
+    if (!next.reattach) return;
+    const snap = sessionSnapshots.get(PERSONA_SESSION_ID);
+    if (snap) {
+      sessionSnapshots.set(PERSONA_SESSION_ID, {
+        ...snap,
+        messages: [],
+        lastSeq: 0,
+        streamingBubble: null,
+        streamAcc: null,
+        extWidgets: EXT.EMPTY,
+      });
+    }
+    if (activeSessionId !== PERSONA_SESSION_ID) return;
+    _resetSessionVars();
+    // A switch into Ompy may be buffering; the attach below re-reads the
+    // relay from the start instead, so the buffer is not needed.
+    _replayBuffer = null;
+    _personaAttach(0);
+    notify();
+  }
+
   // ── Session switching ─────────────────────────────────────────────────────
   // Generation counter guards against overlapping switches: _switchToSession
   // is async with multiple await points and writes shared module state
@@ -988,13 +1052,20 @@
     }
     if (_switchIntent !== intent || !sessionRegistry.has(id)) return;
     const myGen = ++_switchGen;
+    const persona = id === PERSONA_SESSION_ID;
 
     // Snapshot current session so we can restore it when switching back
     _saveCurrentSession();
     // The inspected agent belongs to the tab being left: drop that process
     // back to "progress" while activeSessionId still addresses it.
-    if (subagentInspecting) {
+    if (subagentInspecting && previous !== PERSONA_SESSION_ID) {
       _send({ type: "set_subagent_subscription", level: SUB.subscriptionLevelFor({ inspecting: false }) });
+    }
+    // Leaving Ompy stops the service's relay for this window; its hosted
+    // session keeps running (background tabs keep no live relay either).
+    if (previous === PERSONA_SESSION_ID && !persona) {
+      await _personaDetach();
+      if (_switchGen !== myGen) return;
     }
 
     // Tear down old listeners
@@ -1041,7 +1112,11 @@
     // C with no binding; after, it is dropped and C shows none).
     const current = () => _switchGen === myGen && activeSessionId === id;
     const { listen } = window.__TAURI__.event;
-    const ulLine = await listen(`agent://line/${id}`, ev => { if (current()) handleLine(ev.payload); });
+    // Ompy's frames arrive over the persona relay, already credential-
+    // redacted and numbered by the service; agent tabs stream their own
+    // process's stdout under `agent://line/<id>`.
+    const lineEvent = persona ? `persona://line/${PERSONA_SESSION_ID}` : `agent://line/${id}`;
+    const ulLine = await listen(lineEvent, ev => { if (current()) handleLine(ev.payload); });
     if (!current()) {
       // Superseded while this call's own listener was still being attached —
       // it was never stored into activeListeners, so nothing else will ever
@@ -1051,26 +1126,43 @@
       try { await ulLine(); } catch (_) {}
       return;
     }
-    const ulExit = await listen(`agent://exit/${id}`, ev => {
-      if (!current()) return;
-      const reason = (ev?.payload && String(ev.payload).trim()) || "";
-      console.warn(`[live] session '${id}' omp process exited${reason ? ": " + reason : ""}`);
-      state.isStreaming = false;
-      state.exitReason = reason || null;
-      if (reason) {
-        _pushAssistantNote(_exitNote(reason, sessionRegistry.get(id)?.profile));
-      }
-      _endDeadProcessState();
-      notify();
-    });
+    let ulExit = null;
+    if (!persona) {
+      ulExit = await listen(`agent://exit/${id}`, ev => {
+        if (!current()) return;
+        const reason = (ev?.payload && String(ev.payload).trim()) || "";
+        console.warn(`[live] session '${id}' omp process exited${reason ? ": " + reason : ""}`);
+        state.isStreaming = false;
+        state.exitReason = reason || null;
+        if (reason) {
+          _pushAssistantNote(_exitNote(reason, sessionRegistry.get(id)?.profile));
+        }
+        _endDeadProcessState();
+        notify();
+      });
+    }
     if (!current()) {
       // Same leak as above, but both listeners for this call exist and
       // haven't been committed to activeListeners yet.
       try { await ulLine(); } catch (_) {}
-      try { await ulExit(); } catch (_) {}
+      if (ulExit) try { await ulExit(); } catch (_) {}
       return;
     }
-    activeListeners = [ulLine, ulExit];
+    activeListeners = ulExit ? [ulLine, ulExit] : [ulLine];
+
+    if (persona) {
+      // `persona_attach` asks the service to replay the hosted session's
+      // ring after this tab's cursor and then keep streaming live. Ompy has
+      // no per-tab journal, no `session_status` and no `_initFetch`: its omp
+      // process belongs to the service, not to this app.
+      await _personaAttach(lastSeq);
+      if (!current()) return; // superseded by a newer switch, or detached
+      const buffered = _replayBuffer;
+      _replayBuffer = null;
+      for (const envelope of buffered ?? []) _dispatchEnvelope(envelope);
+      notify();
+      return;
+    }
 
     // Catch up on events the journal captured while this tab had no live
     // listener attached (backgrounded tab switch) — recovers tool cards /
@@ -1131,7 +1223,7 @@
     // de-duplicated against lastSeq inside _dispatchEnvelope.
     const buffered = _replayBuffer;
     _replayBuffer = null;
-    for (const envelope of buffered) _dispatchEnvelope(envelope);
+    for (const envelope of buffered ?? []) _dispatchEnvelope(envelope);
 
     // Surface any cached startup error for this session. A background tab
     // (or a respawn) can fail before any listener is attached, so a spawn
@@ -1387,9 +1479,11 @@
     ++_switchIntent;
     _switchAwayFrom = null;
     _cancelLiveRequests();
+    const wasPersona = activeSessionId === PERSONA_SESSION_ID;
     const listeners = activeListeners;
     activeListeners = [];
     activeSessionId = null;
+    if (wasPersona) _personaDetach();
     _resetSessionVars();
     for (const ul of listeners) { try { await ul(); } catch (_) {} }
   }
@@ -3062,9 +3156,16 @@
 
   // The `send_command` hand-off to the active tab, shared by `_send` and
   // `_sendWithResponse`; callers check the connection and handle failure.
+  // Ompy's frames go to the service's hosted omp session instead of a
+  // process this app spawned; the frame text is identical, so prompts,
+  // steers, aborts and extension_ui_response all work unchanged.
   function _invokeSend(cmd) {
+    const json = JSON.stringify(cmd);
+    if (activeSessionId === PERSONA_SESSION_ID) {
+      return window.__TAURI__.core.invoke("persona_send", { json });
+    }
     return window.__TAURI__.core
-      .invoke("send_command", { sessionId: activeSessionId, json: JSON.stringify(cmd) });
+      .invoke("send_command", { sessionId: activeSessionId, json });
   }
 
   /** Send `cmd` to every open tab's omp, uncorrelated (no `id`: a response
@@ -3076,6 +3177,9 @@
     const json = JSON.stringify(cmd);
     // A warning, not `_invokeSafe`'s error: a tab missing it is expected.
     for (const sessionId of sessionRegistry.keys()) {
+      // Ompy has no process of this app's: its settings ride the persona
+      // protocol, not `send_command`.
+      if (sessionRegistry.get(sessionId)?.kind === "persona") continue;
       window.__TAURI__.core.invoke("send_command", { sessionId, json })
         .catch(e => console.warn(`[live] ${cmd.type} for '${sessionId}' not sent:`, e));
     }
@@ -4916,6 +5020,8 @@
     /** Close a tab after stopping its microphone; a failed stop leaves the
      *  tab visible so the user can retry. */
     async closeSession(id) {
+      // Ompy is the window's own tab: never closable, whatever the caller.
+      if (id === PERSONA_SESSION_ID) return false;
       if (!sessionRegistry.has(id) || _closingVoiceTabs.has(id)) return false;
       _closingVoiceTabs.add(id);
       try {
@@ -5070,6 +5176,31 @@
       if (window.OMP_PROMPT_HISTORY.trimAll(promptHistories, promptHistoryLimit)) notify();
     },
 
+    // ── Ompy persona (src-tauri/src/persona/, docs/architecture/persona-daemon.md) ──
+    // Thin wrappers over the persona commands. Status and inbox are cached
+    // snapshots in Rust, so they answer without a service round trip; the
+    // rest queue a request and wait for the service's reply. `persona_send`
+    // is reached through `_invokeSend`, so a composer message to the active
+    // Ompy tab needs no separate path.
+    personaStatus() { return _invokeSafe("persona_status", undefined, null); },
+    personaInbox() { return _invokeSafe("persona_inbox", undefined, []); },
+    /** Answer one inbox item; `answer` null dismisses it. */
+    personaResolve(id, answer) { return _invokeResult("persona_resolve", { id, answer: answer ?? null }); },
+    personaSettings(settings) { return _invokeResult("persona_set_settings", { settings }); },
+    personaPause() { return _invokeResult("persona_pause"); },
+    personaResume() { return _invokeResult("persona_resume"); },
+    personaWakeNow() { return _invokeResult("persona_wake_now"); },
+    personaEnable() { return _invokeResult("persona_enable"); },
+    personaDisable() { return _invokeResult("persona_disable"); },
+    /** Subscribe to one service event (`status` | `inbox` | `error`);
+     *  `cb(payload)`. Returns the unsubscribe function. */
+    onPersona(kind, cb) {
+      const event = { status: "persona://status", inbox: "persona://inbox", error: "persona://error" }[kind];
+      if (!event || typeof cb !== "function") return () => {};
+      const handle = _listen(event, cb);
+      return () => handle.stop();
+    },
+
     /** Subscribe to state snapshots. Returns an unsubscribe function. */
     onUpdate(cb) {
       subscribers.add(cb);
@@ -5107,6 +5238,14 @@
       .then(() => _restoreOpenTabs())
       .catch(e => console.error("[live] restoring the open tabs failed:", e))
       .finally(_setupExternalOpens);
+
+    // Ompy's relay generation: the status stream decides whether the tab's
+    // cursor still belongs to the service's sequence source. The fetch
+    // covers a status the service emitted before this listener existed
+    // (`setup` starts the client before the webview loads).
+    _listen("persona://status", _onPersonaStatus);
+    _invokeSafe("persona_status", undefined, null)
+      .then(status => { if (status) _onPersonaStatus(status); });
 
     // Busy-close confirmation for an OS close Rust held (`_requestQuit`),
     // and the guard's real state: a reloaded webview may find it armed by
