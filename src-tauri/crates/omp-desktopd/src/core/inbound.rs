@@ -11,6 +11,7 @@ use omp_desktop_core::persona_protocol::{
 };
 use serde_json::value::RawValue;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 impl Core {
     pub(super) fn on_inbound(&mut self, inbound: Inbound, now: &Now) {
@@ -76,32 +77,34 @@ impl Core {
         }
     }
 
-    fn reply_ok(&self, conn: ConnId, req: Option<u64>, data: Option<Value>) {
+    fn reply_ok(&mut self, conn: ConnId, req: Option<u64>, data: Option<Value>) {
         let Some(req) = req else {
             return;
         };
-        if let Some(client) = self.conns.get(&conn) {
-            let _ = client.out.send(ServerMsg::Reply {
+        self.send_to(
+            conn,
+            &ServerMsg::Reply {
                 req,
                 ok: true,
                 data,
                 error: None,
-            });
-        }
+            },
+        );
     }
 
-    fn reply_err(&self, conn: ConnId, req: Option<u64>, error: &str) {
+    fn reply_err(&mut self, conn: ConnId, req: Option<u64>, error: &str) {
         let Some(req) = req else {
             return;
         };
-        if let Some(client) = self.conns.get(&conn) {
-            let _ = client.out.send(ServerMsg::Reply {
+        self.send_to(
+            conn,
+            &ServerMsg::Reply {
                 req,
                 ok: false,
                 data: None,
                 error: Some(error.into()),
-            });
-        }
+            },
+        );
     }
 
     fn on_rpc(&mut self, conn: ConnId, req: Option<u64>, frame: &Value, now: &Now) {
@@ -342,14 +345,13 @@ impl Core {
         if let Some(client) = self.conns.get_mut(&conn) {
             client.attached = true;
         }
-        let Some(session) = &self.session else {
-            return;
-        };
-        for (seq, raw) in session.replay_after(after_seq) {
+        let frames: Vec<(u64, Arc<str>)> = self
+            .session
+            .as_ref()
+            .map_or_else(Vec::new, |session| session.replay_after(after_seq));
+        for (seq, raw) in frames {
             if let Ok(frame) = RawValue::from_string(raw.to_string()) {
-                if let Some(client) = self.conns.get(&conn) {
-                    let _ = client.out.send(ServerMsg::Rpc { seq, frame });
-                }
+                self.send_to(conn, &ServerMsg::Rpc { seq, frame });
             }
         }
     }

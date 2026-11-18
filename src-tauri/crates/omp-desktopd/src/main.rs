@@ -50,6 +50,12 @@ fn run() -> Result<(), String> {
     } else {
         paths.socket.display().to_string()
     };
+    // The core event channel is unbounded on purpose: every producer is
+    // already byte-bounded before it queues (per-connection outbound queues
+    // drop a client over 32 MiB, and the session replay ring is byte-bounded
+    // at 8 MiB), so the queue only holds short-lived references. Bounding it
+    // here could stall the omp stdout reader on a full channel and, with it,
+    // omp itself — the one thing the queue limits must never do.
     let (tx, rx) = std::sync::mpsc::channel();
     let _server = match Server::start(&paths, tx.clone()) {
         Ok(s) => s,

@@ -32,6 +32,8 @@ The transport is newline-delimited JSON, one object per line, capped at 16 MiB e
 
 Client messages are `status`, `attach` (`afterSeq`), `detach`, `rpc`, `pause`, `resume`, `wake_now`, `set_settings`, `inbox_resolve`, `schedule_wake`, `list_schedule`, `cancel_wake` and `notify`. Attached app clients receive sequenced `rpc` frames (replayable from `afterSeq`), `inbox` snapshots and `status`. The extension uses one connection per tool call and exposes only schedule and notify operations to the model.
 
+The server admits at most 16 handshaken clients; a further connection is answered with `reply` `ok: false, error: "too many connections"` and closed. Each connection's outbound queue is bounded at 32 MiB of serialized messages; when a client stops reading and its queue would exceed that, the core logs it, closes the socket and drops the connection instead of blocking. The core event channel itself stays unbounded because its producers are already bounded, and blocking it could stall the `omp` stdout reader.
+
 ## Wake-ups and budget
 
 The scheduler (`scheduler.rs`) is a pure state machine driven by the core's clock. Defaults are a 30-minute interval, quiet hours 20:00–07:00, and quiet weekends. Quiet hours suppress interval wakes only; scheduled and manual wakes still run. Ompy may queue at most 50 wakes, at most 30 days ahead, by absolute or relative time. After sleep, every due scheduled wake is caught up oldest-first, while a missed interval produces at most one catch-up turn.
@@ -53,7 +55,6 @@ If omp exits or cannot spawn, restart backoff starts at 1 second and doubles to 
 - Secret `input` answers are persisted in `inbox.json` and broadcast with the rest of the item (`src/core/inbound.rs`, `src/inbox.rs`).
 - A missing `omp` at service start exits the process instead of retrying with an inbox notice (`src/main.rs`).
 - Windows starts `omp` without `CREATE_NO_WINDOW` or `windows_subsystem`, and the named pipe is named from `USERNAME` with the default DACL (Everyone read) rather than a hardened private descriptor (`src/session.rs`, `src/paths.rs`).
-- Outbound per-connection channels and the accepted-connection count are unbounded, as is the core event channel (`src/server.rs`, `src/core/lifecycle.rs`).
 - A `schedule.json` or `settings.json` read error preserves the file, but the next write of that state overwrites it; inbox and budget files are moved aside instead (`src/core/store.rs`).
 - A corrupted `budget.json` starts a fresh counter, so the day's spent allowance can be regained (`src/core/store.rs`).
 - The systemd `ExecStart` quotes the executable but does not reject embedded newlines (`src/autostart.rs`).

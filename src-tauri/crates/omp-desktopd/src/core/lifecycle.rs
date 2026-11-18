@@ -185,12 +185,18 @@ impl Core {
     }
 
     /// Forward one live frame to every attached connection.
-    fn relay_frame(&self, seq: u64, raw: &str) {
-        for conn in self.conns.values().filter(|conn| conn.attached) {
-            if let Ok(frame) = RawValue::from_string(raw.to_owned()) {
-                let _ = conn.out.send(ServerMsg::Rpc { seq, frame });
-            }
-        }
+    fn relay_frame(&mut self, seq: u64, raw: &str) {
+        let Ok(frame) = RawValue::from_string(raw.to_owned()) else {
+            return;
+        };
+        let msg = ServerMsg::Rpc { seq, frame };
+        let full: Vec<crate::server::ConnId> = self
+            .conns
+            .iter()
+            .filter(|(_, conn)| conn.attached && !conn.out.send(&msg))
+            .map(|(id, _)| *id)
+            .collect();
+        self.drop_conns(full);
     }
 
     fn on_usage(&mut self, usage: &Usage, now: &Now) {

@@ -248,23 +248,48 @@ impl Core {
     }
 
     /// Report the current status to every app connection.
-    fn broadcast_status(&self) {
-        for conn in self.conns.values() {
-            if conn.client == ClientKind::App {
-                let _ = conn.out.send(ServerMsg::Status {
-                    status: self.status_info(),
-                });
-            }
-        }
+    fn broadcast_status(&mut self) {
+        let msg = ServerMsg::Status {
+            status: self.status_info(),
+        };
+        self.send_to_apps(&msg);
     }
 
     /// Report the inbox to every app connection.
-    fn broadcast_inbox(&self) {
-        for conn in self.conns.values() {
-            if conn.client == ClientKind::App {
-                let _ = conn.out.send(ServerMsg::Inbox {
-                    items: self.inbox.items().to_vec(),
-                });
+    fn broadcast_inbox(&mut self) {
+        let msg = ServerMsg::Inbox {
+            items: self.inbox.items().to_vec(),
+        };
+        self.send_to_apps(&msg);
+    }
+
+    /// Queue `msg` for every app client, dropping the ones whose outbound
+    /// queue overflowed.
+    fn send_to_apps(&mut self, msg: &ServerMsg) {
+        let full: Vec<ConnId> = self
+            .conns
+            .iter()
+            .filter(|(_, conn)| conn.client == ClientKind::App && !conn.out.send(msg))
+            .map(|(id, _)| *id)
+            .collect();
+        self.drop_conns(full);
+    }
+
+    /// Queue `msg` for one connection, dropping it when its outbound queue is
+    /// full.
+    fn send_to(&mut self, conn: ConnId, msg: &ServerMsg) {
+        if self.conns.get(&conn).is_some_and(|c| !c.out.send(msg)) {
+            self.drop_conns([conn]);
+        }
+    }
+
+    /// Drop the connections in `conns`. The core never blocks on a client:
+    /// a queue that reached its byte budget closes the socket instead.
+    fn drop_conns(&mut self, conns: impl IntoIterator<Item = ConnId>) {
+        for conn in conns {
+            if let Some(gone) = self.conns.remove(&conn) {
+                eprintln!("[omp-desktopd] dropping connection {conn}: outbound queue full");
+                gone.out.close();
             }
         }
     }
@@ -477,6 +502,40 @@ mod tests {
         assert_eq!(
             core.scheduler.handle(Event::Tick, &now(16, 9, 31)),
             Some(crate::scheduler::WakeReason::Interval)
+        );
+    }
+
+    #[test]
+    fn full_outbound_queue_drops_the_connection() {
+        let root = std::env::temp_dir().join(format!("ompy-core-drop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::under(&root);
+        ensure_private_dir(&paths.persona).unwrap();
+        let start = now(16, 9, 0);
+        let launch = Launch {
+            program: "unused".into(),
+            home: root.clone(),
+            sessions: paths.sessions.clone(),
+            extension: root.join("e.mjs"),
+            instructions: root.join("i.md"),
+            socket_env: "x".into(),
+            env: Vec::new(),
+        };
+        let mut core = Core::new(paths, launch, Box::new(move || start));
+        let (out_tx, _out_rx) = std::sync::mpsc::channel();
+        core.conns.insert(
+            1,
+            Conn {
+                // A zero-byte budget refuses the very first message.
+                out: Outbound::new(out_tx, 0),
+                attached: false,
+                client: ClientKind::App,
+            },
+        );
+        core.broadcast_status();
+        assert!(
+            core.conns.is_empty(),
+            "the overflowing connection must be dropped"
         );
     }
 

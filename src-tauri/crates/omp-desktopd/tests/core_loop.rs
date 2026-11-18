@@ -10,7 +10,7 @@ use omp_desktopd::budget::Usage;
 use omp_desktopd::core::{Core, CoreMsg, FIRST_GENERATION};
 use omp_desktopd::paths::{ensure_private_dir, Paths};
 use omp_desktopd::scheduler::Now;
-use omp_desktopd::server::Inbound;
+use omp_desktopd::server::{Inbound, Outbound, MAX_OUTBOUND_BYTES};
 use omp_desktopd::session::{Launch, SessionEvent};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -19,7 +19,7 @@ use std::time::Duration;
 
 struct Harness {
     tx: mpsc::Sender<CoreMsg>,
-    out: mpsc::Receiver<ServerMsg>,
+    out: mpsc::Receiver<Vec<u8>>,
     clock: Arc<AtomicI64>,
     paths: Paths,
     log: PathBuf,
@@ -87,7 +87,7 @@ fn start_with(
     let (out_tx, out) = mpsc::channel();
     tx.send(CoreMsg::Connected {
         conn: 1,
-        out: out_tx,
+        out: Outbound::new(out_tx, MAX_OUTBOUND_BYTES),
         client,
     })
     .unwrap();
@@ -112,7 +112,8 @@ fn send(h: &Harness, req: u64, msg: ClientMsg) {
 
 fn reply(h: &Harness, req: u64) -> ServerMsg {
     loop {
-        match h.out.recv_timeout(Duration::from_secs(5)).unwrap() {
+        let line = h.out.recv_timeout(Duration::from_secs(5)).unwrap();
+        match serde_json::from_slice::<ServerMsg>(&line).unwrap() {
             m @ ServerMsg::Reply { req: r, .. } if r == req => return m,
             _ => {}
         }
