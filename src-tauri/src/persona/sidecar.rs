@@ -162,15 +162,11 @@ fn ensure_private_dir(dir: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 fn ensure_private_dir(dir: &Path) -> Result<(), String> {
-    // %LOCALAPPDATA% is protected by the per-user Windows ACL. create_new on
-    // the temporary executable below additionally prevents name pre-planting.
-    if !dir
-        .try_exists()
-        .map_err(|e| format!("cannot inspect {}: {e}", dir.display()))?
-    {
-        std::fs::create_dir(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    }
-    Ok(())
+    // Created with, or converted to, a protected DACL for this user alone: an
+    // inherited %LOCALAPPDATA% ACE is not evidence that the replacement lands
+    // in a folder only this user can write.
+    omp_desktop_core::persona_fs_security::ensure_private_dir(dir)
+        .map_err(|e| format!("cannot secure {}: {e}", dir.display()))
 }
 
 fn needs_refresh(bundled: &Path, stable: &Path) -> Result<bool, String> {
@@ -186,6 +182,35 @@ fn needs_refresh(bundled: &Path, stable: &Path) -> Result<bool, String> {
         if metadata.uid() != unsafe { libc::geteuid() }
             || metadata.permissions().mode() & 0o022 != 0
         {
+            return Ok(true);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let secure = &omp_desktop_core::persona_fs_security;
+        // A reparse point is replaced, never followed: the file it points at
+        // is not the copy this app wrote, even when its bytes match.
+        if secure::is_reparse_point(stable)
+            .map_err(|e| format!("cannot inspect {}: {e}", stable.display()))?
+        {
+            return Ok(true);
+        }
+        if !secure::owner_is_current_user(stable)
+            .map_err(|e| format!("cannot inspect the owner of {}: {e}", stable.display()))?
+        {
+            return Err(format!(
+                "installed persona executable is not owned by the current user: {}",
+                stable.display()
+            ));
+        }
+        // A DACL that other accounts can inherit from is repaired by the same
+        // replacement that a byte mismatch causes.
+        if !secure::has_private_dacl(stable).map_err(|e| {
+            format!(
+                "cannot inspect the access control of {}: {e}",
+                stable.display()
+            )
+        })? {
             return Ok(true);
         }
     }
@@ -218,16 +243,25 @@ fn copy_atomic_with(
     let result = (|| {
         let mut source = std::fs::File::open(bundled)
             .map_err(|e| format!("cannot read {}: {e}", bundled.display()))?;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o700);
-        }
-        let mut target = options
-            .open(&temp)
+        // The temp file is the executable that becomes the stable copy, so it
+        // carries the private DACL from its first byte on Windows; `create_new`
+        // additionally prevents name pre-planting.
+        #[cfg(windows)]
+        let mut target = omp_desktop_core::persona_fs_security::create_private_file(&temp)
             .map_err(|e| format!("cannot create {}: {e}", temp.display()))?;
+        #[cfg(not(windows))]
+        let mut target = {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o700);
+            }
+            options
+                .open(&temp)
+                .map_err(|e| format!("cannot create {}: {e}", temp.display()))?
+        };
         std::io::copy(&mut source, &mut target)
             .map_err(|e| format!("cannot copy {}: {e}", bundled.display()))?;
         target
