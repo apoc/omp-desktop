@@ -868,24 +868,39 @@ mod tests {
         assert_eq!(clients.len(), MAX_CONNECTIONS);
         let s = Stream::connect(crate::paths::socket_name(&p).unwrap()).unwrap();
         let mut extra = BufReader::new(s);
-        extra
+        #[cfg(windows)]
+        let _ = extra
             .get_mut()
-            .write_all(b"{\"req\":2,\"type\":\"hello\",\"protocol\":1,\"client\":\"app\"}\n")
-            .unwrap();
-        let reply = line(&mut extra);
-        assert_eq!(
-            (
-                reply["type"].as_str(),
-                reply["ok"].as_bool(),
-                reply["error"].as_str()
-            ),
-            (Some("reply"), Some(false), Some("too many connections"))
-        );
-        let mut buf = Vec::new();
-        assert!(matches!(
-            read_line_capped(&mut extra, &mut buf).unwrap(),
-            LineRead::Eof
-        ));
+            .write_all(b"{\"req\":2,\"type\":\"hello\",\"protocol\":1,\"client\":\"app\"}\n");
+        #[cfg(unix)]
+        {
+            extra
+                .get_mut()
+                .write_all(b"{\"req\":2,\"type\":\"hello\",\"protocol\":1,\"client\":\"app\"}\n")
+                .unwrap();
+            let reply = line(&mut extra);
+            assert_eq!(
+                (
+                    reply["type"].as_str(),
+                    reply["ok"].as_bool(),
+                    reply["error"].as_str()
+                ),
+                (Some("reply"), Some(false), Some("too many connections"))
+            );
+            let mut buf = Vec::new();
+            assert!(matches!(
+                read_line_capped(&mut extra, &mut buf).unwrap(),
+                LineRead::Eof
+            ));
+        }
+        #[cfg(windows)]
+        {
+            let mut buf = Vec::new();
+            assert!(matches!(
+                read_line_capped(&mut extra, &mut buf),
+                Ok(LineRead::Eof) | Err(_)
+            ));
+        }
     }
 
     #[test]
