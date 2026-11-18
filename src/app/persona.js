@@ -167,6 +167,39 @@
   }
 
   /**
+   * Whether a `sessions` entry (or a session registry entry) is Ompy: the
+   * window's own chat, not one of the user's project tabs. Ruling B-R6 —
+   * `kind: "persona"` is the one marker, so the tab bar, the tab counts, the
+   * close/quit guards and the keyboard navigation all ask this instead of
+   * repeating the comparison.
+   */
+  function isPersona(entry) {
+    return entry?.kind === "persona";
+  }
+
+  /** The user's project tabs from a `sessions`/registry list, in their own
+   *  order: everything `isPersona` does not claim. A copy — the caller's
+   *  list is never mutated. */
+  function realTabs(sessions) {
+    return (sessions ?? []).filter(s => !isPersona(s));
+  }
+
+  /** The entry the main view renders: the active one while the snapshot
+   *  still lists it, else the newest project tab, else `fallback` (the
+   *  caller's empty-workspace entry). Ompy is returned only when it *is*
+   *  the active session — it is never a fallback (Ruling B-R6). */
+  function activeEntry(sessions, activeSessionId, fallback) {
+    const list = sessions ?? [];
+    return list.find(s => s.id === activeSessionId) ?? realTabs(list)[0] ?? fallback;
+  }
+
+  /** Whether the window shows the empty workspace: no project tab is open.
+   *  Ompy alone does not fill it (it has its own chat view). */
+  function emptyWorkspace(sessions) {
+    return realTabs(sessions).length === 0;
+  }
+
+  /**
    * The relay cursor after a `persona://status` frame. A new service
    * generation (the process restarted, so the sequence source did) resets
    * the cursor and asks for a fresh attach; the same generation keeps it.
@@ -190,6 +223,10 @@
     inboxView,
     validateSettings,
     answerOptions,
+    isPersona,
+    realTabs,
+    activeEntry,
+    emptyWorkspace,
     cursorAfterStatus,
   });
 })();

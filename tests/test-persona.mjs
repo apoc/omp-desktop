@@ -255,6 +255,52 @@ check("ompy_reattach_resets_cursor", () => {
     { gen: null, lastSeq: 42, reattach: false });
 });
 
+// ── realTabs / isPersona (Ruling B-R6: Ompy is not a tab) ────────────────
+check("real_tabs_exclude_the_persona_entry", () => {
+  const ompy = { id: "ompy", name: "Ompy", path: null, kind: "persona", pinned: true, runState: "idle" };
+  const a = { id: "session-1", name: "a", path: "/tmp/a", runState: "idle" };
+  const b = { id: "session-2", name: "b", path: "/tmp/b", runState: "running" };
+  assert.deepEqual(P.realTabs([ompy, a, b]).map(s => s.id), ["session-1", "session-2"]);
+  assert.deepEqual(P.realTabs([a, b, ompy]).map(s => s.id), ["session-1", "session-2"]);
+  assert.deepEqual(P.realTabs([ompy]).map(s => s.id), []);
+  assert.deepEqual(P.realTabs([]), []);
+  assert.deepEqual(P.realTabs(null), []);
+  // A caller's list is never mutated.
+  const list = [ompy, a];
+  P.realTabs(list);
+  assert.equal(list.length, 2);
+  assert.equal(P.isPersona(ompy), true);
+  assert.equal(P.isPersona(a), false);
+  assert.equal(P.isPersona(undefined), false);
+});
+
+check("main_view_picks_a_project_tab_never_ompy", () => {
+  const ompy = { id: "ompy", name: "Ompy", path: null, kind: "persona", pinned: true };
+  const a = { id: "session-1", name: "a", path: "/tmp/a" };
+  const b = { id: "session-2", name: "b", path: "/tmp/b" };
+  const empty = { id: "", name: "No project", path: null };
+  const pick = (sessions, activeSessionId) => P.activeEntry(sessions, activeSessionId, empty).id;
+  assert.equal(pick([ompy, a, b], "session-2"), "session-2");
+  // A stale or empty active id falls back to the newest project tab.
+  assert.equal(pick([ompy, a, b], "session-gone"), "session-1");
+  assert.equal(pick([ompy, a, b], ""), "session-1");
+  // ... never to Ompy, and with no project tab to the caller's fallback.
+  assert.equal(pick([ompy], "session-gone"), "");
+  assert.equal(pick([ompy], ""), "");
+  assert.equal(pick([], null), "");
+  // Ompy is rendered only when the bridge activated it.
+  assert.equal(pick([ompy, a], "ompy"), "ompy");
+});
+
+check("empty_workspace_needs_no_project_tab", () => {
+  const ompy = { id: "ompy", kind: "persona" };
+  assert.equal(P.emptyWorkspace([]), true);
+  assert.equal(P.emptyWorkspace([ompy]), true);
+  assert.equal(P.emptyWorkspace(null), true);
+  assert.equal(P.emptyWorkspace([{ id: "session-1", path: "/tmp/a" }]), false);
+  assert.equal(P.emptyWorkspace([ompy, { id: "session-1", path: "/tmp/a" }]), false);
+});
+
 check("the api is frozen", () => {
   assert.ok(Object.isFrozen(P));
 });

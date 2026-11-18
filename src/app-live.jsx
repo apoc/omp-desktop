@@ -40,6 +40,12 @@ const { NO_OVERRIDES: NO_COLLAPSE_OVERRIDES, foldModes: _foldModes, overridesFor
 const { tweakKey: _widgetTweakKey } = window.OMP_WIDGETS;
 const { EMPTY: _EXT_EMPTY, cards: _extCards, toggles: _extToggles } = window.OMP_EXT_WIDGETS;
 const { entryOf: _TERM_entryOf } = window.OMP_TERMINAL;
+// Ruling B-R6: Ompy is not a tab. Every count, list, navigation and
+// main-view decision goes through these instead of comparing `kind` again.
+const {
+  realTabs: _alRealTabs, isPersona: _alIsPersona,
+  activeEntry: _alActiveEntry, emptyWorkspace: _alEmptyWorkspace,
+} = window.OMP_PERSONA;
 const { absolutePath: _gitAbsolutePath, finishedEdits: _gitFinishedEdits } = window.OMP_GIT_BROWSER;
 const { linkClick: _fpLinkClick } = window.OMP_FILE_PREVIEW;
 
@@ -166,9 +172,12 @@ function App() {
   const [approvalModes, setApprovalModes] = React.useState(null);
 
   // ── Cross-cutting effects ─────────────────────────────────────────────────
-  // The rendered tab's project. Derived before the effects because the theme
-  // effect needs its folder; the rest of the component reads it here too.
-  const activeProject = sessions.find(s => s.id === activeSessionId) ?? sessions[0] ?? EMPTY_PROJECT;
+  // The rendered entry. `app/persona.js` `activeEntry` picks the active one
+  // while the snapshot lists it, else the newest project tab, else the empty
+  // workspace — never Ompy as a fallback (Ruling B-R6). The one way into the
+  // Ompy chat is the bridge activating it explicitly.
+  const realSessions = _alRealTabs(sessions);
+  const activeProject = _alActiveEntry(sessions, activeSessionId, EMPTY_PROJECT);
   useBridgeSnapshot(bridge, {
     setMessages, setStreaming, setCtx, setKanban, setPlanMeta,
     setModels, setActivity, setSparkline,
@@ -227,12 +236,12 @@ function App() {
   // built-in would tick a profile that isn't where the next tab actually
   // goes. Shared by the toolbar's profile menu, the keymap, recents and the
   // usage-stats panel's header label, instead of a second copy.
-  const activeProfileId    = activeProject.id ? activeProject.profile : noTabProfileId;
+  const activeProfileId    = activeProject.id && !_alIsPersona(activeProject) ? activeProject.profile : noTabProfileId;
   const activeProfileLabel = profiles.find(p => p.id === activeProfileId)?.name ?? activeProfileId;
   // Toolbar approvals button: the mode the rendered tab's omp runs, or
   // `running ⇢ target` while a change waits for its turn to end. Read
   // late-bound: app/approval-mode.js is a plain module like the others.
-  const approvalCell = window.OMP_APPROVAL_MODE.statusCell(approvalModes, activeProject.id ? activeProject : null);
+  const approvalCell = window.OMP_APPROVAL_MODE.statusCell(approvalModes, activeProject.id && !_alIsPersona(activeProject) ? activeProject : null);
   // The tab being rendered owns the plan state: keyed on `activeProject.id`
   // for the same reason as `handleSelectProfile` below, and "" with no tab
   // open, which `updateEntry` ignores.
@@ -824,24 +833,29 @@ function App() {
   // Drag to reorder (#40), from the tab bar or the sidebar: `onDrop` of
   // `useDragReorder`, in display order. Member lists show newest first, the
   // registry's reverse, so a drop above a row is a registry move behind it.
+  // The list is the project tabs only: the bridge applies nothing but a
+  // permutation of those (Ompy is not a tab, Ruling B-R6).
   const handleReorder = (list, id, targetId, after) => {
     const order = list === "projects"
-      ? moveGroup(sessions, id, targetId, after)
-      : moveMember(sessions, id, targetId, !after);
+      ? moveGroup(realSessions, id, targetId, after)
+      : moveMember(realSessions, id, targetId, !after);
     if (order) bridge?.reorderTabs(order);
   };
   // Keyboard move: the active tab's project, one place along the tab bar.
   const shiftActiveProject = delta => {
-    if (!activeProject.id) return;
-    const order = shiftGroup(sessions, groupKey(activeProject), delta);
+    if (!activeProject.id || _alIsPersona(activeProject)) return;
+    const order = shiftGroup(realSessions, groupKey(activeProject), delta);
     if (order) bridge?.reorderTabs(order);
   };
   // Ctrl+Tab / Ctrl+Shift+Tab over the project tabs and, when open, the
   // settings tab as the last stop. Indexed on `activeProject.id`, not
-  // `activeSessionId`: `activeProject` falls back to `sessions[0]` when the
-  // snapshot's `activeSessionId` is stale or empty.
+  // `activeSessionId`: `activeProject` falls back to the newest project tab
+  // when the snapshot's `activeSessionId` is stale or empty. Ompy is never
+  // one of the stops (Ruling B-R6); while it is shown, cycling starts from
+  // the first project tab.
+  const realSessionIds = realSessions.map(s => s.id);
   const cycleTabs = dir => {
-    const r = window.OMP_SETTINGS_TAB.cycle(stab, sessionIds, activeProject.id, dir);
+    const r = window.OMP_SETTINGS_TAB.cycle(stab, realSessionIds, activeProject.id, dir);
     if (r.settingsActive) { openSettings(); return; }
     setStab(window.OMP_SETTINGS_TAB.selectProject);
     if (r.sessionId && r.sessionId !== activeProject.id) bridge?.activateSession(r.sessionId);
@@ -884,7 +898,9 @@ function App() {
     // last stop of next/prev (OMP_SETTINGS_TAB.cycle).
     "desktop.tab.close":       () => {
       if (stab.active) closeSettings();
-      else if (activeProject.id) handleCloseTab(activeProject.id);
+      // Ompy is not a closable tab (Ruling B-R6): with it shown, the
+      // shortcut has nothing to close.
+      else if (activeProject.id && !_alIsPersona(activeProject)) handleCloseTab(activeProject.id);
     },
     "desktop.tab.next":        () => cycleTabs(1),
     "desktop.tab.prev":        () => cycleTabs(-1),
@@ -920,7 +936,9 @@ function App() {
     // EMPTY_PROJECT.id is "" when no tab is open — the app starts that
     // way — so there is no process to respawn: the pick only decides which
     // profile the next tab opens under (and whose recents are listed).
-    if (!activeProject.id) return bridge?.selectNoTabProfile(id);
+    // Ompy is rendered like the empty workspace here (Ruling B-R6): its omp
+    // belongs to the persona service, so there is no tab to respawn.
+    if (!activeProject.id || _alIsPersona(activeProject)) return bridge?.selectNoTabProfile(id);
     return bridge?.switchSessionProfile(activeProject.id, id);
   }, [bridge, activeProject.id]);
   const handleCreateProfile = React.useCallback(name => bridge?.createProfile(name), [bridge]);
@@ -938,9 +956,12 @@ function App() {
   const showRail  = t.layout !== "focus";
   const showSplit = subagentUi.paneOpen;
   const liveCtx   = ctx ?? data.ctx;
-  // No tab open (the app starts that way): the session column shows the
-  // empty state instead of a transcript and a composer with nowhere to send.
-  const noTab = sessions.length === 0;
+  // The empty workspace is what a window with no project tab shows — first
+  // launch, reopen-tabs off, and after the last project tab closed. It is
+  // *not* shown while Ompy is the active session (the main view then shows
+  // the Ompy chat), and Ompy never stands in for a missing tab (Ruling
+  // B-R6): `emptyWorkspace` counts project tabs, not `sessions`.
+  const noTab = _alEmptyWorkspace(sessions) && !_alIsPersona(activeProject);
 
   // Resizable columns beside the chat (#41): which are shown, and their
   // widths as CSS variables on `.workspace`. Browser full view hides the
@@ -1033,8 +1054,8 @@ function App() {
           />
           <TabBar
             profiles={profiles}
-            projects={sessions}
-            activeId={stab.active ? null : activeSessionId}
+            projects={realSessions}
+            activeId={stab.active || _alIsPersona(activeProject) ? null : activeSessionId}
             onSelect={handleSelectTab}
             onClose={handleCloseTab}
             onRename={handleRenameTab}
@@ -1048,10 +1069,10 @@ function App() {
           <div ref={workspaceRef} className="workspace" style={panes.style}>
             {showSidebar && (
               <ProjectSidebar
-                tabs={sessions}
-                activeId={stab.active ? null : activeSessionId}
+                tabs={realSessions}
+                activeId={stab.active || _alIsPersona(activeProject) ? null : activeSessionId}
                 projectAppearances={t.projectAppearance}
-                recents={recentRows(recentProjects, sessions, activeProfileId)}
+                recents={recentRows(recentProjects, realSessions, activeProfileId)}
                 profileLabel={profileLabel}
                 onSelectTab={handleSelectTab}
                 onCloseTab={handleCloseTab}
@@ -1092,7 +1113,7 @@ function App() {
                     followOutput={t.followOutput}
                     submitKey={t.submitKey}
                   />
-                  <TerminalPanels sessions={sessions} activeId={planKey} terminal={terminal} />
+                  <TerminalPanels sessions={realSessions} activeId={planKey} terminal={terminal} />
                   <Composer
                     sessionId={planKey}
                     sessionIds={sessionIds}

@@ -1048,8 +1048,6 @@ window.OMP_I18N.add("zh", {
   "in {n} min": "{n} 分钟后",
   "{used} / {total} tokens today": "今日 {used} / {total} token",
   "Approve": "批准",
-  "Deny": "拒绝",
-  "Confirm": "确认",
   "The settings are missing.": "缺少设置。",
   "The interval must be a whole number of minutes from 5 to 1440.": "间隔必须为 5 到 1440 分钟的整数。",
   "Quiet hours must use HH:MM (00:00 to 23:59).": "安静时段必须使用 HH:MM（00:00 至 23:59）。",
