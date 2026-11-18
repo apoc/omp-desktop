@@ -14,9 +14,30 @@ fn xml(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-#[must_use]
-pub fn launch_agent_plist(exe: &Path) -> String {
-    format!(
+/// The executable path as text, refusing control characters.
+///
+/// `ExecStart` is line based (a newline would add a second command) and XML
+/// 1.0 cannot represent most control characters at all, so an entry built
+/// from such a path would be broken or misleading. Rejecting it is the only
+/// safe answer.
+fn checked_path(exe: &Path) -> Result<String, String> {
+    let text = exe.display().to_string();
+    if let Some(control) = text.chars().find(|c| c.is_control()) {
+        return Err(format!(
+            "executable path contains the control character {control:?}: {text:?}"
+        ));
+    }
+    Ok(text)
+}
+
+/// The macOS `LaunchAgent` plist for `exe`.
+///
+/// # Errors
+///
+/// Returns a message when the executable path contains a control character.
+pub fn launch_agent_plist(exe: &Path) -> Result<String, String> {
+    let exe = checked_path(exe)?;
+    Ok(format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -40,26 +61,34 @@ pub fn launch_agent_plist(exe: &Path) -> String {
 </dict>
 </plist>
 "#,
-        xml(&exe.display().to_string())
-    )
+        xml(&exe)
+    ))
 }
 
-#[must_use]
-pub fn systemd_unit(exe: &Path) -> String {
-    format!(
-        "[Unit]\nDescription=OMP Desktop persona (Ompy)\n\n[Service]\nExecStart=\"{}\" run\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n",
-        exe.display()
-            .to_string()
-            .replace('%', "%%")
-            .replace('$', "$$")
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-    )
+/// The systemd user unit for `exe`.
+///
+/// # Errors
+///
+/// Returns a message when the executable path contains a control character.
+pub fn systemd_unit(exe: &Path) -> Result<String, String> {
+    let exe = checked_path(exe)?
+        .replace('%', "%%")
+        .replace('$', "$$")
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    Ok(format!(
+        "[Unit]\nDescription=OMP Desktop persona (Ompy)\n\n[Service]\nExecStart=\"{exe}\" run\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n",
+    ))
 }
 
-#[must_use]
-pub fn task_xml(exe: &Path, user: &str) -> String {
-    format!(
+/// The Windows Task Scheduler XML for `exe` and `user`.
+///
+/// # Errors
+///
+/// Returns a message when the executable path contains a control character.
+pub fn task_xml(exe: &Path, user: &str) -> Result<String, String> {
+    let exe = checked_path(exe)?;
+    Ok(format!(
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers>
@@ -91,8 +120,8 @@ pub fn task_xml(exe: &Path, user: &str) -> String {
 </Task>
 "#,
         u = xml(user),
-        c = xml(&exe.display().to_string())
-    )
+        c = xml(&exe)
+    ))
 }
 
 #[allow(dead_code)] // also exercised by unit tests on other host platforms
@@ -144,7 +173,7 @@ pub fn install(exe: &Path) -> Result<(), String> {
         .join(format!("{LABEL}.plist"));
     let parent = plist.parent().ok_or("LaunchAgents path has no parent")?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    std::fs::write(&plist, launch_agent_plist(exe)).map_err(|e| e.to_string())?;
+    std::fs::write(&plist, launch_agent_plist(exe)?).map_err(|e| e.to_string())?;
     // SAFETY: getuid has no preconditions.
     let uid = unsafe { libc::getuid() };
     run_tool_or(
@@ -200,7 +229,7 @@ pub fn install(exe: &Path) -> Result<(), String> {
         .join("omp-desktopd.service");
     let parent = unit.parent().ok_or("systemd unit path has no parent")?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    std::fs::write(&unit, systemd_unit(exe)).map_err(|e| e.to_string())?;
+    std::fs::write(&unit, systemd_unit(exe)?).map_err(|e| e.to_string())?;
     run_tool(Command::new("systemctl").args(["--user", "enable", "--now", "omp-desktopd.service"]))
 }
 
@@ -239,7 +268,7 @@ fn task_file() -> std::path::PathBuf {
 fn write_task_xml(path: &Path, exe: &Path) -> Result<(), String> {
     let domain = std::env::var("USERDOMAIN").map_err(|e| format!("USERDOMAIN: {e}"))?;
     let name = std::env::var("USERNAME").map_err(|e| format!("USERNAME: {e}"))?;
-    let text = task_xml(exe, &format!(r"{domain}\{name}"));
+    let text = task_xml(exe, &format!(r"{domain}\{name}"))?;
     let mut bytes = Vec::with_capacity(2 + text.len() * 2);
     bytes.extend_from_slice(&[0xff, 0xfe]);
     for unit in text.encode_utf16() {
@@ -291,7 +320,8 @@ mod tests {
     fn plist_runs_exe_with_run_and_escapes() {
         let p = launch_agent_plist(Path::new(
             "/Applications/OMP Desktop.app/Contents/MacOS/omp-desktopd&x",
-        ));
+        ))
+        .unwrap();
         assert!(p.contains("<string>dev.ohMyPi.desktop.persona</string>"));
         assert!(p.contains(
             "<string>/Applications/OMP Desktop.app/Contents/MacOS/omp-desktopd&amp;x</string>\n        <string>run</string>"
@@ -301,15 +331,32 @@ mod tests {
 
     #[test]
     fn systemd_unit_quotes_spaces() {
-        let u = systemd_unit(Path::new("/opt/OMP Desktop/omp-desktopd"));
+        let u = systemd_unit(Path::new("/opt/OMP Desktop/omp-desktopd")).unwrap();
         assert!(u.contains("ExecStart=\"/opt/OMP Desktop/omp-desktopd\" run"));
         assert!(u.contains("WantedBy=default.target"));
     }
 
     #[test]
     fn systemd_unit_escapes_specifiers_and_expansion() {
-        let u = systemd_unit(Path::new("/opt/100%-$USER/omp-desktopd"));
+        let u = systemd_unit(Path::new("/opt/100%-$USER/omp-desktopd")).unwrap();
         assert!(u.contains("ExecStart=\"/opt/100%%-$$USER/omp-desktopd\" run"));
+    }
+
+    #[test]
+    fn entries_reject_paths_with_control_characters() {
+        // A newline would end `ExecStart` and inject a second command, and XML
+        // cannot carry it either.
+        let newline = Path::new("/opt/omp-desktopd\nExecStart=/bin/sh");
+        for result in [
+            launch_agent_plist(newline),
+            systemd_unit(newline),
+            task_xml(newline, r"PC\sam"),
+        ] {
+            let error = result.unwrap_err();
+            assert!(error.contains("control character"), "{error}");
+        }
+        // A normal path stays accepted.
+        assert!(systemd_unit(Path::new("/opt/omp-desktopd")).is_ok());
     }
 
     #[test]
@@ -339,7 +386,8 @@ mod tests {
         let x = task_xml(
             Path::new(r"C:\Program Files\OMP Desktop\omp-desktopd.exe"),
             r"PC\sam",
-        );
+        )
+        .unwrap();
         assert!(x.contains("<LogonTrigger>") && x.contains(r"<UserId>PC\sam</UserId>"));
         assert!(x.contains(r"<Command>C:\Program Files\OMP Desktop\omp-desktopd.exe</Command>"));
         assert!(x.contains("<Arguments>run</Arguments>"));

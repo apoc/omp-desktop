@@ -4,7 +4,7 @@
 
 ## Process model and CLI
 
-`omp-desktopd run` (also the default with no command) creates the persona directory, starts the socket server and runs the core event loop. The core resolves `omp` on every spawn, so a missing or moved binary follows the same spawn-failure path as a crash instead of exiting: status `error`, one inbox notice per outage and the restart backoff. `install` writes and starts the per-user autostart entry; `uninstall` stops and removes it. Entries are a macOS LaunchAgent (`dev.ohMyPi.desktop.persona`), a Linux systemd user service with `Restart=on-failure`, and a Windows logon Scheduled Task (`OMP Desktop Ompy`, `IgnoreNew`). `status` connects as an app client and prints the service status JSON.
+`omp-desktopd run` (also the default with no command) creates the persona directory, starts the socket server and runs the core event loop. The core resolves `omp` on every spawn, so a missing or moved binary follows the same spawn-failure path as a crash instead of exiting: status `error`, one inbox notice per outage and the restart backoff. `install` writes and starts the per-user autostart entry; `uninstall` stops and removes it. Entries are a macOS LaunchAgent (`dev.ohMyPi.desktop.persona`), a Linux systemd user service with `Restart=on-failure`, and a Windows logon Scheduled Task (`OMP Desktop Ompy`, `IgnoreNew`). Every rendered entry rejects an executable path containing a control character, because systemd would split `ExecStart` on a newline and XML cannot represent it. `status` connects as an app client and prints the service status JSON.
 
 A second `run` first probes the local socket and exits successfully when a service answers. On Unix a stale socket file is replaced. This is socket-based single-instance detection, not a lock file.
 
@@ -56,7 +56,6 @@ If omp exits or cannot spawn, restart backoff starts at 1 second and doubles to 
 - Windows starts `omp` without `CREATE_NO_WINDOW` or `windows_subsystem`, and the named pipe is named from `USERNAME` with the default DACL (Everyone read) rather than a hardened private descriptor (`src/session.rs`, `src/paths.rs`).
 - A `schedule.json` or `settings.json` read error preserves the file, but the next write of that state overwrites it; inbox and budget files are moved aside instead (`src/core/store.rs`).
 - A corrupted `budget.json` starts a fresh counter, so the day's spent allowance can be regained (`src/core/store.rs`).
-- The systemd `ExecStart` quotes the executable but does not reject embedded newlines (`src/autostart.rs`).
 - Notified results bypass the inbox retention rule, and the persona extension's tools omit `loadMode: "essential"` (`src/core/inbound.rs`, `persona/extension.mjs`).
 - Instance detection is check-then-bind without a lock file, so two simultaneous starts can both bind (`src/server.rs`).
 - `omp` tool children are not killed as a process group (`src/session.rs`).
