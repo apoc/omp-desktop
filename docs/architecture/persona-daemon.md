@@ -92,3 +92,4 @@ Enable copies the bundled `omp-desktopd` into the stable per-user location, veri
 - Disable shows the raw `io` error text of the platform tool in Settings → Persona, untranslated (`src/persona/mod.rs`, `src/design/settings/rows-persona.jsx`).
 - Ompy's chat offers "Approve and remember" for tool prompts, but the grant command only knows prompts a Rust-owned tab process forwarded, so the grant is always refused there (`src/live.js`, `src-tauri/src/agent/approvals.rs`).
 - No automated test drives `live.js`'s Ompy transport (relay cursor, attach/replay, ask bubbles); `tests/test-persona.mjs` covers only the pure views (`src/live.js`, `tests/test-persona.mjs`).
+- A startup refresh failure (Windows stop/copy) is cleared by the next status and can be overwritten by a later connection error in the strip, so the warning may never be seen; it is still printed to the app's stderr (`src/persona/client.rs`, `src/app-live.jsx`).
