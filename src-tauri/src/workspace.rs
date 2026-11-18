@@ -13,7 +13,7 @@
 //! mature than its read APIs, and `git add` / `git checkout` / `git reset` /
 //! `git switch` already implement safe, atomic index and worktree mutation.
 
-use crate::child_path::{child_path_dirs, locate_program, TrustedProgram};
+use omp_desktop_core::child_path::{child_path_dirs, locate_program, TrustedProgram};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -168,8 +168,8 @@ pub fn weakly_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
 ///   project, that would be looked up through an empty or relative PATH
 ///   entry *there*, so a project could ship its own `git`. The PATH is
 ///   those same folders (the
-///   [`crate::child_path::trusted_child_path`]), for the helpers git itself
-///   starts (credential helpers, ssh, an editor).
+///   [`omp_desktop_core::child_path::trusted_child_path`]), for the helpers
+///   git itself starts (credential helpers, ssh, an editor).
 ///
 /// Every `git` invocation in this module goes through here. Subcommand-level
 /// flags (`--cached`, `-M`, …) stay at their call sites. `Err` when no `git`

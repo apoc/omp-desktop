@@ -20,7 +20,7 @@ use std::time::UNIX_EPOCH;
 
 use sha2::{Digest, Sha256};
 
-use crate::json_store;
+use omp_desktop_core::json_store;
 use crate::widgets::config::PluginEntry;
 
 /// Domain separator, bumped if the hashed layout ever changes (which

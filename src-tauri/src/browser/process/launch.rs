@@ -13,7 +13,7 @@ use super::pipe::attach;
 use super::stderr::StderrTail;
 use crate::browser::broker::Broker;
 use crate::browser::lock;
-use crate::child_path::apply_child_path;
+use omp_desktop_core::child_path::apply_child_path;
 use crate::supervisor::ProcessSupervisor;
 
 /// How long a fresh Chromium gets to answer on its debugging pipe.
@@ -304,7 +304,7 @@ mod tests {
     use super::*;
     use crate::browser::tests::{chromium_or_skip, tempdir, CHROMIUM};
     #[cfg(unix)]
-    use crate::supervisor::pid_is_alive;
+    use omp_desktop_core::proc_util::pid_is_alive;
 
     /// A fresh profile path per call under `dir`: `profile-0`, `profile-1`, …
     fn profiles(dir: &Path) -> impl FnMut() -> PathBuf + '_ {

@@ -54,7 +54,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::private_fs::{pid_dirs, private_dirs, remove_dir_retrying};
-use crate::supervisor::pid_is_alive;
+use omp_desktop_core::proc_util::pid_is_alive;
 use crate::widgets::config::PluginEntry;
 use crate::widgets::trust;
 

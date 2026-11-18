@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use super::reap;
 pub use crate::private_fs::{create_private_file, remove_dir_retrying};
 use crate::private_fs::{pid_dirs, private_dirs};
-use crate::supervisor::pid_is_alive;
+use omp_desktop_core::proc_util::pid_is_alive;
 
 /// The settings overlay omp takes as `--config=<path>`: its browser tool
 /// attaches to the session's placeholder port. `relay: false` because omp

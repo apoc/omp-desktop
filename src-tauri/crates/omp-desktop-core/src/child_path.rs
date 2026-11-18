@@ -16,7 +16,7 @@
 //! Inherited entries always come first, so a PATH set on purpose (a terminal,
 //! `tauri dev`) still wins.
 
-use crate::program_setting::is_executable_file;
+use crate::proc_util::is_executable_file;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -258,7 +258,7 @@ fn path_key(dir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{absolute_dirs, absolute_entries, find_program, merged_path};
-    use crate::program_setting::is_executable_file;
+    use crate::proc_util::is_executable_file;
     use crate::test_support::{executable, TempDir};
 
     fn entries(path: &std::ffi::OsStr) -> Vec<String> {

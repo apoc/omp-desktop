@@ -4024,6 +4024,7 @@ dependencies = [
  "notify",
  "objc2-core-foundation",
  "objc2-core-graphics",
+ "omp-desktop-core",
  "open",
  "png 0.18.1",
  "portable-pty",
@@ -4047,6 +4048,25 @@ dependencies = [
  "windows-registry",
  "windows-sys 0.61.2",
  "zbus",
+]
+
+[[package]]
+name = "omp-desktop-core"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "windows-registry",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "omp-desktopd"
+version = "0.1.0"
+dependencies = [
+ "omp-desktop-core",
 ]
 
 [[package]]

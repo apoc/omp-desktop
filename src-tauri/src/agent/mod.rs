@@ -208,7 +208,7 @@ impl AgentBridge {
         session_id: String,
         launch: Launch<'_>,
         app: AppHandle,
-        rule_book: Arc<crate::approval::RuleBook>,
+        rule_book: Arc<omp_desktop_core::approval::RuleBook>,
     ) -> Result<(), String> {
         let Launch {
             cwd,
@@ -330,7 +330,7 @@ impl AgentBridge {
     /// Kills the session's process tree and drops its session-scoped
     /// approval grants (`rule_book.clear_session`) — those must not
     /// silently apply to whatever process later reuses this session id.
-    pub fn stop_session(&self, session_id: &str, rule_book: &crate::approval::RuleBook) {
+    pub fn stop_session(&self, session_id: &str, rule_book: &omp_desktop_core::approval::RuleBook) {
         let removed = {
             // Best-effort cleanup: silently bail on a poisoned lock
             // rather than panicking. The map is only readable in error
@@ -555,7 +555,7 @@ impl Drop for AgentBridge {
 fn reap_and_clear_grants(
     session_id: &str,
     mut prev: BridgeInner,
-    rule_book: &crate::approval::RuleBook,
+    rule_book: &omp_desktop_core::approval::RuleBook,
 ) {
     prev.alive.store(false, Ordering::Release);
     // Both callers already cleared `alive` and the tracker under `sessions`
@@ -882,9 +882,9 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let rule_book = crate::approval::RuleBook::new(dir);
+        let rule_book = omp_desktop_core::approval::RuleBook::new(dir);
         rule_book
-            .grant("sess-x", None, "bash", crate::approval::RuleScope::Session)
+            .grant("sess-x", None, "bash", omp_desktop_core::approval::RuleScope::Session)
             .unwrap();
         assert!(rule_book.is_granted("sess-x", None, "bash"));
 
@@ -910,7 +910,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let rule_book = crate::approval::RuleBook::new(dir);
+        let rule_book = omp_desktop_core::approval::RuleBook::new(dir);
         let alive = Arc::new(AtomicBool::new(true));
         // Kept so the flag is observable after `prev` moves into
         // `reap_and_clear_grants` below.
@@ -1026,7 +1026,7 @@ mod tests {
             .unwrap()
             .insert(sid.into(), idle_inner(Arc::new(AtomicBool::new(true))));
         let dir = crate::test_support::TempDir::new("tracker", "stop-session");
-        let rules = crate::approval::RuleBook::new(dir.path().to_path_buf());
+        let rules = omp_desktop_core::approval::RuleBook::new(dir.path().to_path_buf());
         bridge.stop_session(sid, &rules);
         assert!(!tracker.snapshot().contains_key(sid));
     }

@@ -4232,12 +4232,13 @@
     },
 
     // ── Tool-approval rules ──────────────────────────────────────────────────
-    // Backed by src-tauri/src/approval.rs::RuleBook. A rule only ever
-    // auto-answers "Approve" for an exact "Allow tool: X" prompt shape —
-    // see the module doc comment there. Session scope is in-memory (dies
-    // with the tab's omp process); project scope persists to disk keyed by
-    // a hash of the project path — for a grant, the folder of the process
-    // that asked; list and revoke use the active tab's.
+    // Backed by
+    // src-tauri/crates/omp-desktop-core/src/approval.rs::RuleBook. A rule
+    // only ever auto-answers "Approve" for an exact "Allow tool: X" prompt
+    // shape — see the module doc comment there. Session scope is in-memory
+    // (dies with the tab's omp process); project scope persists to disk
+    // keyed by a hash of the project path — for a grant, the folder of the
+    // process that asked; list and revoke use the active tab's.
 
     /** Approve tool-approval prompt `prompt` (its ask bubble: `sessionId` +
      *  request `id`) and grant standing approval for its tool, `scope`

@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/omp-desktop-core", "crates/omp-desktopd"]
+resolver = "2"
+
 [package]
 name = "omp-desktop"
 version = "0.15.0"
@@ -13,6 +17,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# Shared with the persona service `omp-desktopd` (`crates/omp-desktop-core`):
+# PATH/child-program lookup, the atomic JSON store and the approval rules.
+omp-desktop-core = { path = "crates/omp-desktop-core" }
 tauri-plugin-dialog = "2"
 # 2.13: `check()` no longer sets SSL_CERT_FILE/SSL_CERT_DIR process-wide on
 # Linux, which every omp child would have inherited.
@@ -62,7 +69,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_RemoteDesktop",
     "Win32_System_Threading",
 ] }
-# Machine/user PATH for omp and git children (`child_path.rs`, #34). Already
+# Machine/user PATH for omp and git children
+# (`crates/omp-desktop-core/src/child_path.rs`, #34). Already
 # in the tree via reqwest → hyper-util.
 windows-registry = "0.6"
 

@@ -8,10 +8,8 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods))]
 
 mod agent;
-mod approval;
 mod approval_mode;
 mod browser;
-mod child_path;
 mod child_run;
 mod config_file;
 mod conversation_tree;
@@ -21,7 +19,6 @@ mod git;
 mod git_browser;
 mod git_watcher;
 mod goal_config;
-mod json_store;
 mod keybindings;
 mod model_usage;
 mod navigation_guard;
@@ -49,7 +46,7 @@ mod widgets;
 mod workspace;
 
 use agent::AgentBridge;
-use approval::RuleBook;
+use omp_desktop_core::approval::{self, RuleBook};
 use approval_mode::{ApprovalModeStore, ApprovalModeView};
 use external_open::OpenProjectState;
 use git_watcher::GitWatcherState;

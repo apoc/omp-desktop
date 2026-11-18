@@ -13,7 +13,7 @@
 //!   staleness recovery, for guarding the read-modify-write cycle around a
 //!   shared file.
 
-use crate::supervisor::pid_is_alive;
+use crate::proc_util::pid_is_alive;
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};

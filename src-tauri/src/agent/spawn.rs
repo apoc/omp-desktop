@@ -1,5 +1,5 @@
 use crate::approval_mode::ApprovalMode;
-use crate::child_path::{child_path_dirs, locate_program, TrustedProgram};
+use omp_desktop_core::child_path::{child_path_dirs, locate_program, TrustedProgram};
 use std::ffi::{OsStr, OsString};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -25,9 +25,9 @@ pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// would be looked up through any empty or relative PATH entry *there*, so
 /// a project could ship its own `omp`. The PATH is the same absolute
 /// folders the lookup searched ([`child_path_dirs`], i.e. the
-/// [`crate::child_path::trusted_child_path`]), and what omp inherits, so a
-/// `#!/usr/bin/env` interpreter (an npm-installed omp) isn't resolved inside
-/// the project either.
+/// [`omp_desktop_core::child_path::trusted_child_path`]), and what omp
+/// inherits, so a `#!/usr/bin/env` interpreter (an npm-installed omp)
+/// isn't resolved inside the project either.
 struct Omp {
     binary: PathBuf,
     path: OsString,

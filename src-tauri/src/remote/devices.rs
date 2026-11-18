@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::rand::{ct_eq, random_b64};
 use super::tls::write_private;
-use crate::json_store;
+use omp_desktop_core::json_store;
 
 const LAST_SEEN_INTERVAL: Duration = Duration::from_secs(60);
 /// The phone sends the first 120 characters of its user agent; longer names

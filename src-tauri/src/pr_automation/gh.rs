@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::child_path::{locate_program, TrustedProgram};
+use omp_desktop_core::child_path::{locate_program, TrustedProgram};
 use crate::child_run::{collect, WaitError};
 use crate::supervisor::ProcessSupervisor;
 

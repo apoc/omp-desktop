@@ -13,7 +13,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::program_setting::is_executable_file;
+use omp_desktop_core::proc_util::is_executable_file;
 
 /// The platform a candidate list is built for. A parameter rather than
 /// `cfg`, so every platform's order is testable on any host.
@@ -93,7 +93,7 @@ impl Places {
             root: PathBuf::from("/"),
             home: home.map(Path::to_path_buf),
             xdg_cache: var("XDG_CACHE_HOME").map(PathBuf::from),
-            path: crate::child_path::child_path_dirs(),
+            path: omp_desktop_core::child_path::child_path_dirs(),
             install_roots: ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
                 .into_iter()
                 .filter_map(var)
