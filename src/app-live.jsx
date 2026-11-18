@@ -1327,7 +1327,9 @@ function App() {
       )}
 
       {updater.open && (
-        <UpdateModal updater={updater} busyTabs={window.OMP_UPDATER.busyTabCount(sessions)} />
+        // Ompy is hosted by the service: an app restart leaves its run alive,
+        // so only project tabs count as interrupted here.
+        <UpdateModal updater={updater} busyTabs={window.OMP_UPDATER.busyTabCount(realSessions)} />
       )}
 
       {closeConfirm && (

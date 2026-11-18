@@ -1022,7 +1022,19 @@
     // A switch into Ompy may be buffering; the attach below re-reads the
     // relay from the start instead, so the buffer is not needed.
     _replayBuffer = null;
-    _personaAttach(0);
+    const gen = _personaGen;
+    const switchGen = _switchGen;
+    _personaAttach(0).then(() => {
+      // The new generation is a fresh hosted omp: without the opening fetch
+      // it would know neither the ask dialog nor the auto-compaction/retry
+      // overrides, this tab would keep an empty model list, stale commands
+      // and no rpc state, and no subagent frames would come. The switch path
+      // runs the same batch over the relay. Skipped when this generation or
+      // the activation moved on while the attach was in flight.
+      if (_personaGen !== gen || _switchGen !== switchGen) return;
+      if (activeSessionId !== PERSONA_SESSION_ID) return;
+      _initFetch();
+    });
     notify();
   }
 
