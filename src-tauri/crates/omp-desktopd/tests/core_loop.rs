@@ -17,7 +17,7 @@ use omp_desktopd::session::{Launch, SessionEvent};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{mpsc, Arc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 struct Harness {
     tx: mpsc::Sender<CoreMsg>,
@@ -402,12 +402,22 @@ fn attach_after_restart_replays_new_generation() {
             frame: serde_json::json!({"type": "crash"}),
         },
     );
+    // The connection stays attached across the restart, so the new
+    // generation's first frame may be relayed live before the new
+    // generation shows up in a Status frame. Keep every such sequence
+    // number instead of dropping it.
+    let mut new_seqs = Vec::new();
     loop {
         match next_msg(&h) {
+            ServerMsg::Rpc { seq, .. } => new_seqs.push(seq),
             ServerMsg::Status { status } if status.generation > first_generation => break,
             _ => {}
         }
     }
+    assert!(
+        new_seqs.iter().all(|seq| *seq > last_seq),
+        "new generation reused sequences {new_seqs:?}, last before restart was {last_seq}"
+    );
     send(
         &h,
         4,
@@ -415,13 +425,29 @@ fn attach_after_restart_replays_new_generation() {
             after_seq: last_seq,
         },
     );
-    assert!(matches!(reply(&h, 4), ServerMsg::Reply { ok: true, .. }));
-    loop {
-        if let ServerMsg::Rpc { seq, .. } = next_msg(&h) {
-            assert!(seq > last_seq, "new generation reused sequence {seq}");
-            break;
+    // The frame may arrive live before the attach reply, be replayed by the
+    // attach, or arrive live after it; collect it in all three cases.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut replied = false;
+    while !replied || new_seqs.is_empty() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let line = h
+            .out
+            .recv_timeout(remaining)
+            .expect("new generation produced no frame after restart");
+        match parse_msg(&line) {
+            ServerMsg::Rpc { seq, .. } => new_seqs.push(seq),
+            ServerMsg::Reply { req: 4, ok, .. } => {
+                assert!(ok, "attach after restart was refused");
+                replied = true;
+            }
+            _ => {}
         }
     }
+    assert!(
+        new_seqs.iter().all(|seq| *seq > last_seq),
+        "new generation reused sequences {new_seqs:?}, last before restart was {last_seq}"
+    );
 }
 
 #[test]
