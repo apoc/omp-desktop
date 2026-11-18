@@ -61,4 +61,6 @@ If omp exits or cannot spawn, restart backoff starts at 1 second and doubles to 
 - Instance detection is check-then-bind without a lock file, so two simultaneous starts can both bind (`src/server.rs`).
 - `omp` tool children are not killed as a process group (`src/session.rs`).
 - The macOS LaunchAgent has no `StandardErrorPath`, so service stderr has no persistent log (`src/autostart.rs`).
+- An `ask` with a single pick-any (`multi`) question rejects every inbox answer, so the user can only dismiss it; an empty answer to a single pick-one `ask` is sent as `customInput: ""`, which omp treats as a cancel (`src/core/inbound.rs`).
+- The "no response sent" check in `tests/core_loop.rs` `invalid_multi_question_answer_leaves_item_open` searches for a key order serde_json never writes, so it cannot fail.
 - Desktop app integration is Plan B; this service is currently standalone.
