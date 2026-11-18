@@ -13,6 +13,7 @@ const sock = process.platform === "win32" ? `\\\\.\\pipe\\ompy-ext-test-${proces
 if (process.platform !== "win32") fs.rmSync(sock, { force: true });
 const seen = [];
 const server = net.createServer(c => {
+  c.setEncoding("utf8");
   let buf = "";
   c.on("data", d => {
     buf += d;
@@ -22,6 +23,13 @@ const server = net.createServer(c => {
       seen.push(msg);
       if (msg.type === "hello") c.write(JSON.stringify({ type: "hello", protocol: 1 }) + "\n");
       else if (msg.type === "schedule_wake" && !msg.note) c.write(JSON.stringify({ type: "reply", req: msg.req, ok: false, error: "note required" }) + "\n");
+      else if (msg.note === "split utf8") {
+        const reply = Buffer.from(JSON.stringify({ type: "reply", req: msg.req, ok: true, data: { text: "prüfen" } }) + "\n");
+        const split = reply.indexOf(Buffer.from("ü")) + 1;
+        c.write(reply.subarray(0, split));
+        setImmediate(() => c.write(reply.subarray(split)));
+      } else if (msg.note === "close") c.end();
+      else if (msg.note === "malformed") c.write("not json\n");
       else c.write(JSON.stringify({ type: "reply", req: msg.req, ok: true, data: { echo: msg.type } }) + "\n");
     }
   });
@@ -55,6 +63,33 @@ await check("notify passes kind and options", async () => {
   seen.length = 0;
   await tools.get("notify").execute("call3", { kind: "decision", title: "Termin?", options: ["Do", "Fr"] });
   assert.deepEqual([seen[1].kind, seen[1].options], ["decision", ["Do", "Fr"]]);
+});
+
+await check("decodes a multi-byte character split across chunks", async () => {
+  const res = await tools.get("schedule_wake").execute("call4", { in_minutes: 1, note: "split utf8" });
+  assert.match(JSON.stringify(res), /prüfen/);
+});
+
+await check("rejects malformed service replies", async () => {
+  await assert.rejects(tools.get("schedule_wake").execute("call5", { in_minutes: 1, note: "malformed" }));
+});
+
+await check("rejects promptly when the service closes without a reply", async () => {
+  const started = Date.now();
+  await assert.rejects(
+    tools.get("schedule_wake").execute("call6", { in_minutes: 1, note: "close" }),
+    /persona service closed the connection/,
+  );
+  assert.ok(Date.now() - started < 2000, "close rejection must not wait for the 10 s timeout");
+});
+
+await check("rejects an invalid ISO time before contacting the service", async () => {
+  seen.length = 0;
+  await assert.rejects(
+    tools.get("schedule_wake").execute("call7", { at: "tomorrow-ish", note: "check" }),
+    { message: "at is not an ISO 8601 time: tomorrow-ish" },
+  );
+  assert.equal(seen.length, 0);
 });
 
 server.close();

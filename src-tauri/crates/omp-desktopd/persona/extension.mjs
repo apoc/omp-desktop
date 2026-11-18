@@ -7,10 +7,12 @@ function call(type, fields) {
   if (!sock) return Promise.reject(new Error("OMPY_SOCKET is not set; Ompy tools only work inside the persona service"));
   return new Promise((resolve, reject) => {
     const c = net.createConnection(sock);
+    c.setEncoding("utf8");
     let buf = "", done = false;
     const finish = (err, data) => { if (done) return; done = true; clearTimeout(timer); c.destroy(); err ? reject(err) : resolve(data); };
     const timer = setTimeout(() => finish(new Error("persona service did not answer")), 10000);
     c.on("error", e => finish(e));
+    c.on("close", () => finish(new Error("persona service closed the connection")));
     c.on("connect", () => {
       c.write(JSON.stringify({ req: 0, type: "hello", protocol: 1, client: "extension" }) + "\n");
       c.write(JSON.stringify({ req: 1, type, ...fields }) + "\n");
@@ -19,7 +21,9 @@ function call(type, fields) {
       buf += d;
       let i;
       while ((i = buf.indexOf("\n")) >= 0) {
-        const msg = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1);
+        let msg;
+        try { msg = JSON.parse(buf.slice(0, i)); } catch (err) { finish(err); return; }
+        buf = buf.slice(i + 1);
         if (msg.type === "reply" && msg.req === 1) finish(msg.ok ? null : new Error(msg.error || "failed"), msg.data);
         if (msg.type === "reply" && msg.req === 0 && !msg.ok) finish(new Error(msg.error || "handshake failed"));
       }
@@ -36,7 +40,10 @@ export default function (pi) {
     parameters: { type: "object", properties: { at: { type: "string" }, in_minutes: { type: "number" }, note: { type: "string" } }, required: ["note"], additionalProperties: false },
     async execute(_id, p) {
       const fields = { note: p.note };
-      if (p.at !== undefined) fields.atMs = Date.parse(p.at);
+      if (p.at !== undefined) {
+        fields.atMs = Date.parse(p.at);
+        if (Number.isNaN(fields.atMs)) throw new Error(`at is not an ISO 8601 time: ${p.at}`);
+      }
       if (p.in_minutes !== undefined) fields.inMs = Math.round(p.in_minutes * 60000);
       return text(await call("schedule_wake", fields));
     },
