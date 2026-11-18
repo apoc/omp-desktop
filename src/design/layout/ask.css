@@ -212,6 +212,8 @@
 .ask-q .ask-question .md-content { line-height: 1.5; }
 .ask-q .ask-question .md-content p:not(:last-child) { margin-bottom: 0.5em; }
 .ask-q .ask-question .md-content > :not(:first-child) { font-weight: 400; color: var(--fg-2); }
+/* A select title is plain text; omp's multi-line titles keep their breaks. */
+.ask-q .ask-select-question { white-space: pre-wrap; }
 
 .ask-rows { display: flex; flex-direction: column; gap: 4px; }
 .ask-row-btn {
@@ -231,7 +233,9 @@
   cursor: pointer;
   transition: border-color 120ms, background 120ms;
 }
-.ask-row-btn:hover { border-color: color-mix(in oklab, var(--amber) 55%, var(--line)); }
+.ask-row-btn:hover:not(:disabled) { border-color: color-mix(in oklab, var(--amber) 55%, var(--line)); }
+.ask-row-btn:disabled { cursor: default; }
+.ask-row.dimmed { opacity: 0.4; }
 .ask-row-btn:focus-visible { outline: 2px solid color-mix(in oklab, var(--amber) 60%, transparent); outline-offset: 1px; }
 .ask-row.selected .ask-row-btn {
   border-color: color-mix(in oklab, var(--accent) 55%, var(--line));

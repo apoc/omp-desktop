@@ -134,37 +134,41 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
       </>
     );
   } else {
-    // select (default — also covers any legacy message without a `method`)
+    // select (default — also covers any legacy message without a `method`):
+    // one radio row per option, styled like the ask dialog's rows; a click
+    // answers at once. Tool approvals render the same way.
     body = (
       <>
-        <div className="ask-question">{approval ? approval.head : msg.title}</div>
+        <div className={`ask-dialog${done ? " done" : ""}`}>
+          <section className="ask-q">
+            <div className="ask-question ask-select-question" id={`ask-q-${msg.id}`}>{approval ? approval.head : msg.title}</div>
 
-        {/* Detail lines omp appends to the title (origin/reason, path,
-            command, content preview). Capped + scrollable in CSS so a
-            2000-char payload can never push Approve/Deny out of reach. */}
-        {approval?.details && (
-          <div className="ask-approval-details mono selectable">{approval.details}</div>
-        )}
+            {/* Detail lines omp appends to the title (origin/reason, path,
+                command, content preview). Capped + scrollable in CSS so a
+                2000-char payload can never push Approve/Deny out of reach. */}
+            {approval?.details && (
+              <div className="ask-approval-details mono selectable">{approval.details}</div>
+            )}
 
-        {msg.options.length > 0 && (
-          <div className="ask-options">
-            {msg.options.map((opt, i) => {
-              const isSelected = msg.answered && msg.answer === opt;
-              const isDimmed   = done && !isSelected;
-              return (
-                <button
-                  key={i}
-                  className={`ask-opt${isSelected ? " selected" : ""}${isDimmed ? " dimmed" : ""}`}
-                  disabled={done}
-                  onClick={() => submit(opt)}
-                >
-                  {isSelected && <_AskIcon name="check" size={10} color="var(--accent)" />}
-                  {opt}
-                </button>
-              );
-            })}
-          </div>
-        )}
+            {msg.options.length > 0 && (
+              <div className="ask-rows" role="radiogroup" aria-labelledby={`ask-q-${msg.id}`}>
+                {msg.options.map((opt, i) => {
+                  const isSelected = msg.answered && msg.answer === opt;
+                  const isDimmed   = done && !isSelected;
+                  return (
+                    <div key={i} className={`ask-row${isSelected ? " selected" : ""}${isDimmed ? " dimmed" : ""}`}>
+                      <button type="button" className="ask-row-btn" role="radio" aria-checked={isSelected}
+                        disabled={done} onClick={() => submit(opt)}>
+                        <span className="ask-mark radio" />
+                        <span className="ask-row-text"><span className="ask-row-label"><span>{opt}</span></span></span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        </div>
 
         {tool && !done && (
           <div className="ask-approval-rules">
