@@ -18,7 +18,7 @@
    ═════════════════════════════════════════════════════════════════════ */
 
 const {
-  Icon, ChatView, Composer, CommandBridge, WindowChrome, Toolbar, TabBar, SubagentPane, ProjectSidebar, EmptyWorkspace,
+  Icon, ChatView, Composer, CommandBridge, WindowChrome, Toolbar, TabBar, SubagentPane, ProjectSidebar, PersonaStrip, EmptyWorkspace,
   StatusBar, AmbientRail, ConversationTree, PlanKanban, HistoryModal, GitBrowser, FilePreview, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, UpdateModal, useTweaks,
   SettingsPage, ConfirmCloseDialog,
   useWidgets, WidgetCard, WidgetErrorCard, WidgetApprovalCard, WidgetBoundary,
@@ -170,6 +170,13 @@ function App() {
   // Tool approval mode `{ default, projects }` (app/approval-mode.js), null
   // until the bridge's boot fetch lands.
   const [approvalModes, setApprovalModes] = React.useState(null);
+  // Ompy's service state (persona://status, persona://inbox,
+  // persona://error) for the pinned sidebar entry and the status strip.
+  // `status` stays null while the service is not connected; the strip then
+  // offers Enable.
+  const [personaStatus, setPersonaStatus] = React.useState(null);
+  const [personaInbox, setPersonaInbox] = React.useState([]);
+  const [personaError, setPersonaError] = React.useState(null);
 
   // ── Cross-cutting effects ─────────────────────────────────────────────────
   // The rendered entry. `app/persona.js` `activeEntry` picks the active one
@@ -178,6 +185,12 @@ function App() {
   // Ompy chat is the bridge activating it explicitly.
   const realSessions = _alRealTabs(sessions);
   const activeProject = _alActiveEntry(sessions, activeSessionId, EMPTY_PROJECT);
+  // Ompy's own chat: its strip sits above the chat, and the browser, files
+  // and terminal panels belong to project tabs only. Rust has no tab under
+  // `"ompy"`, so those panels stay closed and their toggles disabled while
+  // Ompy shows; switching back to a project tab restores that tab's panel.
+  const personaActive = _alIsPersona(activeProject);
+  const personaBadge = window.OMP_PERSONA.inboxView(personaInbox).badge;
   useBridgeSnapshot(bridge, {
     setMessages, setStreaming, setCtx, setKanban, setPlanMeta,
     setModels, setActivity, setSparkline,
@@ -186,6 +199,35 @@ function App() {
     setNoTabProfileId, setWorkspaceNotes, setApprovalModes, setCloseConfirm,
     setPromptHistory, setSubagents, setSubagentTranscripts, setQueue, setQueueSending, setGoal, setExtWidgets, setLiveVoice, setDictation, setCodexLogin, setDictationCompleted,
   });
+  // Ompy's service events, one subscription for the pinned entry's badge
+  // and the strip. The boot fetch covers events emitted before this effect
+  // ran; a status (re)connection clears a stale protocol error, while an
+  // owner error never gets one.
+  React.useEffect(() => {
+    if (!bridge?.onPersona) return undefined;
+    let live = true;
+    const offStatus = bridge.onPersona("status", next => {
+      if (!live) return;
+      setPersonaStatus(next ?? null);
+      if (next) setPersonaError(null);
+    });
+    const offInbox = bridge.onPersona("inbox", items => {
+      if (live) setPersonaInbox(Array.isArray(items) ? items : []);
+    });
+    const offError = bridge.onPersona("error", next => {
+      if (live) setPersonaError(next ?? null);
+    });
+    Promise.resolve(bridge.personaStatus?.()).then(next => {
+      if (!live) return;
+      setPersonaStatus(next ?? null);
+      if (next) setPersonaError(null);
+    }, () => {});
+    Promise.resolve(bridge.personaInbox?.()).then(items => {
+      if (live) setPersonaInbox(Array.isArray(items) ? items : []);
+    }, () => {});
+    return () => { live = false; offStatus(); offInbox(); offError(); };
+  }, [bridge]);
+
   useRemote({ bridge });
   useThemeEffect(t, activeProject.path);
   // The rendered tab's palette, project override or global; terminals re-theme on it.
@@ -253,14 +295,17 @@ function App() {
   const handleAnnotate = React.useCallback(
     (idx, value) => updatePlan(p => annotatePlan(p, idx, value)), [updatePlan]);
   // "rail" (the idle entry, also with no tab open), "tree", "browser" or "files".
-  const side = entryOf(sides, planKey, "rail");
+  // Ompy always keeps the rail: the side panels are per project tab.
+  const side = personaActive ? "rail" : entryOf(sides, planKey, "rail");
   const setSide = React.useCallback(
     next => setSides(m => updateEntry(m, planKey, "rail", () => next)), [planKey]);
-  const toggleSide = kind => setSide(side === kind ? "rail" : kind);
+  const toggleSide = kind => { if (!personaActive) setSide(side === kind ? "rail" : kind); };
   const setBrowserOpen = React.useCallback(
-    on => setSides(m => updateEntry(m, planKey, "rail", s => (on ? "browser" : s === "browser" ? "rail" : s))), [planKey]);
+    on => { if (!personaActive) setSides(m => updateEntry(m, planKey, "rail", s => (on ? "browser" : s === "browser" ? "rail" : s))); },
+    [planKey, personaActive]);
   const setFilesOpen = React.useCallback(
-    on => setSides(m => updateEntry(m, planKey, "rail", s => (on ? "files" : s === "files" ? "rail" : s))), [planKey]);
+    on => { if (!personaActive) setSides(m => updateEntry(m, planKey, "rail", s => (on ? "files" : s === "files" ? "rail" : s))); },
+    [planKey, personaActive]);
   const tabCollapseOverrides = entryOf(collapseOverrides, planKey, NO_COLLAPSE_OVERRIDES);
   const handleToggleCollapse = React.useCallback(
     (id, collapsed) => setCollapseOverrides(m => updateEntry(m, planKey, NO_COLLAPSE_OVERRIDES, o => ({ ...o, [id]: !collapsed }))),
@@ -427,8 +472,9 @@ function App() {
   const keymap = useKeymap(bridge, activeProfileId);
 
   // One shell per tab, in a panel above the composer (app/use-terminal.jsx).
+  // Ompy has no shell of this app's: the hook must not spawn for "ompy".
   const terminal = useTerminal({
-    bridge, activeSessionId: planKey, sessionIds, tweaks: t, setTweak, appearance,
+    bridge, activeSessionId: personaActive ? null : planKey, sessionIds, tweaks: t, setTweak, appearance,
   });
 
   const subagentUi = useSubagentManager({
@@ -441,13 +487,13 @@ function App() {
   // The browser panel (app/use-browser.jsx). `activeProject.id`, like the
   // widgets below, not `activeSessionId`, which keeps a closed tab's id.
   const browser = useBrowser({
-    bridge, activeSessionId: activeProject.id, sessionIds, open: side === "browser", setOpen: setBrowserOpen, tweaks: t, setTweak,
+    bridge, activeSessionId: personaActive ? null : activeProject.id, sessionIds, open: side === "browser", setOpen: setBrowserOpen, tweaks: t, setTweak,
   });
   // The files panel (app/use-file-comments.jsx): per-tab explain / comment
   // marks on project files, sent with the next message like the browser's
   // annotation chips.
   const files = useFileComments({
-    bridge, tabId: activeProject.id, sessionIds, open: side === "files", setOpen: setFilesOpen,
+    bridge, tabId: personaActive ? null : activeProject.id, sessionIds, open: side === "files", setOpen: setFilesOpen,
     project: activeProject, edits: filesEdits,
   });
   const filesOpenAt = files.openAt;
@@ -916,7 +962,7 @@ function App() {
     "desktop.update.check":    updater.check,
     "desktop.chat.collapseAll": () => handleCollapseAll(true),
     "desktop.chat.expandAll":  () => handleCollapseAll(false),
-    "desktop.terminal.toggle": () => terminal.toggle(planKey),
+    "desktop.terminal.toggle": () => { if (!personaActive) terminal.toggle(planKey); },
     "desktop.browser.toggle":  () => toggleSide("browser"),
     "desktop.files.toggle":    () => toggleSide("files"),
   };
@@ -1032,15 +1078,18 @@ function App() {
               onRefresh: convTree.refresh, canRefresh: !convTree.loading && !!convTree.key,
             }}
             browser={{
-              open: side === "browser", onToggle: () => toggleSide("browser"),
+              open: side === "browser", onToggle: () => toggleSide("browser"), disabled: personaActive,
               annotate: browser.annotate, canAnnotate: browser.state.status === "running", onAnnotate: browser.setAnnotate,
               fullView: browser.fullView, onFullView: browser.setFullView,
             }}
             files={{
-              open: side === "files", onToggle: () => toggleSide("files"),
+              open: side === "files", onToggle: () => toggleSide("files"), disabled: personaActive,
               fullView: files.fullView, onFullView: files.setFullView,
             }}
-            terminal={{ open: _TERM_entryOf(terminal.state, planKey).open, onToggle: () => terminal.toggle(planKey) }}
+            terminal={{
+              open: _TERM_entryOf(terminal.state, planKey).open, disabled: personaActive,
+              onToggle: () => { if (!personaActive) terminal.toggle(planKey); },
+            }}
             onGit={() => setGitOpen({ path: null })}
             approvals={{ cell: approvalCell, onOpen: () => setRulesOpen(true) }}
             onStats={() => setStatsOpen(true)}
@@ -1072,6 +1121,9 @@ function App() {
                 tabs={realSessions}
                 activeId={stab.active || _alIsPersona(activeProject) ? null : activeSessionId}
                 projectAppearances={t.projectAppearance}
+                personaActive={personaActive}
+                personaBadge={personaBadge}
+                onSelectPersona={() => handleSelectTab("ompy")}
                 recents={recentRows(recentProjects, realSessions, activeProfileId)}
                 profileLabel={profileLabel}
                 onSelectTab={handleSelectTab}
@@ -1090,6 +1142,7 @@ function App() {
                 {noTab ? (
                   <EmptyWorkspace notes={workspaceNotes} screen={t.startScreen} paused={stab.active} />
                 ) : (<>
+                  {personaActive && <PersonaStrip status={personaStatus} error={personaError} bridge={bridge} />}
                   <ChatView key={activeSessionId} messages={messages}
                     planMode={plan.mode}
                     annotations={plan.annotations}
@@ -1113,7 +1166,7 @@ function App() {
                     followOutput={t.followOutput}
                     submitKey={t.submitKey}
                   />
-                  <TerminalPanels sessions={realSessions} activeId={planKey} terminal={terminal} />
+                  <TerminalPanels sessions={realSessions} activeId={personaActive ? "" : planKey} terminal={terminal} />
                   <Composer
                     sessionId={planKey}
                     sessionIds={sessionIds}

@@ -58,10 +58,11 @@ function ApprovalModeButton({ cell, onClick }) {
 
 /**
  * nav:      { sidebarOpen, onToggleSidebar, onOpenProject, onHistory }
- * rail, subagents, terminal: { open, onToggle }
+ * rail, subagents: { open, onToggle }
  * tree:     { open, onToggle, onRefresh, canRefresh }
- * browser:  { open, onToggle, annotate, canAnnotate, onAnnotate(on), fullView, onFullView(on) }
- * files:    { open, onToggle, fullView, onFullView(on) }
+ * browser:  { open, onToggle, disabled, annotate, canAnnotate, onAnnotate(on), fullView, onFullView(on) }
+ * files:    { open, onToggle, disabled, fullView, onFullView(on) }
+ * terminal: { open, onToggle, disabled }
  * approvals: { cell, onOpen }; onGit, onStats, onCommands
  * profile:  ProfileMenu's props (profiles, activeId, startupId, on…)
  * settings: { active, onOpen }
@@ -85,7 +86,8 @@ function Toolbar({ nav, rail, subagents, tree, browser, files, terminal, onGit, 
             <ToolButton icon="refresh" title={OMP_TR("refresh conversation tree")} disabled={!tree.canRefresh} onClick={tree.onRefresh} />
           </span>
         )}
-        <ToolButton icon="web" title={_tbTip("browser panel", "desktop.browser.toggle")} pressed={browser.open} onClick={browser.onToggle} />
+        <ToolButton icon="web" title={_tbTip("browser panel", "desktop.browser.toggle")} pressed={browser.open}
+          disabled={browser.disabled} onClick={browser.onToggle} />
         {browser.open && (
           <span className="tb-sub" role="group" aria-label={OMP_TR("browser panel")}>
             <ToolButton icon="edit" title={OMP_TR("annotate the page")} pressed={browser.annotate}
@@ -94,14 +96,16 @@ function Toolbar({ nav, rail, subagents, tree, browser, files, terminal, onGit, 
               onClick={() => browser.onFullView(!browser.fullView)} />
           </span>
         )}
-        <ToolButton icon="file" title={_tbTip("files panel", "desktop.files.toggle")} pressed={files.open} onClick={files.onToggle} />
+        <ToolButton icon="file" title={_tbTip("files panel", "desktop.files.toggle")} pressed={files.open}
+          disabled={files.disabled} onClick={files.onToggle} />
         {files.open && (
           <span className="tb-sub" role="group" aria-label={OMP_TR("files panel")}>
             <ToolButton icon="focus" title={OMP_TR("files panel full view")} pressed={files.fullView}
               onClick={() => files.onFullView(!files.fullView)} />
           </span>
         )}
-        <ToolButton icon="terminal" title={_tbTip("terminal", "desktop.terminal.toggle")} pressed={terminal.open} onClick={terminal.onToggle} />
+        <ToolButton icon="terminal" title={_tbTip("terminal", "desktop.terminal.toggle")} pressed={terminal.open}
+          disabled={terminal.disabled} onClick={terminal.onToggle} />
         <span className="tb-sep" />
 
         <ToolButton icon="diff2" title={_tbTip("git browser", "desktop.panel.changes")} onClick={onGit} />

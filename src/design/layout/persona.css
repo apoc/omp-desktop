@@ -1,0 +1,84 @@
+/* Ompy persona (persona-strip.jsx, project-sidebar.jsx) ─────────────── */
+
+/* Pinned entry above the project tabs. It sits outside `.psb-scroll`, so it
+   never scrolls away; `--bg-elevated` is the mockup's #161A27 card. */
+.psb-pinned { flex: none; padding: 8px 6px 0; }
+.psb-persona {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; height: 30px; padding: 0 8px;
+  border: 1px solid var(--line-bright); border-radius: var(--r-1);
+  background: var(--bg-elevated); color: var(--fg-2);
+  font: inherit; text-align: left; cursor: pointer;
+  transition: background 120ms var(--ease-out), border-color 120ms, color 120ms;
+}
+.psb-persona:hover { background: var(--bg-hover); color: var(--fg); }
+.psb-persona:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.psb-persona.active {
+  background: var(--bg-surface); color: var(--fg);
+  border-color: color-mix(in oklab, var(--accent) 35%, var(--line));
+}
+.psb-persona-name {
+  flex: 1; min-width: 0;
+  font-family: var(--font-mono); font-size: var(--d-text-sm); font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Inbox count: the mockup's amber pill, `padding: 1px 6px`, min 19×14. */
+.psb-persona-badge {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  min-width: 19px; height: 14px; padding: 0 6px;
+  border-radius: var(--r-pill); background: var(--amber);
+  color: #1A1206; font-size: var(--d-text-xs); font-weight: 600; line-height: 1;
+}
+
+/* The face: a mint circle with two punched-out dots, CSS only. The dots use
+   --bg-window, so they follow the theme like the mockup's card colour. */
+.persona-face {
+  position: relative; flex: none;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--accent);
+}
+.persona-face::before,
+.persona-face::after {
+  content: ""; position: absolute; top: 37%;
+  width: 3px; height: 3px; border-radius: 50%;
+  background: var(--bg-window);
+}
+.persona-face::before { left: 30%; }
+.persona-face::after { left: 56%; }
+
+/* Strip above the Ompy chat: one line of state, a 2 px budget bar under it. */
+.persona-strip { flex: none; background: var(--bg-surface); border-bottom: 1px solid var(--line); }
+.persona-line {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 39px; padding: 8px 20px;
+}
+.persona-dot { width: 8px; height: 8px; flex: none; }
+.persona-title {
+  flex: none; font-size: var(--d-text-sm); font-weight: 600; color: var(--fg);
+  white-space: nowrap;
+}
+.persona-note {
+  min-width: 0; font-size: var(--d-text-sm); color: var(--fg-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.persona-sep { flex: none; color: var(--fg-4); }
+.persona-error {
+  min-width: 0; font-size: var(--d-text-sm); color: var(--amber);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.persona-failure {
+  min-width: 0; font-size: var(--d-text-sm); color: var(--rose);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.persona-spacer { flex: 1; min-width: 8px; }
+/* The mockup's pill: `.btn` at strip size, radius pill, hairline border. */
+.persona-action {
+  flex: none; height: 21px; padding: 0 10px; border-radius: var(--r-pill);
+  border-color: var(--line-bright); color: var(--fg-2); font-size: var(--d-text-sm);
+}
+.persona-action:hover { background: var(--bg-hover); color: var(--fg); }
+.persona-bar { height: 2px; background: var(--line); }
+.persona-bar-fill {
+  display: block; height: 100%; background: var(--accent);
+  transition: width 240ms var(--ease-out);
+}
