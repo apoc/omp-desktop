@@ -1457,12 +1457,13 @@ fn setup(app: &tauri::App) {
     app.manage(Arc::new(open_tabs::OpenTabsStore::new(config_file(
         "open-tabs.json",
     ))));
+    // Phone remote access: settings in <app_config_dir>/remote.json, devices
+    // in remote-devices.json. Construction configures its pusher synchronously;
+    // install it before Ompy's client can receive the startup inbox snapshot.
+    remote::bridge::install(app, resolved_config_dir.clone());
     // Ompy's socket client: reconnects in the background and re-emits the
     // service's status, inbox and relayed frames as `persona://` events.
     app.manage(persona::Persona::for_app(app.handle().clone()));
-    // Phone remote access: settings in <app_config_dir>/remote.json, devices
-    // in remote-devices.json; started once from the saved settings.
-    remote::bridge::install(app, resolved_config_dir.clone()); // `config_file` still borrows it
 
     // A cold start *is* how Windows and Linux file managers open a
     // folder, so the launch argv is the third delivery path into the

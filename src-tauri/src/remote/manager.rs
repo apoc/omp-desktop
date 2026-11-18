@@ -118,7 +118,13 @@ impl RemoteManager {
                 None
             }
         };
-        Self { core, fan_out }
+        let manager = Self { core, fan_out };
+        // The persona client can receive its initial inbox before the
+        // remote-start thread runs. Configure push synchronously so that
+        // snapshot is evaluated against the saved settings, not defaults.
+        let push = manager.core.state().settings.push.clone();
+        manager.configure_push(&push);
+        manager
     }
 
     pub fn hub(&self) -> Arc<Hub> {
@@ -166,7 +172,6 @@ impl RemoteManager {
                 core.rebind(&settings);
                 core.state().monitor = core.spawn_monitor();
             }
-            self.configure_push(&settings.push);
         }
         self.publish_status()
     }
