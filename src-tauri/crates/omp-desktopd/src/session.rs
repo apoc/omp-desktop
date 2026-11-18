@@ -8,6 +8,7 @@
 
 use crate::budget::Usage;
 use omp_desktop_core::approval::{approval_request_id, approval_tool_name, RuleBook};
+use omp_desktop_core::child_path::{child_path_dirs, locate_program};
 use omp_desktop_core::persona_protocol::{
     read_line_capped_with, AskQuestionRef, ItemKind, LineRead, MAX_LINE_BYTES,
 };
@@ -28,11 +29,38 @@ pub const REPLAY_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// The session id the persona's rules are granted and looked up under.
 pub const RULE_SESSION: &str = "ompy";
 
+/// Where the session's `omp` executable comes from.
+#[derive(Debug, Clone)]
+pub enum ProgramSource {
+    /// Resolve `name` on the child PATH before every spawn, so an `omp`
+    /// installed while the service runs is found by the next restart.
+    Locate(String),
+    /// A fixed executable (tests and embedders).
+    Fixed(PathBuf),
+}
+
+impl ProgramSource {
+    /// The executable to spawn for the next session.
+    ///
+    /// # Errors
+    ///
+    /// Returns the lookup error when a [`ProgramSource::Locate`] name is not
+    /// on the PATH; the core treats it like any other spawn failure.
+    fn resolve(&self) -> io::Result<PathBuf> {
+        match self {
+            Self::Locate(name) => locate_program(&child_path_dirs(), name)
+                .map(|program| program.binary)
+                .map_err(|error| io::Error::new(io::ErrorKind::NotFound, error)),
+            Self::Fixed(path) => Ok(path.clone()),
+        }
+    }
+}
+
 /// What to spawn and where it runs.
 #[derive(Debug, Clone)]
 pub struct Launch {
-    /// The `omp` executable.
-    pub program: PathBuf,
+    /// The `omp` executable, or the name to resolve before each spawn.
+    pub program: ProgramSource,
     /// The persona's home directory; also the child's working directory.
     pub home: PathBuf,
     /// Where omp keeps its session transcripts.
@@ -347,7 +375,8 @@ impl Session {
         rules: Arc<RuleBook>,
         events: Sender<SessionEvent>,
     ) -> io::Result<Self> {
-        let mut cmd = Command::new(&l.program);
+        let program = l.program.resolve()?;
+        let mut cmd = Command::new(program);
         cmd.args(omp_args(l))
             .current_dir(&l.home)
             .env("OMPY_SOCKET", &l.socket_env)

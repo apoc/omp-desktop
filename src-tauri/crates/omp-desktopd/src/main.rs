@@ -1,4 +1,3 @@
-use omp_desktop_core::child_path::{child_path_dirs, locate_program};
 use omp_desktop_core::json_store::write_atomic;
 use omp_desktop_core::persona_protocol::{read_line_capped, LineRead};
 use omp_desktopd::{
@@ -6,7 +5,7 @@ use omp_desktopd::{
     paths::{ensure_private_dir, pipe_name, socket_name, Paths},
     scheduler::Now,
     server::{Server, StartError},
-    session::Launch,
+    session::{Launch, ProgramSource},
 };
 use std::io::{BufReader, Write};
 use std::process::ExitCode;
@@ -43,7 +42,6 @@ fn run() -> Result<(), String> {
     if !paths.instructions.exists() {
         std::fs::write(&paths.instructions, INSTRUCTIONS).map_err(|e| e.to_string())?;
     }
-    let omp = locate_program(&child_path_dirs(), "omp")?;
     let home = dirs::home_dir().ok_or("no home directory")?;
     let socket_env = if cfg!(windows) {
         format!(r"\\.\pipe\{}", pipe_name())
@@ -67,7 +65,7 @@ fn run() -> Result<(), String> {
     };
     write_atomic(&ext, EXTENSION.as_bytes()).map_err(|e| e.to_string())?;
     let launch = Launch {
-        program: omp.binary,
+        program: ProgramSource::Locate("omp".into()),
         home,
         // Core retains `paths`, so Launch owns its own copies of these paths.
         sessions: paths.sessions.clone(),

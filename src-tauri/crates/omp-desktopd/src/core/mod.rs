@@ -456,6 +456,7 @@ fn prompt_frame(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::ProgramSource;
     use chrono::NaiveDate;
 
     fn now(d: u32, h: u32, m: u32) -> Now {
@@ -483,7 +484,7 @@ mod tests {
         .unwrap();
         let start = now(16, 9, 0);
         let launch = Launch {
-            program: "unused".into(),
+            program: ProgramSource::Fixed("unused".into()),
             home: root.clone(),
             sessions: paths.sessions.clone(),
             extension: root.join("e.mjs"),
@@ -513,7 +514,7 @@ mod tests {
         ensure_private_dir(&paths.persona).unwrap();
         let start = now(16, 9, 0);
         let launch = Launch {
-            program: "unused".into(),
+            program: ProgramSource::Fixed("unused".into()),
             home: root.clone(),
             sessions: paths.sessions.clone(),
             extension: root.join("e.mjs"),

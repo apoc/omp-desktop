@@ -12,7 +12,9 @@ fn launch(tag: &str) -> (Launch, PathBuf) {
     std::fs::create_dir_all(&root).unwrap();
     let log = root.join("sent.log");
     let l = Launch {
-        program: PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
+        program: omp_desktopd::session::ProgramSource::Fixed(PathBuf::from(env!(
+            "CARGO_BIN_EXE_fake-omp"
+        ))),
         home: root.clone(),
         sessions: root.join("s"),
         extension: root.join("ext.mjs"),

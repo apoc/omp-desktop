@@ -56,7 +56,7 @@ fn start_with(
     ensure_private_dir(&paths.persona).unwrap();
     let log = root.join("sent.log");
     let launch = Launch {
-        program,
+        program: omp_desktopd::session::ProgramSource::Fixed(program),
         home: root.clone(),
         sessions: paths.sessions.clone(),
         extension: root.join("e.mjs"),
@@ -118,6 +118,58 @@ fn reply(h: &Harness, req: u64) -> ServerMsg {
             _ => {}
         }
     }
+}
+
+/// The next message the test connection receives.
+fn next_msg(h: &Harness) -> ServerMsg {
+    let line = h.out.recv_timeout(Duration::from_secs(10)).unwrap();
+    serde_json::from_slice(&line).unwrap()
+}
+
+#[test]
+fn missing_omp_is_retried_and_starts_when_it_appears() {
+    let dir = std::env::temp_dir().join(format!("ompy-missing-omp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A fixed path that does not exist yet: the spawn fails and the retry loop
+    // keeps the service up.
+    let target = dir.join("fake-omp");
+    let h = start_with("missing-omp", ClientKind::App, target.clone(), |_| {});
+
+    let mut seen_error = false;
+    let mut notices = 0;
+    while !seen_error || notices == 0 {
+        match next_msg(&h) {
+            ServerMsg::Status { status } if status.state == "error" => seen_error = true,
+            ServerMsg::Inbox { items } => {
+                notices = items
+                    .iter()
+                    .filter(|item| item.title.contains("did not start"))
+                    .count();
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(notices, 1, "a spawn outage must leave one notice");
+    // Let at least one more spawn attempt fail; the second failure must not add
+    // another notice.
+    std::thread::sleep(Duration::from_millis(1_200));
+    std::fs::copy(env!("CARGO_BIN_EXE_fake-omp"), &target).unwrap();
+    loop {
+        match next_msg(&h) {
+            ServerMsg::Status { status } if status.state == "running" => break,
+            ServerMsg::Inbox { items } => {
+                notices = items
+                    .iter()
+                    .filter(|item| item.title.contains("did not start"))
+                    .count();
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(notices, 1, "a spawn outage must leave one notice");
+    let _ = h.tx.send(CoreMsg::Shutdown);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn wait_log(h: &Harness, needle: &str) {

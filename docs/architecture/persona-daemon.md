@@ -4,7 +4,7 @@
 
 ## Process model and CLI
 
-`omp-desktopd run` (also the default with no command) resolves `omp`, creates the persona directory, starts the socket server and runs the core event loop. `install` writes and starts the per-user autostart entry; `uninstall` stops and removes it. Entries are a macOS LaunchAgent (`dev.ohMyPi.desktop.persona`), a Linux systemd user service with `Restart=on-failure`, and a Windows logon Scheduled Task (`OMP Desktop Ompy`, `IgnoreNew`). `status` connects as an app client and prints the service status JSON.
+`omp-desktopd run` (also the default with no command) creates the persona directory, starts the socket server and runs the core event loop. The core resolves `omp` on every spawn, so a missing or moved binary follows the same spawn-failure path as a crash instead of exiting: status `error`, one inbox notice per outage and the restart backoff. `install` writes and starts the per-user autostart entry; `uninstall` stops and removes it. Entries are a macOS LaunchAgent (`dev.ohMyPi.desktop.persona`), a Linux systemd user service with `Restart=on-failure`, and a Windows logon Scheduled Task (`OMP Desktop Ompy`, `IgnoreNew`). `status` connects as an app client and prints the service status JSON.
 
 A second `run` first probes the local socket and exits successfully when a service answers. On Unix a stale socket file is replaced. This is socket-based single-instance detection, not a lock file.
 
@@ -46,14 +46,13 @@ Assistant usage counts `input + output + cacheWrite`; `cacheRead` is excluded. T
 
 The inbox retains settled items for 14 days and at most 200 items overall; open items are always kept. Decisions wait for an answer, while results and notices are informational. Requests from omp retain their method so `select`, `input` and `editor` answers return `value`, `confirm` answers return `confirmed`, and `ask` answers return one structured answer per question. A single pick-one `ask` accepts either an exact option label or free text. For a multi-question `ask`, the inbox answer is a JSON array of per-question strings in question order, each mapped to an exact option label or `customInput`; malformed or wrong-length arrays are rejected and leave the item open.
 
-If omp exits or cannot spawn, restart backoff starts at 1 second and doubles to 5 minutes; a session that stayed up for at least 60 seconds resets the delay to 1 second. Open approvals and decisions bound to an omp RPC request expire on an unexpected stop and any bound items left by a previous process expire at startup, with a notice in the inbox.
+If omp exits or cannot spawn, restart backoff starts at 1 second and doubles to 5 minutes; a session that stayed up for at least 60 seconds resets the delay to 1 second. `omp` is resolved on the child PATH before every spawn, so a missing binary is only one kind of spawn failure (one notice per outage) and installing it while the service runs is enough to recover. Open approvals and decisions bound to an omp RPC request expire on an unexpected stop and any bound items left by a previous process expire at startup, with a notice in the inbox.
 
 ## Known gaps
 
 - `attach` can duplicate frames because replayed ring entries overlap already queued live events, and sequence numbers restart with each session generation (`src/core/inbound.rs`, `src/session.rs`).
 - Results and notices are created open and are never pruned until the user dismisses them, so the inbox can grow without bound (`src/core/inbound.rs`, `src/inbox.rs`).
 - Secret `input` answers are persisted in `inbox.json` and broadcast with the rest of the item (`src/core/inbound.rs`, `src/inbox.rs`).
-- A missing `omp` at service start exits the process instead of retrying with an inbox notice (`src/main.rs`).
 - Windows starts `omp` without `CREATE_NO_WINDOW` or `windows_subsystem`, and the named pipe is named from `USERNAME` with the default DACL (Everyone read) rather than a hardened private descriptor (`src/session.rs`, `src/paths.rs`).
 - A `schedule.json` or `settings.json` read error preserves the file, but the next write of that state overwrites it; inbox and budget files are moved aside instead (`src/core/store.rs`).
 - A corrupted `budget.json` starts a fresh counter, so the day's spent allowance can be regained (`src/core/store.rs`).
