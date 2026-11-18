@@ -216,6 +216,14 @@ pub fn stop(app: &AppHandle) {
     }
 }
 
+/// Push one Ompy inbox item to the phones. No-op while remote access is not
+/// installed; the pusher itself decides from the settings and quiet hours.
+pub fn notify_persona(app: &AppHandle, title: &str, urgent: bool, quiet: bool) {
+    if let Some(manager) = app.try_state::<Arc<RemoteManager>>() {
+        manager.notify_persona(title, urgent, quiet);
+    }
+}
+
 /// A page load or navigation drops the webview's listeners: phones get 4503
 /// until the page announces itself again with `remote_ready(true)`.
 pub fn on_page_load(webview: &Webview, started: bool) {

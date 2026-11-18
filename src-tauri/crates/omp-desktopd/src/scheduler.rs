@@ -1,8 +1,9 @@
 //! When Ompy wakes up. Pure: no IO, no clock, no threads. The core feeds
 //! events with the current time and gets at most one wake-up per call.
 
-use chrono::{Datelike, NaiveDateTime, NaiveTime, Weekday};
+use chrono::{NaiveDateTime, NaiveTime};
 use omp_desktop_core::persona_protocol::PersonaSettings;
+use omp_desktop_core::persona_quiet;
 use serde::{Deserialize, Serialize};
 
 /// Most wakes the user may queue at once.
@@ -12,8 +13,8 @@ pub const MAX_AHEAD_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 const MS_PER_MIN: i64 = 60_000;
 const MIN_INTERVAL_MIN: u32 = 5;
-const DEFAULT_QUIET_START: NaiveTime = NaiveTime::from_hms_opt(20, 0, 0).unwrap();
-const DEFAULT_QUIET_END: NaiveTime = NaiveTime::from_hms_opt(7, 0, 0).unwrap();
+const DEFAULT_QUIET_START: NaiveTime = persona_quiet::DEFAULT_QUIET_START;
+const DEFAULT_QUIET_END: NaiveTime = persona_quiet::DEFAULT_QUIET_END;
 
 /// The instant the core reports with every event: the UTC deadline clock plus
 /// the local wall time that decides quiet hours.
@@ -109,10 +110,6 @@ fn wake_counter(id: &str) -> Option<u64> {
     counter.parse().ok()
 }
 
-fn parse_hhmm(text: &str, fallback: NaiveTime) -> NaiveTime {
-    NaiveTime::parse_from_str(text, "%H:%M").unwrap_or(fallback)
-}
-
 impl Scheduler {
     /// Build a scheduler from the current settings and the wakes restored from
     /// disk. `scheduled` is sorted by time here.
@@ -144,23 +141,15 @@ impl Scheduler {
 
     fn apply(&mut self, settings: &PersonaSettings) {
         self.interval_ms = i64::from(settings.interval_min.max(MIN_INTERVAL_MIN)) * MS_PER_MIN;
-        self.quiet_start = parse_hhmm(&settings.quiet_start, DEFAULT_QUIET_START);
-        self.quiet_end = parse_hhmm(&settings.quiet_end, DEFAULT_QUIET_END);
+        self.quiet_start = persona_quiet::parse_hhmm(&settings.quiet_start, DEFAULT_QUIET_START);
+        self.quiet_end = persona_quiet::parse_hhmm(&settings.quiet_end, DEFAULT_QUIET_END);
         self.quiet_weekends = settings.quiet_weekends;
     }
 
     /// Whether `local` falls into the configured quiet hours.
     #[must_use]
     pub fn is_quiet(&self, local: &NaiveDateTime) -> bool {
-        if self.quiet_weekends && matches!(local.weekday(), Weekday::Sat | Weekday::Sun) {
-            return true;
-        }
-        let time = local.time();
-        if self.quiet_start <= self.quiet_end {
-            time >= self.quiet_start && time < self.quiet_end
-        } else {
-            time >= self.quiet_start || time < self.quiet_end
-        }
+        persona_quiet::contains(self.quiet_start, self.quiet_end, self.quiet_weekends, local)
     }
 
     /// Any hold that stops the scheduler from starting a turn.

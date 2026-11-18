@@ -4074,6 +4074,7 @@ dependencies = [
 name = "omp-desktop-core"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "dirs",
  "interprocess",
  "libc",

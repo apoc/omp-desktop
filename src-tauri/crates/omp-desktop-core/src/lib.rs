@@ -10,6 +10,7 @@ pub mod json_store;
 pub mod persona_paths;
 pub mod persona_pipe_security;
 pub mod persona_protocol;
+pub mod persona_quiet;
 pub mod proc_util;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;

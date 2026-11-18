@@ -2,6 +2,7 @@
 //! `persona://` events, and the commands the Ompy tab and settings use.
 
 mod client;
+mod push;
 mod sidecar;
 
 use crate::agent::validate_command_type;

@@ -12,6 +12,9 @@ test-support = []
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+# Quiet-hour windows (`persona_quiet`): the service's scheduler and the app's
+# push decision must read the same local wall-clock time.
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 # Persona paths and local socket names shared by the app and service.
 dirs = "7"
 interprocess = "2.4.8"

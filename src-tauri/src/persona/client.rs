@@ -1,3 +1,4 @@
+use super::push::new_push_targets;
 use crate::agent::reader::{sanitize_line, LineEvent};
 use interprocess::local_socket::{prelude::*, Stream};
 use interprocess::TryClone;
@@ -6,8 +7,9 @@ use omp_desktop_core::persona_protocol::{
     encode_msg, read_line_capped, write_msg, ClientKind, ClientMsg, Envelope, InboxItem, LineRead,
     ServerMsg, StatusInfo, MAX_LINE_BYTES, PROTOCOL,
 };
+use omp_desktop_core::persona_quiet;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::io::Write;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -24,6 +26,12 @@ pub(super) trait Emitter: Send + Sync + 'static {
     fn inbox(&self, items: &[InboxItem]);
     fn line(&self, seq: u64, text: &str);
     fn error(&self, kind: &str, message: &str);
+
+    /// One push-worthy Ompy inbox item. The default is a no-op so a test
+    /// emitter only records what it cares about.
+    fn persona_push(&self, title: &str, urgent: bool, quiet: bool) {
+        let _ = (title, urgent, quiet);
+    }
 }
 
 struct TauriEmitter(tauri::AppHandle);
@@ -48,6 +56,10 @@ impl Emitter for TauriEmitter {
             message: &'a str,
         }
         let _ = tauri::Emitter::emit(&self.0, "persona://error", ErrorEvent { kind, message });
+    }
+
+    fn persona_push(&self, title: &str, urgent: bool, quiet: bool) {
+        crate::remote::bridge::notify_persona(&self.0, title, urgent, quiet);
     }
 }
 
@@ -99,6 +111,7 @@ impl Client {
             pending: HashMap::new(),
             retry_at: Some(Instant::now()),
             backoff: INITIAL_BACKOFF,
+            seen_inbox: HashSet::new(),
             outage_reported: false,
             stopped: false,
         };
@@ -219,6 +232,10 @@ struct Worker {
     pending: HashMap<u64, (Sender<Result<Value, String>>, Instant)>,
     retry_at: Option<Instant>,
     backoff: Duration,
+    /// Inbox ids this app run has already considered for a push; survives a
+    /// reconnect (the service replays its whole inbox) and diverges from the
+    /// snapshot's contents, which are cleared when the service goes away.
+    seen_inbox: HashSet<String>,
     /// Whether the current outage's `io` error already reached the frontend.
     /// One outage is one error: the retry storm that follows stays silent
     /// until a connection is live again (the outage is over).
@@ -401,12 +418,17 @@ impl Worker {
                 self.emitter.status(Some(&status));
             }
             ServerMsg::Inbox { items } => {
-                self.snapshot
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .inbox
-                    .clone_from(&items); // event and cached snapshot each own a copy
+                let quiet = {
+                    let mut snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+                    let quiet = snapshot
+                        .status
+                        .as_ref()
+                        .is_some_and(|status| persona_quiet::is_quiet_now(&status.settings));
+                    snapshot.inbox.clone_from(&items); // event and cached snapshot each own a copy
+                    quiet
+                };
                 self.emitter.inbox(&items);
+                self.push_new_items(&items, quiet);
             }
             ServerMsg::Rpc { seq, frame } => {
                 // A relayed omp frame is an omp frame: the same redaction the
@@ -423,6 +445,18 @@ impl Worker {
                 self.retry_at = None;
             }
             ServerMsg::Hello { .. } => {}
+        }
+    }
+
+    /// Push the newly opened approvals and decisions of one inbox snapshot.
+    /// The seen set gives each id at most one push per app run; only ids
+    /// still in the inbox are kept, so it stays bounded by the inbox cap
+    /// (a pruned item never returns under the same id).
+    fn push_new_items(&mut self, items: &[InboxItem], quiet: bool) {
+        let targets = new_push_targets(&self.seen_inbox, items, quiet);
+        self.seen_inbox = items.iter().map(|item| item.id.clone()).collect();
+        for item in targets {
+            self.emitter.persona_push(&item.title, item.urgent, quiet);
         }
     }
 
@@ -692,6 +726,13 @@ mod tests {
                 serde_json::json!({"kind": kind, "message": message}),
             ));
         }
+
+        fn persona_push(&self, title: &str, urgent: bool, quiet: bool) {
+            self.0.lock().unwrap().push((
+                "push".into(),
+                serde_json::json!({"title": title, "urgent": urgent, "quiet": quiet}),
+            ));
+        }
     }
 
     fn status() -> StatusInfo {
@@ -704,6 +745,35 @@ mod tests {
             daily_token_limit: 100,
             open_items: 0,
             settings: PersonaSettings::default(),
+        }
+    }
+
+    /// A status whose quiet window is empty, so a test never depends on the
+    /// wall clock.
+    fn daytime_status() -> StatusInfo {
+        let mut quiet_free = status();
+        quiet_free.settings.quiet_start = "00:00".into();
+        quiet_free.settings.quiet_end = "00:00".into();
+        quiet_free.settings.quiet_weekends = false;
+        quiet_free
+    }
+
+    fn open_item(id: &str) -> omp_desktop_core::persona_protocol::InboxItem {
+        use omp_desktop_core::persona_protocol::{InboxItem, ItemKind, ItemState};
+        InboxItem {
+            id: id.into(),
+            kind: ItemKind::Approval,
+            created_at: 0,
+            title: format!("title {id}"),
+            body: None,
+            options: Vec::new(),
+            urgent: false,
+            state: ItemState::Open,
+            answer: None,
+            rpc_request_id: None,
+            request_method: None,
+            ask_questions: None,
+            secret: false,
         }
     }
 
@@ -763,6 +833,92 @@ mod tests {
         });
         assert_eq!(emitted.unwrap().0, "status");
         assert_eq!(client.status().unwrap().generation, 7);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn client_pushes_each_new_open_item_once_per_run() {
+        let temp = TempDir::new("persona-client", "push");
+        let paths = test_paths(&temp, "push");
+        ensure_private_dir(&paths.persona).unwrap();
+        let listener = ListenerOptions::new()
+            .name(socket_name(&paths).unwrap())
+            .create_sync()
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            // First connection: one open item, then the service goes away.
+            let mut first = listener.accept().unwrap();
+            let _hello = read_client(first.try_clone().unwrap());
+            write_msg(&mut first, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            write_msg(
+                &mut first,
+                &ServerMsg::Status {
+                    status: daytime_status(),
+                },
+            )
+            .unwrap();
+            write_msg(
+                &mut first,
+                &ServerMsg::Inbox {
+                    items: vec![open_item("a")],
+                },
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            drop(first);
+
+            // Reconnect: the service replays "a" plus a second open item.
+            let mut second = listener.accept().unwrap();
+            let _hello = read_client(second.try_clone().unwrap());
+            write_msg(&mut second, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            write_msg(
+                &mut second,
+                &ServerMsg::Status {
+                    status: daytime_status(),
+                },
+            )
+            .unwrap();
+            write_msg(
+                &mut second,
+                &ServerMsg::Inbox {
+                    items: vec![open_item("a"), open_item("b")],
+                },
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        let events = Arc::new(Recorder::default());
+        let recorder: Arc<Recorder> = Arc::clone(&events);
+        let emitter: Arc<dyn Emitter> = recorder;
+        let client = Client::start(paths, emitter);
+        let inboxes = eventually(Duration::from_secs(5), || {
+            let events = events.0.lock().unwrap();
+            (events.iter().filter(|(name, _)| name == "inbox").count() == 2).then_some(())
+        });
+        assert!(inboxes.is_some(), "both inbox snapshots arrived");
+        let both_pushed = eventually(Duration::from_secs(5), || {
+            let events = events.0.lock().unwrap();
+            (events.iter().filter(|(name, _)| name == "push").count() >= 2).then_some(())
+        });
+        assert!(both_pushed.is_some(), "both new items were pushed");
+        std::thread::sleep(Duration::from_millis(200));
+        let push_payloads: Vec<Value> = events
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name == "push")
+            .map(|(_, payload)| payload.clone())
+            .collect();
+        assert_eq!(
+            push_payloads,
+            [
+                serde_json::json!({"title": "title a", "urgent": false, "quiet": false}),
+                serde_json::json!({"title": "title b", "urgent": false, "quiet": false}),
+            ],
+            "the replayed open item is not pushed twice"
+        );
         drop(client);
         server.join().unwrap();
     }

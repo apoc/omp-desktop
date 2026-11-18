@@ -19,7 +19,7 @@ use super::emit::{RemoteEmit, Status};
 use super::hub::{Hub, CLOSE_NOT_READY};
 use super::net::{self, Iface};
 use super::pairing::Pairing;
-use super::push::Pusher;
+use super::push::{Kind, Pusher};
 use super::settings::RemoteSettings;
 use super::tls;
 use super::tracker::TrackerSink;
@@ -135,6 +135,14 @@ impl RemoteManager {
     fn configure_push(&self, push: &super::settings::PushSettings) {
         let key = self.core.pusher.configure(push);
         self.core.hub.set_push_key(key);
+    }
+
+    /// Push one Ompy inbox item to the phones, through the same pusher (and
+    /// so the same throttle, settings and lock rule) as a tab push.
+    pub fn notify_persona(&self, title: &str, urgent: bool, quiet: bool) {
+        self.core
+            .pusher
+            .notify_persona(title, Kind::Question, urgent, quiet);
     }
 
     #[cfg(test)]
