@@ -15,6 +15,10 @@ const KEEP_MAX: usize = 200;
 const FILE_VERSION: u32 = 1;
 /// Notice returned by [`Inbox::load`] when it had to reset a broken file.
 const RESET_NOTICE: &str = "Inbox file was unreadable and was reset";
+/// Notice returned by [`Inbox::load`] when the broken file could not even be
+/// moved aside, so the inbox stays in memory and nothing is persisted.
+const UNSAVED_NOTICE: &str =
+    "Inbox file could not be read or moved aside, so changes will not be saved until the service restarts";
 
 /// On-disk shape of `inbox.json`.
 #[derive(Serialize, Deserialize)]
@@ -51,27 +55,48 @@ impl Inbox {
 
     /// Load `path`, or start empty when it does not exist.
     ///
-    /// A file that cannot be parsed is renamed to `inbox.json.bad-<now_ms>`
-    /// and replaced by an empty inbox; the second return value carries the
-    /// notice for the user in that case.
+    /// A file that exists but cannot be read or parsed is never overwritten:
+    /// it is renamed to `<file_name>.bad-<now_ms>` in the same directory and
+    /// replaced by an empty inbox, and the second return value carries the
+    /// notice for the user. When even that rename fails, the empty inbox is
+    /// memory-only (so [`Self::save`] becomes a no-op) and the notice says
+    /// so.
     #[must_use]
     pub fn load(path: PathBuf, now_ms: i64) -> (Self, Option<String>) {
-        let Ok(bytes) = std::fs::read(&path) else {
-            return (Self::at(path), None);
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return (Self::at(path), None);
+            }
+            Err(_) => return Self::move_aside(path, now_ms),
         };
-        let Ok(file) = serde_json::from_slice::<File>(&bytes) else {
-            let bad = path.with_file_name(format!("inbox.json.bad-{now_ms}"));
-            let _ = std::fs::rename(&path, &bad);
+        match serde_json::from_slice::<File>(&bytes) {
+            Ok(file) => (
+                Self {
+                    items: file.items,
+                    counter: file.counter,
+                    path: Some(path),
+                },
+                None,
+            ),
+            Err(_) => Self::move_aside(path, now_ms),
+        }
+    }
+
+    /// Rename the unreadable `path` to `<file_name>.bad-<now_ms>`,
+    /// so the next save starts from a clean state without destroying
+    /// whatever the user had stored there. If the rename fails, fall back to
+    /// a memory-only inbox that never writes.
+    fn move_aside(path: PathBuf, now_ms: i64) -> (Self, Option<String>) {
+        let Some(file_name) = path.file_name() else {
+            return (Self::in_memory(), Some(UNSAVED_NOTICE.into()));
+        };
+        let mut bad_name = file_name.to_os_string();
+        bad_name.push(format!(".bad-{now_ms}"));
+        if std::fs::rename(&path, path.with_file_name(bad_name)).is_ok() {
             return (Self::at(path), Some(RESET_NOTICE.into()));
-        };
-        (
-            Self {
-                items: file.items,
-                counter: file.counter,
-                path: Some(path),
-            },
-            None,
-        )
+        }
+        (Self::in_memory(), Some(UNSAVED_NOTICE.into()))
     }
 
     /// An empty inbox that saves to `path`.
@@ -292,6 +317,7 @@ mod tests {
         ib.prune(15 * DAY);
         assert!(ib.items().iter().any(|i| i.id == open));
         assert_eq!(ib.items().len(), 1, "results older than 14 days are gone");
+        let mut recent = Vec::new();
         for i in 0..250 {
             let id = ib.add(
                 ItemKind::Result,
@@ -303,10 +329,19 @@ mod tests {
                 15 * DAY + i,
             );
             ib.resolve(&id, None);
+            recent.push(id);
         }
         ib.prune(15 * DAY + 300);
         assert_eq!(ib.items().len(), 200);
-        assert!(ib.items().iter().any(|i| i.id == open));
+        assert!(ib.items().iter().any(|item| item.id == open));
+        assert!(
+            !ib.items().iter().any(|item| item.id == recent[0]),
+            "the oldest settled item is dropped"
+        );
+        assert!(
+            ib.items().iter().any(|item| item.id == recent[249]),
+            "the newest settled item is kept"
+        );
     }
 
     #[test]
@@ -318,6 +353,67 @@ mod tests {
         assert!(notice.is_some());
         assert_eq!(ib.items().len(), 0);
         assert!(dir.join("inbox.json.bad-42").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_file_is_moved_aside() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir("omp-desktopd", "inbox-unreadable");
+        let path = dir.join("inbox.json");
+        std::fs::write(&path, b"{\"version\":1,\"counter\":0,\"items\":[]}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&path).is_ok() {
+            // Privileged: file modes do not block the read, so there is no
+            // unreadable file to recover from.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+        let (ib, notice) = Inbox::load(path, 42);
+        assert!(notice.is_some(), "the user is told about the reset");
+        assert_eq!(ib.items().len(), 0);
+        let bad = dir.join("inbox.json.bad-42");
+        assert!(bad.exists(), "unreadable file is renamed, not overwritten");
+        std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_move_aside_never_overwrites() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir("omp-desktopd", "inbox-immovable");
+        let path = dir.join("inbox.json");
+        let original = b"{not json";
+        std::fs::write(&path, original).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let probe = dir.join(".probe");
+        if std::fs::write(&probe, b"").is_ok() {
+            // Privileged: a read-only directory does not block the rename.
+            let _ = std::fs::remove_file(&probe);
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+        let (mut ib, notice) = Inbox::load(path.clone(), 42);
+        assert!(
+            notice.unwrap().contains("will not be saved"),
+            "the notice says nothing can be persisted"
+        );
+        assert_eq!(ib.items().len(), 0);
+        ib.add(ItemKind::Notice, "x".into(), None, vec![], false, None, 1);
+        ib.save().unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "save never replaces the unreadable file"
+        );
+        assert!(!dir.join("inbox.json.bad-42").exists());
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
