@@ -389,12 +389,22 @@ fn attach_after_restart_replays_new_generation() {
         _ => panic!("status reply missing"),
     };
     send(&h, 2, ClientMsg::Attach { after_seq: 0 });
-    assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: true, .. }));
-    let last_seq = loop {
-        if let ServerMsg::Rpc { seq, .. } = next_msg(&h) {
-            break seq;
+    // The ready frame is replayed before the attach reply when omp already
+    // wrote it, and relayed live after the reply when it did not. Collect it
+    // in both orders instead of letting the reply wait discard it.
+    let mut first_seqs = Vec::new();
+    let mut attached = false;
+    while !attached || first_seqs.is_empty() {
+        match next_msg(&h) {
+            ServerMsg::Rpc { seq, .. } => first_seqs.push(seq),
+            ServerMsg::Reply { req: 2, ok, .. } => {
+                assert!(ok, "attach was refused");
+                attached = true;
+            }
+            _ => {}
         }
-    };
+    }
+    let last_seq = *first_seqs.last().unwrap();
     send(
         &h,
         3,
