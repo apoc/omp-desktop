@@ -98,7 +98,7 @@
       .filter(i => i?.state === "open" && (i.kind === "approval" || i.kind === "decision"))
       .sort((a, b) => kindRank(a.kind) - kindRank(b.kind) || (a.createdAt ?? 0) - (b.createdAt ?? 0));
     const results = list
-      .filter(i => i.kind === "result")
+      .filter(i => i?.state === "open" && i.kind === "result")
       .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
       .slice(0, RESULTS_SHOWN);
     return { open, results, badge: open.length };
@@ -110,6 +110,11 @@
    * falls back to `status.nextWakeMs`, and an instant that is already listed
    * is not repeated. Entries are ordered by time, so a scheduled wake before
    * the interval comes first whatever order the service listed it in.
+   *
+   * The interval is not shown while the service is held: paused or out of
+   * budget reports no `nextWakeMs`, and `nextIntervalMs` is then a stale
+   * timestamp that promises a check that will not happen. Queued wakes stay,
+   * because they wait for the resume.
    */
   function scheduleView(schedule, status) {
     const t = window.OMP_I18N.t;
@@ -122,9 +127,15 @@
         atMs: w.atMs,
         label: typeof w.note === "string" && w.note.trim() ? w.note.trim() : t("Scheduled wake"),
       }));
-    const interval = Number.isFinite(schedule?.nextIntervalMs) && schedule.nextIntervalMs > 0
-      ? schedule.nextIntervalMs
-      : typeof status?.nextWakeMs === "number" ? status.nextWakeMs : null;
+    const held = !status
+      || status.state === "paused"
+      || status.state === "budget_exhausted"
+      || status.nextWakeMs == null;
+    const interval = held
+      ? null
+      : Number.isFinite(schedule?.nextIntervalMs) && schedule.nextIntervalMs > 0
+        ? schedule.nextIntervalMs
+        : status.nextWakeMs;
     if (interval !== null && !entries.some(e => e.atMs === interval)) {
       entries.push({ id: "interval", kind: "interval", atMs: interval, label: t("Next check") });
     }

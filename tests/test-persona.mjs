@@ -144,6 +144,17 @@ check("inbox_view_badge_counts_open_approvals_and_decisions", () => {
   assert.deepEqual(view.results.map(i => i.id), ["c"]);    // results only
 });
 
+check("inbox_view_hides_dismissed_results", () => {
+  const items = [
+    item({ id: "open", kind: "result", createdAt: 3_000 }),
+    item({ id: "gone", kind: "result", state: "dismissed", createdAt: 2_000 }),
+    item({ id: "answered", kind: "result", state: "answered", createdAt: 1_000 }),
+  ];
+  const view = P.inboxView(items);
+  assert.deepEqual(view.results.map(i => i.id), ["open"]);
+  assert.equal(view.badge, 0);
+});
+
 check("inbox_view_results_newest_first_capped_at_five", () => {
   const items = Array.from({ length: 7 }, (_, i) =>
     item({ id: `r${i}`, kind: "result", createdAt: i }));
@@ -188,9 +199,33 @@ check("schedule_view_keys_queued_wakes_by_time", () => {
     { id: "b", atMs: NOW + 20 * 60_000, note: "" },
     { id: "a", atMs: NOW + 10 * 60_000, note: "  " },
   ] };
-  const view = P.scheduleView(schedule, status());
+  const view = P.scheduleView(schedule, status({ nextWakeMs: NOW + 10 * 60_000 }));
   assert.deepEqual(view.entries.map(e => e.id), ["a", "b", "interval"]);
   assert.equal(view.entries[0].label, "Scheduled wake");
+});
+
+check("schedule_view_hides_the_interval_while_held", () => {
+  const schedule = { nextIntervalMs: NOW + 30 * 60_000, scheduled: [] };
+  const paused = P.scheduleView(schedule, status({ state: "paused", nextWakeMs: null }));
+  assert.deepEqual(paused, { entries: [], next: null });
+  const exhausted = P.scheduleView(
+    schedule, status({ state: "budget_exhausted", nextWakeMs: null }));
+  assert.deepEqual(exhausted, { entries: [], next: null });
+  // No wake time to promise: a running status without one hides it too.
+  assert.deepEqual(P.scheduleView(schedule, status({ nextWakeMs: null })), { entries: [], next: null });
+  assert.deepEqual(P.scheduleView(schedule, null), { entries: [], next: null });
+});
+
+check("schedule_view_keeps_queued_wakes_while_held", () => {
+  const schedule = {
+    nextIntervalMs: NOW + 30 * 60_000,
+    scheduled: [{ id: "q", atMs: NOW + 10 * 60_000, note: "Check mail" }],
+  };
+  const view = P.scheduleView(schedule, status({ state: "paused", nextWakeMs: null }));
+  assert.deepEqual(view.entries.map(e => [e.kind, e.id, e.atMs]), [
+    ["wake", "q", NOW + 10 * 60_000],
+  ]);
+  assert.equal(view.next, NOW + 10 * 60_000);
 });
 
 check("schedule_view_falls_back_to_the_status_next_wake", () => {
