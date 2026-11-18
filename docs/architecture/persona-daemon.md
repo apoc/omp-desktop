@@ -14,7 +14,7 @@ State lives under `<app config>/persona/` for app identifier `dev.ohMyPi.desktop
 
 |Path|Contents|
 |---|---|
-|`daemon.sock`|Unix local socket (`0600`); Windows uses a per-user named pipe instead|
+|`daemon.sock`|Unix local socket (`0600`); Windows uses the named pipe `omp-desktopd-<user SID>` with a DACL for that user and `LocalSystem` only|
 |`inbox.json`|Approvals, decisions, results and notices, atomically persisted|
 |`schedule.json`|Pending self-scheduled wake-ups|
 |`budget.json`|Local day, token use, warning state and daily limit|
@@ -33,6 +33,8 @@ The transport is newline-delimited JSON, one object per line, capped at 16 MiB e
 Client messages are `status`, `attach` (`afterSeq`), `detach`, `rpc`, `pause`, `resume`, `wake_now`, `set_settings`, `inbox_resolve`, `schedule_wake`, `list_schedule`, `cancel_wake` and `notify`. Attached app clients receive sequenced `rpc` frames (replayable from `afterSeq`), `inbox` snapshots and `status`. The extension uses one connection per tool call and exposes only schedule and notify operations to the model.
 
 The server admits at most 16 handshaken clients; a further connection is answered with `reply` `ok: false, error: "too many connections"` and closed. Each connection's outbound queue is bounded at 32 MiB of serialized messages; when a client stops reading and its queue would exceed that, the core logs it, closes the socket and drops the connection instead of blocking. The core event channel itself stays unbounded because its producers are already bounded, and blocking it could stall the `omp` stdout reader.
+
+On Windows the service derives the pipe name from the current user's SID and installs a DACL that grants full access to that SID and `LocalSystem` only, with nothing inherited; the name and descriptor both fail rather than fall back when the SID cannot be read. `run` detaches from a console it owns alone and spawns `omp` with `CREATE_NO_WINDOW`, so the logon task leaves no console window behind; `status` and `install` keep their console output.
 
 ## Wake-ups and budget
 
@@ -53,7 +55,6 @@ If omp exits or cannot spawn, restart backoff starts at 1 second and doubles to 
 - `attach` can duplicate frames because replayed ring entries overlap already queued live events, and sequence numbers restart with each session generation (`src/core/inbound.rs`, `src/session.rs`).
 - Results and notices are created open and are never pruned until the user dismisses them, so the inbox can grow without bound (`src/core/inbound.rs`, `src/inbox.rs`).
 - Secret `input` answers are persisted in `inbox.json` and broadcast with the rest of the item (`src/core/inbound.rs`, `src/inbox.rs`).
-- Windows starts `omp` without `CREATE_NO_WINDOW` or `windows_subsystem`, and the named pipe is named from `USERNAME` with the default DACL (Everyone read) rather than a hardened private descriptor (`src/session.rs`, `src/paths.rs`).
 - A `schedule.json` or `settings.json` read error preserves the file, but the next write of that state overwrites it; inbox and budget files are moved aside instead (`src/core/store.rs`).
 - A corrupted `budget.json` starts a fresh counter, so the day's spent allowance can be regained (`src/core/store.rs`).
 - Notified results bypass the inbox retention rule, and the persona extension's tools omit `loadMode: "essential"` (`src/core/inbound.rs`, `persona/extension.mjs`).

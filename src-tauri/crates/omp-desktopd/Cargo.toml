@@ -21,6 +21,19 @@ dirs = "7"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+# SID lookup, the pipe DACL, CREATE_NO_WINDOW and console detachment.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Console",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+# `SecurityDescriptor::deserialize` takes the wide form of the SDDL string.
+widestring = "1"
+
 [dev-dependencies]
 # `test_support::tempdir` keeps the temp-dir tests free of collisions.
 omp-desktop-core = { path = "../omp-desktop-core", features = ["test-support"] }

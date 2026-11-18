@@ -77,12 +77,15 @@ pub fn ensure_private_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The per-user Windows pipe name shared by the server and child environment.
-#[must_use]
-pub fn pipe_name() -> String {
-    let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".into());
-    format!("omp-desktopd-{user}")
-}
+/// The per-user Windows pipe name, derived from the current user's SID.
+///
+/// # Errors
+///
+/// Fails when the current user's SID cannot be read. There is no name-based
+/// fallback: a guessed pipe name could collide with or widen access beyond
+/// this user's pipe.
+#[cfg(windows)]
+pub use crate::pipe_security::pipe_name;
 
 /// The socket name for [`Paths::socket`]: a filesystem path on unix, a
 /// per-user namespaced pipe on Windows.
@@ -100,10 +103,15 @@ pub fn socket_name(paths: &Paths) -> io::Result<Name<'static>> {
     #[cfg(windows)]
     {
         use interprocess::local_socket::{GenericNamespaced, ToNsName};
-        #[cfg(test)]
-        let name = paths.test_pipe_name.clone().unwrap_or_else(pipe_name); // Owned name required by `ToNsName`.
         #[cfg(not(test))]
-        let name = pipe_name();
+        let _ = paths;
+        #[cfg(test)]
+        let name = match &paths.test_pipe_name {
+            Some(name) => name.clone(),
+            None => pipe_name()?,
+        };
+        #[cfg(not(test))]
+        let name = pipe_name()?;
         name.to_ns_name::<GenericNamespaced>()
     }
     #[cfg(not(any(unix, windows)))]

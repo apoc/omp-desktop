@@ -106,7 +106,7 @@ fn shutdown(conn: &Stream) {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::io::AsHandle;
+        use std::os::windows::io::{AsHandle, AsRawHandle};
         use windows_sys::Win32::System::Pipes::DisconnectNamedPipe;
         let Stream::NamedPipe(stream) = conn;
         // SAFETY: the handle belongs to this process and this stream; a
@@ -142,6 +142,9 @@ pub struct Server {
 /// Bounds one server run: the handshake deadline and the two resource limits.
 #[derive(Debug, Clone, Copy)]
 struct Limits {
+    /// Handshake deadline. Windows named-pipe streams do not support receive
+    /// timeouts, so the field is unused there.
+    #[cfg_attr(windows, allow(dead_code))]
     hello_timeout: Duration,
     outbound_bytes: usize,
     max_connections: usize,
@@ -216,7 +219,7 @@ impl Server {
         Self::start_with_limits(paths, to_core, Limits::default())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn start_with_hello_timeout(
         paths: &Paths,
         to_core: Sender<CoreMsg>,
@@ -246,10 +249,13 @@ impl Server {
         let _ = std::fs::remove_file(&paths.socket);
         let options = ListenerOptions::new().name(name);
         #[cfg(windows)]
-        let options = options.security_descriptor(
-            crate::pipe_security::listener_security_descriptor()
-                .map_err(|e| StartError::Io(e.to_string()))?,
-        );
+        let options = {
+            use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
+            options.security_descriptor(
+                crate::pipe_security::listener_security_descriptor()
+                    .map_err(|e| StartError::Io(e.to_string()))?,
+            )
+        };
         let listener = options
             .create_sync()
             .map_err(|e| StartError::Io(e.to_string()))?;

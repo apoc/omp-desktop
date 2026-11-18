@@ -387,6 +387,14 @@ impl Session {
             cmd.env(key, value);
         }
         omp_desktop_core::child_path::apply_trusted_child_path(&mut cmd);
+        // omp is a console-subsystem binary; the service may itself be started
+        // by the logon task with no console of its own, and a child without
+        // this flag would flash a window on the user's desktop.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        }
         let mut child = cmd.spawn()?;
         let stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped stdin")));
         let stdout = child.stdout.take().expect("piped stdout");

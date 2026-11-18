@@ -2,7 +2,7 @@ use omp_desktop_core::json_store::write_atomic;
 use omp_desktop_core::persona_protocol::{read_line_capped, LineRead};
 use omp_desktopd::{
     core::Core,
-    paths::{ensure_private_dir, pipe_name, socket_name, Paths},
+    paths::{ensure_private_dir, socket_name, Paths},
     scheduler::Now,
     server::{Server, StartError},
     session::{Launch, ProgramSource},
@@ -36,6 +36,11 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
+    // `status` and `install` keep console output; `run` is normally started by
+    // the logon task and must not leave a console window behind. The binary
+    // stays console-subsystem so those two commands work from a terminal.
+    #[cfg(windows)]
+    detach_own_console();
     let paths = Paths::resolve()?;
     ensure_private_dir(&paths.persona).map_err(|e| e.to_string())?;
     let ext = paths.persona.join("extension.mjs");
@@ -43,11 +48,13 @@ fn run() -> Result<(), String> {
         std::fs::write(&paths.instructions, INSTRUCTIONS).map_err(|e| e.to_string())?;
     }
     let home = dirs::home_dir().ok_or("no home directory")?;
-    let socket_env = if cfg!(windows) {
-        format!(r"\\.\pipe\{}", pipe_name())
-    } else {
-        paths.socket.display().to_string()
-    };
+    #[cfg(windows)]
+    let socket_env = format!(
+        r"\\.\pipe\{}",
+        omp_desktopd::paths::pipe_name().map_err(|e| e.to_string())?
+    );
+    #[cfg(not(windows))]
+    let socket_env = paths.socket.display().to_string();
     // The core event channel is unbounded on purpose: every producer is
     // already byte-bounded before it queues (per-connection outbound queues
     // drop a client over 32 MiB, and the session replay ring is byte-bounded
@@ -87,6 +94,27 @@ fn run() -> Result<(), String> {
     );
     core.run(rx, tx);
     Ok(())
+}
+
+/// Detaches from a console window this process owns alone.
+///
+/// A `Hidden` logon task still gives a console-subsystem binary a fresh
+/// console. `GetConsoleProcessList` counts the processes attached to it; a
+/// count of one means nobody else loses output when this process detaches. A
+/// terminal launch shares the console with the shell, so it is left alone.
+#[cfg(windows)]
+fn detach_own_console() {
+    use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
+
+    let mut pids = [0u32; 2];
+    // SAFETY: the pointer and count describe this local buffer.
+    let attached = unsafe { GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32) };
+    if attached == 1 {
+        // SAFETY: no other process is attached to this console.
+        unsafe {
+            FreeConsole();
+        }
+    }
 }
 
 fn status_data(reply: &serde_json::Value) -> Result<&serde_json::Value, String> {
