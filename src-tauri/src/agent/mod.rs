@@ -25,7 +25,10 @@ pub mod ext_ui;
 pub mod inflight;
 mod inner;
 pub mod journal;
-mod reader;
+// `sanitize_line` and `LineEvent` are shared with the persona client, which
+// relays omp frames too; `agent` itself is private, so nothing outside the
+// crate can reach them.
+pub mod reader;
 pub mod spawn;
 
 use std::collections::HashMap;

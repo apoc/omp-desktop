@@ -391,6 +391,19 @@ pub fn read_line_capped_with<R: BufRead>(
     }
 }
 
+/// Serialises `msg` as one protocol line, newline included, so a caller can
+/// check its size before it goes on the wire (`write_msg` writes it as-is).
+///
+/// # Errors
+///
+/// Returns an [`io::Error`] of kind [`io::ErrorKind::Other`] when `msg`
+/// cannot be serialised.
+pub fn encode_msg<T: Serialize>(msg: &T) -> io::Result<Vec<u8>> {
+    let mut line = serde_json::to_vec(msg).map_err(io::Error::other)?;
+    line.push(b'\n');
+    Ok(line)
+}
+
 /// Writes `msg` as one JSON line and flushes.
 ///
 /// # Errors
@@ -398,9 +411,7 @@ pub fn read_line_capped_with<R: BufRead>(
 /// Returns the I/O error from writing or flushing, or an [`io::Error`] of
 /// kind [`io::ErrorKind::Other`] when `msg` cannot be serialised.
 pub fn write_msg<W: Write, T: Serialize>(w: &mut W, msg: &T) -> io::Result<()> {
-    let mut line = serde_json::to_vec(msg).map_err(io::Error::other)?;
-    line.push(b'\n');
-    w.write_all(&line)?;
+    w.write_all(&encode_msg(msg)?)?;
     w.flush()
 }
 

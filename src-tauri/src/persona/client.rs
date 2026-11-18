@@ -1,15 +1,18 @@
+use crate::agent::reader::{sanitize_line, LineEvent};
 use interprocess::local_socket::{prelude::*, Stream};
 use interprocess::TryClone;
 use omp_desktop_core::persona_paths::{socket_name, Paths};
 use omp_desktop_core::persona_protocol::{
-    read_line_capped, write_msg, ClientKind, ClientMsg, Envelope, InboxItem, LineRead, ServerMsg,
-    StatusInfo, PROTOCOL,
+    encode_msg, read_line_capped, write_msg, ClientKind, ClientMsg, Envelope, InboxItem, LineRead,
+    ServerMsg, StatusInfo, MAX_LINE_BYTES, PROTOCOL,
 };
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::BufReader;
+use std::io::Write;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
@@ -35,11 +38,6 @@ impl Emitter for TauriEmitter {
     }
 
     fn line(&self, seq: u64, text: &str) {
-        #[derive(serde::Serialize, Clone)]
-        struct LineEvent<'a> {
-            seq: u64,
-            text: &'a str,
-        }
         let _ = tauri::Emitter::emit(&self.0, "persona://line/ompy", LineEvent { seq, text });
     }
 
@@ -59,7 +57,19 @@ struct Snapshot {
     inbox: Vec<InboxItem>,
 }
 
+/// The app's managed persona client: one background worker thread and a
+/// reconnecting connection. Commands never call it on the IPC thread — they
+/// take a [`ClientHandle`] and run the blocking call through
+/// [`crate::off_ipc`].
 pub(super) struct Client {
+    handle: ClientHandle,
+}
+
+/// Owned handle to the client's worker, cheap to clone and safe to move into
+/// a blocking task (`off_ipc`). Dropping a handle leaves the worker running;
+/// only dropping the managed [`Client`] shuts it down.
+#[derive(Clone)]
+pub(super) struct ClientHandle {
     tx: Sender<WorkerMsg>,
     snapshot: Arc<Mutex<Snapshot>>,
 }
@@ -89,6 +99,7 @@ impl Client {
             pending: HashMap::new(),
             retry_at: Some(Instant::now()),
             backoff: INITIAL_BACKOFF,
+            outage_reported: false,
             stopped: false,
         };
         if let Err(error) = std::thread::Builder::new()
@@ -100,9 +111,26 @@ impl Client {
                 reason: format!("cannot start persona client: {error}"),
             });
         }
-        Self { tx, snapshot }
+        Self {
+            handle: ClientHandle { tx, snapshot },
+        }
     }
 
+    /// A handle for a command's blocking work (`off_ipc`).
+    pub(super) fn handle(&self) -> ClientHandle {
+        self.handle.clone()
+    }
+
+    pub(super) fn status(&self) -> Option<StatusInfo> {
+        self.handle.status()
+    }
+
+    pub(super) fn inbox(&self) -> Vec<InboxItem> {
+        self.handle.inbox()
+    }
+}
+
+impl ClientHandle {
     pub(super) fn status(&self) -> Option<StatusInfo> {
         // IPC returns an owned snapshot; the worker retains its current copy.
         self.snapshot
@@ -143,7 +171,7 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        let _ = self.tx.send(WorkerMsg::Shutdown);
+        let _ = self.handle.tx.send(WorkerMsg::Shutdown);
     }
 }
 
@@ -167,6 +195,9 @@ enum WorkerMsg {
 struct Connection {
     id: u64,
     writer: Stream,
+    /// The connection's `read_server` thread; disconnected before the
+    /// reader's handle is dropped so it can be reaped.
+    reader: JoinHandle<()>,
 }
 
 struct Worker {
@@ -181,6 +212,10 @@ struct Worker {
     pending: HashMap<u64, (Sender<Result<Value, String>>, Instant)>,
     retry_at: Option<Instant>,
     backoff: Duration,
+    /// Whether the current outage's `io` error already reached the frontend.
+    /// One outage is one error: the retry storm that follows stays silent
+    /// until a connection is live again (the outage is over).
+    outage_reported: bool,
     stopped: bool,
 }
 
@@ -194,11 +229,18 @@ impl Worker {
                     self.expire_requests();
                     continue;
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // Every sender is gone: shut the connection down (the
+                    // reader thread would otherwise keep the socket open
+                    // forever) and stop.
+                    self.disconnect(None);
+                    return;
+                }
             };
             match received {
                 WorkerMsg::Shutdown => {
                     self.fail_pending("persona client stopped");
+                    self.disconnect(None);
                     return;
                 }
                 WorkerMsg::Reconnect => {
@@ -263,6 +305,9 @@ impl Worker {
         match connect(paths, id, &self.tx) {
             Ok(connection) => {
                 self.connection = Some(connection);
+                // A live connection ends the outage; the next `io` failure
+                // is a new one and is reported again.
+                self.outage_reported = false;
             }
             Err(error) => self.connection_failed(error),
         }
@@ -286,14 +331,30 @@ impl Worker {
         };
         let req = self.next_req;
         self.next_req += 1;
+        let line = match encode_msg(&Envelope {
+            req: Some(req),
+            body,
+        }) {
+            Ok(line) => line,
+            Err(error) => {
+                let _ = response.send(Err(format!("cannot encode persona request: {error}")));
+                return;
+            }
+        };
+        // A frame past the protocol's line cap can never be accepted — the
+        // service's reader drops the line — so the request would sit until
+        // the 10 s timeout. Refuse it now with the limit instead.
+        // `encode_msg` appends exactly the newline the cap excludes.
+        let content_len = line.len() - 1;
+        if content_len > MAX_LINE_BYTES {
+            let _ = response.send(Err(format!(
+                "persona frame is {content_len} bytes; the service accepts at most \
+                 {MAX_LINE_BYTES}"
+            )));
+            return;
+        }
         let mut writer = &connection.writer;
-        if let Err(error) = write_msg(
-            &mut writer,
-            &Envelope {
-                req: Some(req),
-                body,
-            },
-        ) {
+        if let Err(error) = writer.write_all(&line).and_then(|()| writer.flush()) {
             let _ = response.send(Err(format!("cannot write to persona service: {error}")));
             self.disconnect(Some(("io", error.to_string())));
             return;
@@ -340,7 +401,12 @@ impl Worker {
                     .clone_from(&items); // event and cached snapshot each own a copy
                 self.emitter.inbox(&items);
             }
-            ServerMsg::Rpc { seq, frame } => self.emitter.line(seq, frame.get()),
+            ServerMsg::Rpc { seq, frame } => {
+                // A relayed omp frame is an omp frame: the same redaction the
+                // agent's stdout reader runs before the webview sees it.
+                let (text, _) = sanitize_line(frame.get().as_bytes());
+                self.emitter.line(seq, &text);
+            }
             ServerMsg::Hello { protocol } if protocol != PROTOCOL => {
                 self.stopped = true;
                 self.disconnect(Some((
@@ -379,7 +445,15 @@ impl Worker {
     }
 
     fn disconnect(&mut self, error: Option<(&str, String)>) {
-        self.connection.take();
+        if let Some(connection) = self.connection.take() {
+            // Shut the socket down before dropping the writer: the reader
+            // thread holds its own handle, so closing ours alone would leave
+            // the socket open, the reader blocked, and the service holding
+            // one of its connection slots until the app exits.
+            shutdown_stream(&connection.writer);
+            drop(connection.writer);
+            reap(connection.reader);
+        }
         self.fail_pending("persona service disconnected");
         {
             let mut snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
@@ -389,7 +463,14 @@ impl Worker {
         self.emitter.status(None);
         self.emitter.inbox(&[]);
         if let Some((kind, message)) = error {
-            self.emitter.error(kind, &message);
+            // One outage, one `io` error: the retries that follow a down
+            // service stay silent until a connection is live again.
+            if kind != "io" || !self.outage_reported {
+                self.emitter.error(kind, &message);
+                if kind == "io" {
+                    self.outage_reported = true;
+                }
+            }
         }
         if !self.stopped {
             self.retry_at = Some(Instant::now() + self.backoff);
@@ -468,10 +549,59 @@ fn connect(paths: &Paths, id: u64, tx: &Sender<WorkerMsg>) -> Result<Connection,
         Err(error) => return Err(ConnectError::Io(format!("invalid persona hello: {error}"))),
     }
     let reader_tx = tx.clone();
-    std::thread::Builder::new()
+    let reader = std::thread::Builder::new()
         .name("persona-reader".into())
         .spawn(move || read_server(id, reader, reader_tx))?;
-    Ok(Connection { id, writer })
+    Ok(Connection { id, writer, reader })
+}
+
+/// Shut this end of a connected socket down so a reader thread blocked in
+/// `read` returns. Dropping a handle alone never wakes it: `read_server`
+/// holds its own clone of the same socket.
+///
+/// The service's own teardown (`omp-desktopd`'s `server::shutdown`) is not
+/// reusable here — its Windows half is `DisconnectNamedPipe`, which only the
+/// server end of a pipe may call.
+fn shutdown_stream(stream: &Stream) {
+    #[cfg(unix)]
+    {
+        use std::os::fd::{AsFd, AsRawFd};
+        let Stream::UdSocket(stream) = stream;
+        // SAFETY: shutdown only reads the descriptor; the stream owns it.
+        // The socket may already be half-closed by the peer (`ENOTCONN`);
+        // the read is at EOF then anyway.
+        unsafe {
+            libc::shutdown(stream.as_fd().as_raw_fd(), libc::SHUT_RDWR);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{AsHandle, AsRawHandle};
+        use windows_sys::Win32::System::IO::CancelIoEx;
+        let Stream::NamedPipe(stream) = stream;
+        // SAFETY: the handle belongs to this process and this stream;
+        // cancelling its pending I/O is what wakes the reader's blocking
+        // `ReadFile` (a named pipe has no shutdown call).
+        unsafe {
+            CancelIoEx(stream.as_handle().as_raw_handle(), std::ptr::null());
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = stream;
+    }
+}
+
+/// Reap a disconnected connection's reader thread.
+fn reap(reader: JoinHandle<()>) {
+    // The shutdown above makes the reader's `read` return on unix, so the
+    // join is bounded. On Windows `CancelIoEx` is best-effort; joining a read
+    // it failed to wake would hang the worker, so the thread is detached
+    // instead.
+    #[cfg(unix)]
+    let _ = reader.join();
+    #[cfg(not(unix))]
+    drop(reader);
 }
 
 fn read_server(id: u64, mut reader: BufReader<Stream>, tx: Sender<WorkerMsg>) {
@@ -516,10 +646,11 @@ mod tests {
     use omp_desktop_core::persona_paths::{ensure_private_dir, socket_name, Paths};
     use omp_desktop_core::persona_protocol::{
         read_line_capped, write_msg, ClientMsg, Envelope, LineRead, PersonaSettings, ServerMsg,
-        StatusInfo,
+        StatusInfo, MAX_LINE_BYTES,
     };
     use serde_json::Value;
     use std::io::BufReader;
+    use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -579,10 +710,25 @@ mod tests {
         serde_json::from_slice(&buf).unwrap()
     }
 
+    /// Paths under a per-test root, with a unique Windows pipe name: the
+    /// production pipe is user-wide, and a test's accept thread may outlive
+    /// it (as in `omp-desktopd`'s own suites).
+    fn test_paths(temp: &TempDir, tag: &str) -> Paths {
+        let paths = Paths::under(temp.path());
+        #[cfg(windows)]
+        let paths = Paths {
+            test_pipe_name: Some(format!("ompy-app-test-{tag}-{}", std::process::id())),
+            ..paths
+        };
+        #[cfg(not(windows))]
+        let _ = tag;
+        paths
+    }
+
     #[test]
     fn client_connects_and_emits_status() {
         let temp = TempDir::new("persona-client", "connect");
-        let paths = Paths::under(temp.path());
+        let paths = test_paths(&temp, "connect");
         ensure_private_dir(&paths.persona).unwrap();
         let listener = ListenerOptions::new()
             .name(socket_name(&paths).unwrap())
@@ -627,7 +773,7 @@ mod tests {
     #[test]
     fn client_routes_request_reply_by_req_id() {
         let temp = TempDir::new("persona-client", "request");
-        let paths = Paths::under(temp.path());
+        let paths = test_paths(&temp, "request");
         ensure_private_dir(&paths.persona).unwrap();
         let listener = ListenerOptions::new()
             .name(socket_name(&paths).unwrap())
@@ -658,11 +804,16 @@ mod tests {
         let events = Arc::new(Recorder::default());
         let client = Client::start(paths, events);
         assert!(eventually(Duration::from_secs(2), || { client.status().map(|_| ()) }).is_some());
-        client
+        // Through the handle a command hands to `off_ipc`: same worker, and
+        // dropping the handle must not shut the client down.
+        let handle = client.handle();
+        handle
             .request(ClientMsg::Rpc {
                 frame: serde_json::json!({"type":"prompt","message":"hi"}),
             })
             .unwrap();
+        drop(handle);
+        assert_eq!(client.status().unwrap().generation, 7);
         drop(client);
         server.join().unwrap();
     }
@@ -670,7 +821,7 @@ mod tests {
     #[test]
     fn protocol_mismatch_stops_retry() {
         let temp = TempDir::new("persona-client", "protocol");
-        let paths = Paths::under(temp.path());
+        let paths = test_paths(&temp, "protocol");
         ensure_private_dir(&paths.persona).unwrap();
         let listener = ListenerOptions::new()
             .name(socket_name(&paths).unwrap())
@@ -725,5 +876,178 @@ mod tests {
             "client retried after protocol mismatch"
         );
         drop(client);
+    }
+
+    #[test]
+    fn client_redacts_credentials_in_relayed_frames() {
+        let temp = TempDir::new("persona-client", "redact");
+        let paths = test_paths(&temp, "redact");
+        ensure_private_dir(&paths.persona).unwrap();
+        let listener = ListenerOptions::new()
+            .name(socket_name(&paths).unwrap())
+            .create_sync()
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let _hello = read_client(stream.try_clone().unwrap());
+            write_msg(&mut stream, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            let frame = serde_json::value::RawValue::from_string(
+                r#"{"type":"tool","authorization":"Bearer sekret","apiKey":"sk-live-1","safe":"ok"}"#
+                    .into(),
+            )
+            .unwrap();
+            write_msg(&mut stream, &ServerMsg::Rpc { seq: 9, frame }).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        let events = Arc::new(Recorder::default());
+        let client = Client::start(paths, events.clone());
+        let line = eventually(Duration::from_secs(2), || {
+            events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(name, _)| name == "line")
+                .cloned()
+        })
+        .expect("no persona://line event");
+        let text = line.1["text"].as_str().unwrap();
+        assert_eq!(line.1["seq"], 9);
+        assert!(
+            !text.contains("sekret"),
+            "authorization value reached the webview: {text}"
+        );
+        assert!(
+            !text.contains("sk-live-1"),
+            "apiKey value reached the webview: {text}"
+        );
+        assert!(
+            text.contains(crate::redaction::REDACTED_PLACEHOLDER),
+            "no redaction placeholder in {text}"
+        );
+        assert!(
+            text.contains(r#""safe":"ok""#),
+            "a harmless field was changed: {text}"
+        );
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn io_error_is_emitted_once_per_outage() {
+        let temp = TempDir::new("persona-client", "outage");
+        let paths = test_paths(&temp, "outage");
+        ensure_private_dir(&paths.persona).unwrap();
+        let events = Arc::new(Recorder::default());
+        // No listener: every connect attempt fails against a down service.
+        let client = Client::start(paths, events.clone());
+        let io_errors = || {
+            events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(name, payload)| name == "error" && payload["kind"] == "io")
+                .count()
+        };
+        assert!(
+            eventually(Duration::from_secs(2), || {
+                events
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(name, payload)| name == "error" && payload["kind"] == "io")
+                    .then_some(())
+            })
+            .is_some(),
+            "the first failure did not report an io error"
+        );
+        // Retries land at 500 ms and 1500 ms; both must stay silent.
+        std::thread::sleep(Duration::from_millis(1800));
+        assert_eq!(io_errors(), 1, "one outage reported more than one io error");
+        drop(client);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconnect_closes_the_old_connection() {
+        let temp = TempDir::new("persona-client", "reconnect");
+        let paths = test_paths(&temp, "reconnect");
+        ensure_private_dir(&paths.persona).unwrap();
+        let listener = ListenerOptions::new()
+            .name(socket_name(&paths).unwrap())
+            .create_sync()
+            .unwrap();
+        let (closed_tx, closed_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut first = listener.accept().unwrap();
+            let _hello = read_client(first.try_clone().unwrap());
+            write_msg(&mut first, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            write_msg(&mut first, &ServerMsg::Status { status: status() }).unwrap();
+            // A reconnect must close this socket (EOF), not leave it open and
+            // the service holding its connection slot.
+            let mut reader = BufReader::new(first);
+            let mut buf = Vec::new();
+            let closed = matches!(
+                read_line_capped(&mut reader, &mut buf).unwrap(),
+                LineRead::Eof
+            );
+            let _ = closed_tx.send(closed);
+            // Keep the reconnected client connected until the test ends.
+            let mut second = listener.accept().unwrap();
+            let _hello = read_client(second.try_clone().unwrap());
+            write_msg(&mut second, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        let events = Arc::new(Recorder::default());
+        let client = Client::start(paths, events);
+        assert!(eventually(Duration::from_secs(2), || { client.status().map(|_| ()) }).is_some());
+        client.handle().reconnect().unwrap();
+        assert!(
+            closed_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "the old connection stayed open after a reconnect"
+        );
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn oversized_frame_fails_before_the_request_timeout() {
+        let temp = TempDir::new("persona-client", "oversize");
+        let paths = test_paths(&temp, "oversize");
+        ensure_private_dir(&paths.persona).unwrap();
+        let listener = ListenerOptions::new()
+            .name(socket_name(&paths).unwrap())
+            .create_sync()
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let _hello = read_client(stream.try_clone().unwrap());
+            write_msg(&mut stream, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            write_msg(&mut stream, &ServerMsg::Status { status: status() }).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        let events = Arc::new(Recorder::default());
+        let client = Client::start(paths, events);
+        assert!(eventually(Duration::from_secs(2), || { client.status().map(|_| ()) }).is_some());
+        let started = std::time::Instant::now();
+        let error = client
+            .handle()
+            .request(ClientMsg::Rpc {
+                frame: Value::String("x".repeat(MAX_LINE_BYTES)),
+            })
+            .unwrap_err();
+        assert!(
+            error.contains("the service accepts at most"),
+            "unexpected error for an oversized frame: {error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "an oversized frame waited for the request timeout: {:?}",
+            started.elapsed()
+        );
+        drop(client);
+        server.join().unwrap();
     }
 }
