@@ -98,6 +98,9 @@ libc = "0.2"
 # Decode screenshot pixels in real-Chromium annotate regression tests
 # (`base64` comes from the normal dependencies).
 [dev-dependencies]
+# Same path crate as above, with the helpers the app's test suites share
+# (`test_support`): one copy, re-exported from `src/test_support.rs`.
+omp-desktop-core = { path = "crates/omp-desktop-core", features = ["test-support"] }
 png = "0.18"
 
 [profile.release]

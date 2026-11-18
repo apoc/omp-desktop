@@ -533,7 +533,7 @@ mod tests {
         let project = dir.path().join("project");
         let trusted = dir.path().join("bin");
         let git_file = format!("git{}", std::env::consts::EXE_SUFFIX);
-        executable(&project.join(&git_file), "");
+        let _ = executable(&project.join(&git_file), "");
         let real = executable(&trusted.join(&git_file), "");
 
         // `child_path_dirs` has already dropped the empty and relative PATH

@@ -46,10 +46,10 @@ mod widgets;
 mod workspace;
 
 use agent::AgentBridge;
-use omp_desktop_core::approval::{self, RuleBook};
 use approval_mode::{ApprovalModeStore, ApprovalModeView};
 use external_open::OpenProjectState;
 use git_watcher::GitWatcherState;
+use omp_desktop_core::approval::{self, RuleBook};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

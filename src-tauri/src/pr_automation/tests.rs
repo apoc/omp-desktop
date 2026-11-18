@@ -618,7 +618,10 @@ fn only_a_missing_gh_is_marked_gh_missing() {
     assert!(err.gh_missing && !err.retryable, "{err:?}");
     assert_eq!(serde_json::to_value(&err).unwrap()["ghMissing"], true);
     let bin = dir.path().join("bin");
-    crate::test_support::executable(&bin.join(format!("gh{}", std::env::consts::EXE_SUFFIX)), "");
+    let _ = crate::test_support::executable(
+        &bin.join(format!("gh{}", std::env::consts::EXE_SUFFIX)),
+        "",
+    );
     // gh is found; the folder is no Git checkout, so no gh run happens.
     let err = snapshot_in(&[bin], &folder).unwrap_err();
     assert!(!err.gh_missing, "{err:?}");

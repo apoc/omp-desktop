@@ -8,6 +8,7 @@ use std::path::Path;
 ///
 /// Unix: one this user may execute, as `execvp` checks it, so an execute bit
 /// only for others doesn't count. Windows: any file.
+#[must_use]
 pub fn is_executable_file(path: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -43,6 +44,7 @@ pub fn is_executable_file(path: &Path) -> bool {
 ///   failure count as alive. A process that really exited with code 259
 ///   reads as alive, which errs on the safe side.
 #[cfg(unix)]
+#[must_use]
 pub fn pid_is_alive(pid: u32) -> bool {
     // SAFETY: signal 0 sends no actual signal; it only validates that the
     // pid exists and is signalable by us. No memory is touched beyond what
@@ -59,6 +61,7 @@ use windows_sys::Win32::Foundation::{
 };
 
 #[cfg(windows)]
+#[must_use]
 pub fn pid_is_alive(pid: u32) -> bool {
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,

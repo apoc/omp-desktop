@@ -13,8 +13,8 @@ use super::pipe::attach;
 use super::stderr::StderrTail;
 use crate::browser::broker::Broker;
 use crate::browser::lock;
-use omp_desktop_core::child_path::apply_child_path;
 use crate::supervisor::ProcessSupervisor;
+use omp_desktop_core::child_path::apply_child_path;
 
 /// How long a fresh Chromium gets to answer on its debugging pipe.
 pub const LAUNCH_TIMEOUT: Duration = Duration::from_secs(10);

@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter};
 
-use omp_desktop_core::approval::{self, RuleBook};
 use crate::redaction::{is_credential_key, REDACTED_PLACEHOLDER};
+use omp_desktop_core::approval::{self, RuleBook};
 
 use super::approvals::{self, PendingApprovals};
 use super::ext_ui::{self, ExtUiState};

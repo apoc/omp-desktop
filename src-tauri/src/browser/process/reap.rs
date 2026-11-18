@@ -5,6 +5,7 @@ use std::path::Path;
 
 #[cfg(unix)]
 use crate::supervisor::kill_group_if_leader;
+#[cfg(unix)]
 use omp_desktop_core::proc_util::pid_is_alive;
 
 /// Kill the browsers a dead instance directory recorded (its

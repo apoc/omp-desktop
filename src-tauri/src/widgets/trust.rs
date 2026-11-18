@@ -20,8 +20,8 @@ use std::time::UNIX_EPOCH;
 
 use sha2::{Digest, Sha256};
 
-use omp_desktop_core::json_store;
 use crate::widgets::config::PluginEntry;
+use omp_desktop_core::json_store;
 
 /// Domain separator, bumped if the hashed layout ever changes (which
 /// invalidates every approval — intended).

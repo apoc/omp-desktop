@@ -884,7 +884,12 @@ mod tests {
         ));
         let rule_book = omp_desktop_core::approval::RuleBook::new(dir);
         rule_book
-            .grant("sess-x", None, "bash", omp_desktop_core::approval::RuleScope::Session)
+            .grant(
+                "sess-x",
+                None,
+                "bash",
+                omp_desktop_core::approval::RuleScope::Session,
+            )
             .unwrap();
         assert!(rule_book.is_granted("sess-x", None, "bash"));
 

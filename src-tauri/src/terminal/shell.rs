@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 
 use portable_pty::CommandBuilder;
 
+use crate::program_setting::typed_path;
 use omp_desktop_core::child_path;
 use omp_desktop_core::proc_util::is_executable_file;
-use crate::program_setting::typed_path;
 
 /// Shells that take `-l -i` (login, interactive), by file name (Windows:
 /// file stem of an `.exe`, any case).

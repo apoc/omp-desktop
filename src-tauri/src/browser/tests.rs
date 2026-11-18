@@ -818,7 +818,10 @@ fn second_closer_waits_for_the_release_in_flight(name: &str, second_closer: fn(&
             .trim()
             .parse()
             .unwrap();
-        assert!(!omp_desktop_core::proc_util::pid_is_alive(pid), "browser dead");
+        assert!(
+            !omp_desktop_core::proc_util::pid_is_alive(pid),
+            "browser dead"
+        );
         releasing.join().unwrap();
         launching.join().unwrap().unwrap();
     });

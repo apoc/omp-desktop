@@ -5,6 +5,10 @@ edition = "2021"
 rust-version = "1.98"
 publish = false
 
+[features]
+# Exposes `test_support` to a dependent crate's tests (the app re-exports it).
+test-support = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
