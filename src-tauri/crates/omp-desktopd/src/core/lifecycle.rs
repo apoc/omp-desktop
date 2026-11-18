@@ -23,6 +23,18 @@ const NOTICE_EXPIRED: &str = "Ompy stopped unexpectedly; open approvals expired"
 const NOTICE_WARNED: &str = "80 % of today's token limit used";
 const NOTICE_EXHAUSTED: &str = "Daily token limit reached; Ompy pauses until midnight";
 
+/// The delay before the next spawn attempt. `uptime` is how long the session
+/// that just ended actually ran; a spawn failure passes `None`, so a missing
+/// omp only ever backs off further instead of collapsing to one second.
+#[must_use]
+fn restart_delay_for(backoff: Duration, uptime: Option<Duration>) -> Duration {
+    if uptime.is_some_and(|uptime| uptime >= RESTART_RESET) {
+        RESTART_MIN
+    } else {
+        backoff
+    }
+}
+
 impl Core {
     /// Spawn omp for the next generation and forward its events to this loop.
     pub(super) fn start_session(&mut self, now: &Now) {
@@ -47,37 +59,40 @@ impl Core {
                 self.last_spawn = std::time::Instant::now();
                 self.spawn_error = None;
                 self.started = true;
+                let blocked = self.inbox.has_open_bound();
+                self.scheduler.handle(Event::Blocked(blocked), now);
                 self.broadcast_status();
             }
             Err(error) => {
                 let message = format!("Ompy's omp process did not start: {error}");
                 eprintln!("[omp-desktopd] {message}");
                 self.session = None;
+                let first_failure = self.spawn_error.is_none();
                 self.spawn_error = Some(message.clone());
                 self.started = true;
-                self.inbox.add(
-                    ItemKind::Notice,
-                    message,
-                    None,
-                    Vec::new(),
-                    true,
-                    None,
-                    now.utc_ms,
-                );
-                self.inbox_changed();
-                let delay = self.restart_delay();
+                self.scheduler.handle(Event::Blocked(true), now);
+                if first_failure {
+                    self.inbox.add(
+                        ItemKind::Notice,
+                        message,
+                        None,
+                        Vec::new(),
+                        true,
+                        None,
+                        now.utc_ms,
+                    );
+                    self.inbox_changed(now);
+                }
+                let delay = self.restart_delay(None);
                 self.schedule_restart(delay);
             }
         }
     }
 
-    /// Reset and grow the restart backoff: 1 s doubling to 5 min, reset after
-    /// a session stayed up for [`RESTART_RESET`].
-    fn restart_delay(&mut self) -> Duration {
-        if self.last_spawn.elapsed() >= RESTART_RESET {
-            self.backoff = RESTART_MIN;
-        }
-        let delay = self.backoff;
+    /// Grow the restart backoff: 1 s doubling to 5 min, reset only when the
+    /// session that just ended had stayed up for [`RESTART_RESET`].
+    fn restart_delay(&mut self, uptime: Option<Duration>) -> Duration {
+        let delay = restart_delay_for(self.backoff, uptime);
         self.backoff = (delay * 2).min(RESTART_MAX);
         delay
     }
@@ -147,11 +162,11 @@ impl Core {
                 self.inbox
                     .add(kind, title, body, options, false, Some(id), now.utc_ms);
                 self.scheduler.handle(Event::Blocked(true), now);
-                self.inbox_changed();
+                self.inbox_changed(now);
             }
             SessionEvent::UiCancel { id } => {
                 if self.inbox.expire_by_rpc(&id) {
-                    self.inbox_changed();
+                    self.inbox_changed(now);
                 }
                 let blocked = self.inbox.has_open_bound();
                 self.scheduler.handle(Event::Blocked(blocked), now);
@@ -202,10 +217,10 @@ impl Core {
                 now.utc_ms,
             );
         }
-        self.scheduler.handle(Event::Blocked(false), now);
+        self.scheduler.handle(Event::Blocked(true), now);
         self.scheduler.handle(Event::Busy(false), now);
-        self.inbox_changed();
-        let delay = self.restart_delay();
+        self.inbox_changed(now);
+        let delay = self.restart_delay(Some(self.last_spawn.elapsed()));
         self.schedule_restart(delay);
     }
 
@@ -220,5 +235,39 @@ impl Core {
         }
         self.persist_budget();
         self.broadcast_status();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Backoff sequence for repeated spawn failures: double, cap at five
+    /// minutes, never reset without a session that actually ran.
+    #[test]
+    fn spawn_failures_back_off_without_collapsing() {
+        let mut backoff = RESTART_MIN;
+        let mut delays = Vec::new();
+        for _ in 0..11 {
+            let delay = restart_delay_for(backoff, None);
+            delays.push(delay.as_secs());
+            backoff = (delay * 2).min(RESTART_MAX);
+        }
+        assert_eq!(delays, vec![1, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300]);
+    }
+
+    #[test]
+    fn long_uptime_resets_backoff_only_for_a_real_session() {
+        assert_eq!(
+            restart_delay_for(RESTART_MAX, Some(RESTART_RESET)),
+            RESTART_MIN
+        );
+        assert_eq!(
+            restart_delay_for(
+                RESTART_MAX,
+                Some(RESTART_RESET.checked_sub(Duration::from_secs(1)).unwrap())
+            ),
+            RESTART_MAX
+        );
     }
 }

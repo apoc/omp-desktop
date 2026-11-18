@@ -2,7 +2,7 @@
 //! relays.
 
 use super::Core;
-use crate::budget::BudgetEvent;
+use crate::budget::BudgetState;
 use crate::scheduler::{Event, Now, ScheduleError};
 use crate::server::{ConnId, Inbound};
 use chrono::NaiveTime;
@@ -107,14 +107,16 @@ impl Core {
     fn on_rpc(&mut self, conn: ConnId, req: Option<u64>, frame: &Value, now: &Now) {
         if frame.get("type").and_then(Value::as_str) == Some("extension_ui_response") {
             if let Some(id) = frame.get("id").and_then(Value::as_str) {
-                if self
-                    .inbox
-                    .resolve_by_rpc(id, Some(ui_answer(frame)))
-                    .is_some()
-                {
+                let cancelled = frame.get("cancelled").and_then(Value::as_bool) == Some(true);
+                let answer = if cancelled {
+                    None
+                } else {
+                    Some(ui_answer(frame))
+                };
+                if self.inbox.resolve_by_rpc(id, answer).is_some() {
                     let blocked = self.inbox.has_open_bound();
                     self.scheduler.handle(Event::Blocked(blocked), now);
-                    self.inbox_changed();
+                    self.inbox_changed(now);
                 }
             }
         }
@@ -142,9 +144,11 @@ impl Core {
         self.persist_settings();
         self.scheduler
             .handle(Event::Settings(self.settings.clone()), now);
-        if self.budget.set_limit(self.settings.daily_token_limit) == Some(BudgetEvent::Reset) {
-            self.scheduler.handle(Event::BudgetExhausted(false), now);
-        }
+        self.budget.set_limit(self.settings.daily_token_limit);
+        self.scheduler.handle(
+            Event::BudgetExhausted(self.budget.state() == BudgetState::Exhausted),
+            now,
+        );
         self.persist_budget();
         self.broadcast_status();
         self.reply_ok(conn, req, None);
@@ -162,23 +166,31 @@ impl Core {
             self.reply_err(conn, req, "no open inbox item with that id");
             return;
         };
-        let mut told_omp = false;
-        if let (Some(rpc), Some(answer)) = (item.rpc_request_id.as_deref(), answer) {
-            self.respond(rpc, &item.options, answer);
-            told_omp = true;
-        } else if item.rpc_request_id.is_none() && item.kind == ItemKind::Decision {
+        if let Some(rpc) = item.rpc_request_id.as_deref() {
+            match answer {
+                Some(answer) => self.respond(rpc, &item.options, answer),
+                None => self.dismiss(rpc),
+            }
+        } else if item.kind == ItemKind::Decision {
             if let Some(answer) = answer {
                 let message = format!("[ompy decision] {}: {answer}", item.title);
                 self.send_prompt(&message);
-                told_omp = true;
             }
         }
-        if told_omp {
-            let blocked = self.inbox.has_open_bound();
-            self.scheduler.handle(Event::Blocked(blocked), now);
-        }
-        self.inbox_changed();
+        let blocked = self.inbox.has_open_bound();
+        self.scheduler.handle(Event::Blocked(blocked), now);
+        self.inbox_changed(now);
         self.reply_ok(conn, req, Some(json!({ "id": item.id })));
+    }
+
+    /// Withdraw omp's request `rpc` because the user dismissed its inbox item.
+    fn dismiss(&self, rpc: &str) {
+        let frame = json!({
+            "type": "extension_ui_response",
+            "id": rpc,
+            "cancelled": true,
+        });
+        self.send_frame(&frame.to_string());
     }
 
     /// Answer omp's request `rpc` with `answer`; confirm prompts get a
@@ -273,7 +285,7 @@ impl Core {
             None,
             now.utc_ms,
         );
-        self.inbox_changed();
+        self.inbox_changed(now);
         self.reply_ok(conn, req, Some(json!({ "id": id })));
     }
 

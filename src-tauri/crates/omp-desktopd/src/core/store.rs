@@ -5,6 +5,7 @@
 use super::Core;
 use crate::budget::Budget;
 use crate::scheduler::Now;
+use chrono::NaiveDate;
 use omp_desktop_core::json_store::write_atomic;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -22,7 +23,9 @@ pub(super) struct Writes {
 }
 
 impl Core {
-    pub(super) fn persist_inbox(&self) {
+    /// Prune expired settled items, then persist the inbox.
+    pub(super) fn persist_inbox(&mut self, now_ms: i64) {
+        self.inbox.prune(now_ms);
         if let Err(error) = self.inbox.save() {
             eprintln!("[omp-desktopd] could not save the inbox: {error}");
         }
@@ -81,22 +84,62 @@ pub(super) fn write_json<T: Serialize>(path: &Path, value: &T, what: &str) {
     }
 }
 
-/// Load today's budget. `Budget` has no `Default` because its counter belongs
-/// to a day, so a missing or corrupt file starts a fresh counter for today.
-pub(super) fn load_budget(path: &Path, now: &Now) -> (Budget, bool) {
+/// Load today's budget. A missing file starts a fresh counter that is written
+/// normally. A corrupt or unreadable file is renamed to
+/// `<file_name>.bad-<now_ms>` and replaced by a fresh counter; when even the
+/// rename fails the fresh counter stays memory-only so the unreadable file is
+/// never overwritten.
+///
+/// The middle return value is the user notice for a reset file, the last one
+/// says whether the fresh counter may be persisted.
+pub(super) fn load_budget(path: &Path, now: &Now) -> (Budget, Option<String>, bool) {
     let today = now.local.date();
-    match std::fs::read(path) {
-        Err(error) if error.kind() == ErrorKind::NotFound => (Budget::new(0, today), true),
+    let bytes = match std::fs::read(path) {
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return (Budget::new(0, today), None, true);
+        }
         Err(error) => {
             eprintln!("[omp-desktopd] budget file unreadable: {error}");
-            (Budget::new(0, today), false)
+            return reset_budget(path, today, now.utc_ms);
         }
-        Ok(bytes) => match serde_json::from_slice::<Budget>(&bytes) {
-            Ok(budget) => (budget, true),
-            Err(error) => {
-                eprintln!("[omp-desktopd] budget file corrupt: {error}");
-                (Budget::new(0, today), false)
-            }
-        },
+        Ok(bytes) => bytes,
+    };
+    match serde_json::from_slice::<Budget>(&bytes) {
+        Ok(budget) => (budget, None, true),
+        Err(error) => {
+            eprintln!("[omp-desktopd] budget file corrupt: {error}");
+            reset_budget(path, today, now.utc_ms)
+        }
     }
+}
+
+/// Start a fresh counter for `today` after moving the unreadable file aside.
+fn reset_budget(path: &Path, today: NaiveDate, now_ms: i64) -> (Budget, Option<String>, bool) {
+    if move_aside(path, now_ms) {
+        (
+            Budget::new(0, today),
+            Some("Budget file was unreadable and was reset; today's counter starts at zero".into()),
+            true,
+        )
+    } else {
+        (
+            Budget::new(0, today),
+            Some(
+                "Budget file could not be read or moved aside; today's counter starts at zero and \
+                 will not be saved"
+                    .into(),
+            ),
+            false,
+        )
+    }
+}
+
+/// Rename `path` to `<file_name>.bad-<now_ms>`.
+fn move_aside(path: &Path, now_ms: i64) -> bool {
+    let Some(file_name) = path.file_name() else {
+        return false;
+    };
+    let mut bad_name = file_name.to_os_string();
+    bad_name.push(format!(".bad-{now_ms}"));
+    std::fs::rename(path, path.with_file_name(bad_name)).is_ok()
 }

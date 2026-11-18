@@ -4,7 +4,7 @@
 
 use chrono::NaiveDate;
 use omp_desktop_core::persona_protocol::{
-    ClientKind, ClientMsg, InboxItem, ItemKind, ItemState, PersonaSettings, ServerMsg,
+    ClientKind, ClientMsg, InboxItem, ItemKind, ItemState, NotifyKind, PersonaSettings, ServerMsg,
 };
 use omp_desktopd::budget::Usage;
 use omp_desktopd::core::{Core, CoreMsg, FIRST_GENERATION};
@@ -25,14 +25,38 @@ struct Harness {
     log: PathBuf,
 }
 
+const fn t0_ms() -> i64 {
+    // Monday 2026-11-16 09:00 local == UTC.
+    NaiveDate::from_ymd_opt(2026, 11, 16)
+        .unwrap()
+        .and_hms_opt(9, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp_millis()
+}
+
 fn start(tag: &str, client: ClientKind) -> Harness {
+    start_with(
+        tag,
+        client,
+        PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
+        |_| {},
+    )
+}
+
+fn start_with(
+    tag: &str,
+    client: ClientKind,
+    program: PathBuf,
+    setup: impl FnOnce(&Paths),
+) -> Harness {
     let root = std::env::temp_dir().join(format!("ompy-core-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let paths = Paths::under(&root);
     ensure_private_dir(&paths.persona).unwrap();
     let log = root.join("sent.log");
     let launch = Launch {
-        program: PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
+        program,
         home: root.clone(),
         sessions: paths.sessions.clone(),
         extension: root.join("e.mjs"),
@@ -40,13 +64,8 @@ fn start(tag: &str, client: ClientKind) -> Harness {
         socket_env: "x".into(),
         env: vec![("FAKE_OMP_LOG".into(), log.display().to_string())],
     };
-    // Monday 2026-11-16 09:00 local == UTC.
-    let t0 = NaiveDate::from_ymd_opt(2026, 11, 16)
-        .unwrap()
-        .and_hms_opt(9, 0, 0)
-        .unwrap()
-        .and_utc()
-        .timestamp_millis();
+    let t0 = t0_ms();
+    setup(&paths);
     let clock = Arc::new(AtomicI64::new(t0));
     let c2 = Arc::clone(&clock);
     let core = Core::new(
@@ -272,4 +291,315 @@ fn budget_exhaustion_stops_interval_wakes() {
     assert!(!std::fs::read_to_string(&h.log)
         .unwrap_or_default()
         .contains("trigger: interval"));
+}
+
+/// Wait until the session is gone: a frame sent to a dead session is refused.
+fn wait_down(h: &Harness) {
+    for req in 10_000..10_400 {
+        send(
+            h,
+            req,
+            ClientMsg::Rpc {
+                frame: serde_json::json!({"type": "noop"}),
+            },
+        );
+        if let ServerMsg::Reply { ok: false, .. } = reply(h, req) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    panic!("session never went down");
+}
+
+fn open_approval_id(h: &Harness) -> String {
+    wait_until(h, |items| {
+        items
+            .iter()
+            .any(|i| i.kind == ItemKind::Approval && i.state == ItemState::Open)
+    })
+    .into_iter()
+    .find(|i| i.kind == ItemKind::Approval)
+    .unwrap()
+    .id
+}
+
+#[test]
+fn spawn_failure_is_noticed_once() {
+    let h = start_with(
+        "spawn-fail",
+        ClientKind::App,
+        PathBuf::from("/nonexistent/omp-for-test"),
+        |_| {},
+    );
+    send(&h, 1, ClientMsg::Status);
+    assert!(matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }));
+    for req in 2..=4 {
+        h.tx.send(CoreMsg::Restart).unwrap();
+        send(&h, req, ClientMsg::Status);
+        assert!(matches!(reply(&h, req), ServerMsg::Reply { ok: true, .. }));
+    }
+    let items = inbox_items(&h);
+    let notices = items
+        .iter()
+        .filter(|i| i.title.starts_with("Ompy's omp process did not start"))
+        .count();
+    assert_eq!(notices, 1, "one outage adds exactly one notice");
+}
+
+#[test]
+fn exhausted_budget_resets_at_local_midnight_on_tick() {
+    let h = start("budget-midnight", ClientKind::App);
+    let settings = PersonaSettings {
+        daily_token_limit: 100_000,
+        ..PersonaSettings::default()
+    };
+    send(&h, 1, ClientMsg::SetSettings { settings });
+    assert!(matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }));
+    h.tx.send(CoreMsg::Session {
+        gen: FIRST_GENERATION,
+        ev: SessionEvent::Usage(Usage {
+            input: 100_000,
+            output: 0,
+            cache_write: 0,
+        }),
+    })
+    .unwrap();
+    send(&h, 2, ClientMsg::Status);
+    match reply(&h, 2) {
+        ServerMsg::Reply {
+            data: Some(data), ..
+        } => assert_eq!(data["state"], "budget_exhausted"),
+        other => panic!("{other:?}"),
+    }
+    // 2026-11-17 00:00:10 local, just past midnight.
+    let midnight = NaiveDate::from_ymd_opt(2026, 11, 17)
+        .unwrap()
+        .and_hms_opt(0, 0, 10)
+        .unwrap()
+        .and_utc()
+        .timestamp_millis();
+    h.clock.store(midnight, Ordering::SeqCst);
+    h.tx.send(CoreMsg::Tick).unwrap();
+    send(&h, 3, ClientMsg::Status);
+    match reply(&h, 3) {
+        ServerMsg::Reply {
+            data: Some(data), ..
+        } => assert_eq!(data["state"], "running"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn exhausted_budget_on_start_holds_interval() {
+    let h = start_with(
+        "budget-startup",
+        ClientKind::App,
+        PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
+        |paths| {
+            std::fs::write(
+                &paths.budget,
+                br#"{"limit":2000000,"day":"2026-11-16","used":2000000}"#,
+            )
+            .unwrap();
+        },
+    );
+    send(&h, 1, ClientMsg::Status);
+    match reply(&h, 1) {
+        ServerMsg::Reply {
+            data: Some(data), ..
+        } => assert_eq!(data["state"], "budget_exhausted"),
+        other => panic!("{other:?}"),
+    }
+    h.clock.fetch_add(31 * 60_000, Ordering::SeqCst);
+    h.tx.send(CoreMsg::Tick).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!std::fs::read_to_string(&h.log)
+        .unwrap_or_default()
+        .contains("trigger: interval"));
+}
+
+#[test]
+fn lowering_limit_below_use_holds_interval() {
+    let h = start("budget-lower", ClientKind::App);
+    h.tx.send(CoreMsg::Session {
+        gen: FIRST_GENERATION,
+        ev: SessionEvent::Usage(Usage {
+            input: 150_000,
+            output: 0,
+            cache_write: 0,
+        }),
+    })
+    .unwrap();
+    let settings = PersonaSettings {
+        daily_token_limit: 100_000,
+        ..PersonaSettings::default()
+    };
+    send(&h, 1, ClientMsg::SetSettings { settings });
+    assert!(matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }));
+    send(&h, 2, ClientMsg::Status);
+    match reply(&h, 2) {
+        ServerMsg::Reply {
+            data: Some(data), ..
+        } => assert_eq!(data["state"], "budget_exhausted"),
+        other => panic!("{other:?}"),
+    }
+    h.clock.fetch_add(31 * 60_000, Ordering::SeqCst);
+    h.tx.send(CoreMsg::Tick).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!std::fs::read_to_string(&h.log)
+        .unwrap_or_default()
+        .contains("trigger: interval"));
+}
+
+#[test]
+fn dismissing_bound_item_cancels_request() {
+    let h = start("dismiss", ClientKind::App);
+    send(&h, 1, ClientMsg::WakeNow);
+    let id = open_approval_id(&h);
+    send(&h, 2, ClientMsg::InboxResolve { id, answer: None });
+    wait_log(&h, r#""cancelled":true"#);
+    assert!(std::fs::read_to_string(&h.log)
+        .unwrap_or_default()
+        .contains(r#""id":"ap1""#));
+    wait_until(&h, |items| {
+        items
+            .iter()
+            .any(|i| i.kind == ItemKind::Approval && i.state == ItemState::Dismissed)
+    });
+}
+
+#[test]
+fn app_cancelled_response_dismisses_item() {
+    let h = start("app-cancel", ClientKind::App);
+    send(&h, 1, ClientMsg::WakeNow);
+    open_approval_id(&h);
+    send(
+        &h,
+        2,
+        ClientMsg::Rpc {
+            frame: serde_json::json!({
+                "type": "extension_ui_response",
+                "id": "ap1",
+                "cancelled": true,
+            }),
+        },
+    );
+    wait_until(&h, |items| {
+        items
+            .iter()
+            .any(|i| i.rpc_request_id.as_deref() == Some("ap1") && i.state == ItemState::Dismissed)
+    });
+}
+
+#[test]
+fn corrupt_budget_is_moved_aside_and_replaced() {
+    let h = start_with(
+        "budget-corrupt",
+        ClientKind::App,
+        PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
+        |paths| std::fs::write(&paths.budget, b"{not json").unwrap(),
+    );
+    let bad = h
+        .paths
+        .budget
+        .with_file_name(format!("budget.json.bad-{}", t0_ms()));
+    assert!(bad.exists(), "the corrupt file is moved aside");
+    let items = inbox_items(&h);
+    assert!(items
+        .iter()
+        .any(|i| i.title.contains("Budget file was unreadable")));
+    h.tx.send(CoreMsg::Session {
+        gen: FIRST_GENERATION,
+        ev: SessionEvent::Usage(Usage {
+            input: 7,
+            output: 0,
+            cache_write: 0,
+        }),
+    })
+    .unwrap();
+    send(&h, 1, ClientMsg::Status);
+    assert!(matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }));
+    let budget = std::fs::read_to_string(&h.paths.budget).unwrap();
+    assert!(budget.contains("\"used\": 7"), "a fresh budget is written");
+}
+
+#[test]
+fn inbox_retention_caps_settled_items() {
+    let t0 = t0_ms();
+    let h = start_with(
+        "retention",
+        ClientKind::App,
+        PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
+        |paths| {
+            let mut items = vec![serde_json::json!({
+                "id": "open",
+                "kind": "decision",
+                "createdAt": t0,
+                "title": "keep me",
+                "body": null,
+                "options": [],
+                "urgent": false,
+                "state": "open",
+                "answer": null,
+                "rpcRequestId": null
+            })];
+            for i in 0..250 {
+                items.push(serde_json::json!({
+                    "id": format!("old-{i}"),
+                    "kind": "result",
+                    "createdAt": t0 - i * 1_000,
+                    "title": format!("result {i}"),
+                    "body": null,
+                    "options": [],
+                    "urgent": false,
+                    "state": "dismissed",
+                    "answer": null,
+                    "rpcRequestId": null
+                }));
+            }
+            let file = serde_json::json!({"version": 1, "counter": 300, "items": items});
+            std::fs::write(&paths.inbox, serde_json::to_vec(&file).unwrap()).unwrap();
+        },
+    );
+    send(
+        &h,
+        1,
+        ClientMsg::Notify {
+            kind: NotifyKind::Result,
+            title: "fresh".into(),
+            body: None,
+            options: None,
+            urgent: false,
+        },
+    );
+    assert!(matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }));
+    let items = inbox_items(&h);
+    assert!(items.len() <= 200, "settled history is capped");
+    assert!(items.iter().any(|i| i.id == "open"), "open items survive");
+}
+
+#[test]
+fn scheduled_wake_due_while_down_survives_restart() {
+    let h = start("wake-down", ClientKind::App);
+    send(
+        &h,
+        1,
+        ClientMsg::ScheduleWake {
+            at_ms: Some(t0_ms() + 60_000),
+            in_ms: None,
+            note: "down-wake".into(),
+        },
+    );
+    assert!(matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }));
+    send(
+        &h,
+        2,
+        ClientMsg::Rpc {
+            frame: serde_json::json!({"type": "crash"}),
+        },
+    );
+    wait_down(&h);
+    h.clock.store(t0_ms() + 61_000, Ordering::SeqCst);
+    h.tx.send(CoreMsg::Tick).unwrap();
+    wait_log(&h, "[ompy wake] trigger: scheduled: down-wake");
 }

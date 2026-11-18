@@ -10,10 +10,10 @@ mod inbound;
 mod lifecycle;
 mod store;
 
-use crate::budget::Budget;
+use crate::budget::{Budget, BudgetState};
 use crate::inbox::Inbox;
 use crate::paths::{ensure_private_dir, Paths};
-use crate::scheduler::{Now, Scheduled, Scheduler};
+use crate::scheduler::{Event, Now, Scheduled, Scheduler};
 use crate::server::{ConnId, Inbound, Outbound};
 use crate::session::{Launch, Session, SessionEvent};
 use omp_desktop_core::approval::RuleBook;
@@ -149,7 +149,7 @@ impl Core {
         let (settings, settings_ok) = read_json::<PersonaSettings>(&paths.settings, "settings");
         let (wakes, wakes_ok) = read_json::<Vec<Scheduled>>(&paths.schedule, "schedule");
         let (mut inbox, inbox_notice) = Inbox::load(paths.inbox.clone(), now.utc_ms);
-        let (mut budget, budget_ok) = load_budget(&paths.budget, &now);
+        let (mut budget, budget_notice, budget_writable) = load_budget(&paths.budget, &now);
         budget.set_limit(settings.daily_token_limit);
         let mut notices: Vec<String> = Vec::new();
         if let Some(notice) = inbox_notice {
@@ -161,13 +161,12 @@ impl Core {
         if !wakes_ok {
             notices.push("Schedule file was unreadable; using an empty schedule".into());
         }
-        if !budget_ok {
-            notices.push("Budget file was unreadable; today's counter starts at zero".into());
+        if let Some(notice) = budget_notice {
+            notices.push(notice);
         }
         if inbox.expire_all_bound() > 0 {
             notices.push(NOTICE_STARTUP_EXPIRED.into());
         }
-        let had_notices = !notices.is_empty();
         for title in notices {
             inbox.add(
                 ItemKind::Notice,
@@ -179,8 +178,12 @@ impl Core {
                 now.utc_ms,
             );
         }
-        let scheduler = Scheduler::new(&settings, wakes, &now);
-        let core = Self {
+        let mut scheduler = Scheduler::new(&settings, wakes, &now);
+        scheduler.handle(
+            Event::BudgetExhausted(budget.state() == BudgetState::Exhausted),
+            &now,
+        );
+        let mut core = Self {
             rules: Arc::new(RuleBook::new(paths.rules.clone())),
             clock,
             settings,
@@ -192,7 +195,7 @@ impl Core {
             writes: Writes {
                 settings: settings_ok,
                 schedule: wakes_ok,
-                budget: budget_ok,
+                budget: budget_writable,
             },
             paused: false,
             spawn_error: None,
@@ -204,9 +207,7 @@ impl Core {
             launch,
             paths,
         };
-        if had_notices {
-            core.persist_inbox();
-        }
+        core.persist_inbox(now.utc_ms);
         core
     }
 
@@ -266,9 +267,9 @@ impl Core {
         }
     }
 
-    /// Broadcast the inbox after a change and tell the app about the new count.
-    fn inbox_changed(&self) {
-        self.persist_inbox();
+    /// Prune the inbox, persist it and tell the app about the change.
+    fn inbox_changed(&mut self, now: &Now) {
+        self.persist_inbox(now.utc_ms);
         self.broadcast_inbox();
         self.broadcast_status();
     }
@@ -284,7 +285,7 @@ impl Core {
             None,
             now.utc_ms,
         );
-        self.inbox_changed();
+        self.inbox_changed(now);
     }
 
     /// Write one frame to the session. Returns whether it was handed to omp.
@@ -304,6 +305,18 @@ impl Core {
         self.send_frame(&prompt_frame(message))
     }
 
+    /// The deadline the loop sleeps until: the scheduler's next wake or, while
+    /// the budget is exhausted and the persona is not paused, the next local
+    /// midnight so the day rolls over without waiting for a message.
+    fn deadline(&self, now: &Now) -> Option<i64> {
+        sleep_deadline(
+            self.scheduler.next_deadline(),
+            self.paused,
+            self.budget.state() == BudgetState::Exhausted,
+            now,
+        )
+    }
+
     /// The blocking loop: sleeps until the scheduler's next deadline or the
     /// next message, then handles one message.
     // The loop owns the receiver and reads it until it disconnects; taking it
@@ -315,7 +328,7 @@ impl Core {
         self.start_session(&now);
         loop {
             let now = (self.clock)();
-            let msg = match self.scheduler.next_deadline() {
+            let msg = match self.deadline(&now) {
                 Some(due) if due <= now.utc_ms => CoreMsg::Tick,
                 Some(due) => {
                     let wait = Duration::from_millis(wait_ms(due, now.utc_ms));
@@ -374,6 +387,30 @@ fn wait_ms(due_ms: i64, now_ms: i64) -> u64 {
     u64::try_from(due_ms.saturating_sub(now_ms)).unwrap_or(0)
 }
 
+/// The soonest deadline the loop should sleep until. While the budget is
+/// exhausted (and the persona is not paused) the next local midnight is
+/// always a candidate, so the day rolls over even when the scheduler has no
+/// deadline of its own.
+fn sleep_deadline(scheduler: Option<i64>, paused: bool, exhausted: bool, now: &Now) -> Option<i64> {
+    if paused || !exhausted {
+        return scheduler;
+    }
+    let midnight = next_local_midnight_ms(now);
+    Some(scheduler.map_or(midnight, |due| due.min(midnight)))
+}
+
+/// Milliseconds since the epoch of the next local midnight after `now`.
+const fn next_local_midnight_ms(now: &Now) -> i64 {
+    let Some(tomorrow) = now.local.date().succ_opt() else {
+        return now.utc_ms;
+    };
+    let Some(midnight) = tomorrow.and_hms_opt(0, 0, 0) else {
+        return now.utc_ms;
+    };
+    let delta = midnight.signed_duration_since(now.local);
+    now.utc_ms.saturating_add(delta.num_milliseconds())
+}
+
 /// A `prompt` frame that queues behind whatever omp is doing.
 fn prompt_frame(message: &str) -> String {
     json!({
@@ -382,4 +419,49 @@ fn prompt_frame(message: &str) -> String {
         "streamingBehavior": "followUp",
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn now(d: u32, h: u32, m: u32) -> Now {
+        let local = NaiveDate::from_ymd_opt(2026, 11, d)
+            .unwrap()
+            .and_hms_opt(h, m, 0)
+            .unwrap();
+        Now {
+            utc_ms: local.and_utc().timestamp_millis(),
+            local,
+        }
+    }
+
+    #[test]
+    fn exhausted_budget_sleeps_until_local_midnight() {
+        let t = now(16, 23, 30);
+        let midnight = now(17, 0, 0).utc_ms;
+        assert_eq!(next_local_midnight_ms(&t), midnight);
+        assert_eq!(sleep_deadline(None, false, true, &t), Some(midnight));
+        assert_eq!(
+            sleep_deadline(Some(midnight + 1), false, true, &t),
+            Some(midnight),
+            "midnight wins over a later scheduler deadline"
+        );
+        assert_eq!(
+            sleep_deadline(Some(midnight - 1), false, true, &t),
+            Some(midnight - 1),
+            "an earlier scheduler deadline wins"
+        );
+        assert_eq!(
+            sleep_deadline(None, true, true, &t),
+            None,
+            "a paused persona has no midnight timer"
+        );
+        assert_eq!(
+            sleep_deadline(Some(42), false, false, &t),
+            Some(42),
+            "a budget with tokens left leaves the scheduler alone"
+        );
+    }
 }
