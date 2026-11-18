@@ -13,3 +13,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 serde = { version = "1", features = ["derive"] }
 # `raw_value`: the socket server relays omp frames without re-parsing them.
 serde_json = { version = "1", features = ["raw_value"] }
+
+[dev-dependencies]
+# `test_support::tempdir` keeps the temp-dir tests free of collisions.
+omp-desktop-core = { path = "../omp-desktop-core", features = ["test-support"] }
