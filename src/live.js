@@ -987,6 +987,11 @@
   // from the previous omp session (OMP_PERSONA.cursorAfterStatus).
   let _personaGen = null;
 
+  // Set by a successful Disable and cleared by Enable or any live status: the
+  // strip then treats `status: null` as the expected state instead of showing
+  // an `io` error for the service it just switched off.
+  let personaExpectedOff = false;
+
   function _personaAttach(afterSeq) {
     return _invokeSafe("persona_attach", { afterSeq }, null);
   }
@@ -1004,6 +1009,7 @@
    *  goes too and it re-attaches from 0 through the same reset a tab switch
    *  runs (microphone included). */
   function _onPersonaStatus(status) {
+    if (status) personaExpectedOff = false;
     const next = PERSONA.cursorAfterStatus(_personaGen, status, lastSeq);
     _personaGen = next.gen;
     if (!next.reattach) return;
@@ -5253,8 +5259,26 @@
     personaPause() { return _invokeResult("persona_pause"); },
     personaResume() { return _invokeResult("persona_resume"); },
     personaWakeNow() { return _invokeResult("persona_wake_now"); },
-    personaEnable() { return _invokeResult("persona_enable"); },
-    personaDisable() { return _invokeResult("persona_disable"); },
+    /** Enable starts (or keeps) the login service: its absence stops being
+     *  the expected state. */
+    personaEnable() {
+      return _invokeResult("persona_enable").then(result => {
+        if (result?.ok !== false) personaExpectedOff = false;
+        return result;
+      });
+    },
+    /** Disable makes the service's absence the expected state: the strip
+     *  then shows Enable instead of the connection `io` error the platform
+     *  tool would have produced. */
+    personaDisable() {
+      return _invokeResult("persona_disable").then(result => {
+        if (result?.ok !== false) personaExpectedOff = true;
+        notify();
+        return result;
+      });
+    },
+    /** Whether the user's last Enable/Disable left Ompy off on purpose. */
+    personaExpectedOff() { return personaExpectedOff; },
     /** Subscribe to one service event (`status` | `inbox` | `error`);
      *  `cb(payload)`. Returns the unsubscribe function. */
     onPersona(kind, cb) {

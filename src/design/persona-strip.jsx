@@ -15,13 +15,6 @@
 
 const _PS_TICK_MS = 30_000;
 
-// One sentence per error kind the service reports; an unknown kind keeps
-// the service's own message behind the generic line.
-const _PS_ERROR_TEXT = {
-  protocol: "Update needed: the Ompy service and the app have different versions.",
-  owner: "Another account owns the Ompy service name; Ompy stays off.",
-  refresh: "Ompy could not update its background service; restart OMP Desktop to retry.",
-};
 
 /** The pinned entry's glyph: a mint circle with two punched-out dots.
  *  Decorative — the row's name is its accessible text. */
@@ -69,13 +62,14 @@ function PersonaStrip({ status, error, refreshError, bridge }) {
       .finally(() => setBusy(false));
   };
 
-  const errorLine = (problem, fallback) => !problem
-    ? null
-    : _PS_ERROR_TEXT[problem.kind]
-      ? OMP_TR(_PS_ERROR_TEXT[problem.kind])
-      : OMP_TR(fallback, { error: problem.message || OMP_TR("unknown error") });
-  const errorText = errorLine(error, "The Ompy service reported a problem: {error}");
-  const refreshText = errorLine(refreshError, "The Ompy service reported a problem: {error}");
+  // `errorView` names the failure in the user's language and keeps the
+  // platform's own text for the tooltip: an OS error string is never the line.
+  // A service the user just disabled is absent on purpose, so the connection
+  // `io` error of that expected absence is not shown.
+  const expectedOff = bridge?.personaExpectedOff?.() === true;
+  const connectionProblem = error && expectedOff && !status && error.kind === "io" ? null : error;
+  const connectionView = window.OMP_PERSONA.errorView(connectionProblem);
+  const refreshView = window.OMP_PERSONA.errorView(refreshError);
   const dot = !view.online ? ""
     : view.state === "running" ? " live"
     : view.state === "paused" || view.state === "budget_exhausted" ? " warn"
@@ -89,16 +83,18 @@ function PersonaStrip({ status, error, refreshError, bridge }) {
         <span className="persona-title">
           {view.online ? `${OMP_TR("Ompy")} · ${view.label}` : view.label}
         </span>
-        {errorText ? (
-          <span className="persona-error" role="status">{errorText}</span>
+        {connectionView ? (
+          <span className="persona-error" role="status" title={connectionView.detail || undefined}>
+            {connectionView.text}
+          </span>
         ) : view.online ? (<>
           <span className="persona-note">{OMP_TR("next wake-up")} {view.nextWake}</span>
           <span className="persona-sep" aria-hidden="true">·</span>
           <span className="persona-note">{view.tokensText}</span>
         </>) : null}
-        {refreshText && (
-          <span className="persona-error" role="status" title={refreshError?.message || undefined}>
-            {refreshText}
+        {refreshView && (
+          <span className="persona-error" role="status" title={refreshView.detail || undefined}>
+            {refreshView.text}
           </span>
         )}
         {failure && <span className="persona-failure" role="status">{failure}</span>}

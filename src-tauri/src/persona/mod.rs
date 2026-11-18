@@ -177,10 +177,13 @@ async fn set_installed(persona: &State<'_, Persona>, install: bool) -> Result<()
     crate::off_ipc(move || {
         if install {
             sidecar::install()?;
+            client.reconnect()
         } else {
             sidecar::uninstall()?;
+            // A disabled service is absent on purpose: its connect failures
+            // are the expected state, not an outage to show in the strip.
+            client.reconnect_expecting_off()
         }
-        client.reconnect()
     })
     .await?
 }

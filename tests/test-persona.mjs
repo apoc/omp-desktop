@@ -457,6 +457,50 @@ check("error_channels_keep_the_refresh_warning_apart_from_the_connection", () =>
   assert.deepEqual(P.errorsFromFetch({}), { connection: null, refresh: null });
 });
 
+check("error_text_names_io_failures_in_words_and_keeps_the_raw_one_for_a_tooltip", () => {
+  const raw = "connect: Connection refused (os error 61)";
+  assert.deepEqual(P.errorView({ kind: "io", message: raw }), {
+    text: "Could not reach the Ompy service.",
+    detail: raw,
+  });
+  assert.deepEqual(P.errorView({ kind: "refresh", message: "cannot replace the service" }), {
+    text: "Ompy could not update its background service; restart OMP Desktop to retry.",
+    detail: "cannot replace the service",
+  });
+  assert.deepEqual(P.errorView({ kind: "protocol", message: "service protocol 2, expected 1" }), {
+    text: "Update needed: the Ompy service and the app have different versions.",
+    detail: "service protocol 2, expected 1",
+  });
+  assert.deepEqual(P.errorView({ kind: "owner", message: "another account owns the persona pipe" }), {
+    text: "Another account owns the Ompy service name; Ompy stays off.",
+    detail: "another account owns the persona pipe",
+  });
+  // Enable/disable failures: one sentence, the platform tool's output in the
+  // tooltip only.
+  assert.deepEqual(P.errorView({ kind: "control", message: "/x/omp-desktopd uninstall: Access denied" }), {
+    text: "Could not change the Ompy service.",
+    detail: "/x/omp-desktopd uninstall: Access denied",
+  });
+  // A stable code keeps its own translation; an unknown kind or a plain
+  // string has nothing better to say than itself.
+  assert.deepEqual(P.errorView({ kind: "control", message: "persona.instructions_missing:/p/instructions.md" }), {
+    text: "Start Ompy once to create /p/instructions.md.",
+    detail: "persona.instructions_missing:/p/instructions.md",
+  });
+  assert.deepEqual(P.errorView({ kind: "unexpected", message: "boom" }), { text: "boom", detail: null });
+  assert.deepEqual(P.errorView("something odd"), { text: "something odd", detail: null });
+  assert.equal(P.errorView(null), null);
+  assert.equal(P.errorView(undefined), null);
+  // The known sentences are translated, not left as English in zh.
+  win.OMP_I18N.set("zh");
+  try {
+    assert.equal(P.errorView({ kind: "io", message: raw }).text, "无法连接 Ompy 服务。");
+    assert.equal(P.errorView({ kind: "control", message: "denied" }).text, "无法更改 Ompy 服务。");
+  } finally {
+    win.OMP_I18N.set("en");
+  }
+});
+
 check("the api is frozen", () => {
   assert.ok(Object.isFrozen(P));
 });

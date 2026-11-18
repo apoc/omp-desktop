@@ -134,6 +134,7 @@ impl Client {
             backoff: INITIAL_BACKOFF,
             seen_inbox: HashSet::new(),
             outage_reported: false,
+            expect_off: false,
             stopped: false,
         };
         if let Err(error) = std::thread::Builder::new()
@@ -217,8 +218,19 @@ impl ClientHandle {
     }
 
     pub(super) fn reconnect(&self) -> Result<(), String> {
+        self.reconnect_with(false)
+    }
+
+    /// Reconnect after a deliberate Disable: the service's absence is the
+    /// expected state, so its connect failures stay silent until something
+    /// answers or Enable reconnects again.
+    pub(super) fn reconnect_expecting_off(&self) -> Result<(), String> {
+        self.reconnect_with(true)
+    }
+
+    fn reconnect_with(&self, expect_off: bool) -> Result<(), String> {
         self.tx
-            .send(WorkerMsg::Reconnect)
+            .send(WorkerMsg::Reconnect { expect_off })
             .map_err(|_| "persona client stopped".to_owned())
     }
 
@@ -248,7 +260,9 @@ enum WorkerMsg {
         body: ClientMsg,
         response: Sender<Result<Value, String>>,
     },
-    Reconnect,
+    Reconnect {
+        expect_off: bool,
+    },
     RefreshFailed {
         message: String,
     },
@@ -292,6 +306,10 @@ struct Worker {
     /// One outage is one error: the retry storm that follows stays silent
     /// until a connection is live again (the outage is over).
     outage_reported: bool,
+    /// The user just disabled Ompy on purpose: the service's absence (and
+    /// the `io` error every connection attempt gets) is expected, so nothing
+    /// is reported until something answers or Enable is pressed.
+    expect_off: bool,
     stopped: bool,
 }
 
@@ -319,9 +337,10 @@ impl Worker {
                     self.disconnect(None);
                     return;
                 }
-                WorkerMsg::Reconnect => {
+                WorkerMsg::Reconnect { expect_off } => {
                     self.stopped = false;
                     self.outage_reported = false;
+                    self.expect_off = expect_off;
                     self.backoff = INITIAL_BACKOFF;
                     self.disconnect(None);
                     self.retry_at = Some(Instant::now());
@@ -399,9 +418,11 @@ impl Worker {
         match connect(paths, id, &self.tx) {
             Ok(connection) => {
                 self.connection = Some(connection);
-                // A live connection ends the outage; the next `io` failure
-                // is a new one and is reported again.
+                // A live connection ends the outage and any expected
+                // absence; the next `io` failure is a new one and is
+                // reported again.
                 self.outage_reported = false;
+                self.expect_off = false;
             }
             Err(error) => self.connection_failed(error),
         }
@@ -583,8 +604,11 @@ impl Worker {
         self.emitter.inbox(&[]);
         if let Some((kind, message)) = error {
             // One outage, one `io` error: the retries that follow a down
-            // service stay silent until a connection is live again.
-            if kind != "io" || !self.outage_reported {
+            // service stay silent until a connection is live again. A service
+            // the user just disabled is not an outage at all, so its absence
+            // is retried (the retry below still runs) without a report.
+            let expected = kind == "io" && self.expect_off;
+            if !expected && (kind != "io" || !self.outage_reported) {
                 self.emitter.error(kind, &message);
                 if kind == "io" {
                     self.outage_reported = true;
@@ -1359,6 +1383,47 @@ mod tests {
         assert!(
             eventually(Duration::from_secs(2), || (io_errors() == 2).then_some(())).is_some(),
             "reconnect did not reset the outage error guard"
+        );
+        drop(client);
+    }
+
+    #[test]
+    fn a_disabled_service_reports_no_io_error() {
+        let temp = TempDir::new("persona-client", "off");
+        let paths = test_paths(&temp, "off");
+        ensure_private_dir(&paths.persona).unwrap();
+        let events = Arc::new(Recorder::default());
+        // No listener: every connect attempt fails against a down service.
+        let client = Client::start(paths, events.clone());
+        let io_errors = || {
+            events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(name, payload)| name == "error" && payload["kind"] == "io")
+                .count()
+        };
+        assert!(
+            eventually(Duration::from_secs(2), || (io_errors() > 0).then_some(())).is_some(),
+            "the first outage was not reported"
+        );
+        let reported = io_errors();
+        // Deliberate Disable: the absence is the expected state.
+        client.handle().reconnect_expecting_off().unwrap();
+        std::thread::sleep(Duration::from_millis(1800));
+        assert_eq!(
+            io_errors(),
+            reported,
+            "a deliberately disabled service was reported as an outage"
+        );
+        // Enable reconnects normally: a real outage is reported again.
+        client.handle().reconnect().unwrap();
+        assert!(
+            eventually(Duration::from_secs(2), || (io_errors() > reported)
+                .then_some(()))
+            .is_some(),
+            "enabling did not report the next outage"
         );
         drop(client);
     }

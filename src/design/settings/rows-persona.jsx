@@ -141,6 +141,9 @@ function _PR_Enable({ row, ctx, query }) {
   const [pending, setPending] = React.useState(null);
   const [startFailed, setStartFailed] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  // A failed enable/disable is one user-level sentence; the platform tool's
+  // own text stays in the tooltip (`OMP_PERSONA.errorView`).
+  const [control, setControl] = React.useState(null);
   React.useEffect(() => {
     setPending(value => (value === null || !!status === value ? null : value));
     if (status) setStartFailed(false);
@@ -157,22 +160,25 @@ function _PR_Enable({ row, ctx, query }) {
     if (busy) return;
     setBusy(true);
     setError(null);
+    setControl(null);
     setStartFailed(false);
     Promise.resolve(enable ? ctx.bridge.personaEnable() : ctx.bridge.personaDisable())
       .then(result => {
         if (result?.ok === false) {
-          setError(result.error || OMP_TR("Could not change the Ompy service."));
+          setControl(window.OMP_PERSONA.errorView({ kind: "control", message: result.error || "" }));
           return;
         }
         setPending(enable);
-      }, err => setError(err?.message ?? String(err)))
+      }, err => setControl(window.OMP_PERSONA.errorView({ kind: "control", message: err?.message ?? String(err) })))
       .finally(() => setBusy(false));
   };
   return (
     <Row label={row.label} desc={row.desc} query={query}>
       <Toggle value={pending ?? !!status} onChange={toggle} label={row.label} disabled={busy} />
-      {(error || startFailed) && (
-        <div className="st-row-error">{error || window.OMP_PERSONA.enableStartError()}</div>
+      {(control || error || startFailed) && (
+        <div className="st-row-error" title={control?.detail || undefined}>
+          {control?.text || error || window.OMP_PERSONA.enableStartError()}
+        </div>
       )}
     </Row>
   );

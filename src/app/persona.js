@@ -258,6 +258,16 @@
     return { connection: value.connection ?? null, refresh: value.refresh ?? null };
   }
 
+  // The user-level sentence per error kind the app can name. The
+  // platform's own message is never the line itself, only its tooltip.
+  const ERROR_TEXT = {
+    io: "Could not reach the Ompy service.",
+    protocol: "Update needed: the Ompy service and the app have different versions.",
+    owner: "Another account owns the Ompy service name; Ompy stays off.",
+    refresh: "Ompy could not update its background service; restart OMP Desktop to retry.",
+    control: "Could not change the Ompy service.",
+  };
+
   /** Translate stable Rust error codes; runtime errors stay untouched. */
   function errorText(error) {
     const prefix = "persona.instructions_missing:";
@@ -265,6 +275,27 @@
       return window.OMP_I18N.t("Start Ompy once to create {path}.", { path: error.slice(prefix.length) });
     }
     return error;
+  }
+
+  /**
+   * `{ text, detail }` for one error — a `{kind, message}` from
+   * `persona://error`, or a command's plain string (`kind: "control"` passed
+   * by the caller for enable/disable). `text` is translated and never an OS
+   * error string; `detail` is that raw message for a tooltip, or null.
+   */
+  function errorView(error) {
+    if (!error) return null;
+    if (typeof error === "string") {
+      const translated = errorText(error);
+      return { text: translated, detail: translated === error ? null : error };
+    }
+    const message = typeof error.message === "string" ? error.message : "";
+    const translated = errorText(message);
+    if (translated !== message) return { text: translated, detail: message || null };
+    const known = ERROR_TEXT[error.kind];
+    return known
+      ? { text: window.OMP_I18N.t(known), detail: message || null }
+      : { text: message, detail: null };
   }
 
   function enableStartError() {
@@ -332,6 +363,7 @@
     answerOptions,
     sidebarLabel,
     errorText,
+    errorView,
     enableStartError,
     EMPTY_ERRORS,
     errorsWith,
