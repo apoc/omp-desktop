@@ -249,7 +249,13 @@ mod tests {
         #[cfg(not(unix))]
         let root = omp_desktop_core::test_support::tempdir("omp-desktopd", tag);
         let _ = std::fs::remove_dir_all(&root);
-        Paths::under(&root)
+        let paths = Paths::under(&root);
+        #[cfg(windows)]
+        let paths = Paths {
+            test_pipe_name: Some(format!("ompy-test-{tag}-{}", std::process::id())),
+            ..paths
+        };
+        paths
     }
 
     fn line(r: &mut BufReader<Stream>) -> serde_json::Value {
@@ -261,7 +267,6 @@ mod tests {
         serde_json::from_slice(&buf).unwrap()
     }
 
-    #[cfg_attr(windows, ignore = "user-wide pipe name")]
     #[test]
     fn second_instance_is_refused() {
         let p = temp_paths("single");
@@ -273,7 +278,6 @@ mod tests {
         ));
     }
 
-    #[cfg_attr(windows, ignore = "user-wide pipe name")]
     #[test]
     fn hello_is_required_and_unknown_message_keeps_connection() {
         let p = temp_paths("hello");

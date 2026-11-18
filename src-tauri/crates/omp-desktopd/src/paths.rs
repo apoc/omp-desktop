@@ -14,6 +14,10 @@ pub struct Paths {
     /// Unix socket path. On Windows the server uses a namespaced pipe
     /// instead; the field stays for diagnostics.
     pub socket: PathBuf,
+    /// Unique named pipe for Windows tests, whose accept threads outlive a
+    /// test server and must not collide on the user-wide production name.
+    #[cfg(all(test, windows))]
+    pub test_pipe_name: Option<String>,
     pub inbox: PathBuf,
     pub schedule: PathBuf,
     pub budget: PathBuf,
@@ -43,6 +47,8 @@ impl Paths {
         Self {
             config: config.to_path_buf(),
             socket: persona.join("daemon.sock"),
+            #[cfg(all(test, windows))]
+            test_pipe_name: None,
             inbox: persona.join("inbox.json"),
             schedule: persona.join("schedule.json"),
             budget: persona.join("budget.json"),
@@ -94,8 +100,11 @@ pub fn socket_name(paths: &Paths) -> io::Result<Name<'static>> {
     #[cfg(windows)]
     {
         use interprocess::local_socket::{GenericNamespaced, ToNsName};
-        let _ = paths;
-        pipe_name().to_ns_name::<GenericNamespaced>()
+        #[cfg(test)]
+        let name = paths.test_pipe_name.clone().unwrap_or_else(pipe_name); // Owned name required by `ToNsName`.
+        #[cfg(not(test))]
+        let name = pipe_name();
+        name.to_ns_name::<GenericNamespaced>()
     }
     #[cfg(not(any(unix, windows)))]
     {
