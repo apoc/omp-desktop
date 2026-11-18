@@ -89,3 +89,11 @@ Enable copies the bundled `omp-desktopd` into the stable per-user location, veri
 - The credential sanitizer replaces every `secret`-named value, including the `secret: true` flag of an omp `input` request, with a placeholder string; the chat and phone input prompts therefore never mask that answer, and the answer stays in the tab's message state (`src-tauri/src/redaction.rs`, `src-tauri/src/agent/reader.rs`, `src/live.js`).
 - A protocol mismatch makes the startup refresh probe treat the service as stopped: any failed `status` is read as "not running", so a stale service is not restarted (`src/persona/sidecar.rs`, `crates/omp-desktopd/src/main.rs`).
 - Ompy's chat offers "Approve and remember" for tool prompts, but the grant command only knows prompts a Rust-owned tab process forwarded, so the grant is always refused there (`src/live.js`, `src-tauri/src/agent/approvals.rs`).
+- The app's sidecar commands (Enable, Disable, startup refresh) run outside the app's `spawn_gate`, so they can overlap a Chromium launch and inherit its handles (`src-tauri/src/persona/sidecar.rs`).
+- `Session::send` writes to omp's stdin synchronously on the core thread; an omp that stops reading stalls the whole core, including shutdown (`crates/omp-desktopd/src/session.rs`).
+- Inbox answers are settled and acknowledged before they reach omp; if the session is down, the item is marked answered although nothing received it (`crates/omp-desktopd/src/core/inbound.rs`).
+- The relay envelope adds bytes on top of a frame of up to 16 MiB, while the app reads with the same 16 MiB cap, so a frame at the limit disconnects the app (`src-tauri/src/persona/client.rs`).
+- An admission refusal (`too many connections`) is classified as a terminal protocol error, so the app stops reconnecting and asks for an update (`src-tauri/src/persona/client.rs`).
+- Service notices (expired approvals, budget warnings, restart notices) are not shown in the Inbox card (`src/app/persona.js`).
+- If the running status arrives before Enable resolves, Settings can show "Ompy did not start" for a healthy service (`src/design/settings/rows-persona.jsx`).
+- Instructions are passed at spawn only; editing the file takes effect after the next omp restart, although Settings says "on every wake-up" (`src/app/settings-schema.js`, `crates/omp-desktopd/src/session.rs`).
