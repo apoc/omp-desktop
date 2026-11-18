@@ -27,6 +27,8 @@ tauri-plugin-updater = "2.13"
 serde = { version = "1", features = ["derive"] }
 # `raw_value`: the conversation tree skips message bodies it does not read.
 serde_json = { version = "1", features = ["raw_value"] }
+# Persona service client: unix domain socket on unix, named pipe on Windows.
+interprocess = "2.4.8"
 notify = "8"
 gix = "0.87"
 open = { version = "5", features = ["shellexecute-on-windows"] }

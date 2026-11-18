@@ -73,7 +73,7 @@ const DELTA_EVENT_FILTER: &str =
 /// `'unsafe-inline'` for Babel) forwarding an unintended or malformed
 /// command. Kept in sync with every `_send`/`_sendWithResponse` call site
 /// in `src/live.js`.
-const ALLOWED_COMMAND_TYPES: &[&str] = &[
+pub const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "extension_ui_response",
     "get_session_stats",
     "get_state",
@@ -580,7 +580,7 @@ fn reap_and_clear_grants(
 /// against [`ALLOWED_COMMAND_TYPES`]; the parsed command on success.
 /// Extracted as a pure function so the validation logic is unit-testable
 /// without a running child process.
-fn validate_command_type(trimmed: &str) -> Result<serde_json::Value, String> {
+pub fn validate_command_type(trimmed: &str) -> Result<serde_json::Value, String> {
     let parsed: serde_json::Value =
         serde_json::from_str(trimmed).map_err(|_| "command is not valid JSON".to_string())?;
     let cmd_type = parsed

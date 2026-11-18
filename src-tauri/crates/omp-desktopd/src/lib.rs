@@ -5,8 +5,6 @@ pub mod autostart;
 pub mod budget;
 pub mod core;
 pub mod inbox;
-pub mod paths;
-pub mod pipe_security;
 pub mod scheduler;
 pub mod server;
 pub mod session;

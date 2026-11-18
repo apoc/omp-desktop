@@ -4039,6 +4039,7 @@ dependencies = [
  "base64 0.22.1",
  "cpal",
  "gix",
+ "interprocess",
  "libc",
  "notify",
  "objc2-core-foundation",
@@ -4073,10 +4074,13 @@ dependencies = [
 name = "omp-desktop-core"
 version = "0.1.0"
 dependencies = [
+ "dirs",
+ "interprocess",
  "libc",
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "widestring",
  "windows-registry",
  "windows-sys 0.61.2",
 ]
@@ -4092,7 +4096,6 @@ dependencies = [
  "omp-desktop-core",
  "serde",
  "serde_json",
- "widestring",
  "windows-sys 0.61.2",
 ]
 

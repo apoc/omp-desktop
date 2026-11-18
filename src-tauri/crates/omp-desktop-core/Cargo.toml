@@ -12,9 +12,20 @@ test-support = []
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+# Persona paths and local socket names shared by the app and service.
+dirs = "7"
+interprocess = "2.4.8"
 sha2 = "0.11"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
 windows-registry = "0.6"
+# `SecurityDescriptor::deserialize` takes the wide form of the SDDL string.
+widestring = "1"

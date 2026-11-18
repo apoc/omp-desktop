@@ -12,11 +12,11 @@ mod store;
 
 use crate::budget::{Budget, BudgetState};
 use crate::inbox::Inbox;
-use crate::paths::{ensure_private_dir, Paths};
 use crate::scheduler::{Event, Now, Scheduled, Scheduler};
 use crate::server::{ConnId, Inbound, Outbound};
 use crate::session::{Launch, Session, SessionEvent};
 use omp_desktop_core::approval::RuleBook;
+use omp_desktop_core::persona_paths::{ensure_private_dir, Paths};
 use omp_desktop_core::persona_protocol::{
     ClientKind, ItemKind, PersonaSettings, ServerMsg, StatusInfo,
 };

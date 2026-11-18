@@ -24,6 +24,7 @@ mod model_usage;
 mod navigation_guard;
 mod omp_cli;
 mod open_tabs;
+mod persona;
 mod pr_automation;
 mod private_fs;
 mod profiles;
@@ -1456,6 +1457,9 @@ fn setup(app: &tauri::App) {
     app.manage(Arc::new(open_tabs::OpenTabsStore::new(config_file(
         "open-tabs.json",
     ))));
+    // Ompy's socket client: reconnects in the background and re-emits the
+    // service's status, inbox and relayed frames as `persona://` events.
+    app.manage(persona::Persona::for_app(app.handle().clone()));
     // Phone remote access: settings in <app_config_dir>/remote.json, devices
     // in remote-devices.json; started once from the saved settings.
     remote::bridge::install(app, resolved_config_dir.clone()); // `config_file` still borrows it
@@ -1637,6 +1641,18 @@ pub fn run() {
             app_update_check,
             app_update_install,
             set_close_guard,
+            persona::persona_status,
+            persona::persona_inbox,
+            persona::persona_attach,
+            persona::persona_detach,
+            persona::persona_send,
+            persona::persona_resolve,
+            persona::persona_set_settings,
+            persona::persona_pause,
+            persona::persona_resume,
+            persona::persona_wake_now,
+            persona::persona_enable,
+            persona::persona_disable,
             remote::commands::remote_status,
             remote::commands::remote_interfaces,
             remote::commands::remote_apply_settings,

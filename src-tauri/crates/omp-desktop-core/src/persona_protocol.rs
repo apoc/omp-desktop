@@ -210,7 +210,7 @@ pub struct StatusInfo {
 }
 
 /// A line sent by the service to its clients.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
     /// Answer to [`ClientMsg::Hello`].
@@ -230,6 +230,90 @@ pub enum ServerMsg {
     Rpc { seq: u64, frame: Box<RawValue> },
     /// The inbox contents.
     Inbox { items: Vec<InboxItem> },
+}
+
+// An internally tagged enum buffers its variant in `serde::__private::de::Content`,
+// which cannot feed `RawValue`'s raw-borrow deserializer. Keep the whole line
+// as a `RawValue` first, then parse the selected variant directly so the
+// relayed frame keeps its exact JSON text.
+impl<'de> Deserialize<'de> for ServerMsg {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+
+        let raw = Box::<RawValue>::deserialize(deserializer).map_err(D::Error::custom)?;
+        let text = raw.get();
+        let tag: ServerTag = serde_json::from_str(text).map_err(D::Error::custom)?;
+        match tag.kind.as_str() {
+            "hello" => serde_json::from_str::<HelloWire>(text)
+                .map(|wire| Self::Hello {
+                    protocol: wire.protocol,
+                })
+                .map_err(D::Error::custom),
+            "reply" => serde_json::from_str::<ReplyWire>(text)
+                .map(|wire| Self::Reply {
+                    req: wire.req,
+                    ok: wire.ok,
+                    data: wire.data,
+                    error: wire.error,
+                })
+                .map_err(D::Error::custom),
+            "status" => serde_json::from_str::<StatusWire>(text)
+                .map(|wire| Self::Status {
+                    status: wire.status,
+                })
+                .map_err(D::Error::custom),
+            "rpc" => serde_json::from_str::<RpcWire>(text)
+                .map(|wire| Self::Rpc {
+                    seq: wire.seq,
+                    frame: wire.frame,
+                })
+                .map_err(D::Error::custom),
+            "inbox" => serde_json::from_str::<InboxWire>(text)
+                .map(|wire| Self::Inbox { items: wire.items })
+                .map_err(D::Error::custom),
+            _ => Err(D::Error::unknown_variant(
+                &tag.kind,
+                &["hello", "reply", "status", "rpc", "inbox"],
+            )),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ServerTag {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+#[derive(Deserialize)]
+struct HelloWire {
+    protocol: u32,
+}
+
+#[derive(Deserialize)]
+struct ReplyWire {
+    req: u64,
+    ok: bool,
+    #[serde(default)]
+    data: Option<Value>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StatusWire {
+    status: StatusInfo,
+}
+
+#[derive(Deserialize)]
+struct RpcWire {
+    seq: u64,
+    frame: Box<RawValue>,
+}
+
+#[derive(Deserialize)]
+struct InboxWire {
+    items: Vec<InboxItem>,
 }
 
 /// Outcome of [`read_line_capped`].
@@ -346,6 +430,18 @@ mod tests {
         match env.body {
             ClientMsg::Rpc { frame } => {
                 assert_eq!(frame, serde_json::json!({"type":"prompt","message":"hi"}));
+            }
+            _ => panic!("not rpc"),
+        }
+    }
+
+    #[test]
+    fn server_rpc_message_deserializes_its_frame_verbatim() {
+        let line = r#"{"type":"rpc","seq":9,"frame":{"type":"prompt","message":"hi"}}"#;
+        match serde_json::from_str::<ServerMsg>(line).unwrap() {
+            ServerMsg::Rpc { seq, frame } => {
+                assert_eq!(seq, 9);
+                assert_eq!(frame.get(), r#"{"type":"prompt","message":"hi"}"#);
             }
             _ => panic!("not rpc"),
         }

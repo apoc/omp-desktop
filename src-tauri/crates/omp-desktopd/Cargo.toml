@@ -31,8 +31,6 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }
-# `SecurityDescriptor::deserialize` takes the wide form of the SDDL string.
-widestring = "1"
 
 [dev-dependencies]
 # `test_support::tempdir` keeps the temp-dir tests free of collisions.

@@ -16,7 +16,7 @@ pub struct Paths {
     pub socket: PathBuf,
     /// Unique named pipe for Windows tests, whose accept threads outlive a
     /// test server and must not collide on the user-wide production name.
-    #[cfg(all(test, windows))]
+    #[cfg(all(any(test, feature = "test-support"), windows))]
     pub test_pipe_name: Option<String>,
     pub inbox: PathBuf,
     pub schedule: PathBuf,
@@ -47,7 +47,7 @@ impl Paths {
         Self {
             config: config.to_path_buf(),
             socket: persona.join("daemon.sock"),
-            #[cfg(all(test, windows))]
+            #[cfg(all(any(test, feature = "test-support"), windows))]
             test_pipe_name: None,
             inbox: persona.join("inbox.json"),
             schedule: persona.join("schedule.json"),
@@ -85,7 +85,7 @@ pub fn ensure_private_dir(dir: &Path) -> io::Result<()> {
 /// fallback: a guessed pipe name could collide with or widen access beyond
 /// this user's pipe.
 #[cfg(windows)]
-pub use crate::pipe_security::pipe_name;
+pub use crate::persona_pipe_security::pipe_name;
 
 /// The socket name for [`Paths::socket`]: a filesystem path on unix, a
 /// per-user namespaced pipe on Windows.
@@ -103,14 +103,14 @@ pub fn socket_name(paths: &Paths) -> io::Result<Name<'static>> {
     #[cfg(windows)]
     {
         use interprocess::local_socket::{GenericNamespaced, ToNsName};
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-support")))]
         let _ = paths;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let name = match &paths.test_pipe_name {
             Some(name) => name.clone(),
             None => pipe_name()?,
         };
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-support")))]
         let name = pipe_name()?;
         name.to_ns_name::<GenericNamespaced>()
     }

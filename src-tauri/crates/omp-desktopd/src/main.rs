@@ -1,8 +1,8 @@
 use omp_desktop_core::json_store::write_atomic;
+use omp_desktop_core::persona_paths::{ensure_private_dir, socket_name, Paths};
 use omp_desktop_core::persona_protocol::{read_line_capped, LineRead};
 use omp_desktopd::{
     core::Core,
-    paths::{ensure_private_dir, socket_name, Paths},
     scheduler::Now,
     server::{Server, StartError},
     session::{Launch, ProgramSource},
@@ -51,7 +51,7 @@ fn run() -> Result<(), String> {
     #[cfg(windows)]
     let socket_env = format!(
         r"\\.\pipe\{}",
-        omp_desktopd::paths::pipe_name().map_err(|e| e.to_string())?
+        omp_desktop_core::persona_paths::pipe_name().map_err(|e| e.to_string())?
     );
     #[cfg(not(windows))]
     let socket_env = paths.socket.display().to_string();

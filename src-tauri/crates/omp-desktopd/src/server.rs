@@ -7,8 +7,8 @@
 //! client that connects and stays silent cannot multiply threads. The slot is
 //! released when both the reader and the writer are gone.
 use crate::core::CoreMsg;
-use crate::paths::{ensure_private_dir, socket_name, Paths};
 use interprocess::local_socket::{prelude::*, ListenerOptions, Stream};
+use omp_desktop_core::persona_paths::{ensure_private_dir, socket_name, Paths};
 use omp_desktop_core::persona_protocol::{
     read_line_capped, write_msg, ClientKind, ClientMsg, Envelope, LineRead, ServerMsg, PROTOCOL,
 };
@@ -353,13 +353,15 @@ impl Server {
         // server process's user instead of trusting the name.
         #[cfg(windows)]
         if let Ok(probe) = Stream::connect(name.clone()) {
-            return Err(match crate::pipe_security::probe_is_ours(&probe) {
-                Ok(true) => StartError::AlreadyRunning,
-                Ok(false) => {
-                    StartError::Io("another account owns the persona pipe name".to_owned())
-                }
-                Err(e) => StartError::Io(format!("cannot verify the persona pipe owner: {e}")),
-            });
+            return Err(
+                match omp_desktop_core::persona_pipe_security::probe_is_ours(&probe) {
+                    Ok(true) => StartError::AlreadyRunning,
+                    Ok(false) => {
+                        StartError::Io("another account owns the persona pipe name".to_owned())
+                    }
+                    Err(e) => StartError::Io(format!("cannot verify the persona pipe owner: {e}")),
+                },
+            );
         }
         #[cfg(not(windows))]
         if Stream::connect(name.clone()).is_ok() {
@@ -375,7 +377,7 @@ impl Server {
         let options = {
             use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
             options.security_descriptor(
-                crate::pipe_security::listener_security_descriptor()
+                omp_desktop_core::persona_pipe_security::listener_security_descriptor()
                     .map_err(|e| StartError::Io(e.to_string()))?,
             )
         };
@@ -665,10 +667,10 @@ fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paths::Paths;
     use interprocess::local_socket::Stream;
     #[cfg(unix)]
     use interprocess::TryClone;
+    use omp_desktop_core::persona_paths::Paths;
     use omp_desktop_core::persona_protocol::{read_line_capped, LineRead, MAX_LINE_BYTES};
     use std::io::{BufReader, Write};
     use std::sync::mpsc;
@@ -726,7 +728,7 @@ mod tests {
         let p = temp_paths("hello");
         let (tx, rx) = mpsc::channel();
         let _s = Server::start(&p, tx).unwrap();
-        let s = Stream::connect(crate::paths::socket_name(&p).unwrap()).unwrap();
+        let s = Stream::connect(omp_desktop_core::persona_paths::socket_name(&p).unwrap()).unwrap();
         let mut r = BufReader::new(s);
         r.get_mut()
             .write_all(b"{\"req\":1,\"type\":\"hello\",\"protocol\":1,\"client\":\"app\"}\n")
@@ -758,7 +760,7 @@ mod tests {
         let p = temp_paths("silent");
         let (tx, _rx) = mpsc::channel();
         let _s = Server::start_with_hello_timeout(&p, tx, Duration::from_millis(50)).unwrap();
-        let s = Stream::connect(crate::paths::socket_name(&p).unwrap()).unwrap();
+        let s = Stream::connect(omp_desktop_core::persona_paths::socket_name(&p).unwrap()).unwrap();
         s.set_recv_timeout(Some(Duration::from_secs(2))).unwrap();
         let mut r = BufReader::new(s);
         let mut buf = Vec::new();
@@ -773,7 +775,7 @@ mod tests {
         let p = temp_paths("long-hello");
         let (tx, _rx) = mpsc::channel();
         let _s = Server::start(&p, tx).unwrap();
-        let s = Stream::connect(crate::paths::socket_name(&p).unwrap()).unwrap();
+        let s = Stream::connect(omp_desktop_core::persona_paths::socket_name(&p).unwrap()).unwrap();
         let mut r = BufReader::new(s);
         let mut oversized = vec![b'x'; MAX_LINE_BYTES + 1];
         oversized.push(b'\n');
@@ -799,7 +801,7 @@ mod tests {
         let p = temp_paths("proto");
         let (tx, _rx) = mpsc::channel();
         let _s = Server::start(&p, tx).unwrap();
-        let s = Stream::connect(crate::paths::socket_name(&p).unwrap()).unwrap();
+        let s = Stream::connect(omp_desktop_core::persona_paths::socket_name(&p).unwrap()).unwrap();
         let mut r = BufReader::new(s);
         r.get_mut()
             .write_all(b"{\"req\":1,\"type\":\"hello\",\"protocol\":9,\"client\":\"app\"}\n")
@@ -833,7 +835,7 @@ mod tests {
     #[test]
     fn stale_socket_file_is_replaced() {
         let p = temp_paths("stale");
-        crate::paths::ensure_private_dir(&p.persona).unwrap();
+        omp_desktop_core::persona_paths::ensure_private_dir(&p.persona).unwrap();
         std::fs::write(&p.socket, b"").unwrap();
         let (tx, _rx) = mpsc::channel();
         assert!(Server::start(&p, tx).is_ok());
@@ -841,7 +843,7 @@ mod tests {
 
     /// Connects and completes the handshake, returning the open stream.
     fn handshake(p: &Paths) -> BufReader<Stream> {
-        let s = Stream::connect(crate::paths::socket_name(p).unwrap()).unwrap();
+        let s = Stream::connect(omp_desktop_core::persona_paths::socket_name(p).unwrap()).unwrap();
         let mut r = BufReader::new(s);
         r.get_mut()
             .write_all(b"{\"req\":1,\"type\":\"hello\",\"protocol\":1,\"client\":\"app\"}\n")
@@ -875,7 +877,7 @@ mod tests {
             let _ = connected(&rx);
         }
         assert_eq!(clients.len(), MAX_CONNECTIONS);
-        let s = Stream::connect(crate::paths::socket_name(&p).unwrap()).unwrap();
+        let s = Stream::connect(omp_desktop_core::persona_paths::socket_name(&p).unwrap()).unwrap();
         let mut extra = BufReader::new(s);
         #[cfg(windows)]
         let _ = extra
@@ -1001,7 +1003,8 @@ mod tests {
         let server = Server::start_with_limits(&p, tx, limits).unwrap();
         let mut clients: Vec<BufReader<Stream>> = (0..6)
             .map(|_| {
-                let s = Stream::connect(crate::paths::socket_name(&p).unwrap()).unwrap();
+                let s = Stream::connect(omp_desktop_core::persona_paths::socket_name(&p).unwrap())
+                    .unwrap();
                 s.set_recv_timeout(Some(Duration::from_secs(3))).unwrap();
                 BufReader::new(s)
             })
@@ -1047,7 +1050,7 @@ mod tests {
         let p = temp_paths("slow-hello");
         let (tx, _rx) = mpsc::channel();
         let _s = Server::start_with_hello_timeout(&p, tx, Duration::from_millis(200)).unwrap();
-        let s = Stream::connect(crate::paths::socket_name(&p).unwrap()).unwrap();
+        let s = Stream::connect(omp_desktop_core::persona_paths::socket_name(&p).unwrap()).unwrap();
         s.set_recv_timeout(Some(Duration::from_secs(2))).unwrap();
         let mut client = BufReader::new(s);
         let mut trickle = client.get_ref().try_clone().unwrap();

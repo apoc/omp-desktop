@@ -3,12 +3,12 @@
 //! and schedules are persisted.
 
 use chrono::NaiveDate;
+use omp_desktop_core::persona_paths::{ensure_private_dir, Paths};
 use omp_desktop_core::persona_protocol::{
     ClientKind, ClientMsg, InboxItem, ItemKind, ItemState, NotifyKind, PersonaSettings, ServerMsg,
 };
 use omp_desktopd::budget::Usage;
 use omp_desktopd::core::{Core, CoreMsg};
-use omp_desktopd::paths::{ensure_private_dir, Paths};
 use omp_desktopd::scheduler::Now;
 use omp_desktopd::server::{
     Inbound, InboundBudget, Outbound, MAX_INBOUND_BYTES, MAX_OUTBOUND_BYTES,

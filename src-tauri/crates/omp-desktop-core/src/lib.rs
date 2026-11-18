@@ -7,6 +7,8 @@
 pub mod approval;
 pub mod child_path;
 pub mod json_store;
+pub mod persona_paths;
+pub mod persona_pipe_security;
 pub mod persona_protocol;
 pub mod proc_util;
 #[cfg(any(test, feature = "test-support"))]
