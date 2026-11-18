@@ -48,7 +48,17 @@ If omp exits or cannot spawn, restart backoff starts at 1 second and doubles to 
 
 ## Known gaps
 
-- The Windows named pipe still uses the default DACL (Everyone read); it is not hardened yet.
-- Instance detection is check-then-bind without a lock file, so two simultaneous starts can both bind.
-- omp tool children are not killed as a process group.
+- `attach` can duplicate frames because replayed ring entries overlap already queued live events, and sequence numbers restart with each session generation (`src/core/inbound.rs`, `src/session.rs`).
+- Results and notices are created open and are never pruned until the user dismisses them, so the inbox can grow without bound (`src/core/inbound.rs`, `src/inbox.rs`).
+- Secret `input` answers are persisted in `inbox.json` and broadcast with the rest of the item (`src/core/inbound.rs`, `src/inbox.rs`).
+- A missing `omp` at service start exits the process instead of retrying with an inbox notice (`src/main.rs`).
+- Windows starts `omp` without `CREATE_NO_WINDOW` or `windows_subsystem`, and the named pipe is named from `USERNAME` with the default DACL (Everyone read) rather than a hardened private descriptor (`src/session.rs`, `src/paths.rs`).
+- Outbound per-connection channels and the accepted-connection count are unbounded, as is the core event channel (`src/server.rs`, `src/core/lifecycle.rs`).
+- A `schedule.json` or `settings.json` read error preserves the file, but the next write of that state overwrites it; inbox and budget files are moved aside instead (`src/core/store.rs`).
+- A corrupted `budget.json` starts a fresh counter, so the day's spent allowance can be regained (`src/core/store.rs`).
+- The systemd `ExecStart` quotes the executable but does not reject embedded newlines (`src/autostart.rs`).
+- Notified results bypass the inbox retention rule, and the persona extension's tools omit `loadMode: "essential"` (`src/core/inbound.rs`, `persona/extension.mjs`).
+- Instance detection is check-then-bind without a lock file, so two simultaneous starts can both bind (`src/server.rs`).
+- `omp` tool children are not killed as a process group (`src/session.rs`).
+- The macOS LaunchAgent has no `StandardErrorPath`, so service stderr has no persistent log (`src/autostart.rs`).
 - Desktop app integration is Plan B; this service is currently standalone.
