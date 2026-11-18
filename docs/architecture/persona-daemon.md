@@ -6,7 +6,7 @@
 
 `omp-desktopd run` (also the default with no command) creates the persona directory, starts the socket server and runs the core event loop. The core resolves `omp` on every spawn, so a missing or moved binary follows the same spawn-failure path as a crash instead of exiting: status `error`, one inbox notice per outage and the restart backoff. `install` writes and starts the per-user autostart entry; `uninstall` stops and removes it. Entries are a macOS LaunchAgent (`dev.ohMyPi.desktop.persona`), a Linux systemd user service with `Restart=on-failure`, and a Windows logon Scheduled Task (`OMP Desktop Ompy`, `IgnoreNew`). Every rendered entry rejects an executable path containing a control character, because systemd would split `ExecStart` on a newline and XML cannot represent it. `status` connects as an app client and prints the service status JSON.
 
-A second `run` first probes the local socket and exits successfully when a service answers. On Unix a stale socket file is replaced. This is socket-based single-instance detection, not a lock file.
+A second `run` first probes the local socket and exits successfully when a service answers; on Windows the probe also verifies that the answering server runs as the current user (see below), so a pipe created by another account is a hard error rather than a silent second instance. On Unix a stale socket file is replaced. This is socket-based single-instance detection, not a lock file.
 
 ## Files
 
@@ -14,7 +14,7 @@ State lives under `<app config>/persona/` for app identifier `dev.ohMyPi.desktop
 
 |Path|Contents|
 |---|---|
-|`daemon.sock`|Unix local socket (`0600`); Windows uses the named pipe `omp-desktopd-<user SID>` with a DACL for that user and `LocalSystem` only|
+|`daemon.sock`|Unix local socket (`0600`); Windows uses the named pipe `omp-desktopd-<user SID>` with a DACL for that user only|
 |`inbox.json`|Approvals, decisions, results and notices, atomically persisted|
 |`schedule.json`|Pending self-scheduled wake-ups|
 |`budget.json`|Local day, token use, warning state and daily limit|
@@ -32,9 +32,13 @@ The transport is newline-delimited JSON, one object per line, capped at 16 MiB e
 
 Client messages are `status`, `attach` (`afterSeq`), `detach`, `rpc`, `pause`, `resume`, `wake_now`, `set_settings`, `inbox_resolve`, `schedule_wake`, `list_schedule`, `cancel_wake` and `notify`. Attached app clients receive sequenced `rpc` frames (replayable from `afterSeq`), `inbox` snapshots and `status`. The extension uses one connection per tool call and exposes only schedule and notify operations to the model.
 
-The server admits at most 16 handshaken clients; a further connection is answered with `reply` `ok: false, error: "too many connections"` and closed. Each connection's outbound queue is bounded at 32 MiB of serialized messages; when a client stops reading and its queue would exceed that, the core logs it, closes the socket and drops the connection instead of blocking. The core event channel itself stays unbounded because its producers are already bounded, and blocking it could stall the `omp` stdout reader.
+Admission happens in the accept loop, before any connection thread or handshake buffer exists: at most 16 connections hold a slot, including clients that connect and never send `hello`. A connection beyond the cap is answered on the accept thread with `reply` `ok: false, error: "too many connections"` (bounded by a short write timeout) and closed without a thread. On Unix the handshake deadline is absolute - 10 s in total across all reads - so a client that trickles bytes cannot extend it; Windows named-pipe streams have no receive timeout, and the pipe DACL keeps such a client within the same user.
 
-On Windows the service derives the pipe name from the current user's SID and installs a DACL that grants full access to that SID and `LocalSystem` only, with nothing inherited; the name and descriptor both fail rather than fall back when the SID cannot be read. `run` detaches from a console it owns alone and spawns `omp` with `CREATE_NO_WINDOW`, so the logon task leaves no console window behind; `status` and `install` keep their console output.
+Each connection's outbound queue is bounded at 32 MiB of serialized messages; when a client stops reading and its queue would exceed that, the core logs it, closes the socket and drops the connection instead of blocking. Inbound is bounded per connection as well: the reader reserves each line's serialized size against a 32 MiB budget before handing it to the core, and the core releases it after handling. A line that would exceed the budget is not queued; the reader sends a best-effort `inbound queue full` reply, shuts the connection down and stops reading. A parse error whose reply the outbound queue refuses closes the connection for the same reason: a client that does not read its errors is no longer read either.
+
+When the reader exits - client EOF or half-close, refused reply, or inbound overflow - the socket is shut down so a writer blocked on a client that stopped reading returns, and the admission slot is released only after both the reader and the writer have finished. The core event channel itself stays unbounded: client traffic is byte-bounded before it is queued, session events are not (see Known gaps), and blocking the channel could stall the `omp` stdout reader.
+
+On Windows the service derives the pipe name from the current user's SID and installs a DACL that grants full access to that SID only, with nothing inherited; the name and descriptor both fail rather than fall back when the SID cannot be read. Because any account may pre-create `\\.\pipe\omp-desktopd-<victim SID>`, a successful probe connect is not trusted by name: the service asks the pipe for its server process (`GetNamedPipeServerProcessId`), opens that process with `PROCESS_QUERY_LIMITED_INFORMATION`, compares its token user SID with its own, and treats only a match as already running. A mismatch is the hard error `another account owns the persona pipe name`; a probe that cannot be verified is an error too, never a silent exit. The listener is created with `FILE_FLAG_FIRST_PIPE_INSTANCE` (interprocess sets it for the first instance), so a racing second bind fails instead of sharing the name. `run` detaches from a console it owns alone and spawns `omp` with `CREATE_NO_WINDOW`, so the logon task leaves no console window behind; `status` and `install` keep their console output. A desktop-app client for this protocol (Plan B, not implemented here) must repeat the same server-owner check before trusting the pipe: the DACL protects the service's listener, not a squatter's.
 
 ## Wake-ups and budget
 
@@ -58,7 +62,8 @@ If omp exits or cannot spawn, restart backoff starts at 1 second and doubles to 
 - A `schedule.json` or `settings.json` read error preserves the file, but the next write of that state overwrites it; inbox and budget files are moved aside instead (`src/core/store.rs`).
 - A corrupted `budget.json` starts a fresh counter, so the day's spent allowance can be regained (`src/core/store.rs`).
 - Notified results bypass the inbox retention rule, and the persona extension's tools omit `loadMode: "essential"` (`src/core/inbound.rs`, `persona/extension.mjs`).
-- Instance detection is check-then-bind without a lock file, so two simultaneous starts can both bind (`src/server.rs`).
+- On Unix, instance detection is check-then-bind without a lock file, so two simultaneous starts can both bind; the Windows first-instance pipe flag prevents that case (`src/server.rs`).
+- The session-to-core event channel is unbounded: queued session events keep their frames alive, so replay-ring eviction cannot free them, and memory follows `omp`'s own output rate (`src/core/mod.rs`, `src/session.rs`).
 - `omp` tool children are not killed as a process group (`src/session.rs`).
 - The macOS LaunchAgent has no `StandardErrorPath`, so service stderr has no persistent log (`src/autostart.rs`).
 - An `ask` with a single pick-any (`multi`) question rejects every inbox answer, so the user can only dismiss it; an empty answer to a single pick-one `ask` is sent as `customInput: ""`, which omp treats as a cancel (`src/core/inbound.rs`).
