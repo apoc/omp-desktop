@@ -4,3 +4,4 @@ export function smokeChecksum(values) {
   for (const v of values) acc = (acc * 31 + v) % 1000003;
   return acc;
 }
+// second head
