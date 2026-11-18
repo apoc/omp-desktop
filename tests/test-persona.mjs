@@ -1,0 +1,248 @@
+#!/usr/bin/env node
+// Regression script for src/app/persona.js — the Ompy tab's pure helpers:
+// the status view (state label, next wake, token bar), the inbox split,
+// settings validation and the answer buttons.
+// Run: node tests/test-persona.mjs  (or: npm run test:persona)
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const win = {};
+for (const file of ["src/app/i18n.js", "src/app/persona.js"]) {
+  // eslint-disable-next-line no-new-func
+  new Function("window", readFileSync(join(root, file), "utf8"))(win);
+}
+const P = win.OMP_PERSONA;
+
+let passed = 0;
+function check(label, fn) {
+  try {
+    fn();
+  } catch (err) {
+    console.error(`FAILED: ${label}`);
+    throw err;
+  }
+  passed++;
+}
+
+// Local wall-clock times, so "at HH:MM" is the same in every timezone.
+const at = (h, m) => new Date(2026, 10, 18, h, m, 0, 0).getTime();
+const NOW = at(10, 0);
+
+const SETTINGS = {
+  intervalMin: 30,
+  quietStart: "20:00",
+  quietEnd: "07:00",
+  quietWeekends: true,
+  dailyTokenLimit: 2_000_000,
+};
+
+function status(over = {}) {
+  return {
+    generation: 7,
+    state: "running",
+    error: null,
+    nextWakeMs: null,
+    tokensToday: 0,
+    dailyTokenLimit: 2_000_000,
+    openItems: 0,
+    settings: { ...SETTINGS },
+    ...over,
+  };
+}
+
+// ── statusView ───────────────────────────────────────────────────────────
+check("status_view_exhausted: capped bar, exhausted label, pausable", () => {
+  const view = P.statusView(
+    status({ state: "budget_exhausted", tokensToday: 2_100_000 }),
+    NOW,
+  );
+  assert.equal(view.online, true);
+  assert.equal(view.state, "budget_exhausted");
+  assert.equal(view.label, "Budget exhausted");
+  assert.equal(view.tokensPct, 100);
+  assert.equal(view.tokensText, "2.1M / 2M tokens today");
+  assert.equal(view.canPause, true);
+  assert.equal(view.canResume, false);
+});
+
+check("status_view_null_is_offline", () => {
+  const view = P.statusView(null, NOW);
+  assert.equal(view.online, false);
+  assert.equal(view.label, "Ompy is off");
+  assert.equal(view.nextWake, "—");
+  assert.equal(view.tokensPct, 0);
+  assert.equal(view.canPause, false);
+  assert.equal(view.canResume, false);
+});
+
+check("status_view_labels_cover_every_state", () => {
+  assert.equal(P.statusView(status(), NOW).label, "Running");
+  assert.equal(P.statusView(status({ state: "paused" }), NOW).label, "Paused");
+  assert.equal(P.statusView(status({ state: "starting" }), NOW).label, "Starting");
+  assert.equal(
+    P.statusView(status({ state: "error", error: "socket closed" }), NOW).label,
+    "Error: socket closed",
+  );
+});
+
+check("status_view_next_wake_under_an_hour_counts_minutes", () => {
+  const view = P.statusView(status({ nextWakeMs: NOW + 12 * 60_000 }), NOW);
+  assert.equal(view.nextWake, "in 12 min");
+});
+
+check("status_view_next_wake_over_an_hour_is_a_local_time", () => {
+  const view = P.statusView(status({ nextWakeMs: NOW + 90 * 60_000 }), NOW);
+  assert.equal(view.nextWake, "at 11:30");
+});
+
+check("status_view_next_wake_absent_is_a_dash", () => {
+  assert.equal(P.statusView(status({ nextWakeMs: null }), NOW).nextWake, "—");
+});
+
+check("status_view_tokens_pct_uses_the_limit", () => {
+  const view = P.statusView(status({ tokensToday: 600_000 }), NOW);
+  assert.equal(view.tokensPct, 30);
+  assert.equal(view.tokensText, "600k / 2M tokens today");
+});
+
+check("status_view_paused_can_resume_not_pause", () => {
+  const view = P.statusView(status({ state: "paused" }), NOW);
+  assert.equal(view.canPause, false);
+  assert.equal(view.canResume, true);
+});
+
+// ── inboxView ────────────────────────────────────────────────────────────
+const item = (over) => ({
+  id: "i1",
+  kind: "decision",
+  createdAt: 1_000,
+  title: "Question",
+  body: null,
+  options: ["Yes", "No"],
+  urgent: false,
+  state: "open",
+  answer: null,
+  rpcRequestId: null,
+  ...over,
+});
+
+check("inbox_view_badge_counts_open_approvals_and_decisions", () => {
+  const items = [
+    item({ id: "a", kind: "approval", createdAt: 3_000 }),
+    item({ id: "b", kind: "decision", createdAt: 1_000 }),
+    item({ id: "c", kind: "result", createdAt: 2_000 }),
+    item({ id: "d", kind: "notice", createdAt: 4_000 }),
+    item({ id: "e", kind: "approval", state: "answered", createdAt: 5_000 }),
+  ];
+  const view = P.inboxView(items);
+  assert.equal(view.badge, 2);
+  assert.deepEqual(view.open.map(i => i.id), ["a", "b"]); // approvals first, oldest first
+  assert.deepEqual(view.results.map(i => i.id), ["c"]);    // results only
+});
+
+check("inbox_view_results_newest_first_capped_at_five", () => {
+  const items = Array.from({ length: 7 }, (_, i) =>
+    item({ id: `r${i}`, kind: "result", createdAt: i }));
+  assert.deepEqual(P.inboxView(items).results.map(i => i.id), ["r6", "r5", "r4", "r3", "r2"]);
+});
+
+check("inbox_view_empty_is_empty", () => {
+  assert.deepEqual(P.inboxView([]), { open: [], results: [], badge: 0 });
+  assert.deepEqual(P.inboxView(undefined), { open: [], results: [], badge: 0 });
+});
+
+// ── validateSettings ─────────────────────────────────────────────────────
+check("validate_settings_accepts_the_defaults", () => {
+  const result = P.validateSettings({ ...SETTINGS });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value, SETTINGS);
+});
+
+check("validate_settings_interval_bounds_are_5_to_1440", () => {
+  for (const bad of [4, 1441, 30.5, "30", NaN]) {
+    const result = P.validateSettings({ ...SETTINGS, intervalMin: bad });
+    assert.equal(result.ok, false);
+    assert.equal(result.field, "intervalMin");
+    assert.equal(typeof result.message, "string");
+  }
+  const edge = [
+    P.validateSettings({ ...SETTINGS, intervalMin: 5 }),
+    P.validateSettings({ ...SETTINGS, intervalMin: 1440 }),
+  ];
+  assert.ok(edge.every(r => r.ok));
+});
+
+check("validate_settings_quiet_hours_are_HH_MM", () => {
+  for (const [field, bad] of [
+    ["quietStart", "9:00"], ["quietStart", "24:00"], ["quietStart", ""],
+    ["quietEnd", "07:60"], ["quietEnd", "0730"],
+  ]) {
+    const result = P.validateSettings({ ...SETTINGS, [field]: bad });
+    assert.equal(result.ok, false);
+    assert.equal(result.field, field);
+    assert.equal(typeof result.message, "string");
+  }
+});
+
+check("validate_settings_daily_limit_is_100k_to_1e9", () => {
+  for (const bad of [99_999, 1_000_000_001, 100_000.5, "100000"]) {
+    const result = P.validateSettings({ ...SETTINGS, dailyTokenLimit: bad });
+    assert.equal(result.ok, false);
+    assert.equal(result.field, "dailyTokenLimit");
+    assert.equal(typeof result.message, "string");
+  }
+  const edge = [
+    P.validateSettings({ ...SETTINGS, dailyTokenLimit: 100_000 }),
+    P.validateSettings({ ...SETTINGS, dailyTokenLimit: 1_000_000_000 }),
+  ];
+  assert.ok(edge.every(r => r.ok));
+});
+
+check("validate_settings_quiet_weekends_is_boolean", () => {
+  for (const bad of ["yes", 1, null, undefined]) {
+    const result = P.validateSettings({ ...SETTINGS, quietWeekends: bad });
+    assert.equal(result.ok, false);
+    assert.equal(result.field, "quietWeekends");
+    assert.equal(typeof result.message, "string");
+  }
+});
+
+// ── answerOptions ────────────────────────────────────────────────────────
+check("answer_options_approval_is_approve_deny", () => {
+  assert.deepEqual(P.answerOptions(item({ kind: "approval" })), [
+    { label: "Approve", value: "Approve" },
+    { label: "Deny", value: "Deny" },
+  ]);
+});
+
+check("answer_options_confirm_is_confirm_deny", () => {
+  assert.deepEqual(
+    P.answerOptions(item({ kind: "decision", requestMethod: "confirm", options: ["Confirm", "Deny"] })),
+    [
+      { label: "Confirm", value: "Confirm" },
+      { label: "Deny", value: "Deny" },
+    ],
+  );
+});
+
+check("answer_options_decision_comes_from_the_item", () => {
+  assert.deepEqual(P.answerOptions(item({ options: ["Ship it", "Not yet"] })), [
+    { label: "Ship it", value: "Ship it" },
+    { label: "Not yet", value: "Not yet" },
+  ]);
+});
+
+check("answer_options_result_and_notice_have_none", () => {
+  assert.deepEqual(P.answerOptions(item({ kind: "result" })), []);
+  assert.deepEqual(P.answerOptions(item({ kind: "notice" })), []);
+});
+
+check("the api is frozen", () => {
+  assert.ok(Object.isFrozen(P));
+});
+
+console.log(`test-persona: ${passed} checks passed`);

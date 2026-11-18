@@ -313,6 +313,11 @@
        app-live.jsx read window.OMP_SETTINGS / OMP_SETTINGS_TAB. -->
   <script src="app/settings-schema.js"></script>
   <script src="app/settings-tab.js"></script>
+  <!-- Ompy persona pure helpers (status view, inbox split, settings
+       validation, answer buttons; docs/architecture/persona-daemon.md).
+       Dependency-free IIFE; live.js reads window.OMP_PERSONA at its
+       top-level init, so it must load before live.js. -->
+  <script src="app/persona.js"></script>
 
   <!-- Tweak storage (localStorage `omp-desktop:tweaks`): useTweaks and the
        OMP_TWEAKS_STORE reader live.js uses at its top-level init. IIFE. -->

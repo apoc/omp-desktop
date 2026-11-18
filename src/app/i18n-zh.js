@@ -1035,5 +1035,25 @@ window.OMP_I18N.add("zh", {
   "Comment in files panel": "在文件面板中注释",
   "Explain or comment lines of this file in the files panel": "在文件面板中解释或注释此文件的行",
   "The project folder could not be placed in its repository's work tree.": "无法确定项目文件夹在其仓库工作树中的位置。",
+
+  // ── Ompy persona tab (app/persona.js, design/persona-strip.jsx) ──
+  "Ompy is off": "Ompy 已关闭",
+  "Running": "运行中",
+  "Paused": "已暂停",
+  "Budget exhausted": "预算已用尽",
+  "Starting": "启动中",
+  "Error: {message}": "错误：{message}",
+  "unknown error": "未知错误",
+  "at {time}": "于 {time}",
+  "in {n} min": "{n} 分钟后",
+  "{used} / {total} tokens today": "今日 {used} / {total} token",
+  "Approve": "批准",
+  "Deny": "拒绝",
+  "Confirm": "确认",
+  "The settings are missing.": "缺少设置。",
+  "The interval must be a whole number of minutes from 5 to 1440.": "间隔必须为 5 到 1440 分钟的整数。",
+  "Quiet hours must use HH:MM (00:00 to 23:59).": "安静时段必须使用 HH:MM（00:00 至 23:59）。",
+  "The daily limit must be a whole number from 100,000 to 1,000,000,000 tokens.": "每日限额必须为 100,000 到 1,000,000,000 token 的整数。",
+  "Quiet weekends must be on or off.": "周末安静必须为开或关。",
 });
 
