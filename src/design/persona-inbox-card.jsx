@@ -49,7 +49,7 @@ function PersonaInboxCard({ status, items, bridge }) {
   const t = window.OMP_I18N.t;
   const view = window.OMP_PERSONA.inboxView(items);
   const sched = window.OMP_PERSONA.scheduleView(schedule, status);
-  const relative = at => window.OMP_WIDGETS.relativeTime(at, now);
+  const relative = at => window.OMP_PERSONA.relativeTime(at, now);
 
   const settle = (item, answerValue) => {
     if (busy || !bridge?.personaResolve) return;

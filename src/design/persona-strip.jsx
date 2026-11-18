@@ -38,6 +38,7 @@ function PersonaStrip({ status, error, bridge }) {
   const [now, setNow] = React.useState(() => Date.now());
   React.useEffect(() => {
     if (!status) return undefined;
+    setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), _PS_TICK_MS);
     return () => clearInterval(timer);
   }, [status]);

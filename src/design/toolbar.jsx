@@ -59,7 +59,7 @@ function ApprovalModeButton({ cell, onClick }) {
 /**
  * nav:      { sidebarOpen, onToggleSidebar, onOpenProject, onHistory }
  * rail, subagents: { open, onToggle }
- * tree:     { open, onToggle, onRefresh, canRefresh }
+ * tree:     { open, onToggle, onRefresh, canRefresh, disabled }
  * browser:  { open, onToggle, disabled, annotate, canAnnotate, onAnnotate(on), fullView, onFullView(on) }
  * files:    { open, onToggle, disabled, fullView, onFullView(on) }
  * terminal: { open, onToggle, disabled }
@@ -80,7 +80,8 @@ function Toolbar({ nav, rail, subagents, tree, browser, files, terminal, onGit, 
         <span className="tb-sep" />
 
         <ToolButton icon="agent" title={OMP_TR("subagent manager")} pressed={subagents.open} onClick={subagents.onToggle} />
-        <ToolButton icon="branch" title={OMP_TR("conversation tree (prompt-cache status)")} pressed={tree.open} onClick={tree.onToggle} />
+        <ToolButton icon="branch" title={OMP_TR("conversation tree (prompt-cache status)")} pressed={tree.open}
+          disabled={tree.disabled} onClick={tree.onToggle} />
         {tree.open && (
           <span className="tb-sub" role="group" aria-label={OMP_TR("conversation tree")}>
             <ToolButton icon="refresh" title={OMP_TR("refresh conversation tree")} disabled={!tree.canRefresh} onClick={tree.onRefresh} />

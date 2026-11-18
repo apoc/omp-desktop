@@ -694,6 +694,7 @@ mod tests {
         paths
     }
 
+    #[cfg(unix)]
     fn is_disconnect_error(error: &std::io::Error) -> bool {
         matches!(
             error.kind(),

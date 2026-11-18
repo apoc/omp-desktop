@@ -63,10 +63,17 @@ impl Emitter for TauriEmitter {
     }
 }
 
+#[derive(Clone, serde::Serialize)]
+pub struct PersonaError {
+    kind: String,
+    message: String,
+}
+
 #[derive(Default)]
 struct Snapshot {
     status: Option<StatusInfo>,
     inbox: Vec<InboxItem>,
+    error: Option<PersonaError>,
 }
 
 /// The app's managed persona client: one background worker thread and a
@@ -141,6 +148,10 @@ impl Client {
     pub(super) fn inbox(&self) -> Vec<InboxItem> {
         self.handle.inbox()
     }
+
+    pub(super) fn error(&self) -> Option<PersonaError> {
+        self.handle.error()
+    }
 }
 
 impl ClientHandle {
@@ -159,6 +170,15 @@ impl ClientHandle {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .inbox
+            .clone()
+    }
+
+    pub(super) fn error(&self) -> Option<PersonaError> {
+        // IPC returns an owned snapshot; the worker retains its current copy.
+        self.snapshot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .error
             .clone()
     }
 
@@ -269,6 +289,7 @@ impl Worker {
                 }
                 WorkerMsg::Reconnect => {
                     self.stopped = false;
+                    self.outage_reported = false;
                     self.backoff = INITIAL_BACKOFF;
                     self.disconnect(None);
                     self.retry_at = Some(Instant::now());
@@ -411,10 +432,10 @@ impl Worker {
                 }
             }
             ServerMsg::Status { status } => {
-                self.snapshot
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .status = Some(status.clone()); // event and cached snapshot each own a copy
+                let mut snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+                snapshot.status = Some(status.clone()); // event and cached snapshot each own a copy
+                snapshot.error = None;
+                drop(snapshot);
                 self.emitter.status(Some(&status));
             }
             ServerMsg::Inbox { items } => {
@@ -492,14 +513,22 @@ impl Worker {
             // the socket open, the reader blocked, and the service holding
             // one of its connection slots until the app exits.
             shutdown_stream(&connection.writer);
+            reap(connection.reader, &connection.writer);
             drop(connection.writer);
-            reap(connection.reader);
         }
         self.fail_pending("persona service disconnected");
         {
             let mut snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
             snapshot.status = None;
             snapshot.inbox.clear();
+            if let Some((kind, message)) = &error {
+                if *kind != "io" {
+                    snapshot.error = Some(PersonaError {
+                        kind: (*kind).to_owned(),
+                        message: message.clone(), // event and cached snapshot each own a copy
+                    });
+                }
+            }
         }
         self.emitter.status(None);
         self.emitter.inbox(&[]);
@@ -633,16 +662,43 @@ fn shutdown_stream(stream: &Stream) {
     }
 }
 
-/// Reap a disconnected connection's reader thread.
-fn reap(reader: JoinHandle<()>) {
+/// Reap a disconnected connection's reader thread before dropping `writer`.
+fn reap(reader: JoinHandle<()>, writer: &Stream) {
     // The shutdown above makes the reader's `read` return on unix, so the
-    // join is bounded. On Windows `CancelIoEx` is best-effort; joining a read
-    // it failed to wake would hang the worker, so the thread is detached
-    // instead.
+    // join is bounded by the socket implementation.
     #[cfg(unix)]
-    let _ = reader.join();
-    #[cfg(not(unix))]
-    drop(reader);
+    {
+        let _ = writer;
+        let _ = reader.join();
+    }
+    // A named pipe has no shutdown call. Keep the writer alive and repeat
+    // CancelIoEx until the reader finishes; a failed cancellation is bounded
+    // to 500 ms and detaches the reader rather than hanging the worker.
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{AsHandle, AsRawHandle};
+        use windows_sys::Win32::System::IO::CancelIoEx;
+        let Stream::NamedPipe(stream) = writer;
+        for _ in 0..50 {
+            if reader.is_finished() {
+                break;
+            }
+            // SAFETY: the handle belongs to this process and this stream;
+            // cancelling its pending I/O wakes the reader's `ReadFile`.
+            unsafe {
+                CancelIoEx(stream.as_handle().as_raw_handle(), std::ptr::null());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if reader.is_finished() {
+            let _ = reader.join();
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = writer;
+        drop(reader);
+    }
 }
 
 fn read_server(id: u64, mut reader: BufReader<Stream>, tx: Sender<WorkerMsg>) {
@@ -1034,11 +1090,46 @@ mod tests {
                 .then_some(())
         });
         assert!(protocol_error.is_some());
+        assert_eq!(client.error().unwrap().kind, "protocol");
         assert!(
             !server.join().unwrap(),
             "client retried after protocol mismatch"
         );
         drop(client);
+    }
+
+    #[test]
+    fn successful_status_clears_the_cached_terminal_error() {
+        let temp = TempDir::new("persona-client", "snap");
+        let paths = test_paths(&temp, "snap");
+        ensure_private_dir(&paths.persona).unwrap();
+        let listener = ListenerOptions::new()
+            .name(socket_name(&paths).unwrap())
+            .create_sync()
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut first = listener.accept().unwrap();
+            let _hello = read_client(first.try_clone().unwrap());
+            write_msg(&mut first, &ServerMsg::Hello { protocol: 2 }).unwrap();
+            drop(first);
+
+            let mut second = listener.accept().unwrap();
+            let _hello = read_client(second.try_clone().unwrap());
+            write_msg(&mut second, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            write_msg(&mut second, &ServerMsg::Status { status: status() }).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        let events = Arc::new(Recorder::default());
+        let client = Client::start(paths, events);
+        assert!(eventually(Duration::from_secs(2), || {
+            client.error().map(|error| error.kind)
+        })
+        .is_some());
+        client.handle().reconnect().unwrap();
+        assert!(eventually(Duration::from_secs(2), || { client.status().map(|_| ()) }).is_some());
+        assert!(client.error().is_none());
+        drop(client);
+        server.join().unwrap();
     }
 
     #[test]
@@ -1129,6 +1220,11 @@ mod tests {
         // Retries land at 500 ms and 1500 ms; both must stay silent.
         std::thread::sleep(Duration::from_millis(1800));
         assert_eq!(io_errors(), 1, "one outage reported more than one io error");
+        client.handle().reconnect().unwrap();
+        assert!(
+            eventually(Duration::from_secs(2), || (io_errors() == 2).then_some(())).is_some(),
+            "reconnect did not reset the outage error guard"
+        );
         drop(client);
     }
 

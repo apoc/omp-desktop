@@ -139,14 +139,25 @@ function _PR_Enable({ row, ctx, query }) {
   // Enable answers before the service's status does; the toggle keeps the
   // user's intent until a status either confirms or contradicts it.
   const [pending, setPending] = React.useState(null);
+  const [startFailed, setStartFailed] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   React.useEffect(() => {
     setPending(value => (value === null || !!status === value ? null : value));
+    if (status) setStartFailed(false);
   }, [status]);
+  React.useEffect(() => {
+    if (pending !== true) return undefined;
+    const timer = setTimeout(() => {
+      setPending(null);
+      setStartFailed(true);
+    }, 10_000);
+    return () => clearTimeout(timer);
+  }, [pending]);
   const toggle = enable => {
     if (busy) return;
     setBusy(true);
     setError(null);
+    setStartFailed(false);
     Promise.resolve(enable ? ctx.bridge.personaEnable() : ctx.bridge.personaDisable())
       .then(result => {
         if (result?.ok === false) {
@@ -160,7 +171,9 @@ function _PR_Enable({ row, ctx, query }) {
   return (
     <Row label={row.label} desc={row.desc} query={query}>
       <Toggle value={pending ?? !!status} onChange={toggle} label={row.label} disabled={busy} />
-      {error && <div className="st-row-error">{error}</div>}
+      {(error || startFailed) && (
+        <div className="st-row-error">{error || window.OMP_PERSONA.enableStartError()}</div>
+      )}
     </Row>
   );
 }
@@ -265,8 +278,10 @@ function _PR_Instructions({ row, ctx, query }) {
     setError(null);
     Promise.resolve(ctx.bridge.personaOpenInstructions())
       .then(result => {
-        if (result?.ok === false) setError(result.error || OMP_TR("Could not open the instructions file."));
-      }, err => setError(err?.message ?? String(err)))
+        if (result?.ok === false) {
+          setError(window.OMP_PERSONA.errorText(result.error) || OMP_TR("Could not open the instructions file."));
+        }
+      }, err => setError(window.OMP_PERSONA.errorText(err?.message ?? String(err))))
       .finally(() => setBusy(false));
   };
   return (

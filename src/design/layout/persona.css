@@ -53,6 +53,7 @@
   min-height: 39px; padding: 8px 20px;
 }
 .persona-dot { width: 8px; height: 8px; flex: none; }
+.window:not(.is-running) .persona-line > .dot.live { animation: none; }
 .persona-title {
   flex: none; font-size: var(--d-text-sm); font-weight: 600; color: var(--fg);
   white-space: nowrap;

@@ -225,6 +225,9 @@ function App() {
     Promise.resolve(bridge.personaInbox?.()).then(items => {
       if (live) setPersonaInbox(Array.isArray(items) ? items : []);
     }, () => {});
+    Promise.resolve(bridge.personaError?.()).then(error => {
+      if (live && error) setPersonaError(error);
+    }, () => {});
     return () => { live = false; offStatus(); offInbox(); offError(); };
   }, [bridge]);
 
@@ -1074,7 +1077,7 @@ function App() {
             rail={{ open: railVisible, onToggle: toggleRail }}
             subagents={{ open: showSplit, onToggle: subagentUi.togglePane }}
             tree={{
-              open: side === "tree", onToggle: () => toggleSide("tree"),
+              open: side === "tree", onToggle: () => toggleSide("tree"), disabled: personaActive,
               onRefresh: convTree.refresh, canRefresh: !convTree.loading && !!convTree.key,
             }}
             browser={{
@@ -1121,7 +1124,7 @@ function App() {
                 tabs={realSessions}
                 activeId={stab.active || _alIsPersona(activeProject) ? null : activeSessionId}
                 projectAppearances={t.projectAppearance}
-                personaActive={personaActive}
+                personaActive={personaActive && !stab.active}
                 personaBadge={personaBadge}
                 onSelectPersona={() => handleSelectTab("ompy")}
                 recents={recentRows(recentProjects, realSessions, activeProfileId)}

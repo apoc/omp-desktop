@@ -527,6 +527,14 @@ fn app_secret_response_is_not_persisted_or_broadcast() {
         ServerMsg::Reply { ok: true, .. }
     ));
     assert_no_later_secret_broadcast(&h);
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&h.paths.inbox).unwrap()).unwrap();
+    assert!(stored["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|stored_item| stored_item["rpcRequestId"] == "s1")
+        .is_some_and(|stored_item| stored_item["state"] != "open"));
     assert!(!std::fs::read_to_string(&h.paths.inbox)
         .unwrap()
         .contains("hunter2"));

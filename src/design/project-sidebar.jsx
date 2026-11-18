@@ -52,7 +52,8 @@ function ProjectSidebar({
           no project open and the persona service off. */}
       <div className="psb-pinned">
         <button type="button" className={`psb-persona${personaActive ? " active" : ""}`}
-          title={OMP_TR("Ompy")} aria-current={personaActive ? "page" : undefined}
+          title={OMP_TR("Ompy")} aria-label={window.OMP_PERSONA.sidebarLabel(personaBadge)}
+          aria-current={personaActive ? "page" : undefined}
           onClick={onSelectPersona}>
           <PersonaFace />
           <span className="psb-persona-name">{OMP_TR("Ompy")}</span>

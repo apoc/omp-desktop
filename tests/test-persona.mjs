@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const win = {};
-for (const file of ["src/app/i18n.js", "src/app/persona.js"]) {
+for (const file of ["src/app/i18n.js", "src/app/i18n-zh.js", "src/app/persona.js"]) {
   // eslint-disable-next-line no-new-func
   new Function("window", readFileSync(join(root, file), "utf8"))(win);
 }
@@ -101,6 +101,11 @@ check("status_view_next_wake_over_an_hour_is_a_local_time", () => {
 
 check("status_view_next_wake_absent_is_a_dash", () => {
   assert.equal(P.statusView(status({ nextWakeMs: null }), NOW).nextWake, "—");
+});
+
+check("status_view_exhausted_without_wake_resumes_tomorrow", () => {
+  const view = P.statusView(status({ state: "budget_exhausted", nextWakeMs: null }), NOW);
+  assert.equal(view.nextWake, "resumes tomorrow");
 });
 
 check("status_view_tokens_pct_uses_the_limit", () => {
@@ -319,6 +324,41 @@ check("answer_options_decision_comes_from_the_item", () => {
 check("answer_options_result_and_notice_have_none", () => {
   assert.deepEqual(P.answerOptions(item({ kind: "result" })), []);
   assert.deepEqual(P.answerOptions(item({ kind: "notice" })), []);
+});
+
+// ── persona presentation and navigation helpers ─────────────────────────
+check("relative_times_cover_past_future_and_dates", () => {
+  assert.equal(P.relativeTime(NOW - 20_000, NOW), "now");
+  assert.equal(P.relativeTime(NOW - 5 * 60_000, NOW), "5 min ago");
+  assert.equal(P.relativeTime(NOW + 2 * 3_600_000, NOW), "in 2 hr");
+  assert.equal(P.relativeTime(NOW - 3 * 86_400_000, NOW), "3 days ago");
+  assert.equal(P.relativeTime(Date.UTC(2026, 9, 18, 12), Date.UTC(2026, 10, 18, 12)), "2026-10-18");
+});
+
+check("relative_times_and_new_persona_strings_have_chinese", () => {
+  win.OMP_I18N.set("zh");
+  assert.equal(P.relativeTime(NOW - 5 * 60_000, NOW), "5 分钟前");
+  assert.equal(P.sidebarLabel(2), "Ompy，2 项等待你处理");
+  assert.equal(P.statusView(status({ state: "budget_exhausted" }), NOW).nextWake, "明天恢复");
+  assert.equal(
+    P.errorText("persona.instructions_missing:/tmp/persona/instructions.md"),
+    "先启动一次 Ompy 以创建 /tmp/persona/instructions.md。",
+  );
+  assert.equal(P.enableStartError(), "Ompy 未能启动");
+  win.OMP_I18N.set("en");
+});
+
+check("sidebar_label_only_adds_a_waiting_count", () => {
+  assert.equal(P.sidebarLabel(0), "Ompy");
+  assert.equal(P.sidebarLabel(3), "Ompy, 3 waiting for you");
+});
+
+check("coded_instruction_error_keeps_the_path_and_other_errors", () => {
+  assert.equal(
+    P.errorText("persona.instructions_missing:/tmp/persona/instructions.md"),
+    "Start Ompy once to create /tmp/persona/instructions.md.",
+  );
+  assert.equal(P.errorText("editor failed"), "editor failed");
 });
 
 // ── cursorAfterStatus ────────────────────────────────────────────────────

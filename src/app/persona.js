@@ -27,6 +27,26 @@
     return String(n);
   }
 
+  /** Compact relative time for inbox results and scheduled wakes. */
+  function relativeTime(atMs, nowMs) {
+    const t = window.OMP_I18N.t;
+    const delta = atMs - nowMs;
+    const abs = Math.abs(delta);
+    if (abs < 60_000) return t("now");
+    if (abs > 30 * 86_400_000) return new Date(atMs).toISOString().slice(0, 10);
+    const future = delta > 0;
+    if (abs < 3_600_000) {
+      const n = Math.floor(abs / 60_000);
+      return future ? t("in {n} min", { n }) : t("{n} min ago", { n });
+    }
+    if (abs < 86_400_000) {
+      const n = Math.floor(abs / 3_600_000);
+      return future ? t("in {n} hr", { n }) : t("{n} hr ago", { n });
+    }
+    const n = Math.floor(abs / 86_400_000);
+    return future ? t("in {n} days", { n }) : t("{n} days ago", { n });
+  }
+
   /** Local `HH:MM` for a wall-clock instant. */
   function clock(ms) {
     const date = new Date(ms);
@@ -74,7 +94,7 @@
         ? t("Error: {message}", { message: status.error || t("unknown error") })
         : stateLabel(state),
       nextWake: status.nextWakeMs == null
-        ? "—"
+        ? state === "budget_exhausted" ? t("resumes tomorrow") : "—"
         : status.nextWakeMs - nowMs > 60 * MINUTE_MS
           ? t("at {time}", { time: clock(status.nextWakeMs) })
           : t("in {n} min", { n: Math.max(0, Math.round((status.nextWakeMs - nowMs) / MINUTE_MS)) }),
@@ -205,8 +225,26 @@
     return [];
   }
 
-  /**
-   * Whether a `sessions` entry (or a session registry entry) is Ompy: the
+  /** Accessible name of the pinned Ompy button. */
+  function sidebarLabel(badge) {
+    const t = window.OMP_I18N.t;
+    return badge > 0 ? t("Ompy, {n} waiting for you", { n: badge }) : t("Ompy");
+  }
+
+  /** Translate stable Rust error codes; runtime errors stay untouched. */
+  function errorText(error) {
+    const prefix = "persona.instructions_missing:";
+    if (typeof error === "string" && error.startsWith(prefix)) {
+      return window.OMP_I18N.t("Start Ompy once to create {path}.", { path: error.slice(prefix.length) });
+    }
+    return error;
+  }
+
+  function enableStartError() {
+    return window.OMP_I18N.t("Ompy did not start");
+  }
+
+  /** Whether a `sessions` entry (or a session registry entry) is Ompy: the
    * window's own chat, not one of the user's project tabs. Ruling B-R6 —
    * `kind: "persona"` is the one marker, so the tab bar, the tab counts, the
    * close/quit guards and the keyboard navigation all ask this instead of
@@ -259,11 +297,15 @@
 
   window.OMP_PERSONA = Object.freeze({
     compactTokens: compact,
+    relativeTime,
     statusView,
     inboxView,
     scheduleView,
     validateSettings,
     answerOptions,
+    sidebarLabel,
+    errorText,
+    enableStartError,
     isPersona,
     realTabs,
     activeEntry,

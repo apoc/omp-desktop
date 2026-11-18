@@ -6,7 +6,7 @@ mod push;
 mod sidecar;
 
 use crate::agent::validate_command_type;
-use client::Client;
+use client::{Client, PersonaError};
 use omp_desktop_core::persona_protocol::{ClientMsg, InboxItem, PersonaSettings, StatusInfo};
 use tauri::State;
 
@@ -51,6 +51,14 @@ pub fn persona_inbox(persona: State<'_, Persona>) -> Result<Vec<InboxItem>, Stri
     Ok(persona.client.inbox())
 }
 
+/// Last terminal connection error, retained because setup emits it before
+/// the webview can subscribe. A successful status clears it.
+#[tauri::command]
+#[allow(clippy::unnecessary_wraps)] // IPC contract: every persona command returns Result
+pub fn persona_error(persona: State<'_, Persona>) -> Result<Option<PersonaError>, String> {
+    Ok(persona.client.error())
+}
+
 /// The queued wakes and the next interval wake (`ClientMsg::ListSchedule`).
 /// `Value::Null` when the service answers without data.
 #[tauri::command]
@@ -69,12 +77,16 @@ pub async fn persona_open_instructions() -> Result<(), String> {
 
 fn open_instructions() -> Result<(), String> {
     let path = omp_desktop_core::persona_paths::Paths::resolve()?.instructions;
+    open_instructions_at(&path)
+}
+
+fn open_instructions_at(path: &std::path::Path) -> Result<(), String> {
     if !path.is_file() {
-        return Err(format!("Start Ompy once to create {}.", path.display()));
+        return Err(format!("persona.instructions_missing:{}", path.display()));
     }
     let _gate = crate::spawn_gate::shared();
     #[allow(clippy::disallowed_methods)] // launching the editor, under the gate
-    open::that_detached(&path).map_err(|e| format!("cannot open {}: {e}", path.display()))
+    open::that_detached(path).map_err(|e| format!("cannot open {}: {e}", path.display()))
 }
 
 #[tauri::command]
@@ -158,7 +170,18 @@ pub async fn persona_disable(persona: State<'_, Persona>) -> Result<(), String> 
 
 #[cfg(test)]
 mod tests {
-    use super::validate_send;
+    use super::{open_instructions_at, validate_send};
+    use crate::test_support::TempDir;
+
+    #[test]
+    fn missing_instructions_have_a_stable_error_code() {
+        let temp = TempDir::new("persona", "missing-instructions");
+        let path = temp.path().join("instructions.md");
+        assert_eq!(
+            open_instructions_at(&path).unwrap_err(),
+            format!("persona.instructions_missing:{}", path.display())
+        );
+    }
 
     #[test]
     fn send_rejects_unknown_type() {

@@ -5240,6 +5240,7 @@
     // Ompy tab needs no separate path.
     personaStatus() { return _invokeSafe("persona_status", undefined, null); },
     personaInbox() { return _invokeSafe("persona_inbox", undefined, []); },
+    personaError() { return _invokeSafe("persona_error", undefined, null); },
     /** The service's queued wakes and its next interval wake
      *  (`list_schedule`), as `{ok, value | error}`. */
     personaSchedule() { return _invokeResult("persona_schedule"); },
