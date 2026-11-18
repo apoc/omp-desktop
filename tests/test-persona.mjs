@@ -421,6 +421,42 @@ check("empty_workspace_needs_no_project_tab", () => {
   assert.equal(P.emptyWorkspace([ompy, { id: "session-1", path: "/tmp/a" }]), false);
 });
 
+check("error_channels_keep_the_refresh_warning_apart_from_the_connection", () => {
+  const connection = { kind: "protocol", message: "service protocol 2, expected 1" };
+  const refresh = { kind: "refresh", message: "cannot replace the service" };
+  let state = P.EMPTY_ERRORS;
+  assert.deepEqual(state, { connection: null, refresh: null });
+  state = P.errorsWith(state, refresh);
+  assert.deepEqual(state, { connection: null, refresh });
+  // A status clears the connection error only.
+  state = P.errorsWith(state, connection);
+  assert.equal(state.refresh, refresh);
+  state = P.statusCleared(state);
+  assert.deepEqual(state, { connection: null, refresh });
+  // A later connection error does not replace the refresh warning.
+  state = P.errorsWith(state, connection);
+  assert.equal(state.connection, connection);
+  assert.equal(state.refresh, refresh);
+  // ... and the reverse: a new refresh failure leaves the connection error.
+  const second = { kind: "refresh", message: "second failure" };
+  state = P.errorsWith(state, second);
+  assert.equal(state.connection, connection);
+  assert.equal(state.refresh, second);
+  // Unknown or missing shapes are no-ops, and statusCleared is cheap.
+  assert.equal(P.errorsWith(state, null), state);
+  assert.equal(P.errorsWith(state, undefined), state);
+  assert.equal(P.errorsWith(state, "io"), state);
+  const cleared = P.statusCleared(state);
+  assert.equal(cleared.connection, null);
+  assert.equal(P.statusCleared(cleared), cleared, "an already-clear connection is the same object");
+  assert.equal(P.statusCleared(null).connection, null);
+  // The boot fetch has the same shape (and tolerates old or missing data).
+  assert.deepEqual(P.errorsFromFetch({ connection, refresh }), { connection, refresh });
+  assert.deepEqual(P.errorsFromFetch({ connection, refresh: null }), { connection, refresh: null });
+  assert.deepEqual(P.errorsFromFetch(null), { connection: null, refresh: null });
+  assert.deepEqual(P.errorsFromFetch({}), { connection: null, refresh: null });
+});
+
 check("the api is frozen", () => {
   assert.ok(Object.isFrozen(P));
 });

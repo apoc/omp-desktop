@@ -1473,10 +1473,11 @@ fn setup(app: &tauri::App) {
     let reporter = persona.reporter();
     let refreshing = std::thread::Builder::new()
         .name("persona-sidecar-refresh".into())
-        .spawn(move || {
-            if let Err(error) = persona::refresh_sidecar() {
+        .spawn(move || match persona::refresh_sidecar() {
+            Ok(()) => reporter.refresh_succeeded(),
+            Err(error) => {
                 eprintln!("[omp-desktop] persona sidecar not refreshed: {error}");
-                reporter.report_error("refresh", &error);
+                reporter.refresh_failed(&error);
             }
         });
     if let Err(error) = refreshing {

@@ -231,6 +231,33 @@
     return badge > 0 ? t("Ompy, {n} waiting for you", { n: badge }) : t("Ompy");
   }
 
+  /** Neither channel carries an error. */
+  const EMPTY_ERRORS = Object.freeze({ connection: null, refresh: null });
+
+  /** Fold one `persona://error` into the two channels. `refresh` is the
+   *  app's own sidecar failure, kept apart so a connection error can never
+   *  overwrite it (and the reverse); an unknown shape leaves the state. */
+  function errorsWith(prev, error) {
+    const state = prev && typeof prev === "object" ? prev : EMPTY_ERRORS;
+    if (!error || typeof error !== "object") return state;
+    return error.kind === "refresh"
+      ? { ...state, refresh: error }
+      : { ...state, connection: error };
+  }
+
+  /** A status means the service answers: the connection error is over. The
+   *  refresh warning is app-side and stays until a later refresh succeeds. */
+  function statusCleared(prev) {
+    const state = prev && typeof prev === "object" ? prev : EMPTY_ERRORS;
+    return state.connection === null ? state : { ...state, connection: null };
+  }
+
+  /** `persona_error`'s reply (both channels) in the same shape. */
+  function errorsFromFetch(value) {
+    if (!value || typeof value !== "object") return EMPTY_ERRORS;
+    return { connection: value.connection ?? null, refresh: value.refresh ?? null };
+  }
+
   /** Translate stable Rust error codes; runtime errors stay untouched. */
   function errorText(error) {
     const prefix = "persona.instructions_missing:";
@@ -306,6 +333,10 @@
     sidebarLabel,
     errorText,
     enableStartError,
+    EMPTY_ERRORS,
+    errorsWith,
+    statusCleared,
+    errorsFromFetch,
     isPersona,
     realTabs,
     activeEntry,

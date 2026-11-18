@@ -45,6 +45,8 @@ const { entryOf: _TERM_entryOf } = window.OMP_TERMINAL;
 const {
   realTabs: _alRealTabs, isPersona: _alIsPersona,
   activeEntry: _alActiveEntry, emptyWorkspace: _alEmptyWorkspace,
+  EMPTY_ERRORS: _alEmptyErrors, errorsWith: _alErrorsWith,
+  statusCleared: _alStatusCleared, errorsFromFetch: _alErrorsFromFetch,
 } = window.OMP_PERSONA;
 const { absolutePath: _gitAbsolutePath, finishedEdits: _gitFinishedEdits } = window.OMP_GIT_BROWSER;
 const { linkClick: _fpLinkClick } = window.OMP_FILE_PREVIEW;
@@ -176,7 +178,9 @@ function App() {
   // offers Enable.
   const [personaStatus, setPersonaStatus] = React.useState(null);
   const [personaInbox, setPersonaInbox] = React.useState([]);
-  const [personaError, setPersonaError] = React.useState(null);
+  // Two channels (app/persona.js `errorsWith`): the connection's last error
+  // and the app-side sidecar refresh warning, so neither overwrites the other.
+  const [personaErrors, setPersonaErrors] = React.useState(_alEmptyErrors);
 
   // ── Cross-cutting effects ─────────────────────────────────────────────────
   // The rendered entry. `app/persona.js` `activeEntry` picks the active one
@@ -207,30 +211,30 @@ function App() {
     if (!bridge?.onPersona) return undefined;
     let live = true;
     // A sidecar refresh failure is the app's own state, not the connection's:
-    // a live status clears connection errors only, so the update note stays
-    // until the app restarts.
-    const clearedByStatus = prev => (prev && prev.kind === "refresh" ? prev : null);
+    // a live status clears the connection error only, so the update note
+    // stays until a later successful refresh.
     const offStatus = bridge.onPersona("status", next => {
       if (!live) return;
       setPersonaStatus(next ?? null);
-      if (next) setPersonaError(clearedByStatus);
+      if (next) setPersonaErrors(_alStatusCleared);
     });
     const offInbox = bridge.onPersona("inbox", items => {
       if (live) setPersonaInbox(Array.isArray(items) ? items : []);
     });
     const offError = bridge.onPersona("error", next => {
-      if (live) setPersonaError(next ?? null);
+      if (!live) return;
+      setPersonaErrors(prev => _alErrorsWith(prev, next ?? null));
     });
     Promise.resolve(bridge.personaStatus?.()).then(next => {
       if (!live) return;
       setPersonaStatus(next ?? null);
-      if (next) setPersonaError(clearedByStatus);
+      if (next) setPersonaErrors(_alStatusCleared);
     }, () => {});
     Promise.resolve(bridge.personaInbox?.()).then(items => {
       if (live) setPersonaInbox(Array.isArray(items) ? items : []);
     }, () => {});
-    Promise.resolve(bridge.personaError?.()).then(error => {
-      if (live && error) setPersonaError(error);
+    Promise.resolve(bridge.personaError?.()).then(errors => {
+      if (live) setPersonaErrors(_alErrorsFromFetch(errors));
     }, () => {});
     return () => { live = false; offStatus(); offInbox(); offError(); };
   }, [bridge]);
@@ -1149,7 +1153,8 @@ function App() {
                 {noTab ? (
                   <EmptyWorkspace notes={workspaceNotes} screen={t.startScreen} paused={stab.active} />
                 ) : (<>
-                  {personaActive && <PersonaStrip status={personaStatus} error={personaError} bridge={bridge} />}
+                  {personaActive && <PersonaStrip status={personaStatus} error={personaErrors.connection}
+                    refreshError={personaErrors.refresh} bridge={bridge} />}
                   <ChatView key={activeSessionId} messages={messages}
                     planMode={plan.mode}
                     annotations={plan.annotations}

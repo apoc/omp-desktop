@@ -6,7 +6,7 @@ mod push;
 mod sidecar;
 
 use crate::agent::validate_command_type;
-use client::{Client, PersonaError};
+use client::{Client, PersonaErrors};
 use omp_desktop_core::persona_protocol::{ClientMsg, InboxItem, PersonaSettings, StatusInfo};
 use tauri::State;
 
@@ -28,15 +28,22 @@ impl Persona {
     }
 }
 
-/// Reports an app-side failure (the sidecar refresh) as `persona://error` and
-/// caches it for `persona_error`.
+/// Reports the outcome of the startup sidecar refresh as `persona://error`
+/// and caches a failure for `persona_error`, in its own snapshot field.
 pub struct PersonaReporter(client::ClientHandle);
 
 impl PersonaReporter {
-    /// Stores one error in the snapshot and emits it. A disconnected client
-    /// drops it, like every other message to a stopped worker.
-    pub fn report_error(&self, kind: &str, message: &str) {
-        self.0.report_error(kind, message);
+    /// Stores the failure in the snapshot and emits it with kind `refresh`. A
+    /// disconnected client drops it, like every other message to a stopped
+    /// worker.
+    pub fn refresh_failed(&self, message: &str) {
+        self.0.report_refresh_error(message);
+    }
+
+    /// A later refresh succeeded: the warning no longer describes the
+    /// installed copy.
+    pub fn refresh_succeeded(&self) {
+        self.0.clear_refresh_error();
     }
 }
 
@@ -69,12 +76,14 @@ pub fn persona_inbox(persona: State<'_, Persona>) -> Result<Vec<InboxItem>, Stri
     Ok(persona.client.inbox())
 }
 
-/// Last terminal connection error, retained because setup emits it before
-/// the webview can subscribe. A successful status clears it.
+/// The app's error state, retained because setup emits it before the webview
+/// can subscribe: the last terminal connection error (cleared by a successful
+/// status) and an app-side refresh failure (cleared only by a later successful
+/// refresh).
 #[tauri::command]
 #[allow(clippy::unnecessary_wraps)] // IPC contract: every persona command returns Result
-pub fn persona_error(persona: State<'_, Persona>) -> Result<Option<PersonaError>, String> {
-    Ok(persona.client.error())
+pub fn persona_error(persona: State<'_, Persona>) -> Result<PersonaErrors, String> {
+    Ok(persona.client.errors())
 }
 
 /// The queued wakes and the next interval wake (`ClientMsg::ListSchedule`).

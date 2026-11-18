@@ -8,7 +8,9 @@
    controls are the service's: pause/resume, a manual wake while running,
    and Enable while the service is not connected. A `persona://error` the
    app cannot act on (protocol mismatch, another account's pipe) replaces
-   the details with one sentence instead of a retry loop.
+   the details with one sentence instead of a retry loop. The app's own
+   sidecar-refresh failure has its own slot, so a connection error never
+   replaces it and it never replaces the details.
    ═════════════════════════════════════════════════════════════════════ */
 
 const _PS_TICK_MS = 30_000;
@@ -30,10 +32,14 @@ function PersonaFace() {
 /**
  * status: `persona_status`'s StatusInfo, or null while the service is not
  *         connected.
- * error:  the last `persona://error` (`{kind, message}`), or null.
+ * error:  the connection's last `persona://error` (`{kind, message}`), or
+ *         null.
+ * refreshError: the app-side sidecar refresh failure (`kind: "refresh"`), or
+ *         null. Shown next to the details, never instead of them, and never
+ *         replaced by a connection error.
  * bridge: OMP_BRIDGE; pause/resume/wake/enable are its persona commands.
  */
-function PersonaStrip({ status, error, bridge }) {
+function PersonaStrip({ status, error, refreshError, bridge }) {
   // `statusView` shows the next wake against the local clock; a strip that
   // never re-rendered would keep saying "in 12 min" while the window idles.
   const [now, setNow] = React.useState(() => Date.now());
@@ -63,11 +69,13 @@ function PersonaStrip({ status, error, bridge }) {
       .finally(() => setBusy(false));
   };
 
-  const errorText = error
-    ? _PS_ERROR_TEXT[error.kind]
-      ? OMP_TR(_PS_ERROR_TEXT[error.kind])
-      : OMP_TR("The Ompy service reported a problem: {error}", { error: error.message || OMP_TR("unknown error") })
-    : null;
+  const errorLine = (problem, fallback) => !problem
+    ? null
+    : _PS_ERROR_TEXT[problem.kind]
+      ? OMP_TR(_PS_ERROR_TEXT[problem.kind])
+      : OMP_TR(fallback, { error: problem.message || OMP_TR("unknown error") });
+  const errorText = errorLine(error, "The Ompy service reported a problem: {error}");
+  const refreshText = errorLine(refreshError, "The Ompy service reported a problem: {error}");
   const dot = !view.online ? ""
     : view.state === "running" ? " live"
     : view.state === "paused" || view.state === "budget_exhausted" ? " warn"
@@ -88,6 +96,11 @@ function PersonaStrip({ status, error, bridge }) {
           <span className="persona-sep" aria-hidden="true">·</span>
           <span className="persona-note">{view.tokensText}</span>
         </>) : null}
+        {refreshText && (
+          <span className="persona-error" role="status" title={refreshError?.message || undefined}>
+            {refreshText}
+          </span>
+        )}
         {failure && <span className="persona-failure" role="status">{failure}</span>}
         <span className="persona-spacer" />
         {!view.online ? (

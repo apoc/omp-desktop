@@ -56,7 +56,7 @@ If omp exits or cannot spawn, restart backoff starts at 1 second and doubles to 
 
 ## App integration
 
-The desktop app (`src-tauri/src/persona/`, `src/app/persona.js`) is an ordinary app-kind client of the service. A background Rust thread owns the one connection, reconnects with 0.5 s doubling to 5 s backoff, and keeps a snapshot of the status, inbox and last terminal connection error so the webview can fetch state without a service round trip. A protocol mismatch or another account's Windows pipe is terminal: retrying stops until Enable or an app restart. The last terminal error is also cached as a snapshot (`persona_error`) because `setup` can emit it before the webview subscribes; the next successful status clears both copies, except an app-side `refresh` failure, which stays until the app restarts.
+The desktop app (`src-tauri/src/persona/`, `src/app/persona.js`) is an ordinary app-kind client of the service. A background Rust thread owns the one connection, reconnects with 0.5 s doubling to 5 s backoff, and keeps a snapshot of the status, inbox and last terminal connection error so the webview can fetch state without a service round trip. A protocol mismatch or another account's Windows pipe is terminal: retrying stops until Enable or an app restart. The error state is also cached as a snapshot (`persona_error`) because `setup` can emit it before the webview subscribes. It has two channels: the connection's last terminal error, which a successful status clears (event and snapshot), and an app-side `refresh` failure in its own field, which a status, an `io` outage or a reconnect never touches and only a later successful refresh clears. The strip shows both together (`app/persona.js` `errorsWith`/`statusCleared`).
 
 The client surfaces:
 
@@ -91,4 +91,3 @@ Enable copies the bundled `omp-desktopd` into the stable per-user location, veri
 - Disable shows the raw `io` error text of the platform tool in Settings → Persona, untranslated (`src/persona/mod.rs`, `src/design/settings/rows-persona.jsx`).
 - Ompy's chat offers "Approve and remember" for tool prompts, but the grant command only knows prompts a Rust-owned tab process forwarded, so the grant is always refused there (`src/live.js`, `src-tauri/src/agent/approvals.rs`).
 - No automated test drives `live.js`'s Ompy transport (relay cursor, attach/replay, ask bubbles); `tests/test-persona.mjs` covers only the pure views (`src/live.js`, `tests/test-persona.mjs`).
-- A startup refresh failure (Windows stop/copy) is cleared by the next status and can be overwritten by a later connection error in the strip, so the warning may never be seen; it is still printed to the app's stderr (`src/persona/client.rs`, `src/app-live.jsx`).

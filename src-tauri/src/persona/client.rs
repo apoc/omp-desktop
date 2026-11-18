@@ -70,11 +70,24 @@ pub struct PersonaError {
     message: String,
 }
 
+/// Both error channels the app reports: the connection's last terminal error
+/// (cleared by a successful status) and an app-side failure such as the
+/// startup sidecar refresh (cleared only when a later refresh succeeds).
+#[derive(Clone, Default, serde::Serialize)]
+pub struct PersonaErrors {
+    connection: Option<PersonaError>,
+    refresh: Option<PersonaError>,
+}
+
 #[derive(Default)]
 struct Snapshot {
     status: Option<StatusInfo>,
     inbox: Vec<InboxItem>,
     error: Option<PersonaError>,
+    /// Not a connection error: the service may be perfectly reachable while
+    /// the app failed to update its installed copy. Kept apart so the next
+    /// status — or a retry storm — cannot hide it.
+    refresh_error: Option<PersonaError>,
 }
 
 /// The app's managed persona client: one background worker thread and a
@@ -150,8 +163,8 @@ impl Client {
         self.handle.inbox()
     }
 
-    pub(super) fn error(&self) -> Option<PersonaError> {
-        self.handle.error()
+    pub(super) fn errors(&self) -> PersonaErrors {
+        self.handle.errors()
     }
 }
 
@@ -174,13 +187,13 @@ impl ClientHandle {
             .clone()
     }
 
-    pub(super) fn error(&self) -> Option<PersonaError> {
+    pub(super) fn errors(&self) -> PersonaErrors {
         // IPC returns an owned snapshot; the worker retains its current copy.
-        self.snapshot
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .error
-            .clone()
+        let snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+        PersonaErrors {
+            connection: snapshot.error.clone(), // event and cached snapshot each own a copy
+            refresh: snapshot.refresh_error.clone(),
+        }
     }
 
     pub(super) fn request(&self, body: ClientMsg) -> Result<(), String> {
@@ -209,13 +222,18 @@ impl ClientHandle {
             .map_err(|_| "persona client stopped".to_owned())
     }
 
-    /// Cache and emit an app-side failure (the sidecar refresh) the same way
-    /// the worker reports its own terminal errors.
-    pub(super) fn report_error(&self, kind: &str, message: &str) {
-        let _ = self.tx.send(WorkerMsg::ReportError {
-            kind: kind.to_owned(),
+    /// Cache and emit an app-side refresh failure (`persona://error` kind
+    /// `refresh`) in its own snapshot field, apart from the connection's.
+    pub(super) fn report_refresh_error(&self, message: &str) {
+        let _ = self.tx.send(WorkerMsg::RefreshFailed {
             message: message.to_owned(),
         });
+    }
+
+    /// Drop a stored refresh failure: a later refresh succeeded, so the
+    /// warning no longer describes the installed copy.
+    pub(super) fn clear_refresh_error(&self) {
+        let _ = self.tx.send(WorkerMsg::RefreshSucceeded);
     }
 }
 
@@ -231,10 +249,10 @@ enum WorkerMsg {
         response: Sender<Result<Value, String>>,
     },
     Reconnect,
-    ReportError {
-        kind: String,
+    RefreshFailed {
         message: String,
     },
+    RefreshSucceeded,
     Shutdown,
     Server {
         connection: u64,
@@ -309,16 +327,22 @@ impl Worker {
                     self.retry_at = Some(Instant::now());
                 }
                 WorkerMsg::Request { body, response } => self.request(body, response),
-                WorkerMsg::ReportError { kind, message } => {
-                    {
-                        let mut snapshot =
-                            self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
-                        snapshot.error = Some(PersonaError {
-                            kind: kind.clone(), // event and cached snapshot each own a copy
-                            message: message.clone(),
-                        });
-                    }
-                    self.emitter.error(&kind, &message);
+                WorkerMsg::RefreshFailed { message } => {
+                    let error = PersonaError {
+                        kind: "refresh".to_owned(),
+                        message: message.clone(), // event and cached snapshot each own a copy
+                    };
+                    self.snapshot
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .refresh_error = Some(error);
+                    self.emitter.error("refresh", &message);
+                }
+                WorkerMsg::RefreshSucceeded => {
+                    self.snapshot
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .refresh_error = None;
                 }
                 WorkerMsg::Server { connection, msg } => self.server_msg(connection, msg),
                 WorkerMsg::Closed { connection, reason } => {
@@ -1107,7 +1131,7 @@ mod tests {
                 .then_some(())
         });
         assert!(protocol_error.is_some());
-        assert_eq!(client.error().unwrap().kind, "protocol");
+        assert_eq!(client.errors().connection.unwrap().kind, "protocol");
         assert!(
             !server.join().unwrap(),
             "client retried after protocol mismatch"
@@ -1139,12 +1163,106 @@ mod tests {
         let events = Arc::new(Recorder::default());
         let client = Client::start(paths, events);
         assert!(eventually(Duration::from_secs(2), || {
-            client.error().map(|error| error.kind)
+            client.errors().connection.map(|error| error.kind)
         })
         .is_some());
         client.handle().reconnect().unwrap();
         assert!(eventually(Duration::from_secs(2), || { client.status().map(|_| ()) }).is_some());
-        assert!(client.error().is_none());
+        assert!(client.errors().connection.is_none());
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_refresh_failure_survives_a_status_and_an_io_outage() {
+        let temp = TempDir::new("persona-client", "keep");
+        let paths = test_paths(&temp, "keep");
+        ensure_private_dir(&paths.persona).unwrap();
+        let listener = ListenerOptions::new()
+            .name(socket_name(&paths).unwrap())
+            .create_sync()
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            // First connection: a status, then the service goes away.
+            let mut first = listener.accept().unwrap();
+            let _hello = read_client(first.try_clone().unwrap());
+            write_msg(&mut first, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            write_msg(&mut first, &ServerMsg::Status { status: status() }).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            drop(first);
+            // Second connection: the reconnect's status must not clear the
+            // refresh warning either.
+            let mut second = listener.accept().unwrap();
+            let _hello = read_client(second.try_clone().unwrap());
+            write_msg(&mut second, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            write_msg(&mut second, &ServerMsg::Status { status: status() }).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        let events = Arc::new(Recorder::default());
+        let client = Client::start(paths, events.clone());
+        assert!(
+            eventually(Duration::from_secs(2), || client.status().map(|_| ())).is_some(),
+            "the first status never arrived"
+        );
+        client
+            .handle()
+            .report_refresh_error("cannot replace the service");
+        assert!(
+            eventually(Duration::from_secs(2), || client
+                .errors()
+                .refresh
+                .map(|error| error.kind))
+            .is_some(),
+            "the refresh failure was not cached"
+        );
+        assert!(
+            events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(name, payload)| name == "error" && payload["kind"] == "refresh"),
+            "the refresh failure was not emitted"
+        );
+        // The service going away is one io outage; its `persona://error`
+        // event does not touch the refresh warning, and neither does the
+        // snapshot reset the disconnect performs.
+        assert!(
+            eventually(Duration::from_secs(5), || client
+                .status()
+                .is_none()
+                .then_some(()))
+            .is_some(),
+            "the service outage was not noticed"
+        );
+        assert!(
+            events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(name, payload)| name == "error" && payload["kind"] == "io"),
+            "the io outage was not emitted"
+        );
+        assert_eq!(
+            client.errors().refresh.unwrap().message,
+            "cannot replace the service",
+            "the io outage cleared the refresh warning"
+        );
+        // The reconnect's status clears the connection error only.
+        assert!(
+            eventually(Duration::from_secs(5), || {
+                let errors = client.errors();
+                (errors.connection.is_none() && client.status().is_some()).then_some(())
+            })
+            .is_some(),
+            "the reconnect did not report a status"
+        );
+        assert_eq!(
+            client.errors().refresh.unwrap().message,
+            "cannot replace the service",
+            "a status cleared the refresh warning"
+        );
         drop(client);
         server.join().unwrap();
     }
