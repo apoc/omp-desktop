@@ -76,28 +76,101 @@ fn digest(path: &Path) -> Result<[u8; 32], String> {
     Ok(hash.finalize().into())
 }
 
-fn needs_refresh(bundled: &Path, stable: &Path) -> Result<bool, String> {
-    let bundled_len = std::fs::metadata(bundled)
-        .map_err(|e| format!("cannot inspect {}: {e}", bundled.display()))?
-        .len();
-    let stable_len = std::fs::metadata(stable)
-        .map_err(|e| format!("cannot inspect {}: {e}", stable.display()))?
-        .len();
-    if bundled_len != stable_len {
-        return Ok(true);
+fn ensure_install_dirs(stable_dir: &Path) -> Result<(), String> {
+    let app_dir = stable_dir
+        .parent()
+        .ok_or_else(|| "stable persona directory has no parent".to_owned())?;
+    for dir in [app_dir, stable_dir] {
+        ensure_private_dir(dir)?;
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_private_dir(dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+    match std::fs::symlink_metadata(dir) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "refusing symlinked persona directory {}",
+                    dir.display()
+                ));
+            }
+            if !metadata.is_dir() {
+                return Err(format!(
+                    "persona directory is not a directory: {}",
+                    dir.display()
+                ));
+            }
+            // SAFETY: geteuid has no preconditions.
+            if metadata.uid() != unsafe { libc::geteuid() } {
+                return Err(format!(
+                    "persona directory is not owned by the current user: {}",
+                    dir.display()
+                ));
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(dir)
+                .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        }
+        Err(e) => return Err(format!("cannot inspect {}: {e}", dir.display())),
+    }
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("cannot make {} private: {e}", dir.display()))?;
+    let metadata = std::fs::symlink_metadata(dir)
+        .map_err(|e| format!("cannot inspect {}: {e}", dir.display()))?;
+    // SAFETY: geteuid has no preconditions.
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err(format!(
+            "persona directory must be a non-symlinked, current-user-owned mode 0700 directory: {}",
+            dir.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn ensure_private_dir(dir: &Path) -> Result<(), String> {
+    // %LOCALAPPDATA% is protected by the per-user Windows ACL. create_new on
+    // the temporary executable below additionally prevents name pre-planting.
+    if !dir
+        .try_exists()
+        .map_err(|e| format!("cannot inspect {}: {e}", dir.display()))?
+    {
+        std::fs::create_dir(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    Ok(())
+}
+
+fn needs_refresh(bundled: &Path, stable: &Path) -> Result<bool, String> {
     Ok(digest(bundled)? != digest(stable)?)
 }
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Copy through a new temporary file beside `stable`, then atomically rename.
+/// Copy through a new private temporary file beside `stable`, then atomically rename.
 fn copy_atomic(bundled: &Path, stable: &Path) -> Result<(), String> {
+    copy_atomic_with(bundled, stable, |_| {})
+}
+
+fn copy_atomic_with(
+    bundled: &Path,
+    stable: &Path,
+    before_rename: impl FnOnce(&Path),
+) -> Result<(), String> {
     let parent = stable
         .parent()
         .ok_or_else(|| "stable persona executable has no directory".to_owned())?;
-    std::fs::create_dir_all(parent)
-        .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    ensure_install_dirs(parent)?;
     let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let mut temp_name = stable
         .file_name()
@@ -108,23 +181,22 @@ fn copy_atomic(bundled: &Path, stable: &Path) -> Result<(), String> {
     let result = (|| {
         let mut source = std::fs::File::open(bundled)
             .map_err(|e| format!("cannot read {}: {e}", bundled.display()))?;
-        let mut target = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o700);
+        }
+        let mut target = options
             .open(&temp)
             .map_err(|e| format!("cannot create {}: {e}", temp.display()))?;
         std::io::copy(&mut source, &mut target)
             .map_err(|e| format!("cannot copy {}: {e}", bundled.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            target
-                .set_permissions(std::fs::Permissions::from_mode(0o755))
-                .map_err(|e| format!("cannot make {} executable: {e}", temp.display()))?;
-        }
         target
             .sync_all()
             .map_err(|e| format!("cannot write {}: {e}", temp.display()))?;
+        before_rename(&temp);
         drop(target);
         std::fs::rename(&temp, stable).map_err(|e| {
             let locked = if cfg!(windows) {
@@ -142,35 +214,56 @@ fn copy_atomic(bundled: &Path, stable: &Path) -> Result<(), String> {
     result
 }
 
+fn copy_verified(bundled: &Path, stable: &Path) -> Result<(), String> {
+    copy_atomic(bundled, stable)?;
+    if needs_refresh(bundled, stable)? {
+        return Err(format!(
+            "installed persona executable does not match the bundle: {}",
+            stable.display()
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn install() -> Result<(), String> {
     let stable = stable_path()?;
-    copy_atomic(&path()?, &stable)?;
+    copy_verified(&path()?, &stable)?;
     run_at(&stable, "install").map(drop)
 }
 
 pub(super) fn uninstall() -> Result<(), String> {
-    // Leave the copy for a later enable; remove only the login entry.
-    run_at(&stable_path()?, "uninstall").map(drop)
+    // Run the trusted bundle, never a pre-planted stable executable. Leave
+    // the copy for a later enable; remove only the login entry.
+    run_at(&path()?, "uninstall").map(drop)
 }
 
 /// Refresh an installed copy after an app update, off the main thread.
-/// Re-running install is idempotent and bootstraps the running service again.
 pub(super) fn refresh() -> Result<(), String> {
     let stable = stable_path()?;
+    refresh_with(&path()?, &stable, |program, command| {
+        run_at(program, command).map(drop)
+    })
+}
+
+fn refresh_with(
+    bundled: &Path,
+    stable: &Path,
+    mut run: impl FnMut(&Path, &str) -> Result<(), String>,
+) -> Result<(), String> {
     if !stable
         .try_exists()
         .map_err(|e| format!("cannot inspect {}: {e}", stable.display()))?
     {
         return Ok(());
     }
-    let bundled = path()?;
-    if !needs_refresh(&bundled, &stable)? {
+    if !needs_refresh(bundled, stable)? {
         return Ok(());
     }
-    let running = run_at(&stable, "status").is_ok();
-    copy_atomic(&bundled, &stable)?;
+    // The bundle is trusted even when the pre-existing stable copy is not.
+    let running = run(bundled, "status").is_ok();
+    copy_verified(bundled, stable)?;
     if running {
-        run_at(&stable, "install")?;
+        run(stable, "restart")?;
     }
     Ok(())
 }
@@ -241,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_compares_size_then_contents() {
+    fn refresh_compares_contents() {
         let temp = crate::test_support::TempDir::new("persona-sidecar", "refresh");
         let bundled = temp.path().join("bundled");
         let stable = temp.path().join("stable");
@@ -252,6 +345,118 @@ mod tests {
         assert!(!super::needs_refresh(&bundled, &stable).unwrap());
         std::fs::write(&stable, b"longer").unwrap();
         assert!(super::needs_refresh(&bundled, &stable).unwrap());
+    }
+
+    #[test]
+    fn refresh_replaces_a_mismatch_without_executing_it() {
+        let temp = crate::test_support::TempDir::new("persona-sidecar", "untrusted");
+        let bundled = temp.path().join("bundled");
+        let stable = super::stable_dir_from(temp.path()).join(super::executable_name());
+        std::fs::create_dir_all(stable.parent().unwrap()).unwrap();
+        std::fs::write(&bundled, b"bundle").unwrap();
+        std::fs::write(&stable, b"attack").unwrap();
+        let mut calls = Vec::new();
+        super::refresh_with(&bundled, &stable, |program, command| {
+            calls.push((program.to_path_buf(), command.to_owned()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&stable).unwrap(), b"bundle");
+        assert_eq!(
+            calls,
+            vec![
+                (bundled, "status".to_owned()),
+                (stable, "restart".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn refresh_does_not_start_a_disabled_service() {
+        let temp = crate::test_support::TempDir::new("persona-sidecar", "disabled");
+        let bundled = temp.path().join("bundled");
+        let stable = super::stable_dir_from(temp.path()).join(super::executable_name());
+        std::fs::create_dir_all(stable.parent().unwrap()).unwrap();
+        std::fs::write(&bundled, b"bundle").unwrap();
+        std::fs::write(&stable, b"old").unwrap();
+        let mut calls = Vec::new();
+        super::refresh_with(&bundled, &stable, |program, command| {
+            calls.push((program.to_path_buf(), command.to_owned()));
+            Err("not running".to_owned())
+        })
+        .unwrap();
+        assert_eq!(calls, vec![(bundled, "status".to_owned())]);
+        assert_eq!(std::fs::read(stable).unwrap(), b"bundle");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_directories_and_temp_file_are_private_from_creation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = crate::test_support::TempDir::new("persona-sidecar", "private");
+        let bundled = temp.path().join("bundled");
+        let stable = super::stable_dir_from(temp.path()).join(super::executable_name());
+        std::fs::write(&bundled, b"bundle").unwrap();
+        super::copy_atomic_with(&bundled, &stable, |temporary| {
+            assert_eq!(
+                std::fs::metadata(temporary).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        })
+        .unwrap();
+        let bin = stable.parent().unwrap();
+        let app = bin.parent().unwrap();
+        for path in [app, bin, &stable] {
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_group_writable_install_directories_are_made_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = crate::test_support::TempDir::new("persona-sidecar", "chmod");
+        let bundled = temp.path().join("bundled");
+        let stable = super::stable_dir_from(temp.path()).join(super::executable_name());
+        std::fs::create_dir_all(stable.parent().unwrap()).unwrap();
+        std::fs::write(&bundled, b"bundle").unwrap();
+        for dir in [
+            stable.parent().unwrap(),
+            stable.parent().unwrap().parent().unwrap(),
+        ] {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o775)).unwrap();
+        }
+        super::copy_atomic(&bundled, &stable).unwrap();
+        for dir in [
+            stable.parent().unwrap(),
+            stable.parent().unwrap().parent().unwrap(),
+        ] {
+            assert_eq!(
+                std::fs::metadata(dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_install_directories_are_rejected() {
+        let temp = crate::test_support::TempDir::new("persona-sidecar", "symlink");
+        let bundled = temp.path().join("bundled");
+        let stable = super::stable_dir_from(temp.path()).join(super::executable_name());
+        let elsewhere = temp.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::create_dir(stable.parent().unwrap().parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, stable.parent().unwrap()).unwrap();
+        std::fs::write(&bundled, b"bundle").unwrap();
+        let error = super::copy_atomic(&bundled, &stable).unwrap_err();
+        assert!(error.contains("symlink"), "{error}");
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
     }
 
     #[test]
@@ -278,8 +483,8 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(
-                std::fs::metadata(stable).unwrap().permissions().mode() & 0o111,
-                0o111
+                std::fs::metadata(stable).unwrap().permissions().mode() & 0o777,
+                0o700
             );
         }
     }

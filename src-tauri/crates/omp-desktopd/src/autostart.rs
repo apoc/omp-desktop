@@ -233,6 +233,57 @@ pub fn install(exe: &Path) -> Result<(), String> {
     run_tool(Command::new("systemctl").args(["--user", "enable", "--now", "omp-desktopd.service"]))
 }
 
+#[allow(dead_code)] // pure command data is tested on every host platform
+fn linux_restart_args(active: bool) -> Option<[&'static str; 3]> {
+    active.then_some(["--user", "restart", "omp-desktopd.service"])
+}
+
+/// Restarts a running service after its executable is replaced. Inactive or
+/// disabled Linux services stay stopped; macOS re-bootstraps its loaded agent
+/// and Windows ends then recreates/runs its task so the new image is loaded.
+///
+/// # Errors
+///
+/// Returns environment or platform-tool failures.
+#[cfg(target_os = "linux")]
+pub fn restart(_exe: &Path) -> Result<(), String> {
+    #[allow(clippy::disallowed_methods)] // one-shot platform tool; no Chromium in this process
+    let probe = Command::new("systemctl")
+        .args(["--user", "is-active", "--quiet", "omp-desktopd.service"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if probe.status.success() {
+        run_tool(Command::new("systemctl").args(linux_restart_args(true).unwrap()))?;
+    } else if !matches!(probe.status.code(), Some(3 | 4)) {
+        return Err(format!(
+            "systemctl --user is-active exited with {}",
+            probe.status
+        ));
+    }
+    Ok(())
+}
+
+/// Restarts the loaded agent with the replacement executable.
+///
+/// # Errors
+///
+/// Returns file-system, environment or platform-tool failures.
+#[cfg(target_os = "macos")]
+pub fn restart(exe: &Path) -> Result<(), String> {
+    install(exe)
+}
+
+/// Ends the old task process before recreating and running the replacement.
+///
+/// # Errors
+///
+/// Returns file-system, environment or platform-tool failures.
+#[cfg(windows)]
+pub fn restart(exe: &Path) -> Result<(), String> {
+    let _ = run_tool(Command::new("schtasks").args(["/End", "/TN", TASK_NAME]));
+    install(exe)
+}
+
 /// Stops and removes the autostart entry.
 ///
 /// # Errors
@@ -357,6 +408,15 @@ mod tests {
         }
         // A normal path stays accepted.
         assert!(systemd_unit(Path::new("/opt/omp-desktopd")).is_ok());
+    }
+
+    #[test]
+    fn linux_restart_only_targets_an_active_service() {
+        assert_eq!(
+            linux_restart_args(true),
+            Some(["--user", "restart", "omp-desktopd.service"])
+        );
+        assert_eq!(linux_restart_args(false), None);
     }
 
     #[test]

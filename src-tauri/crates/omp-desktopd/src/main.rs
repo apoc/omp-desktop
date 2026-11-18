@@ -21,9 +21,12 @@ fn main() -> ExitCode {
         "install" => std::env::current_exe()
             .map_err(|e| e.to_string())
             .and_then(|exe| omp_desktopd::autostart::install(&exe)),
+        "restart" => std::env::current_exe()
+            .map_err(|e| e.to_string())
+            .and_then(|exe| omp_desktopd::autostart::restart(&exe)),
         "uninstall" => omp_desktopd::autostart::uninstall(),
         other => Err(format!(
-            "unknown command `{other}`; use run, status, install or uninstall"
+            "unknown command `{other}`; use run, status, install, restart or uninstall"
         )),
     };
     match result {
