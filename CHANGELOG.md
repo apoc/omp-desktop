@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Ompy, a background agent that wakes on a schedule, triages mail and other work, and leaves approvals, decisions and results in an inbox. Settings → Persona starts it at login on macOS, Linux and Windows and sets an adjustable daily token limit; the pinned Ompy tab shows its state, next wake-up, today's token bar and Pause/Resume, and the rail's Inbox card answers its requests and shows queued wake-ups. While the app runs, new approvals and decisions also reach paired phones as push notifications.
+
 ### Changed
 
 - The browser panel has its own close button again, at the right end of its control bar. The toolbar's browser toggle still closes it too.

@@ -54,6 +54,23 @@ The inbox retains settled items for 14 days and at most 200 items overall; open 
 
 If omp exits or cannot spawn, restart backoff starts at 1 second and doubles to 5 minutes; a session that stayed up for at least 60 seconds resets the delay to 1 second. `omp` is resolved on the child PATH before every spawn, so a missing binary is only one kind of spawn failure (one notice per outage) and installing it while the service runs is enough to recover. Open approvals and decisions bound to an omp RPC request expire on an unexpected stop and any bound items left by a previous process expire at startup, with a notice in the inbox.
 
+## App integration
+
+The desktop app (`src-tauri/src/persona/`, `src/app/persona.js`) is an ordinary app-kind client of the service. A background Rust thread owns the one connection, reconnects with 0.5 s doubling to 5 s backoff, and keeps a snapshot of the status, inbox and last terminal connection error so the webview can fetch state without a service round trip. A protocol mismatch or another account's Windows pipe is terminal: retrying stops until Enable or an app restart. The last terminal error is also cached as a snapshot (`persona_error`) because `setup` can emit it before the webview subscribes; the next successful status clears both copies.
+
+The client surfaces:
+
+- events `persona://status`, `persona://inbox`, `persona://line/ompy` (an omp frame after the same credential redaction as the agent reader) and `persona://error` (`kind` `io`, `protocol` or `owner`);
+- commands `persona_status`, `persona_inbox`, `persona_error`, `persona_schedule`, `persona_attach`, `persona_detach`, `persona_send` (the normal RPC allowlist), `persona_resolve`, `persona_set_settings` (the complete settings object), `persona_pause`, `persona_resume`, `persona_wake_now`, `persona_enable`, `persona_disable` and `persona_open_instructions`.
+
+`live.js` models Ompy as a session with id `ompy` and `kind: "persona"`, not a project tab: it never enters `open-tabs.json`, tab counts, drag reorder, close guards or Ctrl+Tab stops, and closing it is a no-op. Status generations drive the relay cursor: a new service process resets the cursor and transcript and re-attaches at sequence 0; `attach` replays the ring in order and live frames follow without duplicates. Ompy's own chat has no Rust tab, so the browser, files, terminal and conversation-tree panels are disabled while it is shown; Settings can sit above it without marking its sidebar entry current.
+
+The UI pieces are the pinned sidebar entry with an inbox badge, the status strip above Ompy's chat (`design/persona-strip.jsx`: service state, next wake, token bar, Pause/Resume, Wake now, Enable), the rail Inbox card (`design/persona-inbox-card.jsx`: open approvals/decisions, recent results, queued wakes) and Settings → Persona (`design/settings/rows-persona.jsx`: Enable, interval, quiet hours/weekends, daily token limit, instructions). `app/persona.js` holds the pure status/inbox/schedule views, settings validation, translated relative times, stable-error translation and the persona predicate shared by all of them. Interface strings use `OMP_TR` with Chinese entries.
+
+While the app runs, each new open approval or decision in an inbox snapshot is offered to Web Push; quiet hours keep only urgent items, and the phone's notification deep-links to `?tab=ompy`. The push worker uses the ordinary settings and 30 s throttle.
+
+Enable copies the bundled `omp-desktopd` into the stable per-user location, verifies its SHA-256 and runs `<stable copy> install`; Disable runs `<bundled copy> uninstall` and leaves the stable copy dormant. App startup refreshes a changed copy and restarts only a service that was already running. The sidecar, path and signing details are in `docs/architecture/sidecar.md`.
+
 ## Known gaps
 
 - On Windows a client refused by the 16-connection admission cap sees an immediate disconnect without the `too many connections` reply; avoiding interprocess's dirty-pipe linger pool takes precedence over delivering that error (`src/server.rs`). Unix clients still receive the reply.
@@ -66,5 +83,6 @@ If omp exits or cannot spawn, restart backoff starts at 1 second and doubles to 
 - `omp` tool children are not killed as a process group (`src/session.rs`).
 - The macOS LaunchAgent has no `StandardErrorPath`, so service stderr has no persistent log (`src/autostart.rs`).
 - An `ask` with a single pick-any (`multi`) question rejects every inbox answer, so the user can only dismiss it; an empty answer to a single pick-one `ask` is sent as `customInput: ""`, which omp treats as a cancel (`src/core/inbound.rs`).
-- The "no response sent" check in `tests/core_loop.rs` `invalid_multi_question_answer_leaves_item_open` searches for a key order serde_json never writes, so it cannot fail.
-- Desktop app integration is Plan B; this service is currently standalone.
+- The phone's Ompy tab chip shows `busy: false` and `hasAsk: false`.
+- All Ompy notifications share the single `ompy` push key, so the 30 s throttle permits one Ompy push per app across every inbox item.
+- Existing user-owned symlinked ancestors above the app data directory are followed by design; only the app-named directory, `bin` and the executable are rejected when symlinked (`src/persona/sidecar.rs`).
