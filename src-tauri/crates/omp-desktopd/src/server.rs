@@ -170,6 +170,7 @@ fn serve(conn: Stream, to_core: Sender<CoreMsg>) {
         .send(CoreMsg::Connected {
             conn: id,
             out: out_tx.clone(),
+            client,
         })
         .is_err()
     {
