@@ -457,6 +457,55 @@ check("error_channels_keep_the_refresh_warning_apart_from_the_connection", () =>
   assert.deepEqual(P.errorsFromFetch({}), { connection: null, refresh: null });
 });
 
+check("a_boot_error_snapshot_never_erases_a_live_event", () => {
+  const refresh = { kind: "refresh", message: "cannot replace the service" };
+  const connection = { kind: "io", message: "connect: refused" };
+  const nothing = { connection: null, refresh: null };
+  // Boot fetch first, event afterwards: both channels come from the
+  // snapshot, and the event that lands later still wins.
+  let state = P.errorsFromBoot(P.EMPTY_ERRORS, { connection, refresh }, { connection: false, refresh: false });
+  assert.deepEqual(state, { connection, refresh });
+  state = P.errorsWith(state, refresh);
+  assert.equal(state.refresh, refresh);
+  // Event first, boot fetch afterwards: the event's channel survives the
+  // snapshot that was read before it; the untouched one still arrives.
+  const raced = P.errorsWith(P.EMPTY_ERRORS, refresh);
+  assert.equal(
+    P.errorsFromBoot(raced, nothing, { connection: false, refresh: true }),
+    raced,
+    "an older snapshot erased the event's refresh warning"
+  );
+  assert.equal(P.errorsFromBoot(raced, { connection, refresh: null }, { connection: false, refresh: true }).connection, connection);
+  // A status the event already applied is not undone by its older snapshot.
+  const cleared = P.statusCleared(P.errorsWith(P.EMPTY_ERRORS, connection));
+  const merged = P.errorsFromBoot(cleared, { connection, refresh }, { connection: true, refresh: false });
+  assert.equal(merged.connection, null, "an older snapshot restored a cleared connection error");
+  assert.equal(merged.refresh, refresh, "the unseen channel did not come from the snapshot");
+  // Every channel seen: the snapshot changes nothing.
+  assert.equal(P.errorsFromBoot(raced, { connection, refresh }, { connection: true, refresh: true }), raced);
+  // A cleared refresh event is also newer than the snapshot.
+  const afterClear = P.errorCleared(raced, "refresh");
+  assert.equal(P.errorsFromBoot(afterClear, { connection: null, refresh }, { connection: true, refresh: true }), afterClear);
+});
+
+check("a_cleared_error_event_drops_only_its_own_channel", () => {
+  const refresh = { kind: "refresh", message: "cannot replace the service" };
+  const connection = { kind: "io", message: "refused" };
+  let state = P.errorsWith(P.errorsWith(P.EMPTY_ERRORS, refresh), connection);
+  state = P.errorCleared(state, "refresh");
+  assert.deepEqual(state, { connection, refresh: null });
+  assert.equal(P.errorCleared(state, "refresh"), state, "an already-clear warning is the same object");
+  assert.equal(P.errorCleared(state, "bogus"), state, "an unknown channel is a no-op");
+  assert.equal(P.errorCleared(null, "refresh").refresh, null);
+  // `errorChannel` names the channel one payload writes.
+  assert.equal(P.errorChannel(refresh), "refresh");
+  assert.equal(P.errorChannel(connection), "connection");
+  assert.equal(P.errorChannel(null), null);
+  assert.equal(P.errorChannel("io"), null);
+  assert.equal(P.isErrorChannel("connection"), true);
+  assert.equal(P.isErrorChannel("control"), false);
+});
+
 check("error_text_names_io_failures_in_words_and_keeps_the_raw_one_for_a_tooltip", () => {
   const raw = "connect: Connection refused (os error 61)";
   assert.deepEqual(P.errorView({ kind: "io", message: raw }), {

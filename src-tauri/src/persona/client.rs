@@ -28,6 +28,10 @@ pub(super) trait Emitter: Send + Sync + 'static {
     fn line(&self, seq: u64, text: &str);
     fn error(&self, kind: &str, message: &str);
 
+    /// The warning `kind` described no longer applies. The cleared snapshot
+    /// alone only reaches a UI that reloads; this event drops it live.
+    fn error_cleared(&self, kind: &str);
+
     /// One push-worthy Ompy inbox item. The default is a no-op so a test
     /// emitter only records what it cares about.
     fn persona_push(&self, title: &str, urgent: bool) {
@@ -57,6 +61,14 @@ impl Emitter for TauriEmitter {
             message: &'a str,
         }
         let _ = tauri::Emitter::emit(&self.0, "persona://error", ErrorEvent { kind, message });
+    }
+
+    fn error_cleared(&self, kind: &str) {
+        #[derive(serde::Serialize, Clone)]
+        struct ClearedEvent<'a> {
+            kind: &'a str,
+        }
+        let _ = tauri::Emitter::emit(&self.0, "persona://error/cleared", ClearedEvent { kind });
     }
 
     fn persona_push(&self, title: &str, urgent: bool) {
@@ -362,6 +374,11 @@ impl Worker {
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
                         .refresh_error = None;
+                    // A mounted UI holds the warning in its own state, so the
+                    // cleared snapshot alone would leave it until a reload.
+                    // Idempotent: a start whose refresh never warned clears
+                    // nothing.
+                    self.emitter.error_cleared("refresh");
                 }
                 WorkerMsg::Server { connection, msg } => self.server_msg(connection, msg),
                 WorkerMsg::Closed { connection, reason } => {
@@ -848,6 +865,13 @@ mod tests {
             ));
         }
 
+        fn error_cleared(&self, kind: &str) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(("cleared".into(), serde_json::json!({"kind": kind})));
+        }
+
         fn persona_push(&self, title: &str, urgent: bool) {
             self.0.lock().unwrap().push((
                 "push".into(),
@@ -1289,6 +1313,43 @@ mod tests {
         );
         drop(client);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn a_successful_refresh_clears_the_cached_warning_and_emits_it() {
+        let temp = TempDir::new("persona-client", "refresh-cleared");
+        let paths = test_paths(&temp, "refresh-cleared");
+        ensure_private_dir(&paths.persona).unwrap();
+        let events = Arc::new(Recorder::default());
+        let client = Client::start(paths, events.clone());
+        client
+            .handle()
+            .report_refresh_error("cannot replace the service");
+        assert!(
+            eventually(Duration::from_secs(2), || client.errors().refresh).is_some(),
+            "the refresh failure was not cached"
+        );
+        client.handle().clear_refresh_error();
+        assert!(
+            eventually(Duration::from_secs(2), || client
+                .errors()
+                .refresh
+                .is_none()
+                .then_some(()))
+            .is_some(),
+            "a successful refresh left the warning cached"
+        );
+        // The snapshot alone only reaches a UI that reloads; the cleared
+        // event is what drops a warning the mounted strip already shows.
+        assert!(
+            events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(name, payload)| name == "cleared" && payload["kind"] == "refresh"),
+            "the cleared refresh warning was not emitted"
+        );
     }
 
     #[test]

@@ -97,12 +97,39 @@ fn create_missing_ancestors(dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("cannot create {}: {e}", dir.display()))
 }
 
-fn ensure_install_dirs(stable_dir: &Path) -> Result<(), String> {
+/// The install directories and where the plain ancestor creation ends.
+///
+/// Only the folders ABOVE the app's own name may be created by
+/// [`create_missing_ancestors`]: they are the user's ordinary data directory
+/// chain, whose mode nothing here changes. The app-named folder and `bin`
+/// belong to the app and are created (or secured) through
+/// [`ensure_private_dir`], so on Windows they carry the protected DACL from
+/// their first moment instead of inheriting `%LOCALAPPDATA%`'s.
+struct InstallDirs {
+    /// Everything above the app-named folder: created when missing, nothing
+    /// else touched.
+    ancestors: PathBuf,
+    /// Created or secured with the protected path, outermost first.
+    protected: [PathBuf; 2],
+}
+
+fn install_dirs(stable_dir: &Path) -> Result<InstallDirs, String> {
     let app_dir = stable_dir
         .parent()
         .ok_or_else(|| "stable persona directory has no parent".to_owned())?;
-    create_missing_ancestors(app_dir)?;
-    for dir in [app_dir, stable_dir] {
+    let ancestors = app_dir
+        .parent()
+        .ok_or_else(|| format!("cannot create {}: no parent directory", app_dir.display()))?;
+    Ok(InstallDirs {
+        ancestors: ancestors.to_path_buf(),
+        protected: [app_dir.to_path_buf(), stable_dir.to_path_buf()],
+    })
+}
+
+fn ensure_install_dirs(stable_dir: &Path) -> Result<(), String> {
+    let dirs = install_dirs(stable_dir)?;
+    create_missing_ancestors(&dirs.ancestors)?;
+    for dir in &dirs.protected {
         ensure_private_dir(dir)?;
     }
     Ok(())
@@ -187,7 +214,7 @@ fn needs_refresh(bundled: &Path, stable: &Path) -> Result<bool, String> {
     }
     #[cfg(windows)]
     {
-        let secure = &omp_desktop_core::persona_fs_security;
+        use omp_desktop_core::persona_fs_security as secure;
         // A reparse point is replaced, never followed: the file it points at
         // is not the copy this app wrote, even when its bytes match.
         if secure::is_reparse_point(stable)
@@ -686,6 +713,30 @@ mod tests {
             std::fs::metadata(temp.path()).unwrap().permissions().mode() & 0o777,
             0o755
         );
+    }
+
+    #[test]
+    fn only_directories_above_the_app_folder_use_the_plain_ancestor_helper() {
+        use std::path::{Path, PathBuf};
+
+        // The app's own name and `bin` are protected from creation; the
+        // folders above the app folder may be created by the generic helper.
+        let dirs = super::install_dirs(Path::new("/data/dev.ohMyPi.desktop/bin")).unwrap();
+        assert_eq!(dirs.ancestors, Path::new("/data"));
+        assert_eq!(
+            dirs.protected,
+            [
+                PathBuf::from("/data/dev.ohMyPi.desktop"),
+                PathBuf::from("/data/dev.ohMyPi.desktop/bin"),
+            ]
+        );
+        // Nothing outside the app folder's name is ever handed to the
+        // protected path, and vice versa.
+        assert!(!dirs.protected.contains(&dirs.ancestors));
+
+        // A path with no folder above the app folder leaves nothing to
+        // create generically: that is an error, not a silent `mkdir`.
+        assert!(super::install_dirs(Path::new("bin")).is_err());
     }
 
     #[test]

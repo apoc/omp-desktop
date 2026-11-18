@@ -5279,10 +5279,10 @@
     },
     /** Whether the user's last Enable/Disable left Ompy off on purpose. */
     personaExpectedOff() { return personaExpectedOff; },
-    /** Subscribe to one service event (`status` | `inbox` | `error`);
-     *  `cb(payload)`. Returns the unsubscribe function. */
+    /** Subscribe to one service event (`status` | `inbox` | `error` |
+     *  `error-cleared`); `cb(payload)`. Returns the unsubscribe function. */
     onPersona(kind, cb) {
-      const event = { status: "persona://status", inbox: "persona://inbox", error: "persona://error" }[kind];
+      const event = { status: "persona://status", inbox: "persona://inbox", error: "persona://error", "error-cleared": "persona://error/cleared" }[kind];
       if (!event || typeof cb !== "function") return () => {};
       const handle = _listen(event, cb);
       return () => handle.stop();

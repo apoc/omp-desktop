@@ -46,7 +46,8 @@ const {
   realTabs: _alRealTabs, isPersona: _alIsPersona,
   activeEntry: _alActiveEntry, emptyWorkspace: _alEmptyWorkspace,
   EMPTY_ERRORS: _alEmptyErrors, errorsWith: _alErrorsWith,
-  statusCleared: _alStatusCleared, errorsFromFetch: _alErrorsFromFetch,
+  statusCleared: _alStatusCleared, errorsFromBoot: _alErrorsFromBoot,
+  errorCleared: _alErrorCleared, errorChannel: _alErrorChannel, isErrorChannel: _alIsErrorChannel,
 } = window.OMP_PERSONA;
 const { absolutePath: _gitAbsolutePath, finishedEdits: _gitFinishedEdits } = window.OMP_GIT_BROWSER;
 const { linkClick: _fpLinkClick } = window.OMP_FILE_PREVIEW;
@@ -210,11 +211,17 @@ function App() {
   React.useEffect(() => {
     if (!bridge?.onPersona) return undefined;
     let live = true;
+    // Which channel a live event already wrote. The boot fetches below were
+    // read before any event that arrives while they are in flight, so their
+    // snapshot must not overwrite one of those channels (the older value
+    // would erase a newer warning or its clearing).
+    const seen = { connection: false, refresh: false };
     // A sidecar refresh failure is the app's own state, not the connection's:
     // a live status clears the connection error only, so the update note
-    // stays until a later successful refresh.
+    // stays until a later successful refresh (or its cleared event).
     const offStatus = bridge.onPersona("status", next => {
       if (!live) return;
+      seen.connection = true;
       setPersonaStatus(next ?? null);
       if (next) setPersonaErrors(_alStatusCleared);
     });
@@ -223,20 +230,29 @@ function App() {
     });
     const offError = bridge.onPersona("error", next => {
       if (!live) return;
+      const channel = _alErrorChannel(next);
+      if (channel) seen[channel] = true;
       setPersonaErrors(prev => _alErrorsWith(prev, next ?? null));
+    });
+    // `persona://error/cleared`: a successful refresh ends the warning it
+    // described, so the strip drops it without a reload.
+    const offCleared = bridge.onPersona("error-cleared", next => {
+      if (!live) return;
+      if (_alIsErrorChannel(next?.kind)) seen[next.kind] = true;
+      setPersonaErrors(prev => _alErrorCleared(prev, next?.kind));
     });
     Promise.resolve(bridge.personaStatus?.()).then(next => {
       if (!live) return;
       setPersonaStatus(next ?? null);
-      if (next) setPersonaErrors(_alStatusCleared);
+      if (next) setPersonaErrors(prev => (seen.connection ? prev : _alStatusCleared(prev)));
     }, () => {});
     Promise.resolve(bridge.personaInbox?.()).then(items => {
       if (live) setPersonaInbox(Array.isArray(items) ? items : []);
     }, () => {});
     Promise.resolve(bridge.personaError?.()).then(errors => {
-      if (live) setPersonaErrors(_alErrorsFromFetch(errors));
+      if (live) setPersonaErrors(prev => _alErrorsFromBoot(prev, errors, seen));
     }, () => {});
-    return () => { live = false; offStatus(); offInbox(); offError(); };
+    return () => { live = false; offStatus(); offInbox(); offError(); offCleared(); };
   }, [bridge]);
 
   useRemote({ bridge });

@@ -60,7 +60,7 @@ The desktop app (`src-tauri/src/persona/`, `src/app/persona.js`) is an ordinary 
 
 The client surfaces:
 
-- events `persona://status`, `persona://inbox`, `persona://line/ompy` (an omp frame after the same credential redaction as the agent reader) and `persona://error` (`kind` `io`, `protocol` or `owner`);
+- events `persona://status`, `persona://inbox`, `persona://line/ompy` (an omp frame after the same credential redaction as the agent reader), `persona://error` (`kind` `io`, `protocol` or `owner`, plus the app-side `refresh`) and `persona://error/cleared` (`{ kind }`: that channel's warning no longer applies, emitted when a later sidecar refresh succeeds so a mounted strip drops it without a reload);
 - commands `persona_status`, `persona_inbox`, `persona_error`, `persona_schedule`, `persona_attach`, `persona_detach`, `persona_send` (the normal RPC allowlist), `persona_resolve`, `persona_set_settings` (the complete settings object), `persona_pause`, `persona_resume`, `persona_wake_now`, `persona_enable`, `persona_disable` and `persona_open_instructions`.
 
 `live.js` models Ompy as a session with id `ompy` and `kind: "persona"`, not a project tab: it never enters `open-tabs.json`, tab counts, drag reorder, close guards or Ctrl+Tab stops, and closing it is a no-op. Status generations drive the relay cursor: a new service process resets the cursor and transcript and re-attaches at sequence 0; `attach` replays the ring in order and live frames follow without duplicates. Ompy's own chat has no Rust tab, so the browser, files, terminal and conversation-tree panels are disabled while it is shown; Settings can sit above it without marking its sidebar entry current.

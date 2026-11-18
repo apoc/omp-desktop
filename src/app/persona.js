@@ -234,15 +234,29 @@
   /** Neither channel carries an error. */
   const EMPTY_ERRORS = Object.freeze({ connection: null, refresh: null });
 
+  /** The two channels one error state carries. */
+  const ERROR_CHANNELS = Object.freeze(["connection", "refresh"]);
+
+  /** Whether `name` is one of them. */
+  function isErrorChannel(name) {
+    return ERROR_CHANNELS.includes(name);
+  }
+
+  /** Which channel one `persona://error` payload writes: `refresh` for the
+   *  app-side sidecar failure, `connection` for everything the service's
+   *  connection reports, null for a shape that carries no error. */
+  function errorChannel(error) {
+    if (!error || typeof error !== "object") return null;
+    return error.kind === "refresh" ? "refresh" : "connection";
+  }
+
   /** Fold one `persona://error` into the two channels. `refresh` is the
    *  app's own sidecar failure, kept apart so a connection error can never
    *  overwrite it (and the reverse); an unknown shape leaves the state. */
   function errorsWith(prev, error) {
     const state = prev && typeof prev === "object" ? prev : EMPTY_ERRORS;
-    if (!error || typeof error !== "object") return state;
-    return error.kind === "refresh"
-      ? { ...state, refresh: error }
-      : { ...state, connection: error };
+    const channel = errorChannel(error);
+    return channel ? { ...state, [channel]: error } : state;
   }
 
   /** A status means the service answers: the connection error is over. The
@@ -256,6 +270,30 @@
   function errorsFromFetch(value) {
     if (!value || typeof value !== "object") return EMPTY_ERRORS;
     return { connection: value.connection ?? null, refresh: value.refresh ?? null };
+  }
+
+  /** The boot snapshot folded into live state. `seen` is which channels a
+   *  live event already wrote (`{ connection, refresh }`): the snapshot was
+   *  read before any event that arrived while it was in flight, so a channel
+   *  it would overwrite is left alone and an event's error survives it.
+   *  Both orderings end in the newest state. */
+  function errorsFromBoot(prev, fetched, seen) {
+    const state = prev && typeof prev === "object" ? prev : EMPTY_ERRORS;
+    const snapshot = errorsFromFetch(fetched);
+    const connection = seen && seen.connection ? state.connection : snapshot.connection;
+    const refresh = seen && seen.refresh ? state.refresh : snapshot.refresh;
+    return connection === state.connection && refresh === state.refresh
+      ? state
+      : { connection, refresh };
+  }
+
+  /** `persona://error/cleared`: the warning that channel held is over (a
+   *  later sidecar refresh succeeded). Unknown channels and an already-clear
+   *  state leave the object alone. */
+  function errorCleared(prev, channel) {
+    const state = prev && typeof prev === "object" ? prev : EMPTY_ERRORS;
+    if (!isErrorChannel(channel) || state[channel] === null) return state;
+    return { ...state, [channel]: null };
   }
 
   // The user-level sentence per error kind the app can name. The
@@ -369,6 +407,10 @@
     errorsWith,
     statusCleared,
     errorsFromFetch,
+    errorsFromBoot,
+    errorCleared,
+    errorChannel,
+    isErrorChannel,
     isPersona,
     realTabs,
     activeEntry,

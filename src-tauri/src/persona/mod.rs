@@ -40,8 +40,9 @@ impl PersonaReporter {
         self.0.report_refresh_error(message);
     }
 
-    /// A later refresh succeeded: the warning no longer describes the
-    /// installed copy.
+    /// A later refresh succeeded: the snapshot drops the warning and
+    /// `persona://error/cleared` tells a mounted UI to drop it too, without
+    /// waiting for a reload.
     pub fn refresh_succeeded(&self) {
         self.0.clear_refresh_error();
     }
