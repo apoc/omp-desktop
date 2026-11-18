@@ -110,24 +110,24 @@ pub fn same_sid(a: &str, b: &str) -> bool {
     a.trim().eq_ignore_ascii_case(b.trim())
 }
 
-/// Zeroed storage for a `TOKEN_USER` and its trailing SID.
+/// Zeroed storage for a `TOKEN_USER`/`TOKEN_OWNER` and its trailing SID.
 ///
-/// `GetTokenInformation` writes a `TOKEN_USER`, whose members need 8-byte
+/// `GetTokenInformation` writes a structure whose members need 8-byte
 /// alignment; a `Vec<u8>` only guarantees 1. The buffer is allocated as `u64`
 /// words covering at least `bytes` bytes.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn token_user_storage(bytes: u32) -> Vec<u64> {
+fn token_storage(bytes: u32) -> Vec<u64> {
     vec![0u64; (bytes as usize).div_ceil(8)]
 }
 
 #[cfg(windows)]
-pub use imp::{current_user_sid, listener_security_descriptor, pipe_name, probe_is_ours};
+pub use imp::{
+    current_user_sid, default_owner_sid, listener_security_descriptor, pipe_name, probe_is_ours,
+};
 
 #[cfg(windows)]
 mod imp {
-    use super::{
-        pipe_name_for, pipe_path, pipe_sddl, same_sid, token_user_storage, PipeConnectError,
-    };
+    use super::{pipe_name_for, pipe_path, pipe_sddl, same_sid, token_storage, PipeConnectError};
     use interprocess::local_socket::Stream;
     use interprocess::os::windows::security_descriptor::SecurityDescriptor;
     use std::ffi::c_void;
@@ -139,7 +139,9 @@ mod imp {
         CloseHandle, LocalFree, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
     };
     use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
-    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenOwner, TokenUser, PSID, TOKEN_INFORMATION_CLASS, TOKEN_QUERY,
+    };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
         SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
@@ -157,12 +159,32 @@ mod imp {
     /// cannot be read. There is deliberately no fallback to a name-based pipe:
     /// a guessed name would widen access beyond this user.
     pub fn current_user_sid() -> io::Result<String> {
+        current_token_sid(TokenUser)
+    }
+
+    /// The current token's default owner SID: the owner Windows gives the
+    /// objects this process creates.
+    ///
+    /// Equal to the user SID for an ordinary token, but
+    /// `BUILTIN\Administrators` for an elevated one. It is still this
+    /// process's own doing, which is why the persona path owner check accepts
+    /// it alongside the user SID.
+    ///
+    /// # Errors
+    ///
+    /// See [`current_user_sid`].
+    pub fn default_owner_sid() -> io::Result<String> {
+        current_token_sid(TokenOwner)
+    }
+
+    /// The SID `class` names for the current process token.
+    fn current_token_sid(class: TOKEN_INFORMATION_CLASS) -> io::Result<String> {
         let mut token: HANDLE = ptr::null_mut();
         // SAFETY: `token` receives an owned handle on success.
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        let result = token_user_sid(token);
+        let result = token_sid(token, class);
         // SAFETY: the token handle is owned here and closed exactly once.
         unsafe {
             CloseHandle(token);
@@ -284,7 +306,7 @@ mod imp {
         if opened == 0 {
             return Err(io::Error::last_os_error());
         }
-        let server_sid = token_user_sid(token);
+        let server_sid = token_sid(token, TokenUser);
         // SAFETY: the token handle is owned here and closed exactly once.
         unsafe {
             CloseHandle(token);
@@ -292,24 +314,26 @@ mod imp {
         Ok(same_sid(&server_sid?, &current_user_sid()?))
     }
 
-    fn token_user_sid(token: HANDLE) -> io::Result<String> {
+    /// The SID `class` names for `token` (`TokenUser` or `TokenOwner`), in
+    /// string form.
+    fn token_sid(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> io::Result<String> {
         let mut size = 0u32;
         // SAFETY: the probe only asks for the required buffer size.
-        unsafe { GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut size) };
+        unsafe { GetTokenInformation(token, class, ptr::null_mut(), 0, &mut size) };
         if size == 0 {
             return Err(io::Error::last_os_error());
         }
-        if (size as usize) < size_of::<TOKEN_USER>() {
-            return Err(io::Error::other("TOKEN_USER buffer is too small"));
+        if (size as usize) < size_of::<PSID>() {
+            return Err(io::Error::other("token SID buffer is too small"));
         }
-        let mut buffer = token_user_storage(size);
+        let mut buffer = token_storage(size);
         // SAFETY: the buffer holds at least `size` bytes and is 8-byte
-        // aligned, which `TOKEN_USER` requires; the call writes at most `size`
-        // bytes and reports the used size.
+        // aligned, which the token structures require; the call writes at
+        // most `size` bytes and reports the used size.
         if unsafe {
             GetTokenInformation(
                 token,
-                TokenUser,
+                class,
                 buffer.as_mut_ptr().cast::<c_void>(),
                 size,
                 &mut size,
@@ -319,15 +343,15 @@ mod imp {
             return Err(io::Error::last_os_error());
         }
         if size as usize > buffer.len() * size_of::<u64>() {
-            return Err(io::Error::other("TOKEN_USER outgrew its buffer"));
+            return Err(io::Error::other("token SID outgrew its buffer"));
         }
-        // SAFETY: on success the buffer starts with a `TOKEN_USER` whose `Sid`
-        // points into the same buffer; it is word-aligned and at least
-        // `size_of::<TOKEN_USER>()` bytes.
-        let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
+        // SAFETY: `TOKEN_USER` (`User.Sid`) and `TOKEN_OWNER` (`Owner`) both
+        // begin with the SID pointer, and the call succeeded into this
+        // word-aligned buffer.
+        let sid = unsafe { *buffer.as_ptr().cast::<PSID>() };
         let mut string_sid: *mut u16 = ptr::null_mut();
         // SAFETY: `string_sid` receives a LocalAlloc-owned string on success.
-        if unsafe { ConvertSidToStringSidW(user.User.Sid, &mut string_sid) } == 0 {
+        if unsafe { ConvertSidToStringSidW(sid, &mut string_sid) } == 0 {
             return Err(io::Error::last_os_error());
         }
         // SAFETY: the string is NUL-terminated and owned by this call; it is
@@ -372,9 +396,9 @@ mod tests {
     }
 
     #[test]
-    fn token_user_storage_is_word_aligned_and_covers_the_size() {
+    fn token_storage_is_word_aligned_and_covers_the_size() {
         for bytes in [0u32, 1, 7, 8, 9, 100] {
-            let buffer = token_user_storage(bytes);
+            let buffer = token_storage(bytes);
             assert!(
                 buffer.len() * size_of::<u64>() >= bytes as usize,
                 "storage must cover {bytes} bytes"
@@ -382,10 +406,10 @@ mod tests {
             assert_eq!(
                 (buffer.as_ptr() as usize) % align_of::<u64>(),
                 0,
-                "storage must meet TOKEN_USER alignment"
+                "storage must meet the token structures' alignment"
             );
         }
-        assert_eq!(token_user_storage(9).len(), 2);
+        assert_eq!(token_storage(9).len(), 2);
     }
 
     #[test]

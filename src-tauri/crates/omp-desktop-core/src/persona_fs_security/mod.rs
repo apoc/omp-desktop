@@ -9,9 +9,16 @@
 //! executable are therefore checked before they are used and given a
 //! protected DACL that grants the current user alone, with nothing inherited.
 //!
+//! The owner check accepts both SIDs a token stamps on the objects it
+//! creates: its user (`TokenUser`) and its default owner (`TokenOwner`). An
+//! elevated token's default owner is `BUILTIN\Administrators`, so an
+//! administrator's own install is not mistaken for a stranger's — while an
+//! owner that is neither SID still is.
+//!
 //! The pure parts (the SDDL, the trust decision) are tested on every
 //! platform; the Win32 calls live in [`win`].
 
+use crate::persona_pipe_security::same_sid;
 use std::path::Path;
 
 /// The protected DACL for the persona directories and the executable: full
@@ -68,6 +75,32 @@ impl EntryIssue {
     }
 }
 
+/// The owner SIDs an entry this app created may carry.
+///
+/// Windows gives a new object the owner of the token that created it: the
+/// token's user (`TokenUser`) for an ordinary process, its default owner
+/// (`TokenOwner`, `BUILTIN\Administrators`) for an elevated one. Both are
+/// this process's own doing. A token can only stamp its own two SIDs on what
+/// it creates, and another account cannot set an object's owner to one of
+/// them without privileges that already let it rewrite the object — so only
+/// a third SID means the entry belongs to someone else.
+#[derive(Clone, Copy, Debug)]
+pub struct TokenOwners<'a> {
+    /// `TokenUser`: the account this process runs as.
+    pub user: &'a str,
+    /// `TokenOwner`: the default owner this token gives new objects.
+    pub default_owner: &'a str,
+}
+
+impl TokenOwners<'_> {
+    /// Whether `owner` is one of the two SIDs this token creates objects
+    /// with.
+    #[must_use]
+    pub fn accepts(self, owner: &str) -> bool {
+        same_sid(owner, self.user) || same_sid(owner, self.default_owner)
+    }
+}
+
 /// The trust decision for one existing entry.
 ///
 /// A reparse point is rejected before its kind is considered: on Windows a
@@ -82,7 +115,7 @@ pub fn check_entry(
     actual: EntryKind,
     reparse: bool,
     owner: &str,
-    current_user: &str,
+    owners: TokenOwners<'_>,
 ) -> Result<(), EntryIssue> {
     if reparse {
         return Err(EntryIssue::Reparse);
@@ -90,7 +123,7 @@ pub fn check_entry(
     if actual != expected {
         return Err(EntryIssue::WrongKind(expected));
     }
-    if !crate::persona_pipe_security::same_sid(owner, current_user) {
+    if !owners.accepts(owner) {
         return Err(EntryIssue::ForeignOwner);
     }
     Ok(())
@@ -99,7 +132,7 @@ pub fn check_entry(
 #[cfg(windows)]
 pub use win::{
     create_private_file, ensure_private_dir, ensure_private_file, has_private_dacl,
-    is_reparse_point, owner_is_current_user,
+    is_reparse_point, owner_is_ours,
 };
 
 #[cfg(windows)]
@@ -107,10 +140,30 @@ mod win;
 
 #[cfg(test)]
 mod tests {
-    use super::{check_entry, private_sddl, EntryIssue, EntryKind};
+    use super::{check_entry, private_sddl, EntryIssue, EntryKind, TokenOwners};
     use std::path::Path;
 
     const SID: &str = "S-1-5-21-1111-2222-3333-1001";
+
+    /// What `BUILTIN\Administrators` is: the default owner an elevated token
+    /// gives new objects.
+    const ADMIN: &str = "S-1-5-32-544";
+
+    /// Both SIDs are the user's own: an ordinary, non-elevated token.
+    const fn user_only() -> TokenOwners<'static> {
+        TokenOwners {
+            user: SID,
+            default_owner: SID,
+        }
+    }
+
+    /// An elevated token: user SID plus the Administrators default owner.
+    const fn elevated() -> TokenOwners<'static> {
+        TokenOwners {
+            user: SID,
+            default_owner: ADMIN,
+        }
+    }
 
     #[test]
     fn directory_dacl_grants_only_the_user_and_is_protected() {
@@ -125,7 +178,13 @@ mod tests {
     #[test]
     fn a_plain_owned_entry_is_trusted() {
         assert_eq!(
-            check_entry(EntryKind::Directory, EntryKind::Directory, false, SID, SID),
+            check_entry(
+                EntryKind::Directory,
+                EntryKind::Directory,
+                false,
+                SID,
+                user_only()
+            ),
             Ok(())
         );
         assert_eq!(
@@ -134,7 +193,7 @@ mod tests {
                 EntryKind::File,
                 false,
                 &SID.to_uppercase(),
-                SID
+                user_only()
             ),
             Ok(()),
             "a differently cased SID names the same account"
@@ -142,11 +201,52 @@ mod tests {
     }
 
     #[test]
+    fn the_tokens_default_owner_is_trusted_like_the_user() {
+        // The identity decision on its own, on every platform.
+        assert!(elevated().accepts(SID), "the token's own user");
+        assert!(
+            elevated().accepts(ADMIN),
+            "an elevated token's default owner"
+        );
+        assert!(
+            elevated().accepts(&ADMIN.to_lowercase()),
+            "SIDs compare case-insensitively"
+        );
+        assert!(elevated().accepts(&format!(" {ADMIN} ")));
+        assert!(!elevated().accepts("S-1-5-21-1-2-3-1002"));
+        assert!(
+            !elevated().accepts("S-1-5-18"),
+            "LocalSystem is neither this token's user nor its default owner"
+        );
+        // And through the entry check, which is what the Win32 half calls.
+        for expected in [EntryKind::Directory, EntryKind::File] {
+            assert_eq!(
+                check_entry(expected, expected, false, ADMIN, elevated()),
+                Ok(())
+            );
+            assert_eq!(
+                check_entry(expected, expected, false, SID, elevated()),
+                Ok(())
+            );
+            assert_eq!(
+                check_entry(expected, expected, false, "S-1-5-18", elevated()),
+                Err(EntryIssue::ForeignOwner)
+            );
+        }
+    }
+
+    #[test]
     fn reparse_points_are_rejected_before_their_kind() {
         // A directory junction reports itself as a directory; only the
         // reparse attribute tells it apart.
         assert_eq!(
-            check_entry(EntryKind::Directory, EntryKind::Directory, true, SID, SID),
+            check_entry(
+                EntryKind::Directory,
+                EntryKind::Directory,
+                true,
+                SID,
+                user_only()
+            ),
             Err(EntryIssue::Reparse)
         );
         let message = EntryIssue::Reparse.message(Path::new(r"C:\Users\u\AppData\Local\d\bin"));
@@ -157,11 +257,23 @@ mod tests {
     #[test]
     fn the_wrong_kind_and_another_owner_are_rejected() {
         assert_eq!(
-            check_entry(EntryKind::Directory, EntryKind::File, false, SID, SID),
+            check_entry(
+                EntryKind::Directory,
+                EntryKind::File,
+                false,
+                SID,
+                user_only()
+            ),
             Err(EntryIssue::WrongKind(EntryKind::Directory))
         );
         assert_eq!(
-            check_entry(EntryKind::File, EntryKind::Directory, false, SID, SID),
+            check_entry(
+                EntryKind::File,
+                EntryKind::Directory,
+                false,
+                SID,
+                user_only()
+            ),
             Err(EntryIssue::WrongKind(EntryKind::File))
         );
         assert_eq!(
@@ -170,7 +282,7 @@ mod tests {
                 EntryKind::File,
                 false,
                 "S-1-5-21-1-2-3-1002",
-                SID
+                elevated()
             ),
             Err(EntryIssue::ForeignOwner)
         );

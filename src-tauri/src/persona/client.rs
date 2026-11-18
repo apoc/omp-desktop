@@ -829,6 +829,7 @@ mod tests {
     };
     use serde_json::Value;
     use std::io::BufReader;
+    #[cfg(unix)]
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;

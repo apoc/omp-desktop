@@ -1,8 +1,8 @@
 //! The Win32 half of [`super`]: creates, validates and secures the stable
 //! persona directories and the executable.
 
-use super::{check_entry, private_sddl, EntryIssue, EntryKind};
-use crate::persona_pipe_security::{current_user_sid, same_sid};
+use super::{check_entry, private_sddl, EntryIssue, EntryKind, TokenOwners};
+use crate::persona_pipe_security::{current_user_sid, default_owner_sid};
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::fs::MetadataExt;
@@ -43,14 +43,24 @@ pub fn is_reparse_point(path: &Path) -> io::Result<bool> {
     Ok(reparse(&metadata))
 }
 
-/// Whether the owner of `path` is the current user.
+/// Whether `path` is owned by this token: its user SID, or the default owner
+/// that token gives the objects it creates.
+///
+/// The second SID matters because an elevated token's default owner is
+/// `BUILTIN\Administrators`, not the user: everything such a process created
+/// would otherwise read as another account's.
 ///
 /// # Errors
 ///
 /// Returns the failing Win32 call, or the SID error.
-pub fn owner_is_current_user(path: &Path) -> io::Result<bool> {
+pub fn owner_is_ours(path: &Path) -> io::Result<bool> {
     let owner = named_owner_sid(path)?;
-    Ok(same_sid(&owner, &current_user_sid()?))
+    let (user, default_owner) = token_owners()?;
+    Ok(TokenOwners {
+        user: &user,
+        default_owner: &default_owner,
+    }
+    .accepts(&owner))
 }
 
 /// Whether `path` carries exactly the protected DACL [`private_sddl`]
@@ -139,11 +149,21 @@ fn ensure_entry(path: &Path, expected: EntryKind) -> io::Result<()> {
         EntryKind::File
     };
     let owner = named_owner_sid(path)?;
-    let current = current_user_sid()?;
-    if let Err(issue) = check_entry(expected, actual, reparse(&metadata), &owner, &current) {
+    let (user, default_owner) = token_owners()?;
+    let owners = TokenOwners {
+        user: &user,
+        default_owner: &default_owner,
+    };
+    if let Err(issue) = check_entry(expected, actual, reparse(&metadata), &owner, owners) {
         return Err(issue_error(path, issue));
     }
-    apply_private_dacl(path, &current)
+    apply_private_dacl(path, &user)
+}
+
+/// The two owner SIDs this token creates objects with: its user and its
+/// default owner.
+fn token_owners() -> io::Result<(String, String)> {
+    Ok((current_user_sid()?, default_owner_sid()?))
 }
 
 fn reparse(metadata: &std::fs::Metadata) -> bool {
@@ -394,7 +414,7 @@ fn win32_result(status: WIN32_ERROR) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_private_dir, has_private_dacl, is_reparse_point, owner_is_current_user};
+    use super::{ensure_private_dir, has_private_dacl, is_reparse_point, owner_is_ours};
     use std::path::PathBuf;
 
     fn temp_dir(tag: &str) -> PathBuf {
@@ -408,7 +428,7 @@ mod tests {
         let dir = temp_dir("new");
         ensure_private_dir(&dir).unwrap();
         assert!(!is_reparse_point(&dir).unwrap());
-        assert!(owner_is_current_user(&dir).unwrap());
+        assert!(owner_is_ours(&dir).unwrap());
         assert!(has_private_dacl(&dir).unwrap());
         std::fs::remove_dir_all(&dir).unwrap();
     }

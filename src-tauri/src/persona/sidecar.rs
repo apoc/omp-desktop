@@ -86,7 +86,11 @@ fn create_missing_ancestors(dir: &Path) -> Result<(), String> {
         .parent()
         .ok_or_else(|| format!("cannot create {}: no parent directory", dir.display()))?;
     create_missing_ancestors(parent)?;
+    // `mode` takes `&mut self`, so only unix needs the binding mutable.
+    #[cfg(unix)]
     let mut builder = std::fs::DirBuilder::new();
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
@@ -222,7 +226,7 @@ fn needs_refresh(bundled: &Path, stable: &Path) -> Result<bool, String> {
         {
             return Ok(true);
         }
-        if !secure::owner_is_current_user(stable)
+        if !secure::owner_is_ours(stable)
             .map_err(|e| format!("cannot inspect the owner of {}: {e}", stable.display()))?
         {
             return Err(format!(
@@ -447,14 +451,17 @@ mod tests {
     fn refresh_compares_contents() {
         let temp = crate::test_support::TempDir::new("persona-sidecar", "refresh");
         let bundled = temp.path().join("bundled");
-        let stable = temp.path().join("stable");
+        let stable = super::stable_dir_from(temp.path()).join(super::executable_name());
+        // Installed the way the app installs it: on Windows a plainly written
+        // file already differs by its missing private DACL, which this test is
+        // not about.
         std::fs::write(&bundled, b"new").unwrap();
-        std::fs::write(&stable, b"old").unwrap();
-        assert!(super::needs_refresh(&bundled, &stable).unwrap());
-        std::fs::write(&stable, b"new").unwrap();
+        super::copy_atomic(&bundled, &stable).unwrap();
         assert!(!super::needs_refresh(&bundled, &stable).unwrap());
-        std::fs::write(&stable, b"longer").unwrap();
+        std::fs::write(&bundled, b"longer").unwrap();
         assert!(super::needs_refresh(&bundled, &stable).unwrap());
+        std::fs::write(&bundled, b"new").unwrap();
+        assert!(!super::needs_refresh(&bundled, &stable).unwrap());
     }
 
     #[test]
