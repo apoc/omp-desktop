@@ -19,13 +19,11 @@ impl Core {
             conn,
             req,
             msg,
-            bytes,
-            budget,
+            reservation: _reservation,
             ..
         } = inbound;
-        // The reader reserved this line against the connection's inbound
-        // budget; the core owns it from here, so release it before handling.
-        budget.release(bytes);
+        // The guard travels with the message and drops at the end of this
+        // handler, returning its bytes to the server-wide budget.
         match msg {
             ClientMsg::Status => {
                 let data = serde_json::to_value(self.status_info()).unwrap_or(Value::Null);

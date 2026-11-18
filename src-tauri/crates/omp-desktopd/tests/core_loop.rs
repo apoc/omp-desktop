@@ -109,7 +109,7 @@ fn send(h: &Harness, req: u64, msg: ClientMsg) {
         client: ClientKind::App,
         msg,
         bytes: 0,
-        budget: InboundBudget::new(MAX_INBOUND_BYTES),
+        reservation: InboundBudget::new(MAX_INBOUND_BYTES).reserve(0).unwrap(),
     }))
     .unwrap();
 }
@@ -134,7 +134,7 @@ fn next_msg(h: &Harness) -> ServerMsg {
 fn handled_message_releases_its_inbound_budget() {
     let h = start("inbound-budget", ClientKind::App);
     let budget = InboundBudget::new(MAX_INBOUND_BYTES);
-    assert!(budget.reserve(4096));
+    let reservation = budget.reserve(4096).unwrap();
     assert_eq!(budget.queued_bytes(), 4096);
     h.tx.send(CoreMsg::Inbound(Inbound {
         conn: 1,
@@ -142,7 +142,7 @@ fn handled_message_releases_its_inbound_budget() {
         client: ClientKind::App,
         msg: ClientMsg::Status,
         bytes: 4096,
-        budget: budget.clone(),
+        reservation,
     }))
     .unwrap();
     assert!(matches!(reply(&h, 7), ServerMsg::Reply { ok: true, .. }));
@@ -403,7 +403,7 @@ fn schedule_wake_validates_and_persists() {
             note: "x".into(),
         },
         bytes: 0,
-        budget: InboundBudget::new(MAX_INBOUND_BYTES),
+        reservation: InboundBudget::new(MAX_INBOUND_BYTES).reserve(0).unwrap(),
     }))
     .unwrap();
     assert!(matches!(reply(&h, 5), ServerMsg::Reply { ok: false, .. }));
@@ -417,7 +417,7 @@ fn schedule_wake_validates_and_persists() {
             note: "later".into(),
         },
         bytes: 0,
-        budget: InboundBudget::new(MAX_INBOUND_BYTES),
+        reservation: InboundBudget::new(MAX_INBOUND_BYTES).reserve(0).unwrap(),
     }))
     .unwrap();
     assert!(matches!(reply(&h, 6), ServerMsg::Reply { ok: true, .. }));

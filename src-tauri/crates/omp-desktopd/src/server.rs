@@ -30,16 +30,17 @@ pub const MAX_OUTBOUND_BYTES: usize = 32 * 1024 * 1024;
 /// an error and closed instead of starting another thread pair.
 pub const MAX_CONNECTIONS: usize = 16;
 
-/// Serialized bytes one connection may have queued in the core's inbound
+/// Serialized bytes the whole server may have queued in the core's inbound
 /// channel.
 ///
-/// The reader reserves a line before handing it to the core and the core
-/// releases it after handling. A line that would exceed the bound is not
-/// queued: the client is disconnected instead, so an idle core never sits on
-/// an unbounded client backlog.
+/// Readers reserve lines before handing them to the core. The reservation
+/// travels with the message and releases on drop after handling, including
+/// when an unhandled message is dropped. A line that would exceed the bound
+/// is not queued: its client is disconnected instead.
 pub const MAX_INBOUND_BYTES: usize = 32 * 1024 * 1024;
 
-/// Bytes one connection currently has reserved in the core's inbound channel.
+/// Bytes currently reserved in the core's inbound channel, shared by every
+/// connection of one server.
 #[derive(Debug, Clone)]
 pub struct InboundBudget {
     queued: Arc<AtomicUsize>,
@@ -47,7 +48,7 @@ pub struct InboundBudget {
 }
 
 impl InboundBudget {
-    /// A budget of `limit` serialized bytes for one connection.
+    /// A budget of `limit` serialized bytes shared by all connections.
     #[must_use]
     pub fn new(limit: usize) -> Self {
         Self {
@@ -56,26 +57,38 @@ impl InboundBudget {
         }
     }
 
-    /// Reserves `size` bytes, or returns `false` when the reservation would
-    /// exceed the budget.
+    /// Reserves `size` bytes, or returns `None` when the reservation would
+    /// exceed the budget. Dropping the guard releases the reservation.
     #[must_use]
-    pub fn reserve(&self, size: usize) -> bool {
+    pub fn reserve(&self, size: usize) -> Option<InboundReservation> {
         self.queued
             .try_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
                 (queued.saturating_add(size) <= self.limit).then_some(queued + size)
             })
-            .is_ok()
-    }
-
-    /// Releases `size` bytes after the core handled the message.
-    pub fn release(&self, size: usize) {
-        self.queued.fetch_sub(size, Ordering::AcqRel);
+            .ok()?;
+        Some(InboundReservation {
+            budget: self.clone(),
+            bytes: size,
+        })
     }
 
     /// Bytes currently reserved.
     #[must_use]
     pub fn queued_bytes(&self) -> usize {
         self.queued.load(Ordering::Acquire)
+    }
+}
+
+/// One inbound line's byte reservation. The core drops it after handling.
+#[derive(Debug)]
+pub struct InboundReservation {
+    budget: InboundBudget,
+    bytes: usize,
+}
+
+impl Drop for InboundReservation {
+    fn drop(&mut self) {
+        self.budget.queued.fetch_sub(self.bytes, Ordering::AcqRel);
     }
 }
 
@@ -189,10 +202,10 @@ pub struct Inbound {
     pub req: Option<u64>,
     pub client: ClientKind,
     pub msg: ClientMsg,
-    /// Serialized line size this message reserved in `budget`.
+    /// Serialized line size reserved in the server-wide inbound budget.
     pub bytes: usize,
-    /// The connection's inbound budget; release `bytes` after handling.
-    pub budget: InboundBudget,
+    /// Releases the server-wide reservation when dropped after handling.
+    pub reservation: InboundReservation,
 }
 
 #[derive(Debug)]
@@ -377,6 +390,7 @@ impl Server {
         }
         let active = Arc::new(AtomicUsize::new(0));
         let accept_active = Arc::clone(&active);
+        let inbound_budget = InboundBudget::new(limits.inbound_bytes);
         let accept = std::thread::Builder::new()
             .name("ompy-accept".into())
             .spawn(move || {
@@ -393,9 +407,10 @@ impl Server {
                                 continue;
                             };
                             let to_core = to_core.clone();
+                            let budget = inbound_budget.clone();
                             let _ = std::thread::Builder::new()
                                 .name("ompy-conn".into())
-                                .spawn(move || serve(conn, to_core, limits, admission));
+                                .spawn(move || serve(conn, to_core, limits, admission, budget));
                         }
                         Err(_) => std::thread::sleep(Duration::from_millis(100)),
                     }
@@ -409,24 +424,37 @@ impl Server {
     }
 }
 
-/// Answers a connection that found no admission slot and closes it.
+const fn refusal_has_reply(windows: bool) -> bool {
+    !windows
+}
+
+/// Closes a connection that found no admission slot, with an error reply on
+/// Unix only.
 ///
 /// Runs on the accept thread, so a client that does not read cannot hold a
-/// handler thread; the write timeout bounds even this refusal, and dropping
-/// the stream closes the socket.
+/// handler thread; the Unix write timeout bounds the reply. Windows must not
+/// write: interprocess 2.4.8 sends a dirty pipe to its `FlushFileBuffers`
+/// linger pool on drop (`named_pipe/stream.rs:28-36,74-84`). Instead,
+/// `shutdown` calls `DisconnectNamedPipe`, the same immediate disconnect used
+/// by interprocess itself (`named_pipe/listener.rs:185-188`). With no write,
+/// the subsequent drop is clean and bypasses the linger pool.
 fn refuse(conn: &Stream) {
-    #[cfg(unix)]
-    let _ = conn.set_send_timeout(Some(Duration::from_millis(250)));
-    let mut writer: &Stream = conn;
-    let _ = write_msg(
-        &mut writer,
-        &ServerMsg::Reply {
-            req: 0,
-            ok: false,
-            data: None,
-            error: Some("too many connections".into()),
-        },
-    );
+    #[cfg(windows)]
+    shutdown(conn);
+    if refusal_has_reply(cfg!(windows)) {
+        #[cfg(unix)]
+        let _ = conn.set_send_timeout(Some(Duration::from_millis(250)));
+        let mut writer: &Stream = conn;
+        let _ = write_msg(
+            &mut writer,
+            &ServerMsg::Reply {
+                req: 0,
+                ok: false,
+                data: None,
+                error: Some("too many connections".into()),
+            },
+        );
+    }
 }
 
 /// `&Stream` implements `Read` and `Write`; `split` is deprecated, so the
@@ -522,7 +550,13 @@ fn handshake(reader: &mut BufReader<TimedRead>, writer: &mut Shared) -> Option<C
 }
 
 #[allow(clippy::needless_pass_by_value)] // Moved into the connection thread; a reference cannot cross that boundary.
-fn serve(conn: Stream, to_core: Sender<CoreMsg>, limits: Limits, admission: Admission) {
+fn serve(
+    conn: Stream,
+    to_core: Sender<CoreMsg>,
+    limits: Limits,
+    admission: Admission,
+    budget: InboundBudget,
+) {
     let id = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     // Windows named-pipe streams do not support receive timeouts.
     let conn = Arc::new(conn);
@@ -579,18 +613,18 @@ fn serve(conn: Stream, to_core: Sender<CoreMsg>, limits: Limits, admission: Admi
     {
         return;
     }
-    let budget = InboundBudget::new(limits.inbound_bytes);
     loop {
         match read_line_capped(&mut reader, &mut buf) {
             Ok(LineRead::Line) => match serde_json::from_slice::<Envelope<ClientMsg>>(&buf) {
                 Ok(Envelope { req, body }) => {
                     let bytes = buf.len();
-                    // Reserve before queueing: a client that outruns the core
-                    // is disconnected instead of growing the core's backlog.
-                    if !budget.reserve(bytes) {
+                    // Reserve before queueing: one client or several successive
+                    // clients cannot grow the idle core's backlog past the
+                    // server-wide bound.
+                    let Some(reservation) = budget.reserve(bytes) else {
                         let _ = send_err(&out, "inbound queue full");
                         break;
-                    }
+                    };
                     if to_core
                         .send(CoreMsg::Inbound(Inbound {
                             conn: id,
@@ -598,11 +632,10 @@ fn serve(conn: Stream, to_core: Sender<CoreMsg>, limits: Limits, admission: Admi
                             client,
                             msg: body,
                             bytes,
-                            budget: budget.clone(),
+                            reservation,
                         }))
                         .is_err()
                     {
-                        budget.release(bytes);
                         break;
                     }
                 }
@@ -814,6 +847,12 @@ mod tests {
             crate::core::CoreMsg::Connected { out, .. } => out,
             _ => panic!("expected a Connected message"),
         }
+    }
+
+    #[test]
+    fn windows_admission_refusal_disconnects_without_reply() {
+        assert!(refusal_has_reply(false));
+        assert!(!refusal_has_reply(true));
     }
 
     #[test]
@@ -1130,5 +1169,72 @@ mod tests {
         assert!(wait_until(Duration::from_secs(5), || {
             server.active_connections() == 0
         }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inbound_budget_is_shared_across_successive_connections() {
+        let p = temp_paths("global-inbound");
+        let (tx, rx) = mpsc::channel();
+        let limits = Limits {
+            inbound_bytes: 64 * 1024,
+            max_connections: 1,
+            ..Limits::default()
+        };
+        let server = Server::start_with_limits(&p, tx, limits).unwrap();
+        let mut pending = Vec::new();
+        for _ in 0..3 {
+            let mut client = handshake(&p);
+            while !matches!(
+                rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                crate::core::CoreMsg::Connected { .. }
+            ) {}
+            client
+                .get_ref()
+                .set_recv_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let body = "x".repeat(4 * 1024);
+            for req in 0..64u64 {
+                let line = format!(
+                    "{{\"req\":{req},\"type\":\"rpc\",\"frame\":{{\"type\":\"tool_call\",\"pad\":\"{body}\"}}}}\n"
+                );
+                if client.get_mut().write_all(line.as_bytes()).is_err() {
+                    break;
+                }
+            }
+            let mut buf = Vec::new();
+            loop {
+                match read_line_capped(&mut client, &mut buf) {
+                    Ok(LineRead::Line) => {
+                        let reply: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+                        assert_eq!(reply["error"], "inbound queue full");
+                    }
+                    Ok(LineRead::Eof) => break,
+                    Ok(LineRead::TooLong) => panic!("unexpected oversized line"),
+                    Err(e) => panic!("the overflowing client was not disconnected: {e}"),
+                }
+            }
+            assert!(wait_until(Duration::from_secs(5), || {
+                server.active_connections() == 0
+            }));
+            while let Ok(msg) = rx.try_recv() {
+                if let crate::core::CoreMsg::Inbound(inbound) = msg {
+                    pending.push(inbound);
+                }
+            }
+        }
+
+        // The core stayed idle while three clients reconnected. Their queued
+        // reservations must share one server-wide bound, not one per client.
+        assert!(
+            !pending.is_empty(),
+            "the flood did not reach the core channel"
+        );
+        let queued: usize = pending.iter().map(|inbound| inbound.bytes).sum();
+        assert!(
+            queued <= limits.inbound_bytes,
+            "three successive clients queued {queued} bytes with a {}-byte global bound",
+            limits.inbound_bytes
+        );
     }
 }
