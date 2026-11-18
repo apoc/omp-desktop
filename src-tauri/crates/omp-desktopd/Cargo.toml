@@ -7,3 +7,9 @@ publish = false
 
 [dependencies]
 omp-desktop-core = { path = "../omp-desktop-core" }
+# Local quiet hours and the wall clock: the scheduler works on both the UTC
+# instant (deadlines) and the local time (quiet hours, DST jumps).
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std", "serde"] }
+serde = { version = "1", features = ["derive"] }
+# `raw_value`: the socket server relays omp frames without re-parsing them.
+serde_json = { version = "1", features = ["raw_value"] }
