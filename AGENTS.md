@@ -35,6 +35,7 @@ Feature internals (RPC frames, state machines, measured omp behaviour) live in `
 |`settings.md`|Settings app tab (state, keys, Escape rule), schema and search, custom rows, storage homes, session behaviours (reopen tabs, busy-close guard, auto-name, auto-compaction/retry, send key, paste collapse, follow output, scrollback, default side, accent tokens)|`app/settings-schema.js`, `app/settings-tab.js`, `app/session-prefs.js`, `app/accent.js`, `design/settings/`, `design/confirm-close.jsx`, `lib.rs` `CloseGuard`|
 |`pr-automation.md`|Changes rail card: current-branch PR discovery (gix + trusted `gh`, GraphQL + head-filtered REST, fail-closed selection), CI line, read cadence and visibility gating, `ghMissing`/`retryable` errors, opt-in Auto-fix dispatch and feedback identities|`pr_automation/`, `app/pr-automation.js`, `app/use-pr-automation.jsx`, `design/pr-automation-*.jsx`, `design/pr-checks.jsx`, `live.js` `prAutomationSnapshot`/`prAutomationSend`|
 |`voice-spectrum.md`|composer microphone equalizer: Rust cpal capture + FFT bands, `voice://spectrum` frames, start/stop ordering, bar physics, platform permissions|`voice_spectrum/`, `app/voice-spectrum.js`, `app/use-voice-spectrum.jsx`, `design/voice-spectrum.jsx`|
+|`persona-daemon.md`|Ompy persona service: process model, files, socket protocol, wake rules, budget, inbox, lifecycle and known gaps|`crates/omp-desktopd/`, `crates/omp-desktop-core/src/persona_protocol.rs`|
 
 User-facing rail widget contract (`widgets.json`, approval, output schema v1, limits, trust model): `docs/widgets.md`. Keep it in sync with any change to those.
 
@@ -49,7 +50,7 @@ User-facing rail widget contract (`widgets.json`, approval, output schema v1, li
 |Rust check (CI)|`cd src-tauri && cargo check --locked`|
 |Rust fmt|`cd src-tauri && cargo fmt`|
 |Rust lint (must stay clean)|`cd src-tauri && cargo +nightly clippy --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery -D warnings`|
-|Rust tests|`cd src-tauri && cargo test` (the real-Chromium tests skip without a browser; `OMP_REQUIRE_CHROMIUM=1`, set in CI, makes that a failure)|
+|Rust tests|`cd src-tauri && cargo test --workspace` (the real-Chromium tests skip without a browser; `OMP_REQUIRE_CHROMIUM=1`, set in CI, makes that a failure)|
 |All JS regression scripts|`npm test`|
 |One JS regression|`node tests/test-<name>.mjs` (or `npm run test:<name>`)|
 |Probe omp RPC (needs a live omp, not in `npm test`)|`node tests/test-rpc.mjs`|
@@ -57,7 +58,7 @@ User-facing rail widget contract (`widgets.json`, approval, output schema v1, li
 
 Regression files are mostly named after the `src/app/<name>.js` module they cover (`app/turn-status.js` → `test-turn-status.mjs`); exceptions: `test-markdown.mjs` (`app/marked-setup.js`), `test-recent-models.mjs` (`adapter.js`), `test-tool-output.mjs` (bash tool card), `test-updater-json.mjs` (`.github/scripts/updater-json.mjs` and `release-notes.mjs`), `test-widget-examples.mjs` (`examples/widgets/git.sh`, parsed with `app/widgets.js`), `test-browser-runtime.mjs` (`app/browser-screen.js` and `app/use-browser.jsx`, run against DOM/React stubs), `test-pr-automation-bridge.mjs` (`live.js` `prAutomationSnapshot`/`prAutomationSend`, with `app/pr-automation.js`). A new test file must be added to the `npm test` chain in `package.json`, with its own `test:<name>` script.
 
-`omp` must be on PATH (`%LOCALAPPDATA%\omp\omp.exe` on Win). CI and every release run the same suite (`.github/workflows/tests.yml`): `cargo test --locked` on win/linux/mac with `OMP_REQUIRE_CHROMIUM=1` (the runner images ship Google Chrome), plus `npm test`.
+`omp` must be on PATH (`%LOCALAPPDATA%\omp\omp.exe` on Win). CI and every release run the same suite (`.github/workflows/tests.yml`): `cargo test --locked --workspace` on win/linux/mac with `OMP_REQUIRE_CHROMIUM=1` (the runner images ship Google Chrome), plus `npm test`.
 
 **omp version floor.** `MIN_OMP_VERSION` in `src-tauri/src/agent/spawn.rs` (currently 18.13.2, for rebuildable `messageUpdates: "delta"` frames) is the only omp version knowledge in the app: `spawn_omp` refuses an older or unreadable omp, and only a pass is cached, so an `omp update` takes effect without an app restart. A change that starts using an RPC command, event or `get_state` field from a newer omp release raises the constant in the same commit (plus a CHANGELOG line); no code branches on the omp version or keeps a fallback for an omp below the floor. Finding a command's first release in omp's repo: `git log --reverse --format=%h -S '"<command>"' -- packages/coding-agent/src/modes/rpc`, then `git tag --contains <sha> --sort=v:refname` (first line; plain `--contains` sorts `v18.4.10` before `v18.4.9`). State fields are unquoted (`-S 'isSettled:'`), and agent-core events live outside `modes/rpc`, so widen the path for those.
 
@@ -65,11 +66,13 @@ Regression files are mostly named after the `src/app/<name>.js` module they cove
 
 |Path|What|
 |---|---|
+|`src-tauri/crates/omp-desktop-core/`|code shared by the desktop and persona service: child PATH lookup, approval rules, atomic JSON stores, process/executable probes and the persona socket protocol|
+|`src-tauri/crates/omp-desktopd/`|Ompy persona service: CLI/autostart, local socket server, scheduler, budget, inbox and hosted omp session (`docs/architecture/persona-daemon.md`)|
 |`src-tauri/src/lib.rs`|Tauri setup, plugin registration, `generate_handler!` list, session commands|
 |`src-tauri/src/agent/`|`AgentBridge` (`mod.rs`, also `ALLOWED_COMMAND_TYPES`), per-session `inner.rs`, `spawn.rs` (omp resolution, version floor, `CREATE_NO_WINDOW`), `reader.rs` (stdout/stderr threads, 16 MiB `read_until_capped`, credential redaction), `journal.rs` (in-memory event ring for `replay_events` after a tab switch), `ext_ui.rs` (latest extension status lines/widgets per session, `extension_ui_state`), `inflight.rs` (the assistant message being streamed, rebuilt from delta frames, `streaming_message`), `approvals.rs` (open tool-approval prompts per process; `approval_approve_and_grant` answers one and saves its rule in one call)|
-|`src-tauri/src/supervisor.rs`|process-tree kill for every spawn (omp, widget plugins, Chromium, the Windows terminal shell): process group / Job Object; `pid_is_alive`, `kill_group_if_leader`|
+|`src-tauri/src/supervisor.rs`|process-tree kill for every spawn (omp, widget plugins, Chromium, the Windows terminal shell): process group / Job Object; `kill_group_if_leader`; `pid_is_alive` is shared from `crates/omp-desktop-core/src/proc_util.rs`|
 |`src-tauri/src/spawn_gate.rs`|the gate every child process starts through (`spawn`/`output`/`status`, `shared()` around spawns made for us, `exclusive()` for Chromium's launch; shared holds never wait for a queued exclusive), so no child but Chromium gets its CDP pipe ends (Windows inheritance, macOS non-atomic close-on-exec); `clippy.toml` `disallowed-methods` checks it in the local clippy run (not in CI)|
-|`src-tauri/src/program_setting.rs`|one-program setting shared by `terminal.json` and `browser.json` (file + lock, in-memory cache, refuse-to-overwrite policy) and the path rules (`typed_path`, `is_executable_file`)|
+|`src-tauri/src/program_setting.rs`|one-program setting shared by `terminal.json` and `browser.json` (file + lock, in-memory cache, refuse-to-overwrite policy) and `typed_path`; executable validation is shared from `crates/omp-desktop-core/src/proc_util.rs`|
 |`src-tauri/src/test_support.rs`|`#[cfg(test)]` helpers shared by module test suites: `eventually`, `wait_until`, `executable` — use these, don't copy them|
 |`src-tauri/src/conversation_tree/`|`conversation_tree` command: session-file family + parsing|
 |`src-tauri/src/saved_sessions/`|omp's persisted session history (history panel, resume)|
@@ -79,7 +82,8 @@ Regression files are mostly named after the `src/app/<name>.js` module they cove
 |`src-tauri/src/git_browser/`|git browser reads via gix (`git_browser_*` commands): `status.rs` (status merge, file tree), `file.rs` (full-file inline diff, caps), `log.rs` (commit walk, refs, ahead/behind), `graph.rs` (lane layout), `commit.rs` (files a commit touched), `branches.rs` (the status bar's branch list)|
 |`src-tauri/src/project_file.rs`|`project_file_read`: one file of the tab's project for the preview (folder from the tab registry, never the webview; symlink-escape refusal; text/image caps; base64 images)|
 |`src-tauri/src/{omp_cli,stats,goal_config}.rs`|one-shot `omp <subcommand>` runs (Usage panel, goal auto-continue)|
-|`src-tauri/src/{approval,model_usage,updater,external_open,child_path,navigation_guard}.rs`|tool-approval rules, model MRU, updater, OS folder opens, child PATH, webview navigation guard|
+|`src-tauri/src/{model_usage,updater,external_open,navigation_guard}.rs`|model MRU, updater, OS folder opens, webview navigation guard|
+|`src-tauri/crates/omp-desktop-core/src/{approval,child_path,json_store,proc_util}.rs`|tool-approval rules, child PATH lookup, atomic JSON persistence, executable-file and process-liveness probes|
 |`src-tauri/src/approval_mode.rs`|tool approval mode store (`approval-mode.json`: default + per-project override), `resolve` for `start_session`, `approval_mode_*` commands|
 |`src-tauri/src/widgets/`|rail widget plugins: `config.rs` (`widgets.json` load/validate, matching), `schedule.rs` (pure trigger/run scheduler), `trust.rs` (fingerprint, `widget-approvals.json`), `snapshot.rs` (`ScriptStore`: verified script copies runs execute, `<app cache>/widget-runs/store/<fingerprint>`), `host.rs` (`WidgetHost`: scheduler thread, run registry, emits), `run.rs` (spawn, timeout, stdout cap, process-tree kill), `context.rs` (git context), `redact.rs`|
 |`src-tauri/src/private_fs.rs`|`private_dirs`: `0700` directory builder (unix) for the browser's instance dirs and widget script copies; `pid_dirs` (per-process `<root>/<pid>` dirs, for pruning dead ones) and `remove_dir_retrying` (Windows files still held open)|
