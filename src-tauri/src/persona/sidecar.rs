@@ -76,10 +76,32 @@ fn digest(path: &Path) -> Result<[u8; 32], String> {
     Ok(hash.finalize().into())
 }
 
+fn create_missing_ancestors(dir: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(dir) {
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("cannot inspect {}: {e}", dir.display())),
+    }
+    let parent = dir
+        .parent()
+        .ok_or_else(|| format!("cannot create {}: no parent directory", dir.display()))?;
+    create_missing_ancestors(parent)?;
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(dir)
+        .map_err(|e| format!("cannot create {}: {e}", dir.display()))
+}
+
 fn ensure_install_dirs(stable_dir: &Path) -> Result<(), String> {
     let app_dir = stable_dir
         .parent()
         .ok_or_else(|| "stable persona directory has no parent".to_owned())?;
+    create_missing_ancestors(app_dir)?;
     for dir in [app_dir, stable_dir] {
         ensure_private_dir(dir)?;
     }
@@ -152,6 +174,21 @@ fn ensure_private_dir(dir: &Path) -> Result<(), String> {
 }
 
 fn needs_refresh(bundled: &Path, stable: &Path) -> Result<bool, String> {
+    let metadata = std::fs::symlink_metadata(stable)
+        .map_err(|e| format!("cannot inspect {}: {e}", stable.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Ok(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // SAFETY: geteuid has no preconditions.
+        if metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.permissions().mode() & 0o022 != 0
+        {
+            return Ok(true);
+        }
+    }
     Ok(digest(bundled)? != digest(stable)?)
 }
 
@@ -250,11 +287,14 @@ fn refresh_with(
     stable: &Path,
     mut run: impl FnMut(&Path, &str) -> Result<(), String>,
 ) -> Result<(), String> {
-    if !stable
-        .try_exists()
-        .map_err(|e| format!("cannot inspect {}: {e}", stable.display()))?
-    {
-        return Ok(());
+    let parent = stable
+        .parent()
+        .ok_or_else(|| "stable persona executable has no directory".to_owned())?;
+    ensure_install_dirs(parent)?;
+    match std::fs::symlink_metadata(stable) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("cannot inspect {}: {e}", stable.display())),
     }
     if !needs_refresh(bundled, stable)? {
         return Ok(());
@@ -457,6 +497,98 @@ mod tests {
         let error = super::copy_atomic(&bundled, &stable).unwrap_err();
         assert!(error.contains("symlink"), "{error}");
         assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refresh_secures_identical_install_directories_before_returning() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = crate::test_support::TempDir::new("persona-sidecar", "refresh-dirs");
+        let bundled = temp.path().join("bundled");
+        let stable = super::stable_dir_from(temp.path()).join(super::executable_name());
+        std::fs::create_dir_all(stable.parent().unwrap()).unwrap();
+        std::fs::write(&bundled, b"bundle").unwrap();
+        std::fs::write(&stable, b"bundle").unwrap();
+        for dir in [
+            stable.parent().unwrap(),
+            stable.parent().unwrap().parent().unwrap(),
+        ] {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o775)).unwrap();
+        }
+        let mut calls = Vec::new();
+        super::refresh_with(&bundled, &stable, |program, command| {
+            calls.push((program.to_path_buf(), command.to_owned()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(calls, [] as [(std::path::PathBuf, String); 0]);
+        for dir in [
+            stable.parent().unwrap(),
+            stable.parent().unwrap().parent().unwrap(),
+        ] {
+            assert_eq!(
+                std::fs::metadata(dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refresh_replaces_an_insecure_identical_executable_without_executing_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = crate::test_support::TempDir::new("persona-sidecar", "refresh-file");
+        let bundled = temp.path().join("bundled");
+        let stable = super::stable_dir_from(temp.path()).join(super::executable_name());
+        std::fs::create_dir_all(stable.parent().unwrap()).unwrap();
+        std::fs::write(&bundled, b"bundle").unwrap();
+        std::fs::write(&stable, b"bundle").unwrap();
+        std::fs::set_permissions(&stable, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let mut calls = Vec::new();
+        super::refresh_with(&bundled, &stable, |program, command| {
+            calls.push((program.to_path_buf(), command.to_owned()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&stable).unwrap(), b"bundle");
+        assert_eq!(
+            std::fs::metadata(&stable).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            calls,
+            vec![
+                (bundled, "status".to_owned()),
+                (stable, "restart".to_owned()),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_creates_missing_data_root_ancestors_without_chmodding_existing_roots() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = crate::test_support::TempDir::new("persona-sidecar", "ancestors");
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let data_root = temp.path().join("missing").join("data");
+        let bundled = temp.path().join("bundled");
+        let stable = super::stable_dir_from(&data_root).join(super::executable_name());
+        std::fs::write(&bundled, b"bundle").unwrap();
+        super::copy_atomic(&bundled, &stable).unwrap();
+        assert_eq!(std::fs::read(stable).unwrap(), b"bundle");
+        for dir in [temp.path().join("missing"), data_root] {
+            assert_eq!(
+                std::fs::metadata(dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        assert_eq!(
+            std::fs::metadata(temp.path()).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
     }
 
     #[test]
