@@ -84,37 +84,9 @@ pub enum ScheduleError {
     EmptyNote,
 }
 
-/// The independent reasons the scheduler must not start a turn.
-///
-/// Kept as bits so the four toggles stay one field; each is set and cleared by
-/// its own [`Event`].
-#[derive(Debug, Clone, Copy, Default)]
-struct Holds(u8);
-
-impl Holds {
-    const BUSY: u8 = 1 << 0;
-    const BLOCKED: u8 = 1 << 1;
-    const PAUSED: u8 = 1 << 2;
-    const EXHAUSTED: u8 = 1 << 3;
-
-    const fn set(&mut self, flag: u8, on: bool) {
-        if on {
-            self.0 |= flag;
-        } else {
-            self.0 &= !flag;
-        }
-    }
-
-    const fn is_set(self, flag: u8) -> bool {
-        self.0 & flag != 0
-    }
-
-    const fn any(self) -> bool {
-        self.0 != 0
-    }
-}
-
 /// Decides when the persona wakes up. Pure state machine: see [`Event`].
+// The four holds are independent and each is toggled by its own `Event`.
+#[allow(clippy::struct_excessive_bools)] // Four independent holds, each toggled by its own Event.
 pub struct Scheduler {
     interval_ms: i64,
     quiet_start: NaiveTime,
@@ -122,8 +94,20 @@ pub struct Scheduler {
     quiet_weekends: bool,
     next_interval_ms: i64,
     scheduled: Vec<Scheduled>,
-    holds: Holds,
+    busy: bool,
+    blocked: bool,
+    paused: bool,
+    exhausted: bool,
     counter: u64,
+}
+
+/// The numeric suffix of an id minted by [`Scheduler::add`] (`w-<at>-<n>`),
+/// or `None` for anything else.
+fn wake_counter(id: &str) -> Option<u64> {
+    let rest = id.strip_prefix("w-")?;
+    let (at, counter) = rest.rsplit_once('-')?;
+    at.parse::<i64>().ok()?;
+    counter.parse().ok()
 }
 
 fn parse_hhmm(text: &str, fallback: NaiveTime) -> NaiveTime {
@@ -136,6 +120,11 @@ impl Scheduler {
     #[must_use]
     pub fn new(settings: &PersonaSettings, mut scheduled: Vec<Scheduled>, now: &Now) -> Self {
         scheduled.sort_by_key(|s| s.at_ms);
+        let counter = scheduled
+            .iter()
+            .filter_map(|s| wake_counter(&s.id))
+            .max()
+            .unwrap_or(0);
         let mut state = Self {
             interval_ms: 0,
             quiet_start: NaiveTime::MIN,
@@ -143,8 +132,11 @@ impl Scheduler {
             quiet_weekends: false,
             next_interval_ms: 0,
             scheduled,
-            holds: Holds::default(),
-            counter: 0,
+            busy: false,
+            blocked: false,
+            paused: false,
+            exhausted: false,
+            counter,
         };
         state.apply(settings);
         state.next_interval_ms = now.utc_ms + state.interval_ms;
@@ -172,6 +164,11 @@ impl Scheduler {
         }
     }
 
+    /// Any hold that stops the scheduler from starting a turn.
+    const fn held(&self) -> bool {
+        self.busy || self.blocked || self.paused || self.exhausted
+    }
+
     /// Feed one event; get at most one wake-up back.
     pub fn handle(&mut self, ev: Event, now: &Now) -> Option<WakeReason> {
         match ev {
@@ -181,26 +178,26 @@ impl Scheduler {
                 None
             }
             Event::Busy(on) => {
-                self.holds.set(Holds::BUSY, on);
+                self.busy = on;
                 None
             }
             Event::Blocked(on) => {
-                self.holds.set(Holds::BLOCKED, on);
+                self.blocked = on;
                 None
             }
             Event::Paused(on) => {
-                self.holds.set(Holds::PAUSED, on);
+                self.paused = on;
                 None
             }
             Event::BudgetExhausted(on) => {
-                self.holds.set(Holds::EXHAUSTED, on);
+                self.exhausted = on;
                 None
             }
             Event::WakeNow => {
-                if self.holds.any() {
+                if self.held() {
                     None
                 } else {
-                    self.holds.set(Holds::BUSY, true);
+                    self.busy = true;
                     Some(WakeReason::Manual)
                 }
             }
@@ -210,14 +207,14 @@ impl Scheduler {
 
     fn tick(&mut self, now: &Now) -> Option<WakeReason> {
         let interval_due = now.utc_ms >= self.next_interval_ms;
-        if self.holds.any() {
+        if self.held() {
             if interval_due {
                 self.next_interval_ms = now.utc_ms + self.interval_ms;
             }
             return None;
         }
         if let Some(due) = self.take_due(now.utc_ms) {
-            self.holds.set(Holds::BUSY, true);
+            self.busy = true;
             return Some(WakeReason::Scheduled {
                 id: due.id,
                 note: due.note,
@@ -226,7 +223,7 @@ impl Scheduler {
         if interval_due {
             self.next_interval_ms = now.utc_ms + self.interval_ms;
             if !self.is_quiet(&now.local) {
-                self.holds.set(Holds::BUSY, true);
+                self.busy = true;
                 return Some(WakeReason::Interval);
             }
         }
@@ -298,11 +295,16 @@ impl Scheduler {
     /// interval and the first queued wake.
     ///
     /// `None` while paused or exhausted: the core re-ticks on unpause instead
-    /// of waking mid-pause.
+    /// of waking mid-pause. While busy or blocked the queued wakes wait, so
+    /// only the interval counts; returning their already past `at_ms` would
+    /// make the core re-tick without sleeping.
     #[must_use]
     pub fn next_deadline(&self) -> Option<i64> {
-        if self.holds.is_set(Holds::PAUSED) || self.holds.is_set(Holds::EXHAUSTED) {
+        if self.paused || self.exhausted {
             return None;
+        }
+        if self.busy || self.blocked {
+            return Some(self.next_interval_ms);
         }
         let first = self
             .scheduled
@@ -493,5 +495,80 @@ mod tests {
             local: at(16, 8, 35).local,
         };
         assert_eq!(s.handle(Event::Tick, &t2), None);
+    }
+
+    #[test]
+    fn held_deadline_ignores_overdue_scheduled() {
+        let wake = at(17, 17, 0); // ten hours after start: both wakes overdue
+        let mut s = sched(&at(17, 7, 0));
+        s.add(at(17, 9, 0).utc_ms, "a".into(), &at(17, 7, 1))
+            .unwrap();
+        s.add(at(17, 10, 0).utc_ms, "b".into(), &at(17, 7, 1))
+            .unwrap();
+
+        assert!(matches!(
+            s.handle(Event::Tick, &wake),
+            Some(WakeReason::Scheduled { .. })
+        ));
+        assert_eq!(
+            s.handle(Event::Tick, &wake),
+            None,
+            "busy tick drops the overdue interval"
+        );
+        assert_eq!(s.next_deadline(), Some(s.next_interval_ms()));
+        assert!(
+            s.next_deadline().unwrap() > wake.utc_ms,
+            "busy must not return a past deadline"
+        );
+        s.handle(Event::Busy(false), &wake);
+        assert!(
+            s.next_deadline().unwrap() <= wake.utc_ms,
+            "queued wake is due again"
+        );
+
+        let mut blocked = sched(&at(17, 7, 0));
+        blocked
+            .add(at(17, 9, 0).utc_ms, "a".into(), &at(17, 7, 1))
+            .unwrap();
+        blocked
+            .add(at(17, 10, 0).utc_ms, "b".into(), &at(17, 7, 1))
+            .unwrap();
+        blocked.handle(Event::Blocked(true), &wake);
+        assert_eq!(blocked.handle(Event::Tick, &wake), None);
+        assert_eq!(blocked.next_deadline(), Some(blocked.next_interval_ms()));
+        assert!(
+            blocked.next_deadline().unwrap() > wake.utc_ms,
+            "blocked must not return a past deadline"
+        );
+        blocked.handle(Event::Blocked(false), &wake);
+        assert!(blocked.next_deadline().unwrap() <= wake.utc_ms);
+    }
+
+    #[test]
+    fn restored_ids_do_not_collide() {
+        let now = at(16, 9, 0);
+        let at_ms = now.utc_ms + 10 * MIN;
+        let restored = vec![
+            Scheduled {
+                id: format!("w-{at_ms}-1"),
+                at_ms,
+                note: "one".into(),
+            },
+            Scheduled {
+                id: format!("w-{at_ms}-4"),
+                at_ms,
+                note: "four".into(),
+            },
+            Scheduled {
+                id: "not-a-wake".into(),
+                at_ms,
+                note: "junk".into(),
+            },
+        ];
+        let mut s = Scheduler::new(&PersonaSettings::default(), restored, &now);
+        let id = s.add(at_ms, "new".into(), &now).unwrap();
+        assert_eq!(id, format!("w-{at_ms}-5"));
+        assert!(s.cancel(&id));
+        assert_eq!(s.scheduled().len(), 3, "restored wakes survive");
     }
 }
