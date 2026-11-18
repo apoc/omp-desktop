@@ -114,8 +114,7 @@ impl Core {
                     Some(ui_answer(frame))
                 };
                 if self.inbox.resolve_by_rpc(id, answer).is_some() {
-                    let blocked = self.inbox.has_open_bound();
-                    self.scheduler.handle(Event::Blocked(blocked), now);
+                    self.scheduler.handle(Event::Blocked(self.blocked()), now);
                     self.inbox_changed(now);
                 }
             }
@@ -177,8 +176,7 @@ impl Core {
                 self.send_prompt(&message);
             }
         }
-        let blocked = self.inbox.has_open_bound();
-        self.scheduler.handle(Event::Blocked(blocked), now);
+        self.scheduler.handle(Event::Blocked(self.blocked()), now);
         self.inbox_changed(now);
         self.reply_ok(conn, req, Some(json!({ "id": item.id })));
     }

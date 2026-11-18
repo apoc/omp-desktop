@@ -150,6 +150,7 @@ impl Core {
         let (wakes, wakes_ok) = read_json::<Vec<Scheduled>>(&paths.schedule, "schedule");
         let (mut inbox, inbox_notice) = Inbox::load(paths.inbox.clone(), now.utc_ms);
         let (mut budget, budget_notice, budget_writable) = load_budget(&paths.budget, &now);
+        budget.roll(now.local.date());
         budget.set_limit(settings.daily_token_limit);
         let mut notices: Vec<String> = Vec::new();
         if let Some(notice) = inbox_notice {
@@ -208,6 +209,7 @@ impl Core {
             paths,
         };
         core.persist_inbox(now.utc_ms);
+        core.persist_budget();
         core
     }
 
@@ -286,6 +288,11 @@ impl Core {
             now.utc_ms,
         );
         self.inbox_changed(now);
+    }
+
+    /// Whether a down session or an open bound inbox item blocks wake-ups.
+    fn blocked(&self) -> bool {
+        self.session.is_none() || self.inbox.has_open_bound()
     }
 
     /// Write one frame to the session. Returns whether it was handed to omp.
@@ -435,6 +442,42 @@ mod tests {
             utc_ms: local.and_utc().timestamp_millis(),
             local,
         }
+    }
+
+    #[test]
+    fn new_rolls_and_persists_a_stale_exhausted_budget() {
+        let root =
+            std::env::temp_dir().join(format!("ompy-core-new-budget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::under(&root);
+        ensure_private_dir(&paths.persona).unwrap();
+        std::fs::write(
+            &paths.budget,
+            br#"{"limit":2000000,"day":"2026-11-15","used":2000000}"#,
+        )
+        .unwrap();
+        let start = now(16, 9, 0);
+        let launch = Launch {
+            program: "unused".into(),
+            home: root.clone(),
+            sessions: paths.sessions.clone(),
+            extension: root.join("e.mjs"),
+            instructions: root.join("i.md"),
+            socket_env: "x".into(),
+            env: Vec::new(),
+        };
+        let mut core = Core::new(paths.clone(), launch, Box::new(move || start));
+
+        assert_eq!(core.budget.day, start.local.date());
+        assert_eq!(core.budget.used, 0);
+        let persisted: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&paths.budget).unwrap()).unwrap();
+        assert_eq!(persisted["day"], "2026-11-16");
+        assert_eq!(persisted["used"], 0);
+        assert_eq!(
+            core.scheduler.handle(Event::Tick, &now(16, 9, 31)),
+            Some(crate::scheduler::WakeReason::Interval)
+        );
     }
 
     #[test]

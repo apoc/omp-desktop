@@ -59,8 +59,7 @@ impl Core {
                 self.last_spawn = std::time::Instant::now();
                 self.spawn_error = None;
                 self.started = true;
-                let blocked = self.inbox.has_open_bound();
-                self.scheduler.handle(Event::Blocked(blocked), now);
+                self.scheduler.handle(Event::Blocked(self.blocked()), now);
                 self.broadcast_status();
             }
             Err(error) => {
@@ -168,8 +167,7 @@ impl Core {
                 if self.inbox.expire_by_rpc(&id) {
                     self.inbox_changed(now);
                 }
-                let blocked = self.inbox.has_open_bound();
-                self.scheduler.handle(Event::Blocked(blocked), now);
+                self.scheduler.handle(Event::Blocked(self.blocked()), now);
             }
             SessionEvent::AutoApproved { .. } => {}
             SessionEvent::Exited { reason } => self.on_exited(&reason, now),

@@ -460,7 +460,8 @@ fn dismissing_bound_item_cancels_request() {
     wait_log(&h, r#""cancelled":true"#);
     assert!(std::fs::read_to_string(&h.log)
         .unwrap_or_default()
-        .contains(r#""id":"ap1""#));
+        .lines()
+        .any(|line| line.contains(r#""id":"ap1""#) && line.contains(r#""cancelled":true"#)));
     wait_until(&h, |items| {
         items
             .iter()
@@ -576,6 +577,89 @@ fn inbox_retention_caps_settled_items() {
     let items = inbox_items(&h);
     assert!(items.len() <= 200, "settled history is capped");
     assert!(items.iter().any(|i| i.id == "open"), "open items survive");
+}
+
+#[test]
+fn scheduled_wake_survives_inbox_resolve_while_down() {
+    let root = std::env::temp_dir().join(format!("ompy-core-resolve-down-{}", std::process::id()));
+    let late_omp = root.join("late-omp");
+    let h = start_with("resolve-down", ClientKind::App, late_omp.clone(), |_| {});
+    send(
+        &h,
+        1,
+        ClientMsg::ScheduleWake {
+            at_ms: Some(t0_ms() + 60_000),
+            in_ms: None,
+            note: "resolve-down-wake".into(),
+        },
+    );
+    assert!(matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }));
+    send(
+        &h,
+        2,
+        ClientMsg::Notify {
+            kind: NotifyKind::Result,
+            title: "resolve while down".into(),
+            body: None,
+            options: None,
+            urgent: false,
+        },
+    );
+    let id = match reply(&h, 2) {
+        ServerMsg::Reply {
+            data: Some(data), ..
+        } => data["id"].as_str().unwrap().to_owned(),
+        other => panic!("{other:?}"),
+    };
+    send(&h, 3, ClientMsg::InboxResolve { id, answer: None });
+    assert!(matches!(reply(&h, 3), ServerMsg::Reply { ok: true, .. }));
+
+    h.clock.store(t0_ms() + 61_000, Ordering::SeqCst);
+    h.tx.send(CoreMsg::Tick).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_fake-omp"), late_omp).unwrap();
+    h.tx.send(CoreMsg::Restart).unwrap();
+    wait_log(&h, "[ompy wake] trigger: scheduled: resolve-down-wake");
+}
+
+#[test]
+fn stale_exhausted_budget_rolls_on_start() {
+    let h = start_with(
+        "budget-stale-day",
+        ClientKind::App,
+        PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
+        |paths| {
+            std::fs::write(
+                &paths.budget,
+                br#"{"limit":2000000,"day":"2026-11-15","used":2000000}"#,
+            )
+            .unwrap();
+        },
+    );
+    send(&h, 1, ClientMsg::Status);
+    match reply(&h, 1) {
+        ServerMsg::Reply {
+            data: Some(data), ..
+        } => {
+            assert_eq!(data["state"], "running");
+            assert_eq!(data["tokensToday"], 0);
+        }
+        other => panic!("{other:?}"),
+    }
+    let budget: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&h.paths.budget).unwrap()).unwrap();
+    assert_eq!(budget["day"], "2026-11-16");
+    assert_eq!(budget["used"], 0);
+
+    h.clock.fetch_add(31 * 60_000, Ordering::SeqCst);
+    h.tx.send(CoreMsg::Tick).unwrap();
+    wait_log(&h, "[ompy wake] trigger: interval");
+    send(&h, 2, ClientMsg::Status);
+    match reply(&h, 2) {
+        ServerMsg::Reply {
+            data: Some(data), ..
+        } => assert_eq!(data["state"], "running"),
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
