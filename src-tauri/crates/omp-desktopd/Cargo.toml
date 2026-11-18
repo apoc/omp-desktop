@@ -4,9 +4,6 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.98"
 publish = false
-# The `fake-omp` bin lives under `tests/`; autodiscovery would otherwise pick
-# it up as an integration test too.
-autotests = false
 
 [dependencies]
 omp-desktop-core = { path = "../omp-desktop-core" }
@@ -28,13 +25,9 @@ libc = "0.2"
 # `test_support::tempdir` keeps the temp-dir tests free of collisions.
 omp-desktop-core = { path = "../omp-desktop-core", features = ["test-support"] }
 
-# The session-host test drives a fake `omp`; it is a binary target under
-# `tests/`, so it is declared explicitly instead of being auto-discovered.
-[[test]]
-name = "session_host"
-path = "tests/session_host.rs"
-
+# The session-host test drives a fake `omp`. It lives under `tests/bin/` so
+# Cargo does not auto-discover it as an integration test.
 [[bin]]
 name = "fake-omp"
-path = "tests/fake_omp.rs"
+path = "tests/bin/fake_omp.rs"
 test = false

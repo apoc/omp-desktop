@@ -8,10 +8,12 @@
 
 use crate::budget::Usage;
 use omp_desktop_core::approval::{approval_request_id, approval_tool_name, RuleBook};
-use omp_desktop_core::persona_protocol::ItemKind;
+use omp_desktop_core::persona_protocol::{
+    read_line_capped_with, ItemKind, LineRead, MAX_LINE_BYTES,
+};
 use serde_json::Value;
 use std::collections::VecDeque;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::Sender;
@@ -20,9 +22,8 @@ use std::sync::{Arc, Mutex};
 /// Frames kept for a client that reconnects and asks to replay.
 pub const REPLAY_MAX: usize = 5000;
 
-/// Longest stdout line accepted; a longer one is split and its pieces are
-/// dropped as unparsable JSON.
-const MAX_LINE: usize = 16 * 1024 * 1024;
+/// Total bytes of frames kept for a client that reconnects and asks to replay.
+pub const REPLAY_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 /// The session id the persona's rules are granted and looked up under.
 pub const RULE_SESSION: &str = "ompy";
@@ -54,7 +55,7 @@ pub enum SessionEvent {
         /// Monotonic frame number, starting at 1.
         seq: u64,
         /// The frame as received, without its line ending.
-        raw: String,
+        raw: Arc<str>,
     },
     /// Tokens an assistant message billed.
     Usage(Usage),
@@ -109,7 +110,57 @@ pub fn omp_args(l: &Launch) -> Vec<String> {
 }
 
 /// Frame counter plus replay ring, shared by the reader thread and [`Session`].
-type Replay = Arc<Mutex<(u64, VecDeque<(u64, String)>)>>;
+type Replay = Arc<Mutex<ReplayRing>>;
+
+/// Ring of the most recent frames, bounded by **both** an entry count and a
+/// total byte budget.
+///
+/// Frames are whole omp lines up to [`MAX_LINE_BYTES`] each, so a count-only
+/// bound would let one session pin `REPLAY_MAX × 16 MiB` indefinitely. The
+/// byte budget evicts oldest-first until both bounds hold; the newest frame is
+/// kept even when it alone exceeds the budget, because dropping the line just
+/// stored would report a `seq` that could never be replayed.
+struct ReplayRing {
+    capacity: usize,
+    max_bytes: usize,
+    bytes: usize,
+    next_seq: u64,
+    entries: VecDeque<(u64, Arc<str>)>,
+}
+
+impl ReplayRing {
+    fn new(capacity: usize, max_bytes: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            max_bytes: max_bytes.max(1),
+            bytes: 0,
+            next_seq: 1,
+            entries: VecDeque::new(),
+        }
+    }
+
+    /// Stores `frame` under the next `seq` and returns that number.
+    fn push(&mut self, frame: Arc<str>) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.bytes += frame.len();
+        self.entries.push_back((seq, frame));
+        while self.entries.len() > self.capacity
+            || (self.bytes > self.max_bytes && self.entries.len() > 1)
+        {
+            if let Some((_, evicted)) = self.entries.pop_front() {
+                self.bytes -= evicted.len();
+            }
+        }
+        seq
+    }
+
+    /// The frames stored after `seq`, oldest first.
+    fn after(&self, seq: u64) -> Vec<(u64, Arc<str>)> {
+        let start = self.entries.partition_point(|(stored, _)| *stored <= seq);
+        self.entries.iter().skip(start).cloned().collect()
+    }
+}
 
 /// A running omp process.
 pub struct Session {
@@ -181,6 +232,46 @@ fn classify(frame: &Value) -> Option<SessionEvent> {
     }
 }
 
+/// The `extension_ui_response` written when a rule covers an approval.
+///
+/// A struct (not a `json!` map) so the serialised byte order is stable and
+/// logs and tests see the same line.
+#[derive(serde::Serialize)]
+struct UiAnswer<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    id: &'a str,
+    value: &'static str,
+}
+
+/// Reads frames until the stream ends, handing each parsed one to `handle`.
+///
+/// A line longer than `cap` bytes is drained to its newline and skipped, and
+/// only end of stream or an I/O error ends the loop: omp may print one huge
+/// line and keep living, so a too-long line must never look like an exit.
+fn pump<R: BufRead>(
+    reader: &mut R,
+    cap: usize,
+    mut handle: impl FnMut(&Value, Arc<str>),
+) -> io::Result<()> {
+    let mut buf = Vec::new();
+    loop {
+        match read_line_capped_with(reader, &mut buf, cap)? {
+            LineRead::Eof => return Ok(()),
+            LineRead::TooLong => continue,
+            LineRead::Line => {}
+        }
+        let Ok(frame) = serde_json::from_slice::<Value>(&buf) else {
+            continue;
+        };
+        let Ok(text) = std::str::from_utf8(&buf) else {
+            continue;
+        };
+        let raw: Arc<str> = Arc::from(text.trim_end_matches('\r'));
+        handle(&frame, raw);
+    }
+}
+
 impl Session {
     /// Spawns omp and starts the thread that reads its stdout.
     ///
@@ -208,7 +299,7 @@ impl Session {
             .env("OMPY_SOCKET", &l.socket_env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::inherit());
         for (key, value) in &l.env {
             cmd.env(key, value);
         }
@@ -216,33 +307,24 @@ impl Session {
         let mut child = cmd.spawn()?;
         let stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped stdin")));
         let stdout = child.stdout.take().expect("piped stdout");
-        let replay: Replay = Arc::new(Mutex::new((0, VecDeque::new())));
+        let replay: Replay = Arc::new(Mutex::new(ReplayRing::new(REPLAY_MAX, REPLAY_MAX_BYTES)));
         let (read_stdin, read_replay, home) =
             (Arc::clone(&stdin), Arc::clone(&replay), l.home.clone());
         let reader = std::thread::Builder::new()
             .name("ompy-stdout".into())
             .spawn(move || {
                 let mut reader = BufReader::with_capacity(64 * 1024, stdout);
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    match reader.by_ref().take(MAX_LINE as u64).read_line(&mut line) {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {}
-                    }
-                    let raw = line.trim_end_matches(['\r', '\n']).to_owned();
-                    let Ok(frame) = serde_json::from_str::<Value>(&raw) else {
-                        continue;
-                    };
-                    if let Some(tool) = approval_tool_name(&frame) {
+                let reason = match pump(&mut reader, MAX_LINE_BYTES, |frame, raw| {
+                    if let Some(tool) = approval_tool_name(frame) {
                         if rules.is_granted(RULE_SESSION, Some(&home), tool) {
-                            if let Some(id) = approval_request_id(&frame) {
-                                let answer = serde_json::json!({
-                                    "type": "extension_ui_response",
-                                    "id": id,
-                                    "value": "Approve",
-                                })
-                                .to_string();
+                            if let Some(id) = approval_request_id(frame) {
+                                let Ok(answer) = serde_json::to_string(&UiAnswer {
+                                    kind: "extension_ui_response",
+                                    id,
+                                    value: "Approve",
+                                }) else {
+                                    return;
+                                };
                                 let written = read_stdin.lock().is_ok_and(|mut w| {
                                     writeln!(w, "{answer}").and_then(|()| w.flush()).is_ok()
                                 });
@@ -250,32 +332,24 @@ impl Session {
                                     let _ = events.send(SessionEvent::AutoApproved {
                                         tool: tool.to_owned(),
                                     });
-                                    continue;
+                                    return;
                                 }
                             }
                         }
                     }
-                    let seq = {
-                        let mut ring = read_replay.lock().unwrap();
-                        ring.0 += 1;
-                        let seq = ring.0;
-                        ring.1.push_back((seq, raw.clone()));
-                        if ring.1.len() > REPLAY_MAX {
-                            ring.1.pop_front();
-                        }
-                        seq
-                    };
-                    if let Some(usage) = Usage::from_message_end(&frame) {
+                    let seq = read_replay.lock().unwrap().push(Arc::clone(&raw));
+                    if let Some(usage) = Usage::from_message_end(frame) {
                         let _ = events.send(SessionEvent::Usage(usage));
                     }
-                    if let Some(event) = classify(&frame) {
+                    if let Some(event) = classify(frame) {
                         let _ = events.send(event);
                     }
                     let _ = events.send(SessionEvent::Frame { seq, raw });
-                }
-                let _ = events.send(SessionEvent::Exited {
-                    reason: "omp exited".into(),
-                });
+                }) {
+                    Ok(()) => "omp exited".to_owned(),
+                    Err(e) => format!("omp stdout failed: {e}"),
+                };
+                let _ = events.send(SessionEvent::Exited { reason });
             });
         if let Err(e) = reader {
             let _ = child.kill();
@@ -312,15 +386,8 @@ impl Session {
     ///
     /// Panics when the replay lock is poisoned.
     #[must_use]
-    pub fn replay_after(&self, seq: u64) -> Vec<(u64, String)> {
-        self.replay
-            .lock()
-            .unwrap()
-            .1
-            .iter()
-            .filter(|(stored, _)| *stored > seq)
-            .cloned()
-            .collect()
+    pub fn replay_after(&self, seq: u64) -> Vec<(u64, Arc<str>)> {
+        self.replay.lock().unwrap().after(seq)
     }
 
     /// Kills omp and reaps it.
@@ -333,5 +400,83 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn frame_types(input: &[u8], cap: usize) -> Vec<String> {
+        let mut reader = Cursor::new(input);
+        let mut seen = Vec::new();
+        pump(&mut reader, cap, |frame, _| {
+            seen.push(frame["type"].as_str().unwrap_or_default().to_owned());
+        })
+        .unwrap();
+        seen
+    }
+
+    #[test]
+    fn too_long_line_cut_inside_a_multibyte_char_does_not_end_the_reader() {
+        // `{"type":"ready"}` first, then a line whose cap boundary (21) falls
+        // between the two bytes of `é`, then a frame that must still arrive.
+        let mut input = b"{\"type\":\"ready\"}\n".to_vec();
+        input.extend_from_slice(&[b'x'; 20]);
+        input.extend_from_slice("é".as_bytes());
+        input.extend_from_slice(b"yy\n{\"type\":\"pong\"}\n");
+        assert_eq!(
+            &input[37..39],
+            "é".as_bytes(),
+            "cap boundary inside the char"
+        );
+        assert_eq!(
+            frame_types(&input, 21),
+            ["ready".to_owned(), "pong".to_owned()]
+        );
+    }
+
+    #[test]
+    fn replay_ring_evicts_oldest_to_hold_the_byte_budget() {
+        let mut ring = ReplayRing::new(10, 10);
+        assert_eq!(ring.push(Arc::from("aaaa")), 1);
+        assert_eq!(ring.push(Arc::from("bbbb")), 2);
+        assert_eq!(ring.bytes, 8);
+        assert_eq!(ring.push(Arc::from("cccc")), 3);
+        assert_eq!(ring.bytes, 8, "oldest frame evicted to fit the budget");
+        assert_eq!(
+            ring.after(0)
+                .into_iter()
+                .map(|(seq, _)| seq)
+                .collect::<Vec<_>>(),
+            [2, 3]
+        );
+        assert_eq!(
+            ring.after(2)
+                .into_iter()
+                .map(|(seq, _)| seq)
+                .collect::<Vec<_>>(),
+            [3]
+        );
+        // The newest frame stays even when it alone exceeds the budget.
+        assert_eq!(ring.push(Arc::from("zzzzzzzzzzzz")), 4);
+        assert_eq!(ring.bytes, 12);
+        assert_eq!(ring.after(0).len(), 1);
+    }
+
+    #[test]
+    fn replay_ring_also_holds_the_entry_count() {
+        let mut ring = ReplayRing::new(2, 1 << 20);
+        for _ in 0..3 {
+            ring.push(Arc::from("frame"));
+        }
+        assert_eq!(
+            ring.after(0)
+                .into_iter()
+                .map(|(seq, _)| seq)
+                .collect::<Vec<_>>(),
+            [2, 3]
+        );
     }
 }

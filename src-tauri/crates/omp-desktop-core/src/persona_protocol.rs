@@ -18,8 +18,9 @@ use serde_json::Value;
 /// Protocol version exchanged in [`ClientMsg::Hello`] / [`ServerMsg::Hello`].
 pub const PROTOCOL: u32 = 1;
 
-/// Longest accepted line, excluding the trailing newline.
-pub const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
+/// Longest accepted line, excluding the trailing newline. omp frames are
+/// relayed up to this size.
+pub const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Which side of the desktop the client is: the app UI or an omp extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,20 +215,36 @@ pub enum LineRead {
     Line,
     /// The stream ended without further bytes.
     Eof,
-    /// The line exceeded [`MAX_LINE_BYTES`]; it was consumed and discarded.
+    /// The line exceeded the byte cap; it was consumed and discarded.
     TooLong,
 }
 
-/// Reads one `\n`-terminated line into `buf` (without the newline).
-///
-/// A line longer than [`MAX_LINE_BYTES`] is consumed up to its newline and
-/// reported as [`LineRead::TooLong`], so the next call starts at the next
-/// line. A final line without a newline counts as a line.
+/// Reads one `\n`-terminated line into `buf` (without the newline), accepting
+/// at most [`MAX_LINE_BYTES`].
 ///
 /// # Errors
 ///
 /// Returns the underlying I/O error if reading from `r` fails.
 pub fn read_line_capped<R: BufRead>(r: &mut R, buf: &mut Vec<u8>) -> io::Result<LineRead> {
+    read_line_capped_with(r, buf, MAX_LINE_BYTES)
+}
+
+/// [`read_line_capped`] with an explicit byte cap.
+///
+/// A line longer than `cap` is consumed up to its newline and reported as
+/// [`LineRead::TooLong`], so the next call starts at the next line; the
+/// reader switches to draining as soon as the line would exceed `cap`, so a
+/// cut inside a multi-byte character never truncates a partial line. A final
+/// line without a newline counts as a line.
+///
+/// # Errors
+///
+/// Returns the underlying I/O error if reading from `r` fails.
+pub fn read_line_capped_with<R: BufRead>(
+    r: &mut R,
+    buf: &mut Vec<u8>,
+    cap: usize,
+) -> io::Result<LineRead> {
     buf.clear();
     let mut too_long = false;
     loop {
@@ -244,7 +261,7 @@ pub fn read_line_capped<R: BufRead>(r: &mut R, buf: &mut Vec<u8>) -> io::Result<
         let newline = chunk.iter().position(|b| *b == b'\n');
         let take = newline.unwrap_or(chunk.len());
         if !too_long {
-            if buf.len() + take > MAX_LINE_BYTES {
+            if buf.len() + take > cap {
                 too_long = true;
                 buf.clear();
             } else {
@@ -330,6 +347,27 @@ mod tests {
             read_line_capped(&mut r, &mut buf).unwrap(),
             LineRead::Eof
         ));
+    }
+
+    #[test]
+    fn capped_reader_drops_a_line_cut_inside_a_multibyte_char() {
+        // 20 ASCII bytes, then `é` (2 bytes); a cap of 21 cuts inside `é`.
+        let mut data = vec![b'x'; 20];
+        data.extend_from_slice("é".as_bytes());
+        data.extend_from_slice(b"yy\n{\"a\":1}\n");
+        assert_eq!(data[20], 0xc3, "cap boundary falls inside the char");
+        let mut r = Cursor::new(data);
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_line_capped_with(&mut r, &mut buf, 21).unwrap(),
+            LineRead::TooLong
+        ));
+        assert_eq!(buf, [] as [u8; 0], "an overlong line leaves no bytes");
+        assert!(matches!(
+            read_line_capped_with(&mut r, &mut buf, 21).unwrap(),
+            LineRead::Line
+        ));
+        assert_eq!(buf, br#"{"a":1}"#);
     }
 
     #[test]
