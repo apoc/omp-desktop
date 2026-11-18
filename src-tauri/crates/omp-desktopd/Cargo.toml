@@ -13,6 +13,13 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 serde = { version = "1", features = ["derive"] }
 # `raw_value`: the socket server relays omp frames without re-parsing them.
 serde_json = { version = "1", features = ["raw_value"] }
+# Local sockets: unix domain socket on unix, named pipe on Windows.
+interprocess = "2.4.8"
+# The same config directory Tauri's `app_config_dir()` resolves.
+dirs = "7"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 # `test_support::tempdir` keeps the temp-dir tests free of collisions.
