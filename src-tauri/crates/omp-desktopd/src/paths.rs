@@ -71,6 +71,13 @@ pub fn ensure_private_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The per-user Windows pipe name shared by the server and child environment.
+#[must_use]
+pub fn pipe_name() -> String {
+    let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".into());
+    format!("omp-desktopd-{user}")
+}
+
 /// The socket name for [`Paths::socket`]: a filesystem path on unix, a
 /// per-user namespaced pipe on Windows.
 ///
@@ -88,8 +95,7 @@ pub fn socket_name(paths: &Paths) -> io::Result<Name<'static>> {
     {
         use interprocess::local_socket::{GenericNamespaced, ToNsName};
         let _ = paths;
-        let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".into());
-        format!("omp-desktopd-{user}").to_ns_name::<GenericNamespaced>()
+        pipe_name().to_ns_name::<GenericNamespaced>()
     }
     #[cfg(not(any(unix, windows)))]
     {

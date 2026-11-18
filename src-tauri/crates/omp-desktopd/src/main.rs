@@ -1,8 +1,9 @@
 use omp_desktop_core::child_path::{child_path_dirs, locate_program};
+use omp_desktop_core::json_store::write_atomic;
 use omp_desktop_core::persona_protocol::{read_line_capped, LineRead};
 use omp_desktopd::{
     core::Core,
-    paths::{ensure_private_dir, socket_name, Paths},
+    paths::{ensure_private_dir, pipe_name, socket_name, Paths},
     scheduler::Now,
     server::{Server, StartError},
     session::Launch,
@@ -39,29 +40,15 @@ fn run() -> Result<(), String> {
     let paths = Paths::resolve()?;
     ensure_private_dir(&paths.persona).map_err(|e| e.to_string())?;
     let ext = paths.persona.join("extension.mjs");
-    std::fs::write(&ext, EXTENSION).map_err(|e| e.to_string())?;
     if !paths.instructions.exists() {
         std::fs::write(&paths.instructions, INSTRUCTIONS).map_err(|e| e.to_string())?;
     }
     let omp = locate_program(&child_path_dirs(), "omp")?;
     let home = dirs::home_dir().ok_or("no home directory")?;
     let socket_env = if cfg!(windows) {
-        format!(
-            r"\\.\pipe\omp-desktopd-{}",
-            std::env::var("USERNAME").unwrap_or_default()
-        )
+        format!(r"\\.\pipe\{}", pipe_name())
     } else {
         paths.socket.display().to_string()
-    };
-    let launch = Launch {
-        program: omp.binary,
-        home,
-        // Core retains `paths`, so Launch owns its own copies of these paths.
-        sessions: paths.sessions.clone(),
-        extension: ext,
-        instructions: paths.instructions.clone(),
-        socket_env,
-        env: vec![],
     };
     let (tx, rx) = std::sync::mpsc::channel();
     let _server = match Server::start(&paths, tx.clone()) {
@@ -71,6 +58,17 @@ fn run() -> Result<(), String> {
             return Ok(());
         }
         Err(StartError::Io(e)) => return Err(e),
+    };
+    write_atomic(&ext, EXTENSION.as_bytes()).map_err(|e| e.to_string())?;
+    let launch = Launch {
+        program: omp.binary,
+        home,
+        // Core retains `paths`, so Launch owns its own copies of these paths.
+        sessions: paths.sessions.clone(),
+        extension: ext,
+        instructions: paths.instructions.clone(),
+        socket_env,
+        env: vec![],
     };
     let core = Core::new(
         paths,
@@ -85,6 +83,16 @@ fn run() -> Result<(), String> {
     );
     core.run(rx, tx);
     Ok(())
+}
+
+fn status_data(reply: &serde_json::Value) -> Result<&serde_json::Value, String> {
+    if reply["ok"] == false {
+        return Err(reply["error"]
+            .as_str()
+            .unwrap_or("status request failed")
+            .to_owned());
+    }
+    Ok(&reply["data"])
 }
 
 fn status() -> Result<(), String> {
@@ -104,13 +112,31 @@ fn status() -> Result<(), String> {
                 let value: serde_json::Value =
                     serde_json::from_slice(&buf).map_err(|e| e.to_string())?;
                 if value["type"] == "reply" && value["req"] == 1 {
-                    let pretty =
-                        serde_json::to_string_pretty(&value["data"]).map_err(|e| e.to_string())?;
+                    let pretty = serde_json::to_string_pretty(status_data(&value)?)
+                        .map_err(|e| e.to_string())?;
                     println!("{pretty}");
                     return Ok(());
                 }
             }
             _ => return Err("service closed the connection".into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn failed_status_reply_returns_service_error() {
+        let reply = json!({"type":"reply","req":1,"ok":false,"error":"daemon busy"});
+        assert_eq!(status_data(&reply), Err("daemon busy".to_owned()));
+    }
+
+    #[test]
+    fn successful_status_reply_returns_data() {
+        let reply = json!({"type":"reply","req":1,"ok":true,"data":{"state":"running"}});
+        assert_eq!(status_data(&reply), Ok(&json!({"state":"running"})));
     }
 }

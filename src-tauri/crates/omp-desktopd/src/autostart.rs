@@ -50,6 +50,8 @@ pub fn systemd_unit(exe: &Path) -> String {
         "[Unit]\nDescription=OMP Desktop persona (Ompy)\n\n[Service]\nExecStart=\"{}\" run\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n",
         exe.display()
             .to_string()
+            .replace('%', "%%")
+            .replace('$', "$$")
             .replace('\\', "\\\\")
             .replace('"', "\\\"")
     )
@@ -93,13 +95,30 @@ pub fn task_xml(exe: &Path, user: &str) -> String {
     )
 }
 
-#[allow(clippy::disallowed_methods)] // one-shot platform tool; no Chromium in this process
+#[allow(dead_code)] // also exercised by unit tests on other host platforms
+fn launchctl_not_loaded(code: Option<i32>, stderr: &str) -> bool {
+    code == Some(3) || stderr.contains("No such process")
+}
+
+#[allow(dead_code)] // also exercised by unit tests on other host platforms
+fn schtasks_missing(stderr: &str) -> bool {
+    stderr.to_ascii_lowercase().contains("does not exist")
+}
+
 fn run_tool(command: &mut Command) -> Result<(), String> {
+    run_tool_or(command, |_, _| false)
+}
+
+#[allow(clippy::disallowed_methods)] // one-shot platform tool; no Chromium in this process
+fn run_tool_or(
+    command: &mut Command,
+    acceptable: impl FnOnce(Option<i32>, &str) -> bool,
+) -> Result<(), String> {
     let output = command.output().map_err(|e| e.to_string())?;
-    if output.status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if output.status.success() || acceptable(output.status.code(), &stderr) {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
     let detail = stderr.trim();
     if detail.is_empty() {
         Err(format!("platform tool exited with {}", output.status))
@@ -128,6 +147,12 @@ pub fn install(exe: &Path) -> Result<(), String> {
     std::fs::write(&plist, launch_agent_plist(exe)).map_err(|e| e.to_string())?;
     // SAFETY: getuid has no preconditions.
     let uid = unsafe { libc::getuid() };
+    run_tool_or(
+        Command::new("launchctl")
+            .arg("bootout")
+            .arg(format!("gui/{uid}/{LABEL}")),
+        launchctl_not_loaded,
+    )?;
     run_tool(
         Command::new("launchctl")
             .arg("bootstrap")
@@ -148,16 +173,19 @@ pub fn uninstall() -> Result<(), String> {
         .join(format!("{LABEL}.plist"));
     // SAFETY: getuid has no preconditions.
     let uid = unsafe { libc::getuid() };
-    run_tool(
+    let bootout = run_tool_or(
         Command::new("launchctl")
             .arg("bootout")
             .arg(format!("gui/{uid}/{LABEL}")),
-    )?;
-    match std::fs::remove_file(&plist) {
+        launchctl_not_loaded,
+    );
+    let removed = match std::fs::remove_file(&plist) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.to_string()),
-    }
+    };
+    bootout?;
+    removed
 }
 
 /// Installs and starts the autostart entry for `exe`.
@@ -183,15 +211,18 @@ pub fn install(exe: &Path) -> Result<(), String> {
 /// Returns file-system, environment or platform-tool failures.
 #[cfg(target_os = "linux")]
 pub fn uninstall() -> Result<(), String> {
+    let unit = home()?
+        .join(".config/systemd/user")
+        .join("omp-desktopd.service");
+    if !unit.exists() {
+        return Ok(());
+    }
     run_tool(Command::new("systemctl").args([
         "--user",
         "disable",
         "--now",
         "omp-desktopd.service",
     ]))?;
-    let unit = home()?
-        .join(".config/systemd/user")
-        .join("omp-desktopd.service");
     match std::fs::remove_file(&unit) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -206,8 +237,8 @@ fn task_file() -> std::path::PathBuf {
 
 #[cfg(windows)]
 fn write_task_xml(path: &Path, exe: &Path) -> Result<(), String> {
-    let domain = std::env::var("USERDOMAIN").map_err(|e| e.to_string())?;
-    let name = std::env::var("USERNAME").map_err(|e| e.to_string())?;
+    let domain = std::env::var("USERDOMAIN").map_err(|e| format!("USERDOMAIN: {e}"))?;
+    let name = std::env::var("USERNAME").map_err(|e| format!("USERNAME: {e}"))?;
     let text = task_xml(exe, &format!(r"{domain}\{name}"));
     let mut bytes = Vec::with_capacity(2 + text.len() * 2);
     bytes.extend_from_slice(&[0xff, 0xfe]);
@@ -244,8 +275,11 @@ pub fn install(exe: &Path) -> Result<(), String> {
 /// Returns platform-tool failures.
 #[cfg(windows)]
 pub fn uninstall() -> Result<(), String> {
-    run_tool(Command::new("schtasks").args(["/End", "/TN", TASK_NAME]))?;
-    run_tool(Command::new("schtasks").args(["/Delete", "/TN", TASK_NAME, "/F"]))
+    let _ = run_tool(Command::new("schtasks").args(["/End", "/TN", TASK_NAME]));
+    run_tool_or(
+        Command::new("schtasks").args(["/Delete", "/TN", TASK_NAME, "/F"]),
+        |_, stderr| schtasks_missing(stderr),
+    )
 }
 
 #[cfg(test)]
@@ -270,6 +304,34 @@ mod tests {
         let u = systemd_unit(Path::new("/opt/OMP Desktop/omp-desktopd"));
         assert!(u.contains("ExecStart=\"/opt/OMP Desktop/omp-desktopd\" run"));
         assert!(u.contains("WantedBy=default.target"));
+    }
+
+    #[test]
+    fn systemd_unit_escapes_specifiers_and_expansion() {
+        let u = systemd_unit(Path::new("/opt/100%-$USER/omp-desktopd"));
+        assert!(u.contains("ExecStart=\"/opt/100%%-$$USER/omp-desktopd\" run"));
+    }
+
+    #[test]
+    fn launchctl_absent_job_is_not_an_error() {
+        assert!(launchctl_not_loaded(Some(3), ""));
+        assert!(launchctl_not_loaded(
+            Some(113),
+            "Boot-out failed: 3: No such process"
+        ));
+        assert!(!launchctl_not_loaded(
+            Some(5),
+            "Boot-out failed: 5: Input/output error"
+        ));
+    }
+
+    #[test]
+    fn schtasks_absent_task_is_not_an_error() {
+        assert!(schtasks_missing(
+            "ERROR: The specified task name does not exist."
+        ));
+        assert!(schtasks_missing("ERROR: Task DOES NOT EXIST."));
+        assert!(!schtasks_missing("ERROR: Access is denied."));
     }
 
     #[test]
