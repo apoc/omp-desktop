@@ -63,11 +63,19 @@ function rustcHostTriple() {
   return parseHostTriple(result.stdout);
 }
 
+export function targetTriple(requested, hostTriple) {
+  return requested ?? hostTriple();
+}
+
+export function checkBuildResult(build) {
+  if (build.signal) throw new Error(`cargo build killed by ${build.signal}`);
+  if (build.status !== 0) process.exit(build.status ?? 1);
+}
+
 function main() {
   const requested = targetFromArgs(process.argv.slice(2))
     ?? (process.env.TAURI_ENV_TARGET_TRIPLE?.trim() || null);
-  const host = rustcHostTriple();
-  const triple = requested ?? host;
+  const triple = targetTriple(requested, rustcHostTriple);
 
   const args = ["build", "--release", "-p", "omp-desktopd"];
   if (requested) args.push("--target", triple);
@@ -75,8 +83,7 @@ function main() {
   // Inherit stdio: cargo's own progress and errors are the useful output.
   const build = spawnSync("cargo", args, { cwd: tauri, stdio: "inherit" });
   if (build.error) throw new Error(`cannot run cargo: ${build.error.message}`);
-  if (build.status !== 0) process.exit(build.status ?? 1);
-  if (build.signal) throw new Error(`cargo build killed by ${build.signal}`);
+  checkBuildResult(build);
 
   const exe = process.platform === "win32" ? ".exe" : "";
   const profile = requested ? join(tauri, "target", triple, "release") : join(tauri, "target", "release");

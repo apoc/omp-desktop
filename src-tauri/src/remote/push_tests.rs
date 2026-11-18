@@ -490,7 +490,7 @@ fn an_unknown_lock_state_still_sends() {
 }
 
 #[test]
-fn persona_pushes_respect_questions_quiet_hours_and_the_throttle() {
+fn persona_pushes_respect_questions_and_the_throttle() {
     let (base, requests) = fake_push_service(vec![]);
     let dir = tempdir("pusher-persona");
     let (pusher, _devices, _) = setup(&dir, "dev@omp-desktop.app", &format!("{base}/sub"));
@@ -502,7 +502,7 @@ fn persona_pushes_respect_questions_quiet_hours_and_the_throttle() {
         contact: "dev@omp-desktop.app".to_owned(),
         only_when_locked: false,
     });
-    pusher.notify_persona("Approve the deployment", Kind::Question, true, false);
+    pusher.notify_persona("Approve the deployment", true);
     assert!(
         requests.recv_timeout(Duration::from_millis(300)).is_err(),
         "the questions switch is off"
@@ -515,18 +515,13 @@ fn persona_pushes_respect_questions_quiet_hours_and_the_throttle() {
         contact: "dev@omp-desktop.app".to_owned(),
         only_when_locked: false,
     });
-    pusher.notify_persona("A decision", Kind::Question, false, true);
-    assert!(
-        requests.recv_timeout(Duration::from_millis(300)).is_err(),
-        "quiet hours keep non-urgent items"
-    );
-    pusher.notify_persona("Approve the deployment", Kind::Question, true, true);
+    pusher.notify_persona("Approve the deployment", true);
     let (head, body) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
     let lower = head.to_ascii_lowercase();
     assert!(lower.contains("urgency: high"), "{head}");
     assert!(body > 86, "an encrypted payload follows the header");
 
-    pusher.notify_persona("Approve the deployment", Kind::Question, true, true);
+    pusher.notify_persona("Approve the deployment", true);
     assert!(
         requests.recv_timeout(Duration::from_millis(300)).is_err(),
         "the second Ompy push inside 30 s is throttled"

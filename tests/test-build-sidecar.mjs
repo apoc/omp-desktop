@@ -5,7 +5,13 @@
 // Run: node tests/test-build-sidecar.mjs  (or: npm run test:build-sidecar)
 
 import assert from "node:assert/strict";
-import { parseHostTriple, sidecarFileName, targetFromArgs } from "../scripts/build-sidecar.mjs";
+import {
+  checkBuildResult,
+  parseHostTriple,
+  sidecarFileName,
+  targetFromArgs,
+  targetTriple,
+} from "../scripts/build-sidecar.mjs";
 
 let passed = 0;
 function check(label, fn) {
@@ -63,6 +69,23 @@ check("--target accepts both spellings", () => {
 
 check("--target without a value is an error", () => {
   assert.throws(() => targetFromArgs(["--target"]), /needs a triple/);
+});
+
+check("a terminated cargo build reports its signal", () => {
+  assert.throws(
+    () => checkBuildResult({ status: null, signal: "SIGTERM" }),
+    /cargo build killed by SIGTERM/,
+  );
+});
+
+check("an explicit target does not invoke rustc", () => {
+  assert.equal(
+    targetTriple("x86_64-apple-darwin", () => {
+      throw new Error("rustc must not run");
+    }),
+    "x86_64-apple-darwin",
+  );
+  assert.equal(targetTriple(null, () => "aarch64-apple-darwin"), "aarch64-apple-darwin");
 });
 
 console.log(`${passed} checks passed`);

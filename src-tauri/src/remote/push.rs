@@ -215,12 +215,9 @@ impl Pusher {
     }
 
     /// Queue a push for one Ompy inbox item — the same worker, throttle and
-    /// settings as a tab push. Quiet hours keep only urgent items, and the
-    /// `questions` switch gates every approval/decision push.
-    pub fn notify_persona(&self, title: &str, kind: Kind, urgent: bool, quiet: bool) {
-        if quiet && !urgent {
-            return;
-        }
+    /// settings as a tab push. The caller has already applied quiet hours;
+    /// the `questions` switch gates every approval/decision push.
+    pub fn notify_persona(&self, title: &str, urgent: bool) {
         {
             let settings = locked(&self.shared.settings);
             if !settings.enabled || !settings.questions {
@@ -234,7 +231,7 @@ impl Pusher {
             format!("Ompy: {shown}")
         };
         let urgency = if urgent { "high" } else { "normal" };
-        self.enqueue(PERSONA_TAB, title, kind.body(), urgency);
+        self.enqueue(PERSONA_TAB, title, Kind::Question.body(), urgency);
     }
 
     /// Take `key`'s throttle slot and hand the message to the worker.

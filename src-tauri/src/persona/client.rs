@@ -29,8 +29,8 @@ pub(super) trait Emitter: Send + Sync + 'static {
 
     /// One push-worthy Ompy inbox item. The default is a no-op so a test
     /// emitter only records what it cares about.
-    fn persona_push(&self, title: &str, urgent: bool, quiet: bool) {
-        let _ = (title, urgent, quiet);
+    fn persona_push(&self, title: &str, urgent: bool) {
+        let _ = (title, urgent);
     }
 }
 
@@ -58,8 +58,8 @@ impl Emitter for TauriEmitter {
         let _ = tauri::Emitter::emit(&self.0, "persona://error", ErrorEvent { kind, message });
     }
 
-    fn persona_push(&self, title: &str, urgent: bool, quiet: bool) {
-        crate::remote::bridge::notify_persona(&self.0, title, urgent, quiet);
+    fn persona_push(&self, title: &str, urgent: bool) {
+        crate::remote::bridge::notify_persona(&self.0, title, urgent);
     }
 }
 
@@ -456,7 +456,7 @@ impl Worker {
         let targets = new_push_targets(&self.seen_inbox, items, quiet);
         self.seen_inbox = items.iter().map(|item| item.id.clone()).collect();
         for item in targets {
-            self.emitter.persona_push(&item.title, item.urgent, quiet);
+            self.emitter.persona_push(&item.title, item.urgent);
         }
     }
 
@@ -727,10 +727,10 @@ mod tests {
             ));
         }
 
-        fn persona_push(&self, title: &str, urgent: bool, quiet: bool) {
+        fn persona_push(&self, title: &str, urgent: bool) {
             self.0.lock().unwrap().push((
                 "push".into(),
-                serde_json::json!({"title": title, "urgent": urgent, "quiet": quiet}),
+                serde_json::json!({"title": title, "urgent": urgent}),
             ));
         }
     }
@@ -914,8 +914,8 @@ mod tests {
         assert_eq!(
             push_payloads,
             [
-                serde_json::json!({"title": "title a", "urgent": false, "quiet": false}),
-                serde_json::json!({"title": "title b", "urgent": false, "quiet": false}),
+                serde_json::json!({"title": "title a", "urgent": false}),
+                serde_json::json!({"title": "title b", "urgent": false}),
             ],
             "the replayed open item is not pushed twice"
         );

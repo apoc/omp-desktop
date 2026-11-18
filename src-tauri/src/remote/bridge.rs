@@ -217,10 +217,10 @@ pub fn stop(app: &AppHandle) {
 }
 
 /// Push one Ompy inbox item to the phones. No-op while remote access is not
-/// installed; the pusher itself decides from the settings and quiet hours.
-pub fn notify_persona(app: &AppHandle, title: &str, urgent: bool, quiet: bool) {
+/// installed; the client filters quiet hours before handing items over.
+pub fn notify_persona(app: &AppHandle, title: &str, urgent: bool) {
     if let Some(manager) = app.try_state::<Arc<RemoteManager>>() {
-        manager.notify_persona(title, urgent, quiet);
+        manager.notify_persona(title, urgent);
     }
 }
 

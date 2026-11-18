@@ -35,5 +35,6 @@ The macOS bundle is ad-hoc signed today (`bundle.macOS.signingIdentity: "-"` in 
 
 ## Known limits
 
+- Universal macOS builds are not supported: the script stages one target triple, so build separate arm64 and x86_64 bundles instead of a universal binary.
 - `beforeDevCommand` is not set, so a dev checkout without `cargo build -p omp-desktopd` gets the app's `cannot run …` error when Ompy is enabled; build the workspace first.
 - A plain `tauri build` without `--config src-tauri/tauri.dist.conf.json` embeds `src/` and has no `externalBin`, so its bundle has no sidecar; only the configured release build is meant to ship Ompy.
