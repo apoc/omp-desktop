@@ -179,6 +179,18 @@
         custom("version", "Version", "The installed OMP Desktop and the newest release.", "version update check skipped"),
       ] },
     ] },
+    { id: "persona", icon: "agent", title: "Persona", blurb: "Ompy works in the background: it wakes on a schedule, keeps an inbox for you and spends a daily token budget. The Ompy service owns all of it, so these rows read and change its settings.", groups: [
+      { name: "Service", rows: [
+        custom("personaEnable", "Run Ompy in the background", "Starts the Ompy service at login and keeps it running when the app is closed.", "ompy service daemon background autostart login"),
+      ] },
+      { name: "Wake-ups", src: "persona/settings.json", rows: [
+        custom("personaSchedule", "Wake-ups", "How often Ompy checks in, and when it stays quiet.", "ompy interval quiet hours weekend schedule"),
+        custom("personaBudget", "Daily token limit", "Ompy stops waking up for the rest of the day when this is reached. Changing it applies immediately.", "ompy budget tokens limit spend"),
+      ] },
+      { name: "Instructions", src: "persona/instructions.md", rows: [
+        custom("personaInstructions", "Instructions file", "The file Ompy reads on every wake-up. Edit it in your own editor.", "ompy prompt system instructions editor"),
+      ] },
+    ] },
     { id: "remote", icon: "live", title: "Remote access", blurb: "Read your sessions, answer questions and steer the agent from a phone on your network. Off by default; nothing listens until you enable it.", groups: [
       { name: "Server", src: "remote.json", rows: [
         custom("remoteServer", "Server", "The interface, port and name the phone connects to. The server only listens on the chosen interface.", "remote phone mobile server interface port host name https lan vpn"),

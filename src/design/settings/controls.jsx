@@ -71,10 +71,10 @@ function SettingsRow({ label, desc, modified, resettable, onReset, stack, aside,
   );
 }
 
-function SettingsToggle({ value, onChange, label }) {
+function SettingsToggle({ value, onChange, label, disabled }) {
   return (
     <button type="button" className="st-tgl" role="switch" aria-checked={!!value} aria-label={OMP_TR(label)}
-      onClick={() => onChange(!value)} />
+      disabled={disabled} onClick={() => { if (!disabled) onChange(!value); }} />
   );
 }
 

@@ -155,6 +155,14 @@ check("inbox_view_empty_is_empty", () => {
   assert.deepEqual(P.inboxView(undefined), { open: [], results: [], badge: 0 });
 });
 
+// ── compactTokens ────────────────────────────────────────────────────────
+check("compact_tokens_shortens_budget_numbers", () => {
+  assert.equal(P.compactTokens(2_000_000), "2M");
+  assert.equal(P.compactTokens(1_200_000), "1.2M");
+  assert.equal(P.compactTokens(99_000), "99k");
+  assert.equal(P.compactTokens(500), "500");
+});
+
 // ── scheduleView ─────────────────────────────────────────────────────────
 check("schedule_view_orders_queued_wakes_and_the_interval", () => {
   const schedule = {

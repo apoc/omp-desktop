@@ -247,6 +247,7 @@
   }
 
   window.OMP_PERSONA = Object.freeze({
+    compactTokens: compact,
     statusView,
     inboxView,
     scheduleView,
