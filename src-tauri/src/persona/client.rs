@@ -150,12 +150,19 @@ impl ClientHandle {
     }
 
     pub(super) fn request(&self, body: ClientMsg) -> Result<(), String> {
+        self.request_value(body).map(|_| ())
+    }
+
+    /// Like [`Self::request`], but hands back the reply's `data` (JSON
+    /// `null` when the service answered without any). `list_schedule` is
+    /// the one request whose answer the UI needs.
+    pub(super) fn request_value(&self, body: ClientMsg) -> Result<Value, String> {
         let (tx, rx) = mpsc::channel();
         self.tx
             .send(WorkerMsg::Request { body, response: tx })
             .map_err(|_| "persona client stopped".to_owned())?;
         match rx.recv_timeout(REQUEST_TIMEOUT) {
-            Ok(Ok(_)) => Ok(()),
+            Ok(Ok(value)) => Ok(value),
             Ok(Err(error)) => Err(error),
             Err(mpsc::RecvTimeoutError::Timeout) => Err("persona request timed out".into()),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err("persona client stopped".into()),

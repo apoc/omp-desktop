@@ -82,3 +82,55 @@
   display: block; height: 100%; background: var(--accent);
   transition: width 240ms var(--ease-out);
 }
+
+/* ── Inbox rail card (persona-inbox-card.jsx) ─────────────────────────── */
+.persona-inbox-count { margin-left: auto; }
+.persona-inbox-empty { margin: 0; font-size: var(--d-text-xs); color: var(--fg-3); }
+.persona-inbox-item {
+  display: flex; flex-direction: column; gap: 6px;
+  padding-top: 8px; border-top: 1px dashed var(--line);
+}
+.persona-inbox-title {
+  font-size: var(--d-text-sm); font-weight: 600; color: var(--fg);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.persona-inbox-body {
+  font-size: var(--d-text-xs); color: var(--fg-3); line-height: var(--d-leading);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+/* The approval's payload: `.ask-approval-details` is the shared mono box;
+   the card takes its bottom gap out (the item's own gap spaces it). */
+.persona-inbox-details { margin-bottom: 0; max-height: 120px; }
+.persona-inbox-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.persona-inbox-btn { height: 22px; padding: 0 10px; font-size: var(--d-text-sm); }
+.persona-inbox-answer { display: flex; gap: 6px; }
+.persona-inbox-input {
+  flex: 1; min-width: 0; padding: 4px 8px; border-radius: var(--r-2);
+  border: 1px solid var(--line-bright); background: var(--bg-input); color: var(--fg);
+  font: inherit; font-size: var(--d-text-sm);
+}
+.persona-inbox-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* "Dismiss" is a link, not a pill: every item has one, results included. */
+.persona-inbox-dismiss {
+  align-self: flex-start; padding: 0; border: 0; background: none;
+  color: var(--fg-4); font: inherit; font-size: var(--d-text-xs); cursor: pointer;
+}
+.persona-inbox-dismiss:hover { color: var(--fg); }
+.persona-inbox-dismiss:disabled { opacity: 0.5; cursor: default; }
+.persona-inbox-sub {
+  padding-top: 6px; border-top: 1px dashed var(--line);
+  font-size: var(--d-text-xs); color: var(--fg-4);
+  font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+}
+.persona-inbox-result, .persona-inbox-scheduled {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+}
+.persona-inbox-result-title {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--d-text-xs); color: var(--fg-2);
+}
+.persona-inbox-time {
+  flex: none; font-size: var(--d-text-xs); color: var(--fg-4);
+  font-variant-numeric: tabular-nums;
+}
+.persona-inbox-result .persona-inbox-dismiss { flex: none; align-self: center; }

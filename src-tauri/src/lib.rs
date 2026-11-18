@@ -1643,6 +1643,8 @@ pub fn run() {
             set_close_guard,
             persona::persona_status,
             persona::persona_inbox,
+            persona::persona_schedule,
+            persona::persona_open_instructions,
             persona::persona_attach,
             persona::persona_detach,
             persona::persona_send,

@@ -155,6 +155,43 @@ check("inbox_view_empty_is_empty", () => {
   assert.deepEqual(P.inboxView(undefined), { open: [], results: [], badge: 0 });
 });
 
+// ── scheduleView ─────────────────────────────────────────────────────────
+check("schedule_view_orders_queued_wakes_and_the_interval", () => {
+  const schedule = {
+    nextIntervalMs: NOW + 30 * 60_000,
+    scheduled: [
+      { id: "late", atMs: NOW + 90 * 60_000, note: "Check mail" },
+      { id: "early", atMs: NOW + 5 * 60_000, note: "Review PR" },
+    ],
+  };
+  const view = P.scheduleView(schedule, status({ nextWakeMs: NOW + 5 * 60_000 }));
+  assert.deepEqual(view.entries.map(e => [e.kind, e.id, e.atMs]), [
+    ["wake", "early", NOW + 5 * 60_000],
+    ["interval", "interval", NOW + 30 * 60_000],
+    ["wake", "late", NOW + 90 * 60_000],
+  ]);
+  assert.equal(view.entries[0].label, "Review PR");
+  assert.equal(view.entries[1].label, "Next check");
+  assert.equal(view.entries[2].label, "Check mail");
+});
+
+check("schedule_view_keys_queued_wakes_by_time", () => {
+  const schedule = { nextIntervalMs: NOW + 60 * 60_000, scheduled: [
+    { id: "b", atMs: NOW + 20 * 60_000, note: "" },
+    { id: "a", atMs: NOW + 10 * 60_000, note: "  " },
+  ] };
+  const view = P.scheduleView(schedule, status());
+  assert.deepEqual(view.entries.map(e => e.id), ["a", "b", "interval"]);
+  assert.equal(view.entries[0].label, "Scheduled wake");
+});
+
+check("schedule_view_falls_back_to_the_status_next_wake", () => {
+  const view = P.scheduleView(null, status({ nextWakeMs: NOW + 12 * 60_000 }));
+  assert.deepEqual(view.entries.map(e => [e.kind, e.atMs]), [["interval", NOW + 12 * 60_000]]);
+  assert.equal(view.next, NOW + 12 * 60_000);
+  assert.deepEqual(P.scheduleView(null, status(), NOW), { entries: [], next: null });
+});
+
 // ── validateSettings ─────────────────────────────────────────────────────
 check("validate_settings_accepts_the_defaults", () => {
   const result = P.validateSettings({ ...SETTINGS });

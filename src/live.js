@@ -5240,6 +5240,12 @@
     // Ompy tab needs no separate path.
     personaStatus() { return _invokeSafe("persona_status", undefined, null); },
     personaInbox() { return _invokeSafe("persona_inbox", undefined, []); },
+    /** The service's queued wakes and its next interval wake
+     *  (`list_schedule`), as `{ok, value | error}`. */
+    personaSchedule() { return _invokeResult("persona_schedule"); },
+    /** Open `<app config>/persona/instructions.md` in the system editor;
+     *  the service writes the file on its first start. */
+    personaOpenInstructions() { return _invokeResult("persona_open_instructions"); },
     /** Answer one inbox item; `answer` null dismisses it. */
     personaResolve(id, answer) { return _invokeResult("persona_resolve", { id, answer: answer ?? null }); },
     personaSettings(settings) { return _invokeResult("persona_set_settings", { settings }); },

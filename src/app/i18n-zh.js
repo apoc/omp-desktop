@@ -1062,5 +1062,18 @@ window.OMP_I18N.add("zh", {
   "Quiet hours must use HH:MM (00:00 to 23:59).": "安静时段必须使用 HH:MM（00:00 至 23:59）。",
   "The daily limit must be a whole number from 100,000 to 1,000,000,000 tokens.": "每日限额必须为 100,000 到 1,000,000,000 token 的整数。",
   "Quiet weekends must be on or off.": "周末安静必须为开或关。",
+  "Inbox": "收件箱",
+  "{n} open": "{n} 项待处理",
+  "Nothing waiting.": "暂无待处理事项。",
+  "Recent": "最近",
+  "Scheduled": "已计划",
+  "Scheduled wake": "计划的唤醒",
+  "Next check": "下次检查",
+  "Dismiss": "忽略",
+  "Send": "发送",
+  "Answer": "回答",
+  "Secret answer": "私密回答",
+  "Type your answer": "输入你的回答",
+  "Ompy's approvals, decisions and results, and the wake-ups it has queued. Shown on every tab while the Ompy service runs.": "Ompy 的审批、决定和结果，以及已排队的唤醒。Ompy 服务运行时在每个标签页显示。",
 });
 

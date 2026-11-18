@@ -46,6 +46,32 @@ pub fn persona_inbox(persona: State<'_, Persona>) -> Result<Vec<InboxItem>, Stri
     Ok(persona.client.inbox())
 }
 
+/// The queued wakes and the next interval wake (`ClientMsg::ListSchedule`).
+/// `Value::Null` when the service answers without data.
+#[tauri::command]
+pub async fn persona_schedule(persona: State<'_, Persona>) -> Result<serde_json::Value, String> {
+    let client = persona.client.handle();
+    crate::off_ipc(move || client.request_value(ClientMsg::ListSchedule)).await?
+}
+
+/// Open the persona instructions file in the user's editor. The service
+/// writes it from its embedded default on start, so a missing file only
+/// means Ompy has not run on this machine yet.
+#[tauri::command]
+pub async fn persona_open_instructions() -> Result<(), String> {
+    crate::off_ipc(open_instructions).await?
+}
+
+fn open_instructions() -> Result<(), String> {
+    let path = omp_desktop_core::persona_paths::Paths::resolve()?.instructions;
+    if !path.is_file() {
+        return Err(format!("Start Ompy once to create {}.", path.display()));
+    }
+    let _gate = crate::spawn_gate::shared();
+    #[allow(clippy::disallowed_methods)] // launching the editor, under the gate
+    open::that_detached(&path).map_err(|e| format!("cannot open {}: {e}", path.display()))
+}
+
 #[tauri::command]
 pub async fn persona_attach(after_seq: u64, persona: State<'_, Persona>) -> Result<(), String> {
     request(&persona, ClientMsg::Attach { after_seq }).await

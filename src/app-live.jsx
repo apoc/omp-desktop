@@ -18,7 +18,7 @@
    ═════════════════════════════════════════════════════════════════════ */
 
 const {
-  Icon, ChatView, Composer, CommandBridge, WindowChrome, Toolbar, TabBar, SubagentPane, ProjectSidebar, PersonaStrip, EmptyWorkspace,
+  Icon, ChatView, Composer, CommandBridge, WindowChrome, Toolbar, TabBar, SubagentPane, ProjectSidebar, PersonaStrip, PersonaInboxCard, EmptyWorkspace,
   StatusBar, AmbientRail, ConversationTree, PlanKanban, HistoryModal, GitBrowser, FilePreview, ApprovalRulesPanel, UsageStatsPanel, PromptHistoryModal, UpdateModal, useTweaks,
   SettingsPage, ConfirmCloseDialog,
   useWidgets, WidgetCard, WidgetErrorCard, WidgetApprovalCard, WidgetBoundary,
@@ -1271,6 +1271,9 @@ function App() {
                       focus, so installing gh brings it back. */}
                   {(t.showChanges ?? true) && !prAutomation.ghMissing && <PrAutomationCard key={planKey} automation={prAutomation} bridge={bridge}
                     available={!!activeProject.path && !!bridge?.isConnected} />}
+                  {/* Every tab: Ompy's inbox is the window's, not a tab's.
+                      The card renders nothing while the service is offline. */}
+                  {(t.showInbox ?? true) && <PersonaInboxCard status={personaStatus} items={personaInbox} bridge={bridge} />}
                   {widgets.fatal && <WidgetErrorCard title="widgets.json" error={widgets.fatal} />}
                   {widgets.configErrors.map((e, i) => <WidgetErrorCard key={i} title="widgets.json" error={e} />)}
                   {widgets.approvals.map(a => (

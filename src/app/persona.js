@@ -104,6 +104,34 @@
     return { open, results, badge: open.length };
   }
 
+  /**
+   * The Inbox card's "Scheduled" list. `list_schedule`'s reply carries the
+   * queued wakes and the interval wake (`nextIntervalMs`); a missing interval
+   * falls back to `status.nextWakeMs`, and an instant that is already listed
+   * is not repeated. Entries are ordered by time, so a scheduled wake before
+   * the interval comes first whatever order the service listed it in.
+   */
+  function scheduleView(schedule, status) {
+    const t = window.OMP_I18N.t;
+    const list = Array.isArray(schedule?.scheduled) ? schedule.scheduled : [];
+    const entries = list
+      .filter(w => typeof w?.atMs === "number" && Number.isFinite(w.atMs))
+      .map(w => ({
+        id: String(w.id ?? ""),
+        kind: "wake",
+        atMs: w.atMs,
+        label: typeof w.note === "string" && w.note.trim() ? w.note.trim() : t("Scheduled wake"),
+      }));
+    const interval = Number.isFinite(schedule?.nextIntervalMs) && schedule.nextIntervalMs > 0
+      ? schedule.nextIntervalMs
+      : typeof status?.nextWakeMs === "number" ? status.nextWakeMs : null;
+    if (interval !== null && !entries.some(e => e.atMs === interval)) {
+      entries.push({ id: "interval", kind: "interval", atMs: interval, label: t("Next check") });
+    }
+    entries.sort((a, b) => a.atMs - b.atMs);
+    return { entries, next: entries[0]?.atMs ?? null };
+  }
+
   function failed(field, message) {
     return { ok: false, field, message };
   }
@@ -221,6 +249,7 @@
   window.OMP_PERSONA = Object.freeze({
     statusView,
     inboxView,
+    scheduleView,
     validateSettings,
     answerOptions,
     isPersona,
