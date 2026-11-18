@@ -15,7 +15,17 @@ use std::sync::Arc;
 
 impl Core {
     pub(super) fn on_inbound(&mut self, inbound: Inbound, now: &Now) {
-        let Inbound { conn, req, msg, .. } = inbound;
+        let Inbound {
+            conn,
+            req,
+            msg,
+            bytes,
+            budget,
+            ..
+        } = inbound;
+        // The reader reserved this line against the connection's inbound
+        // budget; the core owns it from here, so release it before handling.
+        budget.release(bytes);
         match msg {
             ClientMsg::Status => {
                 let data = serde_json::to_value(self.status_info()).unwrap_or(Value::Null);

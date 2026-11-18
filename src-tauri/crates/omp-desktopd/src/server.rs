@@ -1,6 +1,11 @@
 //! Local socket server: one thread accepts, one reader thread and one
-//! writer thread per connection. Parsed messages go to the core; the core
-//! answers through the connection's [`Outbound`] queue.
+//! writer thread per admitted connection. Parsed messages go to the core;
+//! the core answers through the connection's [`Outbound`] queue.
+//!
+//! Admission happens in the accept loop, before any thread exists: at most
+//! [`MAX_CONNECTIONS`] connections hold a slot, handshake included, so a
+//! client that connects and stays silent cannot multiply threads. The slot is
+//! released when both the reader and the writer are gone.
 use crate::core::CoreMsg;
 use crate::paths::{ensure_private_dir, socket_name, Paths};
 use interprocess::local_socket::{prelude::*, ListenerOptions, Stream};
@@ -11,7 +16,7 @@ use std::io::{self, BufReader, Read, Write};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -24,6 +29,55 @@ pub const MAX_OUTBOUND_BYTES: usize = 32 * 1024 * 1024;
 /// Handshaken clients allowed at once. A further connection is answered with
 /// an error and closed instead of starting another thread pair.
 pub const MAX_CONNECTIONS: usize = 16;
+
+/// Serialized bytes one connection may have queued in the core's inbound
+/// channel.
+///
+/// The reader reserves a line before handing it to the core and the core
+/// releases it after handling. A line that would exceed the bound is not
+/// queued: the client is disconnected instead, so an idle core never sits on
+/// an unbounded client backlog.
+pub const MAX_INBOUND_BYTES: usize = 32 * 1024 * 1024;
+
+/// Bytes one connection currently has reserved in the core's inbound channel.
+#[derive(Debug, Clone)]
+pub struct InboundBudget {
+    queued: Arc<AtomicUsize>,
+    limit: usize,
+}
+
+impl InboundBudget {
+    /// A budget of `limit` serialized bytes for one connection.
+    #[must_use]
+    pub fn new(limit: usize) -> Self {
+        Self {
+            queued: Arc::new(AtomicUsize::new(0)),
+            limit,
+        }
+    }
+
+    /// Reserves `size` bytes, or returns `false` when the reservation would
+    /// exceed the budget.
+    #[must_use]
+    pub fn reserve(&self, size: usize) -> bool {
+        self.queued
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                (queued.saturating_add(size) <= self.limit).then_some(queued + size)
+            })
+            .is_ok()
+    }
+
+    /// Releases `size` bytes after the core handled the message.
+    pub fn release(&self, size: usize) {
+        self.queued.fetch_sub(size, Ordering::AcqRel);
+    }
+
+    /// Bytes currently reserved.
+    #[must_use]
+    pub fn queued_bytes(&self) -> usize {
+        self.queued.load(Ordering::Acquire)
+    }
+}
 
 pub type ConnId = u64;
 
@@ -99,9 +153,17 @@ fn shutdown(conn: &Stream) {
     {
         use std::os::fd::{AsFd, AsRawFd};
         let Stream::UdSocket(stream) = conn;
+        let fd = stream.as_fd().as_raw_fd();
         // SAFETY: shutdown only reads the descriptor; the stream owns it.
+        //
+        // A peer that half-closed its write side leaves macOS refusing
+        // `SHUT_RDWR` with `ENOTCONN`, and that failed call does not wake a
+        // writer blocked in `write`. `SHUT_WR` still closes our side there,
+        // which is all that is left to close, and the blocked write returns.
         unsafe {
-            libc::shutdown(stream.as_fd().as_raw_fd(), libc::SHUT_RDWR);
+            if libc::shutdown(fd, libc::SHUT_RDWR) != 0 {
+                libc::shutdown(fd, libc::SHUT_WR);
+            }
         }
     }
     #[cfg(windows)]
@@ -127,6 +189,10 @@ pub struct Inbound {
     pub req: Option<u64>,
     pub client: ClientKind,
     pub msg: ClientMsg,
+    /// Serialized line size this message reserved in `budget`.
+    pub bytes: usize,
+    /// The connection's inbound budget; release `bytes` after handling.
+    pub budget: InboundBudget,
 }
 
 #[derive(Debug)]
@@ -137,9 +203,20 @@ pub enum StartError {
 
 pub struct Server {
     _accept: std::thread::JoinHandle<()>,
+    active: Arc<AtomicUsize>,
 }
 
-/// Bounds one server run: the handshake deadline and the two resource limits.
+impl Server {
+    /// Admission slots in use, including connections that have not finished
+    /// their handshake. Exposed for tests and diagnostics.
+    #[must_use]
+    pub fn active_connections(&self) -> usize {
+        self.active.load(Ordering::Acquire)
+    }
+}
+
+/// Bounds one server run: the handshake deadline and the three resource
+/// limits.
 #[derive(Debug, Clone, Copy)]
 struct Limits {
     /// Handshake deadline. Windows named-pipe streams do not support receive
@@ -147,6 +224,7 @@ struct Limits {
     #[cfg_attr(windows, allow(dead_code))]
     hello_timeout: Duration,
     outbound_bytes: usize,
+    inbound_bytes: usize,
     max_connections: usize,
 }
 
@@ -155,14 +233,33 @@ impl Default for Limits {
         Self {
             hello_timeout: HELLO_TIMEOUT,
             outbound_bytes: MAX_OUTBOUND_BYTES,
+            inbound_bytes: MAX_INBOUND_BYTES,
             max_connections: MAX_CONNECTIONS,
         }
     }
 }
 
-/// Holds one of [`Limits::max_connections`] slots for the life of a
-/// handshaken connection, so a refused client never takes a slot.
-struct Admission(Arc<AtomicUsize>);
+/// Holds one of [`Limits::max_connections`] slots from the accept loop to the
+/// end of a connection.
+///
+/// The accept loop, the reader and the writer each hold a clone, so the slot
+/// is freed only after every thread of the connection is gone. A refused
+/// client never takes a slot and never gets a thread.
+struct Admission(Arc<AdmissionSlot>);
+
+impl Clone for Admission {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+struct AdmissionSlot(Arc<AtomicUsize>);
+
+impl Drop for AdmissionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 impl Admission {
     /// Takes a slot, or `None` when the connection limit is reached.
@@ -172,27 +269,22 @@ impl Admission {
             active.fetch_sub(1, Ordering::AcqRel);
             return None;
         }
-        Some(Self(Arc::clone(active)))
-    }
-}
-
-impl Drop for Admission {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
+        Some(Self(Arc::new(AdmissionSlot(Arc::clone(active)))))
     }
 }
 
 static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
 
 /// Errors after the handshake go through the writer thread, so replies keep
-/// their line order.
-fn send_err(out: &Outbound, error: &str) {
-    let _ = out.send(&ServerMsg::Reply {
+/// their line order. Returns `false` when the outbound queue refused the
+/// error; the caller closes the connection rather than keep reading.
+fn send_err(out: &Outbound, error: &str) -> bool {
+    out.send(&ServerMsg::Reply {
         req: 0,
         ok: false,
         data: None,
         error: Some(error.into()),
-    });
+    })
 }
 
 fn reply_err(out: &mut impl Write, req: Option<u64>, error: &str) {
@@ -242,11 +334,29 @@ impl Server {
     ) -> Result<Self, StartError> {
         ensure_private_dir(&paths.persona).map_err(|e| StartError::Io(e.to_string()))?;
         let name = socket_name(paths).map_err(|e| StartError::Io(e.to_string()))?;
+        // A successful probe is only "already running" when the answering
+        // server is ours. On Windows the pipe name is per user SID, but any
+        // account may create that name first; the probe therefore verifies the
+        // server process's user instead of trusting the name.
+        #[cfg(windows)]
+        if let Ok(probe) = Stream::connect(name.clone()) {
+            return Err(match crate::pipe_security::probe_is_ours(&probe) {
+                Ok(true) => StartError::AlreadyRunning,
+                Ok(false) => {
+                    StartError::Io("another account owns the persona pipe name".to_owned())
+                }
+                Err(e) => StartError::Io(format!("cannot verify the persona pipe owner: {e}")),
+            });
+        }
+        #[cfg(not(windows))]
         if Stream::connect(name.clone()).is_ok() {
             return Err(StartError::AlreadyRunning);
         }
         #[cfg(unix)]
         let _ = std::fs::remove_file(&paths.socket);
+        // On Windows the listener is created with `FILE_FLAG_FIRST_PIPE_INSTANCE`
+        // (interprocess sets it for the first instance), so a second process
+        // cannot bind the name even if its probe raced past ours.
         let options = ListenerOptions::new().name(name);
         #[cfg(windows)]
         let options = {
@@ -266,25 +376,57 @@ impl Server {
                 .map_err(|e| StartError::Io(e.to_string()))?;
         }
         let active = Arc::new(AtomicUsize::new(0));
+        let accept_active = Arc::clone(&active);
         let accept = std::thread::Builder::new()
             .name("ompy-accept".into())
             .spawn(move || {
                 for conn in listener.incoming() {
                     match conn {
                         Ok(conn) => {
+                            // The slot is taken before any thread exists, so a
+                            // silent client costs neither a thread nor a slot
+                            // beyond the cap.
+                            let Some(admission) =
+                                Admission::acquire(&accept_active, limits.max_connections)
+                            else {
+                                refuse(&conn);
+                                continue;
+                            };
                             let to_core = to_core.clone();
-                            let active = Arc::clone(&active);
                             let _ = std::thread::Builder::new()
                                 .name("ompy-conn".into())
-                                .spawn(move || serve(conn, to_core, limits, &active));
+                                .spawn(move || serve(conn, to_core, limits, admission));
                         }
                         Err(_) => std::thread::sleep(Duration::from_millis(100)),
                     }
                 }
             })
             .map_err(|e| StartError::Io(e.to_string()))?;
-        Ok(Self { _accept: accept })
+        Ok(Self {
+            _accept: accept,
+            active,
+        })
     }
+}
+
+/// Answers a connection that found no admission slot and closes it.
+///
+/// Runs on the accept thread, so a client that does not read cannot hold a
+/// handler thread; the write timeout bounds even this refusal, and dropping
+/// the stream closes the socket.
+fn refuse(conn: &Stream) {
+    #[cfg(unix)]
+    let _ = conn.set_send_timeout(Some(Duration::from_millis(250)));
+    let mut writer: &Stream = conn;
+    let _ = write_msg(
+        &mut writer,
+        &ServerMsg::Reply {
+            req: 0,
+            ok: false,
+            data: None,
+            error: Some("too many connections".into()),
+        },
+    );
 }
 
 /// `&Stream` implements `Read` and `Write`; `split` is deprecated, so the
@@ -310,53 +452,94 @@ impl Write for Shared {
     }
 }
 
-#[allow(clippy::needless_pass_by_value)] // Moved into the connection thread; a reference cannot cross that boundary.
-fn serve(conn: Stream, to_core: Sender<CoreMsg>, limits: Limits, active: &Arc<AtomicUsize>) {
-    let id = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
-    #[cfg(unix)]
-    if conn.set_recv_timeout(Some(limits.hello_timeout)).is_err() {
-        return;
+/// Reads with one absolute handshake deadline.
+///
+/// The receive timeout is recomputed from the deadline before every read, so
+/// a client that trickles bytes cannot extend the budget; previously each
+/// arriving byte restarted the full timeout.
+struct TimedRead {
+    inner: Shared,
+    /// `None` once the handshake is over. Unused on Windows, where named-pipe
+    /// streams do not support receive timeouts.
+    #[cfg_attr(windows, allow(dead_code))]
+    deadline: Option<Instant>,
+}
+
+impl Read for TimedRead {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        #[cfg(unix)]
+        if let Some(deadline) = self.deadline {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "hello deadline elapsed",
+                ));
+            };
+            // A zero timeout means "no timeout" on some platforms.
+            let remaining = remaining.max(Duration::from_millis(1));
+            self.inner.0.set_recv_timeout(Some(remaining))?;
+        }
+        self.inner.read(buf)
     }
-    // Windows named-pipe streams do not support receive timeouts.
-    let conn = Arc::new(conn);
-    let mut reader = BufReader::new(Shared(Arc::clone(&conn)));
-    let mut writer = Shared(Arc::clone(&conn));
+}
+
+/// Completes the `hello` handshake before any writer thread exists.
+///
+/// Returns the client kind, or `None` when the connection is refused or
+/// closed (missing or malformed hello, wrong protocol, write failure).
+fn handshake(reader: &mut BufReader<TimedRead>, writer: &mut Shared) -> Option<ClientKind> {
     let mut buf = Vec::new();
-    // Handshake before the writer thread exists.
-    let (client, _admission) = match read_line_capped(&mut reader, &mut buf) {
+    match read_line_capped(reader, &mut buf) {
         Ok(LineRead::Line) => match serde_json::from_slice::<Envelope<ClientMsg>>(&buf) {
             Ok(Envelope {
                 req,
                 body: ClientMsg::Hello { protocol, client },
             }) => {
                 if protocol != PROTOCOL {
-                    reply_err(&mut writer, req, "protocol 1 required");
-                    return;
+                    reply_err(writer, req, "protocol 1 required");
+                    return None;
                 }
-                let Some(admission) = Admission::acquire(active, limits.max_connections) else {
-                    reply_err(&mut writer, req, "too many connections");
-                    return;
-                };
-                if write_msg(&mut writer, &ServerMsg::Hello { protocol: PROTOCOL }).is_err() {
-                    return;
+                if write_msg(writer, &ServerMsg::Hello { protocol: PROTOCOL }).is_err() {
+                    return None;
                 }
-                (client, admission)
+                Some(client)
             }
             Ok(Envelope { req, .. }) => {
-                reply_err(&mut writer, req, "hello first");
-                return;
+                reply_err(writer, req, "hello first");
+                None
             }
             Err(e) => {
-                reply_err(&mut writer, None, &e.to_string());
-                return;
+                reply_err(writer, None, &e.to_string());
+                None
             }
         },
         Ok(LineRead::TooLong) => {
-            reply_err(&mut writer, None, "line too long");
-            return;
+            reply_err(writer, None, "line too long");
+            None
         }
-        _ => return,
+        _ => None,
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)] // Moved into the connection thread; a reference cannot cross that boundary.
+fn serve(conn: Stream, to_core: Sender<CoreMsg>, limits: Limits, admission: Admission) {
+    let id = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
+    // Windows named-pipe streams do not support receive timeouts.
+    let conn = Arc::new(conn);
+    let mut reader = BufReader::new(TimedRead {
+        inner: Shared(Arc::clone(&conn)),
+        #[cfg(unix)]
+        deadline: Some(Instant::now() + limits.hello_timeout),
+        #[cfg(not(unix))]
+        deadline: None,
+    });
+    let mut writer = Shared(Arc::clone(&conn));
+    let mut buf = Vec::new();
+    let Some(client) = handshake(&mut reader, &mut writer) else {
+        return;
     };
+    // Handshake done: no deadline and no receive timeout for the session.
+    reader.get_mut().deadline = None;
     #[cfg(unix)]
     if conn.set_recv_timeout(None).is_err() {
         return;
@@ -369,9 +552,15 @@ fn serve(conn: Stream, to_core: Sender<CoreMsg>, limits: Limits, active: &Arc<At
         limit: limits.outbound_bytes,
         closer: Some(Arc::clone(&conn)),
     };
+    // Both sides hold a clone: the count drops only when the last one goes,
+    // so the slot outlives whichever of reader and writer finishes first.
+    #[allow(clippy::redundant_clone)]
+    // `admission` here is the reader's hold; the clone is the writer's.
+    let writer_admission = admission.clone();
     let _ = std::thread::Builder::new()
         .name("ompy-write".into())
         .spawn(move || {
+            let _admission = writer_admission;
             for line in out_rx {
                 let written = writer.write_all(&line).and_then(|()| writer.flush());
                 queued.fetch_sub(line.len(), Ordering::AcqRel);
@@ -390,28 +579,53 @@ fn serve(conn: Stream, to_core: Sender<CoreMsg>, limits: Limits, active: &Arc<At
     {
         return;
     }
+    let budget = InboundBudget::new(limits.inbound_bytes);
     loop {
         match read_line_capped(&mut reader, &mut buf) {
             Ok(LineRead::Line) => match serde_json::from_slice::<Envelope<ClientMsg>>(&buf) {
                 Ok(Envelope { req, body }) => {
+                    let bytes = buf.len();
+                    // Reserve before queueing: a client that outruns the core
+                    // is disconnected instead of growing the core's backlog.
+                    if !budget.reserve(bytes) {
+                        let _ = send_err(&out, "inbound queue full");
+                        break;
+                    }
                     if to_core
                         .send(CoreMsg::Inbound(Inbound {
                             conn: id,
                             req,
                             client,
                             msg: body,
+                            bytes,
+                            budget: budget.clone(),
                         }))
                         .is_err()
                     {
+                        budget.release(bytes);
                         break;
                     }
                 }
-                Err(e) => send_err(&out, &e.to_string()),
+                Err(e) => {
+                    // A refused error reply means the client is not reading;
+                    // stop parsing its input instead of queueing forever.
+                    if !send_err(&out, &e.to_string()) {
+                        break;
+                    }
+                }
             },
-            Ok(LineRead::TooLong) => send_err(&out, "line too long"),
+            Ok(LineRead::TooLong) => {
+                if !send_err(&out, "line too long") {
+                    break;
+                }
+            }
             _ => break,
         }
     }
+    // The reader is done: shut the socket down so a writer blocked on a
+    // stalled client returns, and the client sees the close. The slot is
+    // released only after that writer thread also ends (its clone drops).
+    shutdown(&conn);
     let _ = to_core.send(CoreMsg::Disconnected(id));
 }
 
@@ -420,6 +634,8 @@ mod tests {
     use super::*;
     use crate::paths::Paths;
     use interprocess::local_socket::Stream;
+    #[cfg(unix)]
+    use interprocess::TryClone;
     use omp_desktop_core::persona_protocol::{read_line_capped, LineRead, MAX_LINE_BYTES};
     use std::io::{BufReader, Write};
     use std::sync::mpsc;
@@ -682,5 +898,237 @@ mod tests {
         // The other client is unaffected.
         assert!(fast_out.send(&ServerMsg::Hello { protocol: PROTOCOL }));
         assert_eq!(line(&mut fast)["type"], "hello");
+    }
+
+    /// Polls `check` until it holds or `limit` elapses.
+    #[cfg(unix)]
+    fn wait_until(limit: Duration, mut check: impl FnMut() -> bool) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < limit {
+            if check() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        check()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn silent_connections_take_slots_before_any_thread_starts() {
+        let p = temp_paths("admission");
+        let (tx, _rx) = mpsc::channel();
+        let limits = Limits {
+            max_connections: 2,
+            hello_timeout: Duration::from_millis(300),
+            ..Limits::default()
+        };
+        let server = Server::start_with_limits(&p, tx, limits).unwrap();
+        let mut clients: Vec<BufReader<Stream>> = (0..6)
+            .map(|_| {
+                let s = Stream::connect(crate::paths::socket_name(&p).unwrap()).unwrap();
+                s.set_recv_timeout(Some(Duration::from_secs(3))).unwrap();
+                BufReader::new(s)
+            })
+            .collect();
+
+        // Silent connections take the slot and the thread while they wait for
+        // `hello`, so the cap already applies before the handshake.
+        assert!(
+            wait_until(Duration::from_secs(3), || server.active_connections() == 2),
+            "silent connections must be admitted before the handshake"
+        );
+
+        let mut refused = 0;
+        for client in &mut clients {
+            let mut buf = Vec::new();
+            match read_line_capped(client, &mut buf).unwrap() {
+                LineRead::Line => {
+                    let reply: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+                    assert_eq!(
+                        (reply["ok"].as_bool(), reply["error"].as_str()),
+                        (Some(false), Some("too many connections"))
+                    );
+                    refused += 1;
+                    assert!(matches!(
+                        read_line_capped(client, &mut buf).unwrap(),
+                        LineRead::Eof
+                    ));
+                }
+                LineRead::Eof => {}
+                LineRead::TooLong => panic!("unexpected oversized line"),
+            }
+        }
+        assert_eq!(refused, 4, "every connection beyond the cap is refused");
+        drop(clients);
+        assert!(wait_until(Duration::from_secs(5), || {
+            server.active_connections() == 0
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hello_deadline_is_absolute_across_reads() {
+        let p = temp_paths("slow-hello");
+        let (tx, _rx) = mpsc::channel();
+        let _s = Server::start_with_hello_timeout(&p, tx, Duration::from_millis(200)).unwrap();
+        let s = Stream::connect(crate::paths::socket_name(&p).unwrap()).unwrap();
+        s.set_recv_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut client = BufReader::new(s);
+        let mut trickle = client.get_ref().try_clone().unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let trickle_stop = std::sync::Arc::clone(&stop);
+        let writer = std::thread::spawn(move || {
+            while !trickle_stop.load(Ordering::Acquire) {
+                // Never a newline: the handshake deadline must expire even
+                // though bytes keep arriving.
+                if trickle.write_all(b"{").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let mut buf = Vec::new();
+        assert!(
+            matches!(read_line_capped(&mut client, &mut buf), Ok(LineRead::Eof)),
+            "the handshake deadline restarted on every arriving byte"
+        );
+        stop.store(true, Ordering::Release);
+        writer.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn half_closed_client_releases_its_slot_after_the_writer_returns() {
+        use std::os::fd::{AsFd, AsRawFd};
+
+        let p = temp_paths("half-close");
+        let (tx, rx) = mpsc::channel();
+        let limits = Limits {
+            max_connections: 2,
+            ..Limits::default()
+        };
+        let server = Server::start_with_limits(&p, tx, limits).unwrap();
+        let mut clients = Vec::new();
+        let mut outs = Vec::new();
+        for _ in 0..2 {
+            clients.push(handshake(&p));
+            outs.push(connected(&rx));
+        }
+        // Queue messages until the outbound budget is used up. The writer
+        // cannot push all of it through a socket nobody reads, so it is
+        // blocked in `write` when the client half-closes.
+        let body = serde_json::Value::String("x".repeat(1024 * 1024));
+        for out in &outs {
+            for req in 0..4096u64 {
+                if !out.send(&ServerMsg::Reply {
+                    req,
+                    ok: true,
+                    data: Some(body.clone()),
+                    error: None,
+                }) {
+                    break;
+                }
+            }
+        }
+        assert!(wait_until(Duration::from_secs(5), || {
+            server.active_connections() == 2
+        }));
+
+        // Half-close the write side and keep the read side open: the server
+        // reader sees EOF while its writer is still blocked on the full pipe.
+        let mut held = Vec::new();
+        for client in clients {
+            let stream = client.into_inner();
+            let Stream::UdSocket(socket) = &stream;
+            // SAFETY: shutdown only reads the descriptor, which the stream
+            // still owns.
+            unsafe {
+                libc::shutdown(socket.as_fd().as_raw_fd(), libc::SHUT_WR);
+            }
+            held.push(stream);
+        }
+        assert_eq!(held.len(), 2);
+        assert!(
+            wait_until(Duration::from_secs(10), || {
+                server.active_connections() == 0
+            }),
+            "the writer of a half-closed client must stop and release its slot"
+        );
+        // With the slots back, a new client completes its handshake.
+        let _fresh = handshake(&p);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn malformed_line_flood_is_dropped_when_the_reply_queue_refuses() {
+        let p = temp_paths("parse-flood");
+        let (tx, _rx) = mpsc::channel();
+        let limits = Limits {
+            outbound_bytes: 0,
+            ..Limits::default()
+        };
+        let _s = Server::start_with_limits(&p, tx, limits).unwrap();
+        let mut client = handshake(&p);
+        client
+            .get_ref()
+            .set_recv_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        // Every parse error would queue a reply; the zero-byte budget refuses
+        // the first one, so the reader must close instead of reading forever.
+        let _ = client
+            .get_mut()
+            .write_all(b"{\"type\":\n{not json}\n{\"type\":\n");
+        let mut buf = Vec::new();
+        assert!(
+            matches!(read_line_capped(&mut client, &mut buf), Ok(LineRead::Eof)),
+            "a client whose error replies are refused must be disconnected"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_that_outruns_the_core_is_disconnected() {
+        let p = temp_paths("inbound");
+        let (tx, rx) = mpsc::channel();
+        let limits = Limits {
+            inbound_bytes: 64 * 1024,
+            ..Limits::default()
+        };
+        let server = Server::start_with_limits(&p, tx, limits).unwrap();
+        let mut client = handshake(&p);
+        // The core never reads the channel in this test.
+        let _ = connected(&rx);
+        client
+            .get_ref()
+            .set_recv_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let body = "x".repeat(4 * 1024);
+        for req in 0..64u64 {
+            let line = format!(
+                "{{\"req\":{req},\"type\":\"rpc\",\"frame\":{{\"type\":\"tool_call\",\"pad\":\"{body}\"}}}}\n"
+            );
+            if client.get_mut().write_all(line.as_bytes()).is_err() {
+                break;
+            }
+        }
+        let mut buf = Vec::new();
+        loop {
+            match read_line_capped(&mut client, &mut buf) {
+                Ok(LineRead::Line) => {
+                    let reply: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+                    assert_eq!(
+                        (reply["type"].as_str(), reply["error"].as_str()),
+                        (Some("reply"), Some("inbound queue full"))
+                    );
+                }
+                Ok(LineRead::Eof) => break,
+                Ok(LineRead::TooLong) => panic!("unexpected oversized line"),
+                Err(e) => panic!("the overflowing client was not disconnected: {e}"),
+            }
+        }
+        assert!(wait_until(Duration::from_secs(5), || {
+            server.active_connections() == 0
+        }));
     }
 }

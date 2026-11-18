@@ -10,7 +10,9 @@ use omp_desktopd::budget::Usage;
 use omp_desktopd::core::{Core, CoreMsg, FIRST_GENERATION};
 use omp_desktopd::paths::{ensure_private_dir, Paths};
 use omp_desktopd::scheduler::Now;
-use omp_desktopd::server::{Inbound, Outbound, MAX_OUTBOUND_BYTES};
+use omp_desktopd::server::{
+    Inbound, InboundBudget, Outbound, MAX_INBOUND_BYTES, MAX_OUTBOUND_BYTES,
+};
 use omp_desktopd::session::{Launch, SessionEvent};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -106,6 +108,8 @@ fn send(h: &Harness, req: u64, msg: ClientMsg) {
         req: Some(req),
         client: ClientKind::App,
         msg,
+        bytes: 0,
+        budget: InboundBudget::new(MAX_INBOUND_BYTES),
     }))
     .unwrap();
 }
@@ -124,6 +128,26 @@ fn reply(h: &Harness, req: u64) -> ServerMsg {
 fn next_msg(h: &Harness) -> ServerMsg {
     let line = h.out.recv_timeout(Duration::from_secs(10)).unwrap();
     serde_json::from_slice(&line).unwrap()
+}
+
+#[test]
+fn handled_message_releases_its_inbound_budget() {
+    let h = start("inbound-budget", ClientKind::App);
+    let budget = InboundBudget::new(MAX_INBOUND_BYTES);
+    assert!(budget.reserve(4096));
+    assert_eq!(budget.queued_bytes(), 4096);
+    h.tx.send(CoreMsg::Inbound(Inbound {
+        conn: 1,
+        req: Some(7),
+        client: ClientKind::App,
+        msg: ClientMsg::Status,
+        bytes: 4096,
+        budget: budget.clone(),
+    }))
+    .unwrap();
+    assert!(matches!(reply(&h, 7), ServerMsg::Reply { ok: true, .. }));
+    assert_eq!(budget.queued_bytes(), 0);
+    let _ = h.tx.send(CoreMsg::Shutdown);
 }
 
 #[test]
@@ -378,6 +402,8 @@ fn schedule_wake_validates_and_persists() {
             in_ms: Some(-5),
             note: "x".into(),
         },
+        bytes: 0,
+        budget: InboundBudget::new(MAX_INBOUND_BYTES),
     }))
     .unwrap();
     assert!(matches!(reply(&h, 5), ServerMsg::Reply { ok: false, .. }));
@@ -390,6 +416,8 @@ fn schedule_wake_validates_and_persists() {
             in_ms: Some(3_600_000),
             note: "later".into(),
         },
+        bytes: 0,
+        budget: InboundBudget::new(MAX_INBOUND_BYTES),
     }))
     .unwrap();
     assert!(matches!(reply(&h, 6), ServerMsg::Reply { ok: true, .. }));
