@@ -16,7 +16,7 @@ const _PI_SCHEDULE_MS = 60_000;
 
 function PersonaInboxCard({ status, items, bridge }) {
   window.OMP_I18N.useLocale();
-  const [now, setNow] = React.useState(() => Date.now());
+  const [now] = window.useNow(status, _PI_TICK_MS);
   const [schedule, setSchedule] = React.useState(null);
   // One request at a time: a second click would race the first reply.
   const [busy, setBusy] = React.useState(null);
@@ -24,12 +24,6 @@ function PersonaInboxCard({ status, items, bridge }) {
   // Free-text drafts by item id. A secret draft lives here only until it is
   // sent; nothing renders it back.
   const [drafts, setDrafts] = React.useState({});
-
-  React.useEffect(() => {
-    if (!status) return undefined;
-    const timer = setInterval(() => setNow(Date.now()), _PI_TICK_MS);
-    return () => clearInterval(timer);
-  }, [status]);
 
   // A status broadcast follows every schedule change, and the timer covers
   // one omp queued through its own tool while nothing else changed.

@@ -104,6 +104,22 @@ function _PR_usePersona(bridge) {
   return { status, error, apply, setError };
 }
 
+/** Commit a change: validate it against the newest settings before queueing
+ *  it, so a refused value makes `_PR_Field` show the saved one again instead
+ *  of waiting a round trip. `patch` is an object or a function of the base. */
+function _PR_commit(settings, apply, setError, patch) {
+  const base = _PR_settings ?? settings;
+  if (!base) return false;
+  const changes = typeof patch === "function" ? patch(base) : patch;
+  const check = window.OMP_PERSONA.validateSettings({ ...base, ...changes });
+  if (!check.ok) {
+    setError(check.message);
+    return false;
+  }
+  apply(changes);
+  return true;
+}
+
 /** Text/number field committed on blur or Enter; re-syncs when the saved
  *  value changes. `onCommit` returning `false` rejects the text and the field
  *  shows the saved value again. */
@@ -190,20 +206,7 @@ function _PR_Schedule({ row, ctx, query }) {
   const { status, error, apply, setError } = _PR_usePersona(ctx.bridge);
   const settings = status?.settings;
   const offline = !settings;
-  // Validate against the newest settings before queueing, so a refused value
-  // makes `_PR_Field` show the saved one again instead of waiting a round trip.
-  const commit = value => {
-    const base = _PR_settings ?? settings;
-    if (!base) return false;
-    const patch = typeof value === "function" ? value(base) : value;
-    const check = window.OMP_PERSONA.validateSettings({ ...base, ...patch });
-    if (!check.ok) {
-      setError(check.message);
-      return false;
-    }
-    apply(patch);
-    return true;
-  };
+  const commit = value => _PR_commit(settings, apply, setError, value);
   const commitInterval = text => {
     const n = Number(text);
     return commit({ intervalMin: text.trim() === "" ? NaN : n });
@@ -241,18 +244,9 @@ function _PR_Budget({ row, ctx, query }) {
   const { status, error, apply, setError } = _PR_usePersona(ctx.bridge);
   const settings = status?.settings;
   const offline = !settings;
-  const commit = text => {
-    const base = _PR_settings ?? settings;
-    if (!base) return false;
-    const patch = { dailyTokenLimit: text.trim() === "" ? NaN : Number(text) };
-    const check = window.OMP_PERSONA.validateSettings({ ...base, ...patch });
-    if (!check.ok) {
-      setError(check.message);
-      return false;
-    }
-    apply(patch);
-    return true;
-  };
+  const commit = text => _PR_commit(settings, apply, setError, {
+    dailyTokenLimit: text.trim() === "" ? NaN : Number(text),
+  });
   return (
     <Row label={row.label} desc={row.desc} query={query} stack>
       <div className="st-rem">

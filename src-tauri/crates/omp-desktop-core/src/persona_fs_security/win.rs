@@ -224,27 +224,29 @@ fn create_dir_with_dacl(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn apply_private_dacl(path: &Path, sid: &str) -> io::Result<()> {
-    let attributes = security_attributes(&private_sddl(sid))?;
+/// The DACL inside a live security descriptor, or `None` when it carries
+/// none.
+fn descriptor_dacl(descriptor: PSECURITY_DESCRIPTOR) -> io::Result<Option<*mut ACL>> {
     let mut dacl: *mut ACL = ptr::null_mut();
     let mut present = 0;
     let mut defaulted = 0;
-    // SAFETY: the descriptor is live until `attributes` drops, and its DACL
-    // lives inside that allocation.
-    if unsafe {
-        GetSecurityDescriptorDacl(
-            attributes.0.lpSecurityDescriptor,
-            &mut present,
-            &mut dacl,
-            &mut defaulted,
-        )
-    } == 0
+    // SAFETY: the descriptor is live for this call; `dacl` then points into it.
+    if unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) }
+        == 0
     {
         return Err(io::Error::last_os_error());
     }
-    if present == 0 || dacl.is_null() {
-        return Err(io::Error::other("the private SDDL carried no DACL"));
-    }
+    Ok(if present == 0 || dacl.is_null() {
+        None
+    } else {
+        Some(dacl)
+    })
+}
+
+fn apply_private_dacl(path: &Path, sid: &str) -> io::Result<()> {
+    let attributes = security_attributes(&private_sddl(sid))?;
+    let dacl = descriptor_dacl(attributes.0.lpSecurityDescriptor)?
+        .ok_or_else(|| io::Error::other("the private SDDL carried no DACL"))?;
     let wide = wide(path)?;
     // SAFETY: `wide` is NUL-terminated, `dacl` points into the live
     // descriptor, and owner, group and SACL are left alone (`null`).
@@ -289,16 +291,10 @@ fn dacl_is_private(path: &Path, sid: PSID) -> io::Result<bool> {
         if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        let mut dacl: *mut ACL = ptr::null_mut();
-        let mut present = 0;
-        let mut defaulted = 0;
-        // SAFETY: as above; `dacl` points into the descriptor.
-        if unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) }
-            == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        if control & SE_DACL_PROTECTED == 0 || present == 0 || dacl.is_null() {
+        let Some(dacl) = descriptor_dacl(descriptor)? else {
+            return Ok(false);
+        };
+        if control & SE_DACL_PROTECTED == 0 {
             return Ok(false);
         }
         // SAFETY: `dacl` points into the live descriptor.

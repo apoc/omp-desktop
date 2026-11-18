@@ -174,6 +174,30 @@ fn home() -> Result<std::path::PathBuf, String> {
     dirs::home_dir().ok_or_else(|| "no home directory".to_owned())
 }
 
+/// Writes an autostart entry, creating its directory first. `build` runs
+/// after that, keeping the directory → entry text → file order both installs
+/// already had.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn write_entry(
+    path: &Path,
+    missing_parent: &str,
+    build: impl FnOnce() -> Result<String, String>,
+) -> Result<(), String> {
+    let parent = path.parent().ok_or(missing_parent)?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    std::fs::write(path, build()?).map_err(|e| e.to_string())
+}
+
+/// Removes an autostart entry; a missing file is already the wanted state.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn remove_entry(path: &Path) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Installs and starts the autostart entry for `exe`.
 ///
 /// # Errors
@@ -184,9 +208,9 @@ pub fn install(exe: &Path) -> Result<(), String> {
     let plist = home()?
         .join("Library/LaunchAgents")
         .join(format!("{LABEL}.plist"));
-    let parent = plist.parent().ok_or("LaunchAgents path has no parent")?;
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    std::fs::write(&plist, launch_agent_plist(exe)?).map_err(|e| e.to_string())?;
+    write_entry(&plist, "LaunchAgents path has no parent", || {
+        launch_agent_plist(exe)
+    })?;
     // SAFETY: getuid has no preconditions.
     let uid = unsafe { libc::getuid() };
     run_tool_or(
@@ -221,11 +245,7 @@ pub fn uninstall() -> Result<(), String> {
             .arg(format!("gui/{uid}/{LABEL}")),
         launchctl_not_loaded,
     );
-    let removed = match std::fs::remove_file(&plist) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.to_string()),
-    };
+    let removed = remove_entry(&plist);
     bootout?;
     removed
 }
@@ -258,9 +278,9 @@ pub fn install(exe: &Path) -> Result<(), String> {
     let unit = home()?
         .join(".config/systemd/user")
         .join("omp-desktopd.service");
-    let parent = unit.parent().ok_or("systemd unit path has no parent")?;
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    std::fs::write(&unit, systemd_unit(exe)?).map_err(|e| e.to_string())?;
+    write_entry(&unit, "systemd unit path has no parent", || {
+        systemd_unit(exe)
+    })?;
     run_tool(Command::new("systemctl").args(["--user", "enable", "--now", "omp-desktopd.service"]))
 }
 
@@ -348,11 +368,7 @@ pub fn uninstall() -> Result<(), String> {
         "--now",
         "omp-desktopd.service",
     ]))?;
-    match std::fs::remove_file(&unit) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
+    remove_entry(&unit)
 }
 
 /// Stops the unit without disabling it; an absent unit is not an error.
@@ -475,6 +491,19 @@ mod tests {
             Some(["--user", "restart", "omp-desktopd.service"])
         );
         assert_eq!(linux_restart_args(false), None);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn removing_a_missing_entry_is_not_an_error() {
+        let dir = std::env::temp_dir().join(format!("omp-autostart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("entry");
+        assert!(remove_entry(&entry).is_ok());
+        std::fs::write(&entry, "unit").unwrap();
+        assert!(remove_entry(&entry).is_ok());
+        assert!(!entry.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

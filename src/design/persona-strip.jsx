@@ -35,13 +35,7 @@ function PersonaFace() {
 function PersonaStrip({ status, error, refreshError, bridge }) {
   // `statusView` shows the next wake against the local clock; a strip that
   // never re-rendered would keep saying "in 12 min" while the window idles.
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
-    if (!status) return undefined;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), _PS_TICK_MS);
-    return () => clearInterval(timer);
-  }, [status]);
+  const [now] = window.useNow(status, _PS_TICK_MS);
   const view = window.OMP_PERSONA.statusView(status, now);
   // One request at a time: a second click would race the first reply.
   const [busy, setBusy] = React.useState(false);

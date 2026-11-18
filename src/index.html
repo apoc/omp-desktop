@@ -346,6 +346,12 @@
        slash menu and mentions, history-modal.jsx, prompt-history-modal.jsx)
        and useListKeys (the two history modals), called at render time. -->
   <script src="design/ui/use-list-nav.js"></script>
+  <!-- A local clock ticking while active: persona-strip.jsx,
+       persona-inbox-card.jsx and app/use-conversation-tree.jsx call
+       window.useNow at render time; app-live.jsx destructures
+       window.useConversationTree at top level, so this must precede all
+       of them. -->
+  <script src="design/ui/use-now.js"></script>
   <!-- The column resize line (#41); destructures
        window.OMP_LAYOUT_WIDTHS at top level; browser-dock.jsx and
        app-live.jsx destructure ResizeHandle at top level. -->
