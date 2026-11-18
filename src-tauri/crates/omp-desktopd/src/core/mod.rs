@@ -29,10 +29,6 @@ use std::time::{Duration, Instant};
 use lifecycle::RESTART_MIN;
 use store::{load_budget, read_json, Writes};
 
-/// Generation number of the first session a core spawns. Every session event
-/// carries the generation of the session that produced it.
-pub const FIRST_GENERATION: u64 = 1;
-
 const NOTICE_STARTUP_EXPIRED: &str = "Open approvals from the previous run expired";
 
 /// One event the server or the session host hands to the core thread.
@@ -204,7 +200,7 @@ impl Core {
             paused: false,
             spawn_error: None,
             started: false,
-            gen: 0,
+            gen: u64::try_from(now.utc_ms).unwrap_or(0),
             next_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             backoff: RESTART_MIN,
             last_spawn: Instant::now(),
@@ -510,6 +506,42 @@ mod tests {
             core.scheduler.handle(Event::Tick, &now(16, 9, 31)),
             Some(crate::scheduler::WakeReason::Interval)
         );
+    }
+
+    #[test]
+    fn generation_is_seeded_from_process_start_time() {
+        let root =
+            std::env::temp_dir().join(format!("ompy-core-generation-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let core_at = |tag: &str, start: Now| {
+            let root = root.join(tag);
+            let paths = Paths::under(&root);
+            ensure_private_dir(&paths.persona).unwrap();
+            let launch = Launch {
+                program: ProgramSource::Fixed("unused".into()),
+                home: root.clone(),
+                sessions: paths.sessions.clone(),
+                extension: root.join("e.mjs"),
+                instructions: root.join("i.md"),
+                socket_env: "x".into(),
+                env: Vec::new(),
+            };
+            Core::new(paths, launch, Box::new(move || start))
+        };
+        let first_start = now(16, 9, 0);
+        let second_start = now(16, 9, 1);
+        let first = core_at("first", first_start);
+        let second = core_at("second", second_start);
+
+        assert_eq!(
+            first.status_info().generation,
+            u64::try_from(first_start.utc_ms).unwrap()
+        );
+        assert_eq!(
+            second.status_info().generation,
+            u64::try_from(second_start.utc_ms).unwrap()
+        );
+        assert!(first.status_info().generation < second.status_info().generation);
     }
 
     #[test]

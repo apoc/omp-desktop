@@ -7,7 +7,7 @@ use omp_desktop_core::persona_protocol::{
     ClientKind, ClientMsg, InboxItem, ItemKind, ItemState, NotifyKind, PersonaSettings, ServerMsg,
 };
 use omp_desktopd::budget::Usage;
-use omp_desktopd::core::{Core, CoreMsg, FIRST_GENERATION};
+use omp_desktopd::core::{Core, CoreMsg};
 use omp_desktopd::paths::{ensure_private_dir, Paths};
 use omp_desktopd::scheduler::Now;
 use omp_desktopd::server::{
@@ -132,6 +132,16 @@ fn reply(h: &Harness, req: u64) -> ServerMsg {
             m @ ServerMsg::Reply { req: r, .. } if r == req => return m,
             _ => {}
         }
+    }
+}
+
+fn current_generation(h: &Harness) -> u64 {
+    send(h, 99_999, ClientMsg::Status);
+    match reply(h, 99_999) {
+        ServerMsg::Reply {
+            data: Some(data), ..
+        } => data["generation"].as_u64().unwrap(),
+        _ => panic!("status reply missing"),
     }
 }
 
@@ -415,12 +425,77 @@ fn attach_after_restart_replays_new_generation() {
 }
 
 #[test]
+fn attach_skips_queued_live_frames_at_or_before_after_seq() {
+    let h = start("attach-watermark", ClientKind::App);
+    send(&h, 1, ClientMsg::WakeNow);
+    wait_log(&h, "[ompy wake] trigger: manual");
+    for req in 10..30 {
+        send(
+            &h,
+            req,
+            ClientMsg::Rpc {
+                frame: serde_json::json!({"type": "prompt", "message": "stream"}),
+            },
+        );
+    }
+    send(&h, 2, ClientMsg::Attach { after_seq: 1_000 });
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let mut seqs = Vec::new();
+    while let Ok(line) = h
+        .out
+        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+    {
+        if let ServerMsg::Rpc { seq, .. } = parse_msg(&line) {
+            seqs.push(seq);
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+    }
+    assert!(
+        seqs.is_empty(),
+        "attach relayed frames the client asked to skip: {seqs:?}"
+    );
+}
+
+fn assert_no_secret_inbox(msg: &ServerMsg) {
+    if let ServerMsg::Inbox { items } = msg {
+        assert!(
+            items
+                .iter()
+                .all(|item| item.answer.as_deref() != Some("hunter2")),
+            "secret answer leaked in an inbox broadcast"
+        );
+    }
+}
+
+fn reply_asserting_no_secret(h: &Harness, req: u64) -> ServerMsg {
+    loop {
+        match next_msg(h) {
+            m @ ServerMsg::Reply { req: r, .. } if r == req => return m,
+            m => assert_no_secret_inbox(&m),
+        }
+    }
+}
+
+fn assert_no_later_secret_broadcast(h: &Harness) {
+    while let Ok(line) = h.out.recv_timeout(Duration::from_millis(250)) {
+        assert_no_secret_inbox(&parse_msg(&line));
+    }
+}
+
+#[test]
 fn secret_input_answer_not_persisted() {
     let h = start("secret-input", ClientKind::App);
     let item = open_request(&h, "secret", "s1");
     assert!(item.secret);
     answer(&h, 2, &item.id, "hunter2");
-    assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: true, .. }));
+    assert!(matches!(
+        reply_asserting_no_secret(&h, 2),
+        ServerMsg::Reply { ok: true, .. }
+    ));
+    assert_no_later_secret_broadcast(&h);
     wait_log(&h, r#""value":"hunter2""#);
     assert!(std::fs::read_to_string(&h.log)
         .unwrap()
@@ -429,17 +504,32 @@ fn secret_input_answer_not_persisted() {
     assert!(!std::fs::read_to_string(&h.paths.inbox)
         .unwrap()
         .contains("hunter2"));
-    while let Ok(line) = h.out.recv_timeout(Duration::from_millis(250)) {
-        if matches!(
-            serde_json::from_slice::<ServerMsg>(&line),
-            Ok(ServerMsg::Inbox { .. })
-        ) {
-            assert!(
-                !String::from_utf8(line).unwrap().contains("hunter2"),
-                "secret answer leaked in an inbox broadcast"
-            );
-        }
-    }
+}
+
+#[test]
+fn app_secret_response_is_not_persisted_or_broadcast() {
+    let h = start("app-secret-input", ClientKind::App);
+    let item = open_request(&h, "secret", "s1");
+    assert!(item.secret);
+    send(
+        &h,
+        2,
+        ClientMsg::Rpc {
+            frame: serde_json::json!({
+                "type": "extension_ui_response",
+                "id": "s1",
+                "value": "hunter2",
+            }),
+        },
+    );
+    assert!(matches!(
+        reply_asserting_no_secret(&h, 2),
+        ServerMsg::Reply { ok: true, .. }
+    ));
+    assert_no_later_secret_broadcast(&h);
+    assert!(!std::fs::read_to_string(&h.paths.inbox)
+        .unwrap()
+        .contains("hunter2"));
 }
 
 #[test]
@@ -570,7 +660,7 @@ fn budget_exhaustion_stops_interval_wakes() {
     // fake omp reports 160 tokens per prompt; forcing exhaustion through
     // repeated wakes is slow, so feed usage directly as the session would:
     h.tx.send(CoreMsg::Session {
-        gen: FIRST_GENERATION,
+        gen: current_generation(&h),
         ev: SessionEvent::Usage(Usage {
             input: 100_000,
             output: 0,
@@ -656,7 +746,7 @@ fn exhausted_budget_resets_at_local_midnight_on_tick() {
     send(&h, 1, ClientMsg::SetSettings { settings });
     assert!(matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }));
     h.tx.send(CoreMsg::Session {
-        gen: FIRST_GENERATION,
+        gen: current_generation(&h),
         ev: SessionEvent::Usage(Usage {
             input: 100_000,
             output: 0,
@@ -722,7 +812,7 @@ fn exhausted_budget_on_start_holds_interval() {
 fn lowering_limit_below_use_holds_interval() {
     let h = start("budget-lower", ClientKind::App);
     h.tx.send(CoreMsg::Session {
-        gen: FIRST_GENERATION,
+        gen: current_generation(&h),
         ev: SessionEvent::Usage(Usage {
             input: 150_000,
             output: 0,
@@ -810,7 +900,7 @@ fn corrupt_budget_is_moved_aside_and_replaced() {
         .iter()
         .any(|i| i.title.contains("Budget file was unreadable")));
     h.tx.send(CoreMsg::Session {
-        gen: FIRST_GENERATION,
+        gen: current_generation(&h),
         ev: SessionEvent::Usage(Usage {
             input: 7,
             output: 0,

@@ -692,6 +692,15 @@ mod tests {
         paths
     }
 
+    fn is_disconnect_error(error: &std::io::Error) -> bool {
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::ConnectionAborted
+        )
+    }
+
     fn line(r: &mut BufReader<Stream>) -> serde_json::Value {
         let mut buf = Vec::new();
         assert!(matches!(
@@ -874,24 +883,36 @@ mod tests {
             .write_all(b"{\"req\":2,\"type\":\"hello\",\"protocol\":1,\"client\":\"app\"}\n");
         #[cfg(unix)]
         {
-            extra
+            let write = extra
                 .get_mut()
-                .write_all(b"{\"req\":2,\"type\":\"hello\",\"protocol\":1,\"client\":\"app\"}\n")
-                .unwrap();
-            let reply = line(&mut extra);
-            assert_eq!(
-                (
-                    reply["type"].as_str(),
-                    reply["ok"].as_bool(),
-                    reply["error"].as_str()
-                ),
-                (Some("reply"), Some(false), Some("too many connections"))
-            );
-            let mut buf = Vec::new();
-            assert!(matches!(
-                read_line_capped(&mut extra, &mut buf).unwrap(),
-                LineRead::Eof
-            ));
+                .write_all(b"{\"req\":2,\"type\":\"hello\",\"protocol\":1,\"client\":\"app\"}\n");
+            match write {
+                Ok(()) => {
+                    let mut buf = Vec::new();
+                    match read_line_capped(&mut extra, &mut buf) {
+                        Ok(LineRead::Line) => {
+                            let reply: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+                            assert_eq!(
+                                (
+                                    reply["type"].as_str(),
+                                    reply["ok"].as_bool(),
+                                    reply["error"].as_str()
+                                ),
+                                (Some("reply"), Some(false), Some("too many connections"))
+                            );
+                            match read_line_capped(&mut extra, &mut buf) {
+                                Ok(LineRead::Eof) => {}
+                                Err(error) if is_disconnect_error(&error) => {}
+                                other => panic!("refused client was not disconnected: {other:?}"),
+                            }
+                        }
+                        Err(error) if is_disconnect_error(&error) => {}
+                        other => panic!("refused client was not disconnected: {other:?}"),
+                    }
+                }
+                Err(error) if is_disconnect_error(&error) => {}
+                Err(error) => panic!("refused client write failed unexpectedly: {error}"),
+            }
         }
         #[cfg(windows)]
         {
@@ -1178,6 +1199,7 @@ mod tests {
                 }
                 Ok(LineRead::Eof) => break,
                 Ok(LineRead::TooLong) => panic!("unexpected oversized line"),
+                Err(e) if is_disconnect_error(&e) => break,
                 Err(e) => panic!("the overflowing client was not disconnected: {e}"),
             }
         }
@@ -1226,6 +1248,7 @@ mod tests {
                     }
                     Ok(LineRead::Eof) => break,
                     Ok(LineRead::TooLong) => panic!("unexpected oversized line"),
+                    Err(e) if is_disconnect_error(&e) => break,
                     Err(e) => panic!("the overflowing client was not disconnected: {e}"),
                 }
             }

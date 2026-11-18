@@ -352,6 +352,7 @@ impl Core {
     fn attach(&mut self, conn: ConnId, after_seq: u64) {
         if let Some(client) = self.conns.get_mut(&conn) {
             client.attached = true;
+            client.last_seq = client.last_seq.max(after_seq);
         }
         let frames: Vec<(u64, Arc<str>)> = self
             .session
