@@ -122,6 +122,10 @@
     function renderAsk(ask, key) {
       const card = node("div", undefined, "ass-body");
       const row = railRow("article", `row ask${fade(`ask:${ask.id}`)}`, "ass-glyph ask-glyph", "?", card);
+      if (ask.kind === "select") {
+        card.append(selectControls(ask));
+        return row;
+      }
       card.append(node("div", ask.title || "Question", "ask-question"));
       if (ask.message) card.append(node("div", ask.message, "ask-confirm-message selectable"));
       if (ask.kind === "dialog") {
@@ -159,6 +163,35 @@
         card.append(wrap);
       }
       return row;
+    }
+
+    // omp's `select` (tool approvals too): radio rows in a card, as on the
+    // desktop (design/chat/ask-bubble.jsx); a tap answers at once.
+    function selectControls(ask) {
+      const wrap = node("div", undefined, "ask-dialog");
+      const group = node("section", undefined, "ask-q");
+      const title = node("div", ask.title || "Question", "ask-question ask-select-question");
+      title.id = `ask-q-${ask.id}`;
+      group.append(title);
+      if (ask.message) group.append(node("div", ask.message, "ask-confirm-message selectable"));
+      const rows = node("div", undefined, "ask-rows");
+      rows.setAttribute("role", "radiogroup");
+      rows.setAttribute("aria-labelledby", title.id);
+      for (const option of C.askControls(ask)) {
+        const row = node("div", undefined, "ask-row");
+        const btn = node("button");
+        btn.type = "button";
+        btn.className = "ask-row-btn";
+        btn.setAttribute("role", "radio");
+        btn.setAttribute("aria-checked", "false");
+        btn.addEventListener("click", () => onAnswer(ask.id, option.value));
+        btn.append(node("span", "", "ask-mark radio"), node("span", option.label, "ask-row-text"));
+        row.append(btn);
+        rows.append(row);
+      }
+      group.append(rows);
+      wrap.append(group);
+      return wrap;
     }
 
     // omp's multi-question ask: answers are [{ id, selectedOptions, customInput? }],

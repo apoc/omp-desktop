@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Single-choice prompts (omp's `select`, which includes tool approvals) now show their options as full-width radio rows in a card, styled like the ask dialog, instead of rounded pill buttons. A click still answers at once. Once answered, the picked row stays highlighted and the others fade. Since omp 18.18.3 the `ask` tool sends HTML forms, and over RPC it asks them one field at a time through `select`. Before this change those fields appeared as pills.
+- Single-choice prompts (omp's `select`, which includes tool approvals) now show their options as full-width radio rows in a card, styled like the ask dialog, instead of rounded pill buttons. This applies on the desktop and on the remote phone view. A click still answers at once. On the desktop, the picked row stays highlighted once answered and the others fade. Since omp 18.18.3 the `ask` tool sends HTML forms, and over RPC it asks them one field at a time through `select`. Before this change those fields appeared as pills.
 - The browser panel has its own close button again, at the right end of its control bar. The toolbar's browser toggle still closes it too.
 
 ## [0.15.0] - 2026-11-14
