@@ -165,30 +165,39 @@
       return row;
     }
 
-    // omp's `select` (tool approvals too): radio rows in a card, as on the
-    // desktop (design/chat/ask-bubble.jsx); a tap answers at once.
+    // omp's `select` (tool approvals, ask-form choice fields too): rows in a card
+    // as on the desktop (design/chat/ask-bubble.jsx), shaped by the shared
+    // OMP_ASK_DIALOG.selectRows; a tap answers at once with the option's value
+    // (the option label for omp's string options).
     function selectControls(ask) {
       const wrap = node("div", undefined, "ask-dialog");
-      const group = node("section", undefined, "ask-q");
+      const group = node("section", undefined, "ask-q ask-select");
       const title = node("div", ask.title || "Question", "ask-question ask-select-question");
       title.id = `ask-q-${ask.id}`;
       group.append(title);
       if (ask.message) group.append(node("div", ask.message, "ask-confirm-message selectable"));
       const rows = node("div", undefined, "ask-rows");
-      rows.setAttribute("role", "radiogroup");
+      const shaped = window.OMP_ASK_DIALOG.selectRows(ask);
+      rows.setAttribute("role", shaped.group);
       rows.setAttribute("aria-labelledby", title.id);
-      for (const option of C.askControls(ask)) {
-        const row = node("div", undefined, "ask-row");
+      const controls = C.askControls(ask);
+      shaped.rows.forEach((spec, i) => {
+        const row = node("div", undefined, spec.checked ? "ask-row checked" : "ask-row");
         const btn = node("button");
         btn.type = "button";
         btn.className = "ask-row-btn";
-        btn.setAttribute("role", "radio");
-        btn.setAttribute("aria-checked", "false");
-        btn.addEventListener("click", () => onAnswer(ask.id, option.value));
-        btn.append(node("span", "", "ask-mark radio"), node("span", option.label, "ask-row-text"));
+        if (spec.role) {
+          btn.setAttribute("role", spec.role);
+          btn.setAttribute("aria-checked", String(spec.checked));
+        }
+        btn.addEventListener("click", () => onAnswer(ask.id, controls[i].value));
+        if (spec.mark) btn.append(node("span", "", `ask-mark ${spec.mark}`));
+        const text = node("span", undefined, "ask-row-text");
+        text.append(node("span", spec.label, "ask-row-label"));
+        btn.append(text);
         row.append(btn);
         rows.append(row);
-      }
+      });
       group.append(rows);
       wrap.append(group);
       return wrap;

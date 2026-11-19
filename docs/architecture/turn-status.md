@@ -40,8 +40,8 @@ every timed finish; push consumers apply the 30-second notification threshold.
 
 Every omp process runs with `set_event_filter { events: null, messageUpdates:
 "delta" }`, written by `start_session` (`agent/mod.rs` `DELTA_EVENT_FILTER`)
-right after the spawn, before the frontend sends anything; omp 18.13.2 (the
-floor) is the first whose delta frames can be rebuilt. A `message_update` then
+right after the spawn, before the frontend sends anything; omp 18.13.2 is the
+first whose delta frames can be rebuilt. A `message_update` then
 carries `message: { role }` and the event without its `partial` snapshot:
 `*_start` the empty block, `*_delta` the increment, `text_end` /
 `thinking_end` the final text (`content`) plus the block's metadata (a

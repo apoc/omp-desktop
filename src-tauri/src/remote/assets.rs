@@ -42,6 +42,7 @@ pub fn lookup(path: &str) -> Option<Asset> {
             include_bytes!("../../../src/design/layout/composer.css"),
         ),
         "/accent.js" => (JS, include_bytes!("../../../src/app/accent.js")),
+        "/ask-dialog.js" => (JS, include_bytes!("../../../src/app/ask-dialog.js")),
         "/scroll-pin.js" => (JS, include_bytes!("../../../src/app/scroll-pin.js")),
         "/manifest.json" => (
             "application/manifest+json",

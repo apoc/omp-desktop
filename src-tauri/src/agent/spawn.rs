@@ -86,11 +86,18 @@ pub fn omp_output<S: AsRef<OsStr>>(args: &[S]) -> Result<std::process::Output, S
 /// commands, events or state fields the app relies on. Raise it in the change
 /// that starts using a newer omp feature; nothing else has to follow.
 ///
-/// 18.13.2: `message_update` frames in `messageUpdates: "delta"` carry what a
-/// client needs to rebuild the message (the block on start/end events, the
-/// message on a restart), so every process streams deltas
-/// (`agent::DELTA_EVENT_FILTER`). Earlier delta frames cannot be rebuilt.
-const MIN_OMP_VERSION: [u32; 3] = [18, 13, 2];
+/// 18.20.0: RPC `select` requests carry `selectionMarker`, `checkedIndices`
+/// and `markableCount` (omp commit 7dee72c553). The select rows read them to
+/// draw a checkbox form field's checked boxes and its action row (`Done
+/// selecting`). An older omp sends none of them, so a checkbox field would
+/// show as unchecked radios, its `Done selecting` row included.
+///
+/// 18.13.2 (history, below this floor now): `message_update` frames in
+/// `messageUpdates: "delta"` carry what a client needs to rebuild the message
+/// (the block on start/end events, the message on a restart), so every process
+/// streams deltas (`agent::DELTA_EVENT_FILTER`). Earlier delta frames cannot be
+/// rebuilt.
+const MIN_OMP_VERSION: [u32; 3] = [18, 20, 0];
 
 /// The binary whose `omp --version` check passed. Only a pass is
 /// remembered, and only for that path: after a refusal the next tab start

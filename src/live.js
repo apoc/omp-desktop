@@ -2414,12 +2414,20 @@
         notify();
         return;
       }
-      // Agent asks the user to pick from a list: every tool-approval prompt
-      // ("Allow tool: X", options ["Approve","Deny"]) and extension pickers
-      // like /review's. The ask tool uses the `ask` dialog below instead.
+      // Agent asks the user to pick one option: every tool-approval prompt
+      // ("Allow tool: X", options ["Approve","Deny"]), extension pickers
+      // like /review's and, since omp 18.18.3, the ask tool's form choice
+      // fields, one per `select` (checkbox state rides in `selectionMarker`/
+      // `checkedIndices`/`markableCount`, shaped by OMP_ASK_DIALOG.selectRows).
+      // The `ask` branch below is omp's ask dialog.
       // Buffered rather than pushed immediately; see _queueAskBubble.
       if (ev.method === "select") {
-        _queueAskBubble(_askMessage("select", ev, { options: ev.options ?? [] }));
+        _queueAskBubble(_askMessage("select", ev, {
+          options: ev.options ?? [],
+          selectionMarker: ev.selectionMarker,
+          checkedIndices: ev.checkedIndices,
+          markableCount: ev.markableCount,
+        }));
         return;
       }
       // omp's ask dialog (enabled per process in _initFetch): every question
