@@ -212,6 +212,8 @@
 .ask-q .ask-question .md-content { line-height: 1.5; }
 .ask-q .ask-question .md-content p:not(:last-child) { margin-bottom: 0.5em; }
 .ask-q .ask-question .md-content > :not(:first-child) { font-weight: 400; color: var(--fg-2); }
+/* A select title is plain text; omp's multi-line titles keep their breaks. */
+.ask-q .ask-select-question { white-space: pre-wrap; }
 
 .ask-rows { display: flex; flex-direction: column; gap: 4px; }
 .ask-row-btn {
@@ -231,14 +233,17 @@
   cursor: pointer;
   transition: border-color 120ms, background 120ms;
 }
-.ask-row-btn:hover { border-color: color-mix(in oklab, var(--amber) 55%, var(--line)); }
+.ask-row-btn:hover:not(:disabled) { border-color: color-mix(in oklab, var(--amber) 55%, var(--line)); }
+.ask-row-btn:disabled { cursor: default; }
+.ask-row.dimmed { opacity: 0.4; }
 .ask-row-btn:focus-visible { outline: 2px solid color-mix(in oklab, var(--amber) 60%, transparent); outline-offset: 1px; }
 .ask-row.selected .ask-row-btn {
   border-color: color-mix(in oklab, var(--accent) 55%, var(--line));
   background: var(--accent-soft);
 }
 
-/* Radio / checkbox marker; the checkbox tick is an inline SVG. */
+/* Radio / checkbox marker; a box's tick is an inline SVG, or the CSS tick
+   below where the mark is empty (the phone). */
 .ask-mark {
   width: 14px;
   height: 14px;
@@ -251,15 +256,31 @@
   color: var(--bg-window);
 }
 .ask-mark.box { border-radius: 4px; }
-.ask-row.selected .ask-mark { border-color: var(--accent); }
-.ask-row.selected .ask-mark.radio::after {
+/* The ask dialog (chat/ask-dialog.jsx) marks its picks with `.selected` alone;
+   a select bubble (`.ask-select`) fills marks from `.checked`, and its
+   `.selected` only highlights the row. */
+.ask-row.checked .ask-mark,
+.ask-q:not(.ask-select) .ask-row.selected .ask-mark { border-color: var(--accent); }
+.ask-row.checked .ask-mark.radio::after,
+.ask-q:not(.ask-select) .ask-row.selected .ask-mark.radio::after {
   content: "";
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--accent);
 }
-.ask-row.selected .ask-mark.box { background: var(--accent); }
+.ask-row.checked .ask-mark.box,
+.ask-q:not(.ask-select) .ask-row.selected .ask-mark.box { background: var(--accent); }
+.ask-row.checked .ask-mark.box:empty::after,
+.ask-q:not(.ask-select) .ask-row.selected .ask-mark.box:empty::after {
+  content: "";
+  width: 4px;
+  height: 8px;
+  margin-top: -1px;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
 
 .ask-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ask-row-label { color: var(--fg); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }

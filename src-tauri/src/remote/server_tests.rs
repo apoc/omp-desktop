@@ -337,6 +337,7 @@ fn static_assets_are_served_with_csp_and_no_store() {
         ("/ask.css", "text/css; charset=utf-8"),
         ("/composer.css", "text/css; charset=utf-8"),
         ("/accent.js", "text/javascript; charset=utf-8"),
+        ("/ask-dialog.js", "text/javascript; charset=utf-8"),
         ("/scroll-pin.js", "text/javascript; charset=utf-8"),
         ("/manifest.json", "application/manifest+json"),
         ("/marked.min.js", "text/javascript; charset=utf-8"),

@@ -62,8 +62,8 @@ const EVENT_JOURNAL_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// increment instead of the whole message so far (rebuilt by the frontend's
 /// `app/stream-delta.js` and by [`inflight`]). Sent here rather than by the
 /// frontend so no process streams whole snapshots, a background tab the
-/// phone prompts before it was ever shown included. omp 18.13.2 (the version
-/// floor) is the first whose delta frames can be rebuilt.
+/// phone prompts before it was ever shown included. omp 18.13.2 is the first
+/// whose delta frames can be rebuilt.
 const DELTA_EVENT_FILTER: &str =
     r#"{"type":"set_event_filter","events":null,"messageUpdates":"delta"}"#;
 

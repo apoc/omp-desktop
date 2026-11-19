@@ -1,7 +1,9 @@
 /* ═════════════════════════════════════════════════════════════════════
    app/ask-dialog.js — omp's ask dialog. Pure functions only; live.js
    keeps the request on its ask message, design/chat/ask-dialog.jsx
-   renders it and holds the picks not sent yet.
+   renders it and holds the picks not sent yet. It also holds `selectRows`,
+   the rows of a `select` bubble (desktop chat/ask-bubble.jsx, and the
+   phone, which is served this file as /ask-dialog.js: window-only).
 
    Once `set_ask_dialog` is enabled, every question of one ask tool call
    arrives as a single `extension_ui_request` with `method: "ask"`, and
@@ -143,8 +145,34 @@
     return runs;
   }
 
+  /** The rows of a `select` request (a tool approval, an extension picker, or
+   *  one choice field of an ask form), from omp's optional `selectionMarker`
+   *  ("radio" | "checkbox"), `checkedIndices` and `markableCount` (the marker
+   *  covers the first `markableCount` rows; later ones are actions such as
+   *  "Done selecting"). omp's fields arrive raw and are validated here;
+   *  anything malformed reads as absent. With no marker every row is a radio
+   *  and `markableCount` is ignored. Per row: its `mark` ("radio" | "box" |
+   *  null) and `role` ("radio" | "checkbox" | null), whether it is `checked`
+   *  (filled mark) and whether it is the answer the bubble was `picked` with.
+   *  Also served to the phone: touches `window` only. */
+  function selectRows(msg) {
+    const options = Array.isArray(msg?.options) ? msg.options : [];
+    const marker = msg?.selectionMarker === "checkbox" || msg?.selectionMarker === "radio" ? msg.selectionMarker : null;
+    const count = msg?.markableCount;
+    const markable = marker && Number.isInteger(count) && count >= 0 ? Math.min(count, options.length) : options.length;
+    const checkedIndices = Array.isArray(msg?.checkedIndices) ? msg.checkedIndices : [];
+    const rows = options.map((opt, index) => {
+      const label = typeof opt === "string" ? opt : String(opt?.label ?? "");
+      const picked = msg.answered === true && msg.answer === label;
+      if (index >= markable) return { label, mark: null, role: null, checked: false, picked };
+      if (marker === "checkbox") return { label, mark: "box", role: "checkbox", checked: checkedIndices.includes(index), picked };
+      return { label, mark: "radio", role: "radio", checked: picked, picked };
+    });
+    return { group: marker === "checkbox" ? "group" : "radiogroup", rows };
+  }
+
   window.OMP_ASK_DIALOG = {
     parseQuestions, emptyDraft, pick, type, unanswered, missing, answersOnClick, answers, timeoutLabel, timeoutNote,
-    codeRuns,
+    codeRuns, selectRows,
   };
 })();

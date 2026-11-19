@@ -22,7 +22,12 @@
     if (!["select", "confirm", "input", "editor", "dialog"].includes(kind)) return null;
     return {
       id: ask.id ?? message.id, kind, title: ask.title ?? "", message: ask.message ?? "",
-      ...(kind === "select" ? { options: ask.options ?? [] } : {}),
+      ...(kind === "select" ? {
+        options: ask.options ?? [],
+        ...(ask.selectionMarker !== undefined ? { selectionMarker: ask.selectionMarker } : {}),
+        ...(ask.checkedIndices !== undefined ? { checkedIndices: ask.checkedIndices } : {}),
+        ...(ask.markableCount !== undefined ? { markableCount: ask.markableCount } : {}),
+      } : {}),
       ...(kind === "editor" && typeof (ask.prefill ?? ask.value) === "string" ? { value: ask.prefill ?? ask.value } : {}),
       ...(kind === "dialog" ? { questions: ask.questions ?? [] } : {}),
     };

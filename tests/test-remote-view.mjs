@@ -108,6 +108,23 @@ test("buildView maps live message shapes, drops thinking and retains only open a
   assert.deepEqual(own(api.tabMeta([{ id: "x", name: "Title", path: "/work", profile: "private" }])), [{ id: "x", title: "Title", project: "work" }]);
 });
 
+test("buildView forwards a select's checkbox fields and leaves other kinds alone", () => {
+  const { api } = load();
+  const fields = { selectionMarker: "checkbox", checkedIndices: [0, 2], markableCount: 3 };
+  const view = api.buildView(snapshot({ messages: [
+    ask("cb", "select", { options: ["A", "B", "C", "✔ Done selecting"], ...fields }),
+    ask("plain", "select", { options: ["Approve", "Deny"] }),
+    ask("conf", "confirm", fields),
+    ask("inp", "input", fields),
+  ] }));
+  assert.deepEqual(own(view.asks), [
+    { id: "cb", kind: "select", title: "Continue?", message: "", options: ["A", "B", "C", "✔ Done selecting"], ...fields },
+    { id: "plain", kind: "select", title: "Continue?", message: "", options: ["Approve", "Deny"] },
+    { id: "conf", kind: "confirm", title: "Continue?", message: "" },
+    { id: "inp", kind: "input", title: "Continue?", message: "" },
+  ]);
+});
+
 test("buildView trims to last 100 messages and 2 000 tool characters without losing older open asks", () => {
   const { api } = load();
   const messages = [ask("old"), ...Array.from({ length: 110 }, (_, id) => ({ kind: "user", id: String(id), text: String(id) })),
