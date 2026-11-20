@@ -165,7 +165,7 @@
         answerCount = answers.length;
       } else {
         const first = answers[0];
-        const parts = Array.isArray(first?.selectedOptions) ? [...first.selectedOptions] : [];
+        const parts = Array.isArray(first?.selectedOptions) ? first.selectedOptions.map((label) => nonBlank(label)?.trim()).filter(Boolean) : [];
         if (nonBlank(first?.customInput)) parts.push(first.customInput.trim());
         answer = parts.length ? parts.join(", ") : null;
       }

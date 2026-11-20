@@ -283,6 +283,17 @@ check("collapsedSummary: missing dialog answers show the nothing-picked status",
   }), { answer: null, answerCount: null, status: "nothing picked", prompt: "Extras?", negative: true });
 });
 
+check("collapsedSummary: blank option labels fall back to the nothing-picked status", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "ask", title: "Extras?", answered: true, cancelled: false,
+    answers: [{ id: "extras", selectedOptions: ["", "   "] }],
+  }), { answer: null, answerCount: null, status: "nothing picked", prompt: "Extras?", negative: true });
+  assert.equal(A.collapsedSummary({
+    method: "ask", title: "Extras?", answered: true, cancelled: false,
+    answers: [{ id: "extras", selectedOptions: ["", " Lint "], customInput: " more " }],
+  }).answer, "Lint, more");
+});
+
 check("collapsedSummary: a one-question dialog shows its answer", () => {
   const summary = A.collapsedSummary({
     method: "ask", title: "", questions: [{ question: "Which version?\nChoose carefully" }],
