@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Ompy, a background agent that wakes on a schedule, triages mail and other work, and leaves approvals, decisions and results in an inbox. Settings → Persona starts it at login on macOS, Linux and Windows and sets an adjustable daily token limit; the pinned Ompy entry shows its state, next wake-up, today's token bar and Pause/Resume, and the rail's Inbox card answers its requests and shows queued wake-ups. While the app runs, new approvals and decisions also reach paired phones as push notifications.
 
+## [0.15.1] - 2026-11-20
+
 ### Changed
 
 - Choice prompts show their options as full-width rows in a card, styled like the ask dialog, instead of rounded pill buttons. They are omp's `select` prompts: tool approvals, extension pickers, and the choice fields of the `ask` tool's forms, which omp sends over RPC one field at a time since 18.18.3 (text fields still come through `input`/`editor`). This applies on the desktop and on the remote phone view. A click still answers at once. Single-choice rows have radio marks; checkbox fields show omp's checked boxes, and their "Done selecting" row is a plain action. On the desktop, the picked row stays highlighted once answered and the others fade.
