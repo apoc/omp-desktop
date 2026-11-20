@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Answered and cancelled desktop ask bubbles collapse to a one-line answer/status and prompt summary. The keyboard-accessible summary expands the full settled prompt again; expansion is local to each bubble. The phone transcript continues to drop settled cards.
+
 ## [0.15.1] - 2026-11-20
 
 ### Changed

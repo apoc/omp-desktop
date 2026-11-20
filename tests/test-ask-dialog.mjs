@@ -219,6 +219,53 @@ check("backtick pairs become code runs; an unpaired backtick stays literal", () 
   assert.deepEqual(A.codeRuns(""), []);
 });
 
+// ── collapsedSummary: the desktop's one-line settled bubble ─────────────
+
+check("collapsedSummary: an open prompt stays expanded", () => {
+  assert.equal(A.collapsedSummary({ title: "Continue?", answered: false, cancelled: false }), null);
+});
+
+check("collapsedSummary: a select uses its picked label and the title's first line", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "select", title: "Allow tool: bash\nCommand: npm test", options: ["Approve", "Deny"],
+    answered: true, cancelled: false, answer: "Approve",
+  }), { answer: "Approve", answerCount: null, status: null, prompt: "Allow tool: bash", negative: false });
+});
+
+check("collapsedSummary: a denied confirm is neutral, not a success", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "confirm", title: "Deploy?", answered: true, cancelled: false, answer: "Deny",
+  }), { answer: "Deny", answerCount: null, status: null, prompt: "Deploy?", negative: true });
+});
+
+check("collapsedSummary: a one-question dialog shows its answer", () => {
+  const summary = A.collapsedSummary({
+    method: "ask", title: "", questions: [{ question: "Which version?\nChoose carefully" }],
+    answered: true, cancelled: false,
+    answers: [{ id: "version", selectedOptions: ["18.4.9 now"] }],
+  });
+  assert.deepEqual(summary, { answer: "18.4.9 now", answerCount: null, status: null, prompt: "Which version?", negative: false });
+});
+
+check("collapsedSummary: a multi-question dialog reports its answer count", () => {
+  const summary = A.collapsedSummary({
+    method: "ask", title: "", questions: [{ question: "One?" }, { question: "Two?" }],
+    answered: true, cancelled: false,
+    answers: [
+      { id: "one", selectedOptions: ["Yes"] },
+      { id: "two", selectedOptions: [], customInput: "Later" },
+    ],
+  });
+  assert.deepEqual(summary, { answer: null, answerCount: 2, status: null, prompt: "One?", negative: false });
+});
+
+check("collapsedSummary: cancellation and omp-side timeout keep their status wording", () => {
+  assert.deepEqual(A.collapsedSummary({ title: "Continue?", answered: false, cancelled: true }),
+    { answer: null, answerCount: null, status: "cancelled", prompt: "Continue?", negative: true });
+  assert.deepEqual(A.collapsedSummary({ title: "Continue?", answered: false, cancelled: true, closedByOmp: true }),
+    { answer: null, answerCount: null, status: "closed by omp", prompt: "Continue?", negative: true });
+});
+
 // ── selectRows: the rows of a `select` request ──────────────────────────
 const row = (label, mark, role, checked, picked = false) => ({ label, mark, role, checked, picked });
 const radios = (...labels) => labels.map(l => row(l, "radio", "radio", false));
