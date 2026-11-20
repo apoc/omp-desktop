@@ -199,6 +199,7 @@ function browser({ pair = false, token = "saved-token", standalone = true, pairS
   ctx.window = ctx;
   vm.runInContext(load("src/app/accent.js"), ctx);
   vm.runInContext(load("src/app/scroll-pin.js"), ctx);
+  vm.runInContext(load("src/app/ask-dialog.js"), ctx);
   vm.runInContext(load("src/remote/client.js"), ctx);
   // Markdown safety itself uses the actual vendored libraries above.
   ctx.OMP_REMOTE_CLIENT.renderMarkdown = text => "SAFE:" + text;
@@ -257,6 +258,40 @@ await check("transcript and asks use text nodes; only assistant markdown receive
   assert.equal(b.frames.at(-1).kind, "answer");
   assert.equal(b.frames.at(-1).value, false);
   assert.equal(b.frames.at(-1).askId, "q");
+});
+await check("select cards draw rows from omp's marker fields; an action row is a plain button", async () => {
+  const b = browser(); await b.connect();
+  const done = "✔ Done selecting";
+  await b.message({ t: "view", view: { tabId: "t", busy: false, messages: [], asks: [
+    { id: "cb", kind: "select", title: "Pick", message: "", options: ["x", "y", done], selectionMarker: "checkbox", checkedIndices: [1], markableCount: 2 },
+    { id: "ap", kind: "select", title: "Allow tool: bash", message: "", options: ["Approve", "Deny"] },
+  ] } });
+  const sections = b.nodes().filter(n => n.tagName === "section" && String(n.className).split(" ").includes("ask-q"));
+  assert.deepEqual(sections.map(s => s.className), ["ask-q ask-select", "ask-q ask-select"]);
+  const [cb, ap] = sections;
+  const has = (n, cls) => String(n.className).split(" ").includes(cls);
+  const rowsOf = section => descendants(section).filter(n => has(n, "ask-row"));
+  const rolesOf = section => descendants(section).filter(n => has(n, "ask-rows")).map(n => n.role);
+  assert.deepEqual(rolesOf(cb), ["group"]);
+  assert.deepEqual(rolesOf(ap), ["radiogroup"]);
+  const [x, y, act] = rowsOf(cb);
+  assert.equal(x.className, "ask-row");
+  assert.equal(y.className, "ask-row checked");
+  const btn = row => row.children[0];
+  assert.deepEqual([btn(x).role, btn(x)["aria-checked"]], ["checkbox", "false"]);
+  assert.deepEqual([btn(y).role, btn(y)["aria-checked"]], ["checkbox", "true"]);
+  assert.equal(btn(act).role, undefined);
+  assert.equal(btn(act)["aria-checked"], undefined);
+  assert.ok(!btn(act).children.some(c => has(c, "ask-mark")), "an action row has no mark");
+  assert.ok(btn(x).children.some(c => c.className === "ask-mark box"));
+  const labels = rows => rows.map(r => descendants(r).find(n => has(n, "ask-row-label")).textContent);
+  assert.deepEqual(labels(rowsOf(cb)), ["x", "y", done]);
+  assert.deepEqual(labels(rowsOf(ap)), ["Approve", "Deny"]);
+  const [approve] = rowsOf(ap);
+  assert.deepEqual([btn(approve).role, btn(approve)["aria-checked"]], ["radio", "false"]);
+  assert.equal(approve.className, "ask-row");
+  await btn(act).emit("click");
+  assert.deepEqual({ kind: b.frames.at(-1).kind, askId: b.frames.at(-1).askId, value: b.frames.at(-1).value }, { kind: "answer", askId: "cb", value: done });
 });
 await check("streaming views preserve live question input nodes and answer their current text", async () => {
   const b = browser(); await b.connect();

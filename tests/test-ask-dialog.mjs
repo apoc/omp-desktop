@@ -219,4 +219,111 @@ check("backtick pairs become code runs; an unpaired backtick stays literal", () 
   assert.deepEqual(A.codeRuns(""), []);
 });
 
+// ── selectRows: the rows of a `select` request ──────────────────────────
+const row = (label, mark, role, checked, picked = false) => ({ label, mark, role, checked, picked });
+const radios = (...labels) => labels.map(l => row(l, "radio", "radio", false));
+
+check("selectRows: a select with no marker is a radiogroup, nothing checked while unanswered", () => {
+  assert.deepEqual(A.selectRows({ options: ["Approve", "Deny"], answered: false, answer: null }),
+    { group: "radiogroup", rows: radios("Approve", "Deny") });
+  assert.deepEqual(A.selectRows({ options: [] }), { group: "radiogroup", rows: [] });
+});
+
+check("selectRows: the answered row of a radio select is picked and checked", () => {
+  const { group, rows } = A.selectRows({ options: ["Approve", "Deny"], answered: true, answer: "Deny" });
+  assert.equal(group, "radiogroup");
+  assert.deepEqual(rows, [row("Approve", "radio", "radio", false), row("Deny", "radio", "radio", true, true)]);
+});
+
+check("selectRows: a reopened bubble (live.js _reopenAsk drops answered and answer) picks nothing", () => {
+  const answered = { options: ["Approve", "Deny"], answered: true, answer: "Approve" };
+  const { answered: _a, answer: _v, ...reopened } = answered;
+  assert.deepEqual(A.selectRows(reopened).rows, radios("Approve", "Deny"));
+  assert.deepEqual(A.selectRows({ ...answered, answered: false }).rows, radios("Approve", "Deny"));
+});
+
+check("selectRows: a radio marker covers the first markableCount rows, later ones are action rows", () => {
+  const { group, rows } = A.selectRows({
+    options: ["a", "b", "c"], selectionMarker: "radio", checkedIndices: [0, 1], markableCount: 2,
+    answered: true, answer: "b",
+  });
+  assert.equal(group, "radiogroup");
+  assert.deepEqual(rows, [row("a", "radio", "radio", false), row("b", "radio", "radio", true, true), row("c", null, null, false)]);
+  assert.deepEqual(A.selectRows({ options: ["a", "b"], selectionMarker: "radio" }).rows, radios("a", "b"));
+});
+
+check("selectRows: with no marker markableCount and checkedIndices are ignored", () => {
+  const { group, rows } = A.selectRows({ options: ["a", "b", "c"], checkedIndices: [0, 1], markableCount: 1 });
+  assert.equal(group, "radiogroup");
+  assert.deepEqual(rows, radios("a", "b", "c"));
+});
+
+check("selectRows: a checkbox select checks exactly the rows in checkedIndices", () => {
+  const { group, rows } = A.selectRows({
+    options: ["x", "y", "z"], selectionMarker: "checkbox", checkedIndices: [0, 2],
+  });
+  assert.equal(group, "group");
+  assert.deepEqual(rows, [
+    row("x", "box", "checkbox", true), row("y", "box", "checkbox", false), row("z", "box", "checkbox", true),
+  ]);
+});
+
+check("selectRows: rows past markableCount are action rows with no mark, role or checked state", () => {
+  const { group, rows } = A.selectRows({
+    options: ["x", "y", "✔ Done selecting"], selectionMarker: "checkbox", checkedIndices: [1, 2], markableCount: 2,
+  });
+  assert.equal(group, "group");
+  assert.deepEqual(rows, [
+    row("x", "box", "checkbox", false), row("y", "box", "checkbox", true), row("✔ Done selecting", null, null, false),
+  ]);
+});
+
+check("selectRows: the answered row of a checkbox select is picked, its checked state still omp's", () => {
+  const { rows } = A.selectRows({
+    options: ["x", "✔ Done selecting"], selectionMarker: "checkbox", checkedIndices: [], markableCount: 1,
+    answered: true, answer: "✔ Done selecting",
+  });
+  assert.deepEqual(rows, [row("x", "box", "checkbox", false), row("✔ Done selecting", null, null, false, true)]);
+});
+
+check("selectRows: a box row the bubble was answered with stays unchecked unless omp checked it", () => {
+  const { rows } = A.selectRows({
+    options: ["x", "✔ Done selecting"], selectionMarker: "checkbox", checkedIndices: [], markableCount: 1,
+    answered: true, answer: "x",
+  });
+  assert.deepEqual(rows, [row("x", "box", "checkbox", false, true), row("✔ Done selecting", null, null, false)]);
+});
+
+check("selectRows: an unknown marker reads as absent", () => {
+  for (const selectionMarker of ["toggle", "", null, 3, undefined, "Checkbox"]) {
+    const r = A.selectRows({ options: ["a", "b"], selectionMarker, checkedIndices: [0], markableCount: 1 });
+    assert.equal(r.group, "radiogroup");
+    assert.deepEqual(r.rows, radios("a", "b"));
+  }
+});
+
+check("selectRows: a markableCount that is not a non-negative integer means every row; a big one is clamped", () => {
+  const opts = ["a", "b", "c"];
+  const marks = (markableCount) => A.selectRows({ options: opts, selectionMarker: "checkbox", markableCount })
+    .rows.map(r => r.mark);
+  const all = ["box", "box", "box"];
+  for (const bad of [-1, 1.5, NaN, Infinity, "2", null, undefined, {}]) assert.deepEqual(marks(bad), all, String(bad));
+  assert.deepEqual(marks(99), all);
+  assert.deepEqual(marks(2), ["box", "box", null]);
+  assert.deepEqual(marks(0), [null, null, null]);
+});
+
+check("selectRows: checkedIndices that is not an array, or has stray entries, checks only valid markable rows", () => {
+  const base = { options: ["a", "b", "c"], selectionMarker: "checkbox", markableCount: 2 };
+  const checked = (checkedIndices) => A.selectRows({ ...base, checkedIndices }).rows.map(r => r.checked);
+  for (const bad of ["0", { 0: true }, 0, null, undefined]) assert.deepEqual(checked(bad), [false, false, false], String(bad));
+  assert.deepEqual(checked([2, 5, -1, 0.5, "1", null, 1]), [false, true, false]);
+  assert.deepEqual(checked([0, 0]), [true, false, false]);
+});
+
+check("selectRows: an object option reads its label", () => {
+  const { rows } = A.selectRows({ options: [{ label: "L" }, { value: 1 }, "s"], answered: true, answer: "L" });
+  assert.deepEqual(rows.map(r => [r.label, r.picked]), [["L", true], ["", false], ["s", false]]);
+});
+
 console.log(`ask-dialog: ${passed} checks passed`);

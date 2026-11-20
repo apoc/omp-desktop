@@ -1,8 +1,9 @@
 /* chat/ask-bubble.jsx — interactive ask bubble.
    Rendered for every extension_ui_request method the desktop shell has UI
-   for: select (pick one option: tool approvals, extension pickers), ask
-   (omp's ask dialog, chat/ask-dialog.jsx), confirm (yes/no), input (single
-   line), editor (multi-line). Stays interactive until the user answers
+   for: select (one option per click: tool approvals, extension pickers,
+   ask-form choice fields), ask (omp's ask dialog, chat/ask-dialog.jsx),
+   confirm (yes/no), input (single line), editor (multi-line). Stays
+   interactive until the user answers
    or the request is cancelled (by the runtime, or locally via Cancel). */
 
 const { Icon: _AskIcon, AskDialog: _AskDialog, OMP_ASK_DIALOG: _AskDialogRules } = window;
@@ -134,37 +135,50 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
       </>
     );
   } else {
-    // select (default — also covers any legacy message without a `method`)
+    // select (default — also covers any legacy message without a `method`):
+    // rows shaped by OMP_ASK_DIALOG.selectRows (radio marks, or omp's
+    // checkbox state with unmarked action rows past `markableCount`),
+    // styled like the ask dialog's rows; a click answers at once with the
+    // row's label. Tool approvals render the same way.
     body = (
       <>
-        <div className="ask-question">{approval ? approval.head : msg.title}</div>
+        <div className={`ask-dialog${done ? " done" : ""}`}>
+          <section className="ask-q ask-select">
+            <div className="ask-question ask-select-question" id={`ask-q-${msg.id}`}>{approval ? approval.head : msg.title}</div>
 
-        {/* Detail lines omp appends to the title (origin/reason, path,
-            command, content preview). Capped + scrollable in CSS so a
-            2000-char payload can never push Approve/Deny out of reach. */}
-        {approval?.details && (
-          <div className="ask-approval-details mono selectable">{approval.details}</div>
-        )}
+            {/* Detail lines omp appends to the title (origin/reason, path,
+                command, content preview). Capped + scrollable in CSS so a
+                2000-char payload can never push Approve/Deny out of reach. */}
+            {approval?.details && (
+              <div className="ask-approval-details mono selectable">{approval.details}</div>
+            )}
 
-        {msg.options.length > 0 && (
-          <div className="ask-options">
-            {msg.options.map((opt, i) => {
-              const isSelected = msg.answered && msg.answer === opt;
-              const isDimmed   = done && !isSelected;
+            {msg.options.length > 0 && (() => {
+              const { group, rows } = _AskDialogRules.selectRows(msg);
               return (
-                <button
-                  key={i}
-                  className={`ask-opt${isSelected ? " selected" : ""}${isDimmed ? " dimmed" : ""}`}
-                  disabled={done}
-                  onClick={() => submit(opt)}
-                >
-                  {isSelected && <_AskIcon name="check" size={10} color="var(--accent)" />}
-                  {opt}
-                </button>
+                <div className="ask-rows" role={group} aria-labelledby={`ask-q-${msg.id}`}>
+                  {rows.map((row, i) => {
+                    const isDimmed = done && !row.picked;
+                    return (
+                      <div key={i} className={`ask-row${row.checked ? " checked" : ""}${row.picked ? " selected" : ""}${isDimmed ? " dimmed" : ""}`}>
+                        <button type="button" className="ask-row-btn" role={row.role ?? undefined}
+                          aria-checked={row.role ? row.checked : undefined}
+                          disabled={done} onClick={() => submit(row.label)}>
+                          {row.mark && (
+                            <span className={`ask-mark ${row.mark}`}>
+                              {row.mark === "box" && row.checked && <_AskIcon name="check" size={10} strokeWidth={2.2} dotColor="transparent" aria-hidden="true" />}
+                            </span>
+                          )}
+                          <span className="ask-row-text"><span className="ask-row-label"><span>{row.label}</span></span></span>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
               );
-            })}
-          </div>
-        )}
+            })()}
+          </section>
+        </div>
 
         {tool && !done && (
           <div className="ask-approval-rules">

@@ -53,6 +53,9 @@ button { min-height: 44px; }
 .ask-other { margin-top: .5rem; }
 .ask-editor-actions { display: flex; gap: .5rem; margin-top: .5rem; }
 .ask-rows { display: flex; flex-direction: column; gap: .25rem; margin-top: .5rem; }
+/* Select rows keep the 44px touch target; centre their content in it. */
+.ask-select .ask-row-btn { align-items: center; }
+.ask-select .ask-row-btn .ask-mark { margin-top: 0; }
 .scan { display: flex; flex-direction: column; gap: .6rem; align-items: flex-start; }
 .scan video { width: 100%; max-width: 24rem; border-radius: .6rem; border: 1px solid var(--line); background: #000; }
 .scan-hint { color: var(--fg-3); min-height: 1.5rem; }
