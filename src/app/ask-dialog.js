@@ -156,7 +156,7 @@
       return { answer: null, answerCount: null, status: msg.closedByOmp ? "closed by omp" : "cancelled", prompt, negative: true };
     }
 
-    let answer = typeof msg.answer === "string" ? msg.answer : null;
+    let answer = nonBlank(msg.answer);
     let answerCount = null;
     if (msg.method === "ask") {
       const answers = Array.isArray(msg.answers) ? msg.answers : [];

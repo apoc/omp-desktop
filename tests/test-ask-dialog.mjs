@@ -238,6 +238,51 @@ check("collapsedSummary: a denied confirm is neutral, not a success", () => {
   }), { answer: "Deny", answerCount: null, status: null, prompt: "Deploy?", negative: true });
 });
 
+check("collapsedSummary: an input answer uses the typed text", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "input", title: "Name?", answered: true, cancelled: false, answer: "omp",
+  }), { answer: "omp", answerCount: null, status: null, prompt: "Name?", negative: false });
+});
+
+check("collapsedSummary: an editor answer uses the typed text", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "editor", title: "Notes?", answered: true, cancelled: false, answer: "First line\nSecond line",
+  }), { answer: "First line\nSecond line", answerCount: null, status: null, prompt: "Notes?", negative: false });
+});
+
+check("collapsedSummary: a blank editor answer reads as nothing picked", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "editor", title: "Notes?", answered: true, cancelled: false, answer: " \n\t ",
+  }), { answer: null, answerCount: null, status: "nothing picked", prompt: "Notes?", negative: true });
+});
+
+check("collapsedSummary: a denied approval is negative", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "select", title: "Allow tool: bash", options: ["Approve", "Deny"],
+    answered: true, cancelled: false, answer: "Deny",
+  }), { answer: "Deny", answerCount: null, status: null, prompt: "Allow tool: bash", negative: true });
+});
+
+check("collapsedSummary: a checkbox select uses its picked label", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "select", title: "Choose features", selectionMarker: "checkbox",
+    answered: true, cancelled: false, answer: "Done selecting",
+  }), { answer: "Done selecting", answerCount: null, status: null, prompt: "Choose features", negative: false });
+});
+
+check("collapsedSummary: a one-question dialog with nothing picked shows its status", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "ask", title: "Extras?", answered: true, cancelled: false,
+    answers: [{ id: "extras", selectedOptions: [] }],
+  }), { answer: null, answerCount: null, status: "nothing picked", prompt: "Extras?", negative: true });
+});
+
+check("collapsedSummary: missing dialog answers show the nothing-picked status", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "ask", title: "Extras?", answered: true, cancelled: false, answers: null,
+  }), { answer: null, answerCount: null, status: "nothing picked", prompt: "Extras?", negative: true });
+});
+
 check("collapsedSummary: a one-question dialog shows its answer", () => {
   const summary = A.collapsedSummary({
     method: "ask", title: "", questions: [{ question: "Which version?\nChoose carefully" }],

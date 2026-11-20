@@ -223,35 +223,35 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
             <span className="ask-collapsed-answer">
               {summary.answerCount !== null
                 ? OMP_I18N.plural(summary.answerCount, "{n} answer", "{n} answers")
-                : summary.answer ?? OMP_TR(summary.status)}
+                : summary.answer
+                  ? (method === "confirm" ? OMP_TR(summary.answer) : summary.answer)
+                  : OMP_TR(summary.status)}
             </span>
             <span className="ask-collapsed-prompt" title={summary.prompt}>{summary.prompt}</span>
             <span className="chip muted">{msg.time}</span>
           </button>
         )}
         {(!summary || expanded) && (
-          <>
-            <div className="ass-meta">
-              <span className="mono" style={{ color: "var(--amber)" }}>{OMP_TR("Ask")}</span>
-              <span className="chip muted">{msg.time}</span>
-              {dialogOpen && msg.questions.length > 1 && (
-                <span className="chip muted">{msg.questions.length} {OMP_TR("questions")}</span>
-              )}
-              {timeoutNote && <span className="chip warn">{timeoutNote}</span>}
-              {msg.answered && (
-                <span className="chip" style={{ color: "var(--accent)", borderColor: "color-mix(in oklab, var(--accent) 30%, var(--line))" }}>
-                  {OMP_TR("answered")}
-                </span>
-              )}
-              {msg.cancelled && (
-                <span className="chip" style={{ color: "var(--fg-4)", borderColor: "var(--line-bright)" }}>
-                  {msg.closedByOmp ? OMP_TR("closed by omp") : OMP_TR("cancelled")}
-                </span>
-              )}
-            </div>
-            <div id={`ask-details-${msg.id}`}>{body}</div>
-          </>
+          <div className="ass-meta">
+            <span className="mono" style={{ color: "var(--amber)" }}>{OMP_TR("Ask")}</span>
+            <span className="chip muted">{msg.time}</span>
+            {dialogOpen && msg.questions.length > 1 && (
+              <span className="chip muted">{msg.questions.length} {OMP_TR("questions")}</span>
+            )}
+            {timeoutNote && <span className="chip warn">{timeoutNote}</span>}
+            {msg.answered && (
+              <span className="chip" style={{ color: "var(--accent)", borderColor: "color-mix(in oklab, var(--accent) 30%, var(--line))" }}>
+                {OMP_TR("answered")}
+              </span>
+            )}
+            {msg.cancelled && (
+              <span className="chip" style={{ color: "var(--fg-4)", borderColor: "var(--line-bright)" }}>
+                {msg.closedByOmp ? OMP_TR("closed by omp") : OMP_TR("cancelled")}
+              </span>
+            )}
+          </div>
         )}
+        <div id={`ask-details-${msg.id}`} hidden={summary ? !expanded : undefined}>{body}</div>
       </div>
     </div>
   );
