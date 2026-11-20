@@ -145,6 +145,35 @@
     return runs;
   }
 
+  /** The settled desktop bubble's one-line summary. Cancellation (including
+   *  omp closing a timed-out dialog) keeps the existing status wording; an
+   *  answered multi-question dialog exposes a count for translated plurals. */
+  function collapsedSummary(msg) {
+    if (!msg?.answered && !msg?.cancelled) return null;
+    const source = nonBlank(msg.title) ?? msg.questions?.[0]?.question ?? "";
+    const prompt = String(source).split(/\r?\n/, 1)[0].trim();
+    if (msg.cancelled) {
+      return { answer: null, answerCount: null, status: msg.closedByOmp ? "closed by omp" : "cancelled", prompt, negative: true };
+    }
+
+    let answer = nonBlank(msg.answer);
+    let answerCount = null;
+    if (msg.method === "ask") {
+      const answers = Array.isArray(msg.answers) ? msg.answers : [];
+      if (answers.length > 1) {
+        answer = null;
+        answerCount = answers.length;
+      } else {
+        const first = answers[0];
+        const parts = Array.isArray(first?.selectedOptions) ? first.selectedOptions.map((label) => nonBlank(label)?.trim()).filter(Boolean) : [];
+        if (nonBlank(first?.customInput)) parts.push(first.customInput.trim());
+        answer = parts.length ? parts.join(", ") : null;
+      }
+    }
+    const status = answer === null && answerCount === null ? "nothing picked" : null;
+    return { answer, answerCount, status, prompt, negative: status !== null || answer?.trim().toLowerCase() === "deny" };
+  }
+
   /** The rows of a `select` request (a tool approval, an extension picker, or
    *  one choice field of an ask form), from omp's optional `selectionMarker`
    *  ("radio" | "checkbox"), `checkedIndices` and `markableCount` (the marker
@@ -173,6 +202,6 @@
 
   window.OMP_ASK_DIALOG = {
     parseQuestions, emptyDraft, pick, type, unanswered, missing, answersOnClick, answers, timeoutLabel, timeoutNote,
-    codeRuns, selectRows,
+    codeRuns, collapsedSummary, selectRows,
   };
 })();

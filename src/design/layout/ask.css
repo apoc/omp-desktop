@@ -8,6 +8,32 @@
   border-color: color-mix(in oklab, var(--amber) 40%, var(--line));
 }
 
+.ask-collapsed {
+  appearance: none;
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-1);
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font-sans);
+  font-size: var(--d-text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.ask-collapsed:hover { background: var(--bg-hover); }
+.ask-collapsed:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ask-collapsed.expanded { margin-bottom: 8px; }
+.ask-collapsed.negative { color: var(--fg-4); }
+.ask-collapsed > svg { flex: none; }
+.ask-collapsed-answer { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask-collapsed-prompt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-3); }
+.ask-collapsed .chip { flex: none; margin-left: auto; }
+
 .ask-question {
   font-size: var(--d-text);
   color: var(--fg);
