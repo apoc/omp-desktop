@@ -5,7 +5,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::tls::{write_private, CertSource};
-use crate::json_store;
+use omp_desktop_core::json_store;
 
 pub const DEFAULT_PORT: u16 = 7470;
 

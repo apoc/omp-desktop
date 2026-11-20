@@ -313,6 +313,11 @@
        app-live.jsx read window.OMP_SETTINGS / OMP_SETTINGS_TAB. -->
   <script src="app/settings-schema.js"></script>
   <script src="app/settings-tab.js"></script>
+  <!-- Ompy persona pure helpers (status view, inbox split, settings
+       validation, answer buttons; docs/architecture/persona-daemon.md).
+       Dependency-free IIFE; live.js reads window.OMP_PERSONA at its
+       top-level init, so it must load before live.js. -->
+  <script src="app/persona.js"></script>
 
   <!-- Tweak storage (localStorage `omp-desktop:tweaks`): useTweaks and the
        OMP_TWEAKS_STORE reader live.js uses at its top-level init. IIFE. -->
@@ -341,6 +346,13 @@
        slash menu and mentions, history-modal.jsx, prompt-history-modal.jsx)
        and useListKeys (the two history modals), called at render time. -->
   <script src="design/ui/use-list-nav.js"></script>
+  <!-- A local clock ticking while active: persona-strip.jsx,
+       persona-inbox-card.jsx and app/use-conversation-tree.jsx call
+       window.useNow at render time, and so do subagent-pane.jsx,
+       subagent-rail-card.jsx and widgets/widget-blocks.jsx; app-live.jsx
+       destructures window.useConversationTree at top level, so this must
+       precede all of them. -->
+  <script src="design/ui/use-now.js"></script>
   <!-- The column resize line (#41); destructures
        window.OMP_LAYOUT_WIDTHS at top level; browser-dock.jsx and
        app-live.jsx destructure ResizeHandle at top level. -->
@@ -390,7 +402,7 @@
   <script type="text/babel" src="design/subagents/subagent-pane.jsx"></script>
   <script type="text/babel" src="design/subagents/subagent-rail-card.jsx"></script>
   <!-- Rail widget plugin cards (#49). widget-blocks.jsx destructures
-       window.Icon, window.useSaNow (subagent-bits.jsx) and window.OMP_WIDGETS;
+       window.Icon, window.useNow (ui/use-now.js) and window.OMP_WIDGETS;
        widget-card.jsx destructures window.Icon, window.OMP_WIDGETS and
        window.WidgetBlocks — order matters. -->
   <script type="text/babel" src="design/widgets/widget-blocks.jsx"></script>
@@ -444,6 +456,13 @@
   <!-- App toolbar between the title bar and the tabs; app-live.jsx
        destructures window.Toolbar. -->
   <script type="text/babel" src="design/toolbar.jsx"></script>
+  <!-- Ompy's state strip above its chat and the sidebar entry's CSS-only
+       face; project-sidebar.jsx destructures window.PersonaFace at top
+       level and app-live.jsx window.PersonaStrip. -->
+  <script type="text/babel" src="design/persona-strip.jsx"></script>
+  <!-- Ompy's Inbox rail card: reads window.OMP_PERSONA (app/persona.js) and
+       window.Icon at render. -->
+  <script type="text/babel" src="design/persona-inbox-card.jsx"></script>
   <!-- Project sidebar (#27); reads window.TabRunDot / window.TabLabel
        (tab-group-chip.jsx) and window.OMP_PROJECT_NAV at top level. -->
   <script type="text/babel" src="design/project-sidebar.jsx"></script>
@@ -529,6 +548,9 @@
   <script type="text/babel" src="design/settings/rows-remote-shared.jsx"></script>
   <script type="text/babel" src="design/settings/rows-remote-server.jsx"></script>
   <script type="text/babel" src="design/settings/rows-remote-phones.jsx"></script>
+  <!-- Settings → Persona: the service status and settings rows. Reads the
+       shared controls at render time. -->
+  <script type="text/babel" src="design/settings/rows-persona.jsx"></script>
   <script type="text/babel" src="design/settings/shortcuts-editor.jsx"></script>
   <script type="text/babel" src="design/settings/page.jsx"></script>
 

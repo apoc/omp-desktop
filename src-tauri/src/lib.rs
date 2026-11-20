@@ -8,10 +8,8 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods))]
 
 mod agent;
-mod approval;
 mod approval_mode;
 mod browser;
-mod child_path;
 mod child_run;
 mod config_file;
 mod conversation_tree;
@@ -21,12 +19,12 @@ mod git;
 mod git_browser;
 mod git_watcher;
 mod goal_config;
-mod json_store;
 mod keybindings;
 mod model_usage;
 mod navigation_guard;
 mod omp_cli;
 mod open_tabs;
+mod persona;
 mod pr_automation;
 mod private_fs;
 mod profiles;
@@ -49,10 +47,10 @@ mod widgets;
 mod workspace;
 
 use agent::AgentBridge;
-use approval::RuleBook;
 use approval_mode::{ApprovalModeStore, ApprovalModeView};
 use external_open::OpenProjectState;
 use git_watcher::GitWatcherState;
+use omp_desktop_core::approval::{self, RuleBook};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1460,8 +1458,32 @@ fn setup(app: &tauri::App) {
         "open-tabs.json",
     ))));
     // Phone remote access: settings in <app_config_dir>/remote.json, devices
-    // in remote-devices.json; started once from the saved settings.
-    remote::bridge::install(app, resolved_config_dir.clone()); // `config_file` still borrows it
+    // in remote-devices.json. Construction configures its pusher synchronously;
+    // install it before Ompy's client can receive the startup inbox snapshot.
+    remote::bridge::install(app, resolved_config_dir.clone());
+    // Ompy's socket client: reconnects in the background and re-emits the
+    // service's status, inbox and relayed frames as `persona://` events.
+    // Created before the refresh thread so a failed refresh can report
+    // through the client's error snapshot instead of only stderr.
+    let persona = persona::Persona::for_app(app.handle().clone());
+    // Refresh only an existing per-user copy; disabling Ompy leaves that copy
+    // dormant. Hashing and the idempotent service restart stay off the UI
+    // thread, and a failure reaches the status strip as `persona://error`
+    // (`kind: "refresh"`) as well as the log.
+    let reporter = persona.reporter();
+    let refreshing = std::thread::Builder::new()
+        .name("persona-sidecar-refresh".into())
+        .spawn(move || match persona::refresh_sidecar() {
+            Ok(()) => reporter.refresh_succeeded(),
+            Err(error) => {
+                eprintln!("[omp-desktop] persona sidecar not refreshed: {error}");
+                reporter.refresh_failed(&error);
+            }
+        });
+    if let Err(error) = refreshing {
+        eprintln!("[omp-desktop] could not start persona sidecar refresh: {error}");
+    }
+    app.manage(persona);
 
     // A cold start *is* how Windows and Linux file managers open a
     // folder, so the launch argv is the third delivery path into the
@@ -1640,6 +1662,21 @@ pub fn run() {
             app_update_check,
             app_update_install,
             set_close_guard,
+            persona::persona_status,
+            persona::persona_inbox,
+            persona::persona_error,
+            persona::persona_schedule,
+            persona::persona_open_instructions,
+            persona::persona_attach,
+            persona::persona_detach,
+            persona::persona_send,
+            persona::persona_resolve,
+            persona::persona_set_settings,
+            persona::persona_pause,
+            persona::persona_resume,
+            persona::persona_wake_now,
+            persona::persona_enable,
+            persona::persona_disable,
             remote::commands::remote_status,
             remote::commands::remote_interfaces,
             remote::commands::remote_apply_settings,

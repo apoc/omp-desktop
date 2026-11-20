@@ -26,7 +26,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-use crate::json_store;
+use omp_desktop_core::json_store;
 
 /// omp's `--approval-mode` values (omp `docs/approval-mode.md`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]

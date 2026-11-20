@@ -150,6 +150,28 @@ fn rebinds_on_ip_change_and_never_binds_another_interface() {
 }
 
 #[test]
+fn saved_push_settings_are_configured_before_start_saved() {
+    let dir = crate::test_support::tempdir("remote-manager", "push-at-construction");
+    RemoteSettings {
+        push: super::super::settings::PushSettings {
+            enabled: true,
+            contact: String::new(),
+            ..super::super::settings::PushSettings::default()
+        },
+        ..RemoteSettings::default()
+    }
+    .save(&dir.join(SETTINGS_FILE))
+    .unwrap();
+
+    let (manager, _emit) = manager_in(&dir, &loopback());
+    assert_eq!(
+        manager.status().push_error.as_deref(),
+        Some(super::super::push_contact::CONTACT_ERROR),
+        "construction must configure push before the remote-start thread runs"
+    );
+}
+
+#[test]
 fn settings_survive_a_restart_in_a_private_file() {
     let (first, _emit, dir) = manager("persist", &loopback());
     let settings = RemoteSettings {

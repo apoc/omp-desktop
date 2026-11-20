@@ -9,11 +9,12 @@
    are real buttons, so every action is keyboard-reachable.
    ═════════════════════════════════════════════════════════════════════ */
 
-const { Icon, TabRunDot, TabLabel, RenameField } = window;
+const { Icon, TabRunDot, TabLabel, RenameField, PersonaFace } = window;
 const { groupTabs, groupRunState, groupTarget, membersNewestFirst, basename, parentName } = window.OMP_PROJECT_NAV;
 
 function ProjectSidebar({
   tabs, activeId, recents, profileLabel, projectAppearances,
+  personaActive, personaBadge, onSelectPersona,
   onSelectTab, onCloseTab, onRenameTab, onNewInProject, onOpenRecent, onForgetRecent, onOpenFolder, onReorder,
 }) {
   // Group keys the user folded. Not persisted: tab ids (and so pathless
@@ -45,6 +46,24 @@ function ProjectSidebar({
   return (
     <aside className="project-sidebar" aria-label={OMP_TR("projects")}>
       <div className="psb-head">{OMP_TR("projects")}</div>
+
+      {/* Pinned above the project tabs and outside the scroll area: Ompy is
+          the window's own chat, not a tab, so it stays reachable even with
+          no project open and the persona service off. */}
+      <div className="psb-pinned">
+        <button type="button" className={`psb-persona${personaActive ? " active" : ""}`}
+          title={OMP_TR("Ompy")} aria-label={window.OMP_PERSONA.sidebarLabel(personaBadge)}
+          aria-current={personaActive ? "page" : undefined}
+          onClick={onSelectPersona}>
+          <PersonaFace />
+          <span className="psb-persona-name">{OMP_TR("Ompy")}</span>
+          {personaBadge > 0 && (
+            <span className="psb-persona-badge" title={OMP_TR("{n} waiting for you", { n: personaBadge })}>
+              {personaBadge}
+            </span>
+          )}
+        </button>
+      </div>
 
       <div className="psb-scroll" onPointerDown={reorder.onPointerDown}>
         <div className="psb-section">{OMP_TR("open tabs")}</div>

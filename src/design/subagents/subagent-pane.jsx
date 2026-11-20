@@ -7,7 +7,7 @@
 
 const { Icon: _SAP_Icon, OMP_SUBAGENTS: _SAP, SaDot: _SAP_Dot, SaToolChip: _SAP_ToolChip,
   SaElapsed: _SAP_Elapsed, SaContextTube: _SAP_Tube, saHueStyle: _SAP_hue, saLeafName: _SAP_leaf,
-  saToolMeta: _SAP_toolMeta, useSaNow: _SAP_useNow, SubagentInspector: _SAP_Inspector } = window;
+  saToolMeta: _SAP_toolMeta, useNow: _SAP_useNow, SubagentInspector: _SAP_Inspector } = window;
 
 // Lane window grows with the session's first spawn (so early runs are not
 // squeezed into the right edge of a fixed minute), clamped to [20s, 2m].
@@ -108,7 +108,7 @@ function SubagentPane({
   const t = _SAP.totals(all);
   // Live agents need a fast clock; finished ones still show relative
   // ("3m ago") times and the swimlane window, so keep a slow idle tick.
-  const now = _SAP_useNow(true, t.live > 0 ? 250 : 10_000);
+  const now = _SAP_useNow(true, t.live > 0 ? 250 : 10_000)[0];
   const shown = _SAP.listAgents(state, filter);
   const groups = _SAP.groupByCall(state, shown);
   const counts = { all: t.total, live: t.live, done: t.done, failed: t.failed };

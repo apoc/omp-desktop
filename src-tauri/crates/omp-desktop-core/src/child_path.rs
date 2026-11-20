@@ -1,7 +1,8 @@
 //! The PATH a child that must find a user-installed binary (omp, `git`) is
-//! spawned with: the inherited one, plus the directories the process that
-//! launched us left out — and the lookup of such a binary by absolute path
-//! ([`locate_program`]), for a child started in an untrusted project folder.
+//! spawned with, plus [`locate_program`] for an untrusted project folder.
+//!
+//! That PATH is the inherited one plus the directories the process that
+//! launched us left out.
 //!
 //! - Unix: GUI launchers (Finder, Dock, `.desktop` files) hand a bundled app
 //!   a minimal PATH, so the common install dirs are appended.
@@ -16,15 +17,18 @@
 //! Inherited entries always come first, so a PATH set on purpose (a terminal,
 //! `tauri dev`) still wins.
 
-use crate::program_setting::is_executable_file;
+use crate::proc_util::is_executable_file;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The PATH a child must be spawned with: the inherited PATH plus the
-/// [`extra_dirs`] entries it lacks ([`merged_path`]). `None` when it can't be
-/// built, so the caller keeps the inherited one. Recomputed on every call, so
-/// a PATH changed while the app runs is picked up too.
+/// [`extra_dirs`] entries it lacks ([`merged_path`]).
+///
+/// `None` when it can't be built, so the caller keeps the inherited one.
+/// Recomputed on every call, so a PATH changed while the app runs is picked
+/// up too.
+#[must_use]
 pub fn child_path() -> Option<OsString> {
     let extra = extra_dirs();
     let current = std::env::var_os("PATH");
@@ -32,18 +36,22 @@ pub fn child_path() -> Option<OsString> {
 }
 
 /// The absolute folders of [`child_path`] (the inherited PATH when that
-/// can't be built), in lookup order: where a search for a user-installed
-/// program looks (omp, the terminal's shell list, Chromium discovery).
-/// Blocking on Windows (registry reads).
+/// can't be built), in lookup order.
+///
+/// That is where a search for a user-installed program looks (omp, the
+/// terminal's shell list, Chromium discovery). Blocking on Windows (registry
+/// reads).
 pub fn child_path_dirs() -> Vec<PathBuf> {
     full_child_path().map_or_else(Vec::new, |path| absolute_dirs(&path).collect())
 }
 
 /// [`child_path`] without its empty and relative entries (the inherited
-/// PATH when that can't be built); `None` when there is no PATH at all. The
-/// PATH for a child started in an untrusted project folder: there such an
-/// entry resolves a program name — the child's own, or a `#!/usr/bin/env`
-/// interpreter's — inside the project.
+/// PATH when that can't be built); `None` when there is no PATH at all.
+///
+/// That is the PATH for a child started in an untrusted project folder:
+/// there such an entry resolves a program name — the child's own, or a
+/// `#!/usr/bin/env` interpreter's — inside the project.
+#[must_use]
 pub fn trusted_child_path() -> Option<OsString> {
     full_child_path().map(|path| absolute_entries(&path))
 }
@@ -96,7 +104,11 @@ pub struct TrustedProgram {
 
 /// Locate program `name` in `dirs` ([`child_path_dirs`]) with
 /// [`find_program`]. Windows: only `<name>.exe`, what `Command` resolved a
-/// bare name to anyway. `Err` names the program when no folder holds it.
+/// bare name to anyway.
+///
+/// # Errors
+/// No folder in `dirs` holds `name`; the message names the program and says
+/// to make sure it is installed and on PATH.
 pub fn locate_program(dirs: &[PathBuf], name: &str) -> Result<TrustedProgram, String> {
     let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     let binary = find_program(dirs, &file, is_executable_file).ok_or_else(|| {
@@ -258,7 +270,7 @@ fn path_key(dir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{absolute_dirs, absolute_entries, find_program, merged_path};
-    use crate::program_setting::is_executable_file;
+    use crate::proc_util::is_executable_file;
     use crate::test_support::{executable, TempDir};
 
     fn entries(path: &std::ffi::OsStr) -> Vec<String> {
@@ -409,7 +421,7 @@ mod tests {
         let [none, first, second] = ["a", "b", "c"].map(|name| dir.path().join(name));
         std::fs::create_dir_all(&none).unwrap();
         let found = executable(&first.join("omp-test"), "");
-        executable(&second.join("omp-test"), "");
+        let _ = executable(&second.join("omp-test"), "");
         let dirs = [none, first, second];
         assert_eq!(
             find_program(&dirs, "omp-test", is_executable_file),

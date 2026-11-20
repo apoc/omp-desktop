@@ -506,8 +506,8 @@ impl ProfileStore {
 
     /// Past versions of `profiles.json`, consulted only when the primary file
     /// exists but fails to parse. Mirrors `approval::RuleBook`'s ring.
-    fn snapshot_ring(dir: &Path) -> crate::json_store::SnapshotRing {
-        crate::json_store::SnapshotRing::new(dir.to_path_buf(), 8)
+    fn snapshot_ring(dir: &Path) -> omp_desktop_core::json_store::SnapshotRing {
+        omp_desktop_core::json_store::SnapshotRing::new(dir.to_path_buf(), 8)
     }
 
     /// The list and the startup default together, read under **one**
@@ -734,7 +734,7 @@ impl ProfileStore {
             return Ok(value);
         };
         // `with_lock_str` creates the lock's (= this file's) parent directory.
-        crate::json_store::with_lock_str(lock, || {
+        omp_desktop_core::json_store::with_lock_str(lock, || {
             // Normalised on read; `f` only inserts sanitised names and
             // slug-derived ids, so the result needs no second pass. A read
             // error (permissions, I/O) aborts here rather than persisting a
@@ -769,7 +769,7 @@ impl ProfileStore {
                 // primary either way.
                 let _ = std::fs::rename(path, path.with_extension("json.corrupt"));
             }
-            crate::json_store::write_atomic(path, &bytes)
+            omp_desktop_core::json_store::write_atomic(path, &bytes)
                 .map_err(|e| format!("write profiles: {e}"))?;
             // Refresh the cache *inside* the advisory lock, like
             // `approval::RuleBook::mutate_project_rules`. Outside it, two
@@ -821,7 +821,7 @@ impl ProfileStore {
 /// Returns an error when `path` exists but cannot be read.
 fn read_or_recover(
     path: &Path,
-    ring: &crate::json_store::SnapshotRing,
+    ring: &omp_desktop_core::json_store::SnapshotRing,
 ) -> Result<(ProfilesFile, bool), String> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,

@@ -25,6 +25,10 @@ const THROTTLE: Duration = Duration::from_secs(30);
 const MIN_TURN: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_TITLE_CHARS: usize = 80;
+/// The Ompy tab's id in the published tab list (`PERSONA_SESSION_ID` in
+/// `live.js`): its push throttle and notification tag, and the `?tab=` a tap
+/// opens.
+const PERSONA_TAB: &str = "ompy";
 
 /// Why a phone is being told something.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,25 +205,50 @@ impl Pusher {
 
     /// Queue a push for `tab`; at most one per tab every 30 s.
     pub fn notify(&self, tab: &str, title: &str, kind: Kind) {
-        let now = Instant::now();
-        let mut sent = locked(&self.shared.last_sent);
-        if sent
-            .get(tab)
-            .is_some_and(|last| now.saturating_duration_since(*last) < THROTTLE)
-        {
-            return;
-        }
         let title = if title.is_empty() {
             "OMP".to_owned()
         } else {
             let shown: String = title.chars().take(MAX_TITLE_CHARS).collect();
             format!("OMP \u{b7} {shown}")
         };
+        self.enqueue(tab, title, kind.body(), kind.urgency());
+    }
+
+    /// Queue a push for one Ompy inbox item — the same worker, throttle and
+    /// settings as a tab push. The caller has already applied quiet hours;
+    /// the `questions` switch gates every approval/decision push.
+    pub fn notify_persona(&self, title: &str, urgent: bool) {
+        {
+            let settings = locked(&self.shared.settings);
+            if !settings.enabled || !settings.questions {
+                return;
+            }
+        }
+        let shown: String = title.chars().take(MAX_TITLE_CHARS).collect();
+        let title = if shown.trim().is_empty() {
+            "Ompy".to_owned()
+        } else {
+            format!("Ompy: {shown}")
+        };
+        let urgency = if urgent { "high" } else { "normal" };
+        self.enqueue(PERSONA_TAB, title, Kind::Question.body(), urgency);
+    }
+
+    /// Take `key`'s throttle slot and hand the message to the worker.
+    fn enqueue(&self, key: &str, title: String, body: &'static str, urgency: &'static str) {
+        let now = Instant::now();
+        let mut sent = locked(&self.shared.last_sent);
+        if sent
+            .get(key)
+            .is_some_and(|last| now.saturating_duration_since(*last) < THROTTLE)
+        {
+            return;
+        }
         let job = Job::Notify(Message {
-            tab: tab.to_owned(),
+            tab: key.to_owned(),
             title,
-            body: kind.body(),
-            urgency: kind.urgency(),
+            body,
+            urgency,
             queued_at: now,
         });
         match self.tx.try_send(job) {
@@ -227,7 +256,7 @@ impl Pusher {
                 if sent.len() >= QUEUE * 2 {
                     sent.retain(|_, last| now.saturating_duration_since(*last) < THROTTLE);
                 }
-                sent.insert(tab.to_owned(), now);
+                sent.insert(key.to_owned(), now);
                 drop(sent);
             }
             Err(TrySendError::Full(_)) => eprintln!("[omp-desktop] push queue full; dropped"),

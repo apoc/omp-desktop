@@ -5,11 +5,12 @@
    shows), then the tool-approval rules granted for the active tab's
    session/project, with a revoke button per rule.
    Rules are backed by OMP_BRIDGE.listApprovalRules/revokeApprovalRule
-   (src-tauri/src/approval.rs::RuleBook). Rules are granted from the ask
-   bubble itself (chat/ask-bubble.jsx's "Allow for this session" /
-   "Always allow in this project" buttons) — this panel is read + revoke
-   only, there's no "add rule" affordance here by design: a rule should
-   only ever originate from an actual prompt the human saw and approved.
+   (src-tauri/crates/omp-desktop-core/src/approval.rs::RuleBook). Rules are
+   granted from the ask bubble itself (chat/ask-bubble.jsx's "Allow for
+   this session" / "Always allow in this project" buttons) — this panel is
+   read + revoke only, there's no "add rule" affordance here by design: a
+   rule should only ever originate from an actual prompt the human saw and
+   approved.
    ═════════════════════════════════════════════════════════════════════ */
 
 const { Icon: _RulesIcon, ApprovalModeSection: _RulesModeSection } = window;

@@ -4,7 +4,7 @@
    a plugin is interpreted as HTML, and links open only through the bridge's
    navigation guard after a second safeUrl check. */
 
-const { Icon: _WB_Icon, useSaNow: _WB_useNow } = window;
+const { Icon: _WB_Icon, useNow: _WB_useNow } = window;
 const { safeUrl: _wbSafeUrl, insertText: _wbInsertText, relativeTime: _wbRelativeTime, insertAction: _wbInsertAction, insertTitle: _wbInsertTitle } = window.OMP_WIDGETS;
 
 /** Relative "time" labels are minute-granular, so a list re-renders once a
@@ -68,7 +68,7 @@ function WidgetList({ block, onInsert, insertCfg }) {
   const { items, limit } = block;
   const shown = limit && !expanded && items.length > limit ? items.slice(0, limit) : items;
   const timed = shown.some((it) => it.time != null);
-  const now = _WB_useNow(timed, _WB_TIME_TICK_MS);
+  const now = _WB_useNow(timed, _WB_TIME_TICK_MS)[0];
   return (
     <>
       {block.title && <div className="wdg-section mono">{block.title}<span className="wdg-count">{items.length}</span></div>}

@@ -78,4 +78,13 @@ check("from settings, next wraps to the first session and prev to the last", () 
   assert.deepEqual(T.cycle(s, [], null, 1), { settingsActive: true, sessionId: null });
 });
 
+check("an inactive external session cycles to the edge real tabs", () => {
+  const closed = T.initial();
+  assert.deepEqual(T.cycle(closed, ["a", "b", "c"], "ompy", 1), { settingsActive: false, sessionId: "a" });
+  assert.deepEqual(T.cycle(closed, ["a", "b", "c"], "ompy", -1), { settingsActive: false, sessionId: "c" });
+  const backgroundSettings = T.selectProject(T.open(T.initial()));
+  assert.deepEqual(T.cycle(backgroundSettings, ["a", "b", "c"], "ompy", 1), { settingsActive: false, sessionId: "a" });
+  assert.deepEqual(T.cycle(backgroundSettings, ["a", "b", "c"], "ompy", -1), { settingsActive: false, sessionId: "c" });
+});
+
 console.log(`test-settings-tab: ${passed} checks passed`);

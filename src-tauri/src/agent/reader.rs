@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter};
 
-use crate::approval::{self, RuleBook};
 use crate::redaction::{is_credential_key, REDACTED_PLACEHOLDER};
+use omp_desktop_core::approval::{self, RuleBook};
 
 use super::approvals::{self, PendingApprovals};
 use super::ext_ui::{self, ExtUiState};
@@ -24,10 +24,12 @@ const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 /// in sync with `replay_events`'s `ReplayEvent` — both sides of the wire
 /// (live `agent://line/{id}` events and a replay response) use the same
 /// `{seq, text}` shape so the frontend can dispatch either through one path.
+/// The persona client emits the same shape for `persona://line/ompy`, so the
+/// Ompy tab and an agent tab read a relayed frame identically.
 #[derive(serde::Serialize, Clone)]
-struct LineEvent<'a> {
-    seq: u64,
-    text: &'a str,
+pub struct LineEvent<'a> {
+    pub seq: u64,
+    pub text: &'a str,
 }
 
 /// Recursively replace the value of any object key matching [`REDACTED_KEYS`]
@@ -77,7 +79,11 @@ fn sanitize_frame(value: &mut serde_json::Value) -> bool {
 /// one) with `None` in place of the parsed frame, since a non-JSON line
 /// cannot carry a *named* credential field — or an approval prompt — for
 /// us to find in the first place.
-fn sanitize_line(raw: &[u8]) -> (String, Option<serde_json::Value>) {
+///
+/// Shared with the persona client (`persona::client`): a relayed
+/// `persona://line/ompy` frame is an omp frame and passes the same
+/// redaction before it can reach the webview.
+pub fn sanitize_line(raw: &[u8]) -> (String, Option<serde_json::Value>) {
     serde_json::from_slice::<serde_json::Value>(raw).map_or_else(
         |_| (String::from_utf8_lossy(raw).into_owned(), None),
         |mut value| {

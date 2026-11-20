@@ -41,6 +41,7 @@
     "showRadar": true,
     "showSubagents": true,
     "showChanges": true,
+    "showInbox": true,
     "showMinimap": true,
     "fontSize":  100,
     "promptHistoryLimit": 100,

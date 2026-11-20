@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/omp-desktop-core", "crates/omp-desktopd"]
+resolver = "2"
+
 [package]
 name = "omp-desktop"
 version = "0.15.1"
@@ -13,6 +17,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# Shared with the persona service `omp-desktopd` (`crates/omp-desktop-core`):
+# PATH/child-program lookup, the atomic JSON store and the approval rules.
+omp-desktop-core = { path = "crates/omp-desktop-core" }
 tauri-plugin-dialog = "2"
 # 2.13: `check()` no longer sets SSL_CERT_FILE/SSL_CERT_DIR process-wide on
 # Linux, which every omp child would have inherited.
@@ -20,6 +27,10 @@ tauri-plugin-updater = "2.13"
 serde = { version = "1", features = ["derive"] }
 # `raw_value`: the conversation tree skips message bodies it does not read.
 serde_json = { version = "1", features = ["raw_value"] }
+# Persona service client: unix domain socket on unix, named pipe on Windows.
+interprocess = "2.4.8"
+# Stable per-user location for the installed persona service copy.
+dirs = "7"
 notify = "8"
 gix = "0.87"
 open = { version = "5", features = ["shellexecute-on-windows"] }
@@ -58,11 +69,14 @@ windows-sys = { version = "0.61", features = [
     "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_System_JobObjects",
+    # `CancelIoEx`: wake the persona client's blocked pipe read on disconnect.
+    "Win32_System_IO",
     # WTS session flags: the screen-lock probe (`remote/lock.rs`).
     "Win32_System_RemoteDesktop",
     "Win32_System_Threading",
 ] }
-# Machine/user PATH for omp and git children (`child_path.rs`, #34). Already
+# Machine/user PATH for omp and git children
+# (`crates/omp-desktop-core/src/child_path.rs`, #34). Already
 # in the tree via reqwest → hyper-util.
 windows-registry = "0.6"
 
@@ -90,6 +104,9 @@ libc = "0.2"
 # Decode screenshot pixels in real-Chromium annotate regression tests
 # (`base64` comes from the normal dependencies).
 [dev-dependencies]
+# Same path crate as above, with the helpers the app's test suites share
+# (`test_support`): one copy, re-exported from `src/test_support.rs`.
+omp-desktop-core = { path = "crates/omp-desktop-core", features = ["test-support"] }
 png = "0.18"
 
 [profile.release]

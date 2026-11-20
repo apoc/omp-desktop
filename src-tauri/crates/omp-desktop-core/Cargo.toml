@@ -1,0 +1,39 @@
+[package]
+name = "omp-desktop-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98"
+publish = false
+
+[features]
+# Exposes `test_support` to a dependent crate's tests (the app re-exports it).
+test-support = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+# Quiet-hour windows (`persona_quiet`): the service's scheduler and the app's
+# push decision must read the same local wall-clock time.
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+# Persona paths and local socket names shared by the app and service.
+dirs = "7"
+interprocess = "2.4.8"
+sha2 = "0.11"
+
+[target.'cfg(unix)'.dependencies]
+# `access(2)`/`kill(2)` in `proc_util`, next to the other per-platform probes.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    # `CreateFileW` with the identification-only SQOS on the client pipe end.
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+windows-registry = "0.6"
+# `SecurityDescriptor::deserialize` takes the wide form of the SDDL string.
+widestring = "1"

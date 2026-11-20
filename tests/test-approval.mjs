@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Regression script for src/app/approval.js — the "Allow tool:" prompt
-// split shared with src-tauri/src/approval.rs, and the transcript row for a
-// prompt an approval rule answered (#42). Titles follow omp's
-// `formatApprovalPrompt` (tools/approval.ts): `Allow tool: <name>`, an
-// optional Origin:/Reason: line, then the tool's own detail lines.
+// split shared with src-tauri/crates/omp-desktop-core/src/approval.rs, and
+// the transcript row for a prompt an approval rule answered (#42). Titles
+// follow omp's `formatApprovalPrompt` (tools/approval.ts): `Allow tool:
+// <name>`, an optional Origin:/Reason: line, then the tool's own detail
+// lines.
 // Run: node tests/test-approval.mjs
 
 import assert from "node:assert/strict";

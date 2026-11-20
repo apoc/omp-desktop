@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use super::locate::{self, Places, Platform};
-use crate::program_setting::{is_executable_file, typed_path, ProgramSetting};
+use crate::program_setting::{typed_path, ProgramSetting};
+use omp_desktop_core::proc_util::is_executable_file;
 
 /// What `browser_settings` / `browser_set_path` / `browser_pick_path`
 /// return.

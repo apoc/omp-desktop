@@ -13,7 +13,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::program_setting::is_executable_file;
+use omp_desktop_core::proc_util::is_executable_file;
 
 /// The platform a candidate list is built for. A parameter rather than
 /// `cfg`, so every platform's order is testable on any host.
@@ -93,7 +93,7 @@ impl Places {
             root: PathBuf::from("/"),
             home: home.map(Path::to_path_buf),
             xdg_cache: var("XDG_CACHE_HOME").map(PathBuf::from),
-            path: crate::child_path::child_path_dirs(),
+            path: omp_desktop_core::child_path::child_path_dirs(),
             install_roots: ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
                 .into_iter()
                 .filter_map(var)
@@ -339,7 +339,7 @@ mod tests {
             .unwrap()
             .join(".omp/puppeteer/chrome/linux-150.0.1.2")
             .join(Platform::Linux.cft_layout());
-        executable(&cft, "cft");
+        let _ = executable(&cft, "cft");
         let c = candidates(Platform::Linux, &p);
         let at = |path: &Path| {
             c.iter()
@@ -375,7 +375,7 @@ mod tests {
                 .join(".omp/puppeteer/chrome")
                 .join(format!("{}-150.0.0.1", platform.cft_prefixes()[0]))
                 .join(platform.cft_layout());
-            executable(&cft, "cft");
+            let _ = executable(&cft, "cft");
             let c = candidates(platform, &p);
             assert_eq!(c[0], cft, "{platform:?}");
         }
@@ -463,7 +463,7 @@ mod tests {
         let root = dir.join("chrome");
         // The foreign dir carries the native layout so only its name can
         // exclude it.
-        executable(
+        let _ = executable(
             &root
                 .join("mac_arm-999.0.0.0")
                 .join(Platform::Linux.cft_layout()),
@@ -491,7 +491,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::os::unix::fs::symlink(&chromium, dir.join("bin/chromium")).unwrap();
         // Ubuntu's transitional script and a snap shim.
-        executable(
+        let _ = executable(
             &dir.join("bin/chromium-browser"),
             "#!/bin/sh\nexec /snap/bin/chromium \"$@\"\n",
         );

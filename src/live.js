@@ -27,6 +27,10 @@
   const LIVE = window.OMP_LIVE_VOICE;
   const DICTATION = LIVE.DICTATION;
   const { tsOf, mergeTranscript } = window.OMP_TRANSCRIPT;
+  const PERSONA = window.OMP_PERSONA;
+  // The Ompy tab's fixed session id: one hosted omp process owned by the
+  // persona service, not one of this app's spawned tabs.
+  const PERSONA_SESSION_ID = "ompy";
 
   // ── Safe defaults so design components never crash on missing fields ──────
   const DEFAULT_DATA = {
@@ -157,6 +161,26 @@
   // under different profiles simultaneously, so changing a tab's profile
   // respawns only that tab (see switchSessionProfile).
   const sessionRegistry = new Map();
+  // Ompy's hosted session lives in this map but is **not a tab** (Ruling
+  // B-R6): it exists for the life of the window, is registered at bridge
+  // start, and every tab count/list/guard goes through `_realTabs()` — the
+  // tab bar, keyboard navigation, drag reorder, the busy-close and quit
+  // guards and `open-tabs.json` never see it. It is reached only by
+  // activating it explicitly (`activateSession("ompy")`; the sidebar entry
+  // is Task 5). Its transcript arrives over the persona relay while it is
+  // the active session.
+  sessionRegistry.set(PERSONA_SESSION_ID, {
+    id: PERSONA_SESSION_ID, name: "Ompy", path: null, kind: "persona", pinned: true,
+  });
+
+  /** The user's project tabs as registry entries, in registry order. Ompy
+   *  is not one of them (Ruling B-R6): every count, list, guard and
+   *  navigation decision asks this, while the snapshot's `sessions` keeps
+   *  Ompy for the chat view and the sidebar entry. */
+  function _realTabs() {
+    return PERSONA.realTabs([...sessionRegistry.values()]);
+  }
+
   const sessionSnapshots = new Map(); // id -> saved state + volatile vars
   const respawnVoice = new Map(); // same-conversation voice awaiting a fresh process activation
   const gitListeners = new Map();  // session_id → Tauri unlisten fn for git://branch/{id}
@@ -428,7 +452,11 @@
   // Active tab reads live state; background tabs read their cached snapshot
   // (never activated yet = "idle" defaults).
   function _sessionsView() {
-    return [...sessionRegistry.values()].map(s => ({
+    const entries = [...sessionRegistry.values()];
+    // Pinned entries (the Ompy tab) stay first whatever order drag-reorder
+    // wrote into the registry.
+    const ordered = [...entries.filter(s => s.pinned), ...entries.filter(s => !s.pinned)];
+    return ordered.map(s => ({
       ...s,
       runState: runStateCached(
         s.id === activeSessionId
@@ -755,7 +783,9 @@
   }
 
   function _layoutNow() {
-    return window.OMP_PROJECT_NAV.tabLayout([...sessionRegistry.values()], activeSessionId);
+    // Only the user's project tabs are part of the saved workspace: Ompy is
+    // never written to `open-tabs.json` and so never spawned on restore.
+    return window.OMP_PROJECT_NAV.tabLayout(_realTabs(), activeSessionId);
   }
 
   /** Write the open-tab layout if it changed since the last one (see
@@ -949,6 +979,71 @@
     return true;
   }
 
+  // ── Ompy persona relay ────────────────────────────────────────────────────
+  // The service generation the Ompy tab's cursor belongs to (`null` = never
+  // seen, or disconnected — the next status is then a new connection). The
+  // service numbers its relay frames per process; a restart starts over, so
+  // a new generation invalidates both the cursor and the transcript built
+  // from the previous omp session (OMP_PERSONA.cursorAfterStatus).
+  let _personaGen = null;
+
+  // Set by a successful Disable and cleared by Enable or any live status: the
+  // strip then treats `status: null` as the expected state instead of showing
+  // an `io` error for the service it just switched off.
+  let personaExpectedOff = false;
+
+  function _personaAttach(afterSeq) {
+    return _invokeSafe("persona_attach", { afterSeq }, null);
+  }
+
+  function _personaDetach() {
+    return _invokeSafe("persona_detach", undefined, null);
+  }
+
+  /** Feed one `persona://status` frame (or the boot fetch) into the tab's
+   *  relay cursor. On a new generation/connection the saved Ompy state from
+   *  the old transport is dropped — cursor, transcript and run state
+   *  (streaming, queue, subagents, rpc state): the frames that built it were
+   *  numbered by a process that is gone, and the new relay replays the
+   *  hosted session from 0. When Ompy is the active session, its live state
+   *  goes too and it re-attaches from 0 through the same reset a tab switch
+   *  runs (microphone included). */
+  function _onPersonaStatus(status) {
+    if (status) personaExpectedOff = false;
+    const next = PERSONA.cursorAfterStatus(_personaGen, status, lastSeq);
+    _personaGen = next.gen;
+    if (!next.reattach) return;
+    // Never keep a snapshot built from another generation's frames: a later
+    // activation would restore its `lastSeq`, `isStreaming`, queue, subagent
+    // list, rpc state and goal, and every new envelope would be dropped as
+    // `seq <= lastSeq` (a backgrounded Ompy has no live state to reset).
+    sessionSnapshots.delete(PERSONA_SESSION_ID);
+    if (activeSessionId !== PERSONA_SESSION_ID) return;
+    // The old transport carried the microphone session: stop voice and
+    // dictation like a tab reset does. Fire-and-forget — the relay the stop
+    // would answer on is gone, piled behind the re-attach below.
+    if (state.liveVoice.active) void _liveStop(true);
+    if (state.dictation.active) void _dictationStop();
+    _resetSessionVars();
+    // A switch into Ompy may be buffering; the attach below re-reads the
+    // relay from the start instead, so the buffer is not needed.
+    _replayBuffer = null;
+    const gen = _personaGen;
+    const switchGen = _switchGen;
+    _personaAttach(0).then(() => {
+      // The new generation is a fresh hosted omp: without the opening fetch
+      // it would know neither the ask dialog nor the auto-compaction/retry
+      // overrides, this tab would keep an empty model list, stale commands
+      // and no rpc state, and no subagent frames would come. The switch path
+      // runs the same batch over the relay. Skipped when this generation or
+      // the activation moved on while the attach was in flight.
+      if (_personaGen !== gen || _switchGen !== switchGen) return;
+      if (activeSessionId !== PERSONA_SESSION_ID) return;
+      _initFetch();
+    });
+    notify();
+  }
+
   // ── Session switching ─────────────────────────────────────────────────────
   // Generation counter guards against overlapping switches: _switchToSession
   // is async with multiple await points and writes shared module state
@@ -988,14 +1083,23 @@
     }
     if (_switchIntent !== intent || !sessionRegistry.has(id)) return;
     const myGen = ++_switchGen;
+    const persona = id === PERSONA_SESSION_ID;
 
     // Snapshot current session so we can restore it when switching back
     _saveCurrentSession();
-    // The inspected agent belongs to the tab being left: drop that process
-    // back to "progress" while activeSessionId still addresses it.
-    if (subagentInspecting) {
+    // The inspected agent belongs to the session being left: drop that
+    // process back to "progress" while activeSessionId still addresses it.
+    // Ompy is included — its hosted omp runs the same subscription — so the
+    // relay is told before the detach below drops it.
+    if (subagentInspecting && previous) {
       _send({ type: "set_subagent_subscription", level: SUB.subscriptionLevelFor({ inspecting: false }) });
     }
+    // Leaving Ompy stops the service's relay for this window; its hosted
+    // session keeps running (background tabs keep no live relay either).
+    // Fire-and-forget: the detach is a socket round-trip that must never
+    // hold up the switch (a stalled service would freeze the UI for up to
+    // its 10 s timeout), and the reply has nothing this window reads.
+    if (previous === PERSONA_SESSION_ID && !persona) _personaDetach();
 
     // Tear down old listeners
     for (const ul of activeListeners) { try { await ul(); } catch (_) {} }
@@ -1041,7 +1145,11 @@
     // C with no binding; after, it is dropped and C shows none).
     const current = () => _switchGen === myGen && activeSessionId === id;
     const { listen } = window.__TAURI__.event;
-    const ulLine = await listen(`agent://line/${id}`, ev => { if (current()) handleLine(ev.payload); });
+    // Ompy's frames arrive over the persona relay, already credential-
+    // redacted and numbered by the service; agent tabs stream their own
+    // process's stdout under `agent://line/<id>`.
+    const lineEvent = persona ? `persona://line/${PERSONA_SESSION_ID}` : `agent://line/${id}`;
+    const ulLine = await listen(lineEvent, ev => { if (current()) handleLine(ev.payload); });
     if (!current()) {
       // Superseded while this call's own listener was still being attached —
       // it was never stored into activeListeners, so nothing else will ever
@@ -1051,26 +1159,47 @@
       try { await ulLine(); } catch (_) {}
       return;
     }
-    const ulExit = await listen(`agent://exit/${id}`, ev => {
-      if (!current()) return;
-      const reason = (ev?.payload && String(ev.payload).trim()) || "";
-      console.warn(`[live] session '${id}' omp process exited${reason ? ": " + reason : ""}`);
-      state.isStreaming = false;
-      state.exitReason = reason || null;
-      if (reason) {
-        _pushAssistantNote(_exitNote(reason, sessionRegistry.get(id)?.profile));
-      }
-      _endDeadProcessState();
-      notify();
-    });
+    let ulExit = null;
+    if (!persona) {
+      ulExit = await listen(`agent://exit/${id}`, ev => {
+        if (!current()) return;
+        const reason = (ev?.payload && String(ev.payload).trim()) || "";
+        console.warn(`[live] session '${id}' omp process exited${reason ? ": " + reason : ""}`);
+        state.isStreaming = false;
+        state.exitReason = reason || null;
+        if (reason) {
+          _pushAssistantNote(_exitNote(reason, sessionRegistry.get(id)?.profile));
+        }
+        _endDeadProcessState();
+        notify();
+      });
+    }
     if (!current()) {
       // Same leak as above, but both listeners for this call exist and
       // haven't been committed to activeListeners yet.
       try { await ulLine(); } catch (_) {}
-      try { await ulExit(); } catch (_) {}
+      if (ulExit) try { await ulExit(); } catch (_) {}
       return;
     }
-    activeListeners = [ulLine, ulExit];
+    activeListeners = ulExit ? [ulLine, ulExit] : [ulLine];
+
+    if (persona) {
+      // `persona_attach` asks the service to replay the hosted session's
+      // ring after this tab's cursor and then keep streaming live. The
+      // hosted omp answers the same RPC a spawned tab does, so the opening
+      // fetch goes out over the relay like a normal tab's (I1): protocol
+      // negotiation, ask dialog, state, messages, models, commands and the
+      // subagent subscription. Ompy still has no per-tab journal and no
+      // `session_status` — those belong to this app's own processes.
+      await _personaAttach(lastSeq);
+      if (!current()) return; // superseded by a newer switch, or detached
+      const buffered = _replayBuffer;
+      _replayBuffer = null;
+      for (const envelope of buffered ?? []) _dispatchEnvelope(envelope);
+      _initFetch();
+      notify();
+      return;
+    }
 
     // Catch up on events the journal captured while this tab had no live
     // listener attached (backgrounded tab switch) — recovers tool cards /
@@ -1131,7 +1260,7 @@
     // de-duplicated against lastSeq inside _dispatchEnvelope.
     const buffered = _replayBuffer;
     _replayBuffer = null;
-    for (const envelope of buffered) _dispatchEnvelope(envelope);
+    for (const envelope of buffered ?? []) _dispatchEnvelope(envelope);
 
     // Surface any cached startup error for this session. A background tab
     // (or a respawn) can fail before any listener is attached, so a spawn
@@ -1387,9 +1516,11 @@
     ++_switchIntent;
     _switchAwayFrom = null;
     _cancelLiveRequests();
+    const wasPersona = activeSessionId === PERSONA_SESSION_ID;
     const listeners = activeListeners;
     activeListeners = [];
     activeSessionId = null;
+    if (wasPersona) _personaDetach();
     _resetSessionVars();
     for (const ul of listeners) { try { await ul(); } catch (_) {} }
   }
@@ -1436,6 +1567,11 @@
     if (!window.__TAURI__) return { ok: false, error: "not connected" };
     const entry = sessionRegistry.get(id);
     if (!entry) return { ok: false, error: "unknown tab" };
+    // Ompy's omp process belongs to the persona service: this app cannot
+    // restart it under a profile or an approval mode (Ruling B-R6).
+    if (PERSONA.isPersona(entry)) {
+      return { ok: false, error: "Ompy has no profile or approval mode to restart" };
+    }
     const what = fresh ? "Profile switch" : "Approval mode change";
     // Re-entrancy: this call spans two awaits, and a second respawn of the
     // same tab would read `wasActive` as false (call 1 already nulled the
@@ -1547,8 +1683,10 @@
         _closeTab(id);
         // `closeSession` saw `activeSessionId === null` (this respawn had
         // already detached) so it never handed focus on. Do it here, or the
-        // app sits with tabs rendered and `_send` routed at `null`.
-        const survivors = [...sessionRegistry.keys()];
+        // app sits with tabs rendered and `_send` routed at `null` — never
+        // to Ompy, which is not a tab (Ruling B-R6): with no project tab
+        // left, the empty workspace is the correct state.
+        const survivors = _realTabs().map(s => s.id);
         if (activeSessionId === null && survivors.length > 0) {
           await _switchToSession(survivors[survivors.length - 1]);
         } else {
@@ -1620,7 +1758,7 @@
     // guess would restart a tab Rust spawned with a project override.
     if (!approvalModes) return { restarted: [], deferred: [] };
     const sessions = _sessionsView();
-    const { now, later } = AMODE.restartPlan(approvalModes, sessions);
+    const { now, later } = AMODE.restartPlan(approvalModes, PERSONA.realTabs(sessions));
     const byId = new Map(sessions.map(s => [s.id, s]));
     const todo = now.filter(id => {
       if (_respawning.has(id)) return false; // its spawn resolves the mode afresh
@@ -1982,8 +2120,12 @@
         if (activeSessionId) for (const note of notes) _pushAssistantNote(note);
         else workspaceNotes = [...workspaceNotes, ...notes];
       }
+      // Only the project tabs count here: Ompy is always registered but was
+      // never part of the saved layout, so its key must not make an
+      // otherwise untouched restore look changed (#34: a launch that opened
+      // none of the saved tabs keeps `open-tabs.json` as it was).
       const untouched = activeSessionId === autoActive
-        && [...sessionRegistry.keys()].join("\n") === restored.join("\n");
+        && _realTabs().map(s => s.id).join("\n") === restored.join("\n");
       _layoutKey = untouched ? JSON.stringify(_layoutNow()) : null;
       _layoutArmed = true;
       notify();
@@ -3070,9 +3212,16 @@
 
   // The `send_command` hand-off to the active tab, shared by `_send` and
   // `_sendWithResponse`; callers check the connection and handle failure.
+  // Ompy's frames go to the service's hosted omp session instead of a
+  // process this app spawned; the frame text is identical, so prompts,
+  // steers, aborts and extension_ui_response all work unchanged.
   function _invokeSend(cmd) {
+    const json = JSON.stringify(cmd);
+    if (activeSessionId === PERSONA_SESSION_ID) {
+      return window.__TAURI__.core.invoke("persona_send", { json });
+    }
     return window.__TAURI__.core
-      .invoke("send_command", { sessionId: activeSessionId, json: JSON.stringify(cmd) });
+      .invoke("send_command", { sessionId: activeSessionId, json });
   }
 
   /** Send `cmd` to every open tab's omp, uncorrelated (no `id`: a response
@@ -3084,6 +3233,9 @@
     const json = JSON.stringify(cmd);
     // A warning, not `_invokeSafe`'s error: a tab missing it is expected.
     for (const sessionId of sessionRegistry.keys()) {
+      // Ompy has no process of this app's: its settings ride the persona
+      // protocol, not `send_command`.
+      if (PERSONA.isPersona(sessionRegistry.get(sessionId))) continue;
       window.__TAURI__.core.invoke("send_command", { sessionId, json })
         .catch(e => console.warn(`[live] ${cmd.type} for '${sessionId}' not sent:`, e));
     }
@@ -3264,10 +3416,11 @@
   // renders the snapshot's `closeConfirm`. Decisions: app/session-prefs.js.
 
   /** Arm Rust's close guard exactly while a close would need confirming;
-   *  called on every notify, so it only sends a change. */
+   *  called on every notify, so it only sends a change. Only project tabs
+   *  count: Ompy is not a tab to close (Ruling B-R6). */
   function _syncCloseGuard(sessions) {
     if (_quitting) return;
-    const armed = PREFS.closeGuardArmed(sessionPrefs, sessions);
+    const armed = PREFS.closeGuardArmed(sessionPrefs, PERSONA.realTabs(sessions));
     if (armed === _closeGuardSent) return;
     _closeGuardSent = armed;
     void _invokeSafe("set_close_guard", { armed });
@@ -3294,7 +3447,7 @@
    *  is disarmed first, so Rust lets this close through. */
   async function _requestQuit() {
     if (_quitting || !window.__TAURI__) return;
-    const confirm = PREFS.quitConfirm(sessionPrefs, _sessionsView());
+    const confirm = PREFS.quitConfirm(sessionPrefs, PERSONA.realTabs(_sessionsView()));
     if (confirm && !(await _askClose(confirm))) return;
     if (_quitting) return; // a second request confirmed meanwhile
     _quitting = true;
@@ -4240,12 +4393,13 @@
     },
 
     // ── Tool-approval rules ──────────────────────────────────────────────────
-    // Backed by src-tauri/src/approval.rs::RuleBook. A rule only ever
-    // auto-answers "Approve" for an exact "Allow tool: X" prompt shape —
-    // see the module doc comment there. Session scope is in-memory (dies
-    // with the tab's omp process); project scope persists to disk keyed by
-    // a hash of the project path — for a grant, the folder of the process
-    // that asked; list and revoke use the active tab's.
+    // Backed by
+    // src-tauri/crates/omp-desktop-core/src/approval.rs::RuleBook. A rule
+    // only ever auto-answers "Approve" for an exact "Allow tool: X" prompt
+    // shape — see the module doc comment there. Session scope is in-memory
+    // (dies with the tab's omp process); project scope persists to disk
+    // keyed by a hash of the project path — for a grant, the folder of the
+    // process that asked; list and revoke use the active tab's.
 
     /** Approve tool-approval prompt `prompt` (its ask bubble: `sessionId` +
      *  request `id`) and grant standing approval for its tool, `scope`
@@ -4872,10 +5026,12 @@
      *  Not persisted — see `setStartupProfile` for that. Resolves to `{ok}`
      *  or `{ok: false, error}` like `switchSessionProfile`. */
     async selectNoTabProfile(id) {
-      // Any registered tab, not just the active one: an open in flight has
-      // registered its tab but not activated it yet, and has already chosen
-      // its profile — acknowledging the pick would silently drop it.
-      if (sessionRegistry.size > 0) return { ok: false, error: "a tab is open" };
+      // Any registered project tab, not just the active one: an open in
+      // flight has registered its tab but not activated it yet, and has
+      // already chosen its profile — acknowledging the pick would silently
+      // drop it. Ompy does not count (Ruling B-R6): it is not a tab whose
+      // profile the empty workspace would inherit.
+      if (_realTabs().length > 0) return { ok: false, error: "a tab is open" };
       if (!profiles.some(p => p.id === id)) return { ok: false, error: `unknown profile '${id}'` };
       _noTabProfileId = id;
       _syncRecentsProfile();
@@ -4894,6 +5050,10 @@
       if (!window.__TAURI__) return { ok: false, error: "not connected" };
       const entry = sessionRegistry.get(id);
       if (!entry) return { ok: false, error: "unknown tab" };
+      // Ompy has no profile of this app's: its process belongs to the
+      // persona service, so a switch here would spawn a second omp under
+      // the id "ompy" (Ruling B-R6).
+      if (PERSONA.isPersona(entry)) return { ok: false, error: "Ompy has no profile" };
       if (entry.profile === profileId) return { ok: true }; // already on this profile
       if (!profiles.some(p => p.id === profileId)) {
         const error = `unknown profile '${profileId}'`;
@@ -4923,6 +5083,9 @@
     /** Close a tab after stopping its microphone; a failed stop leaves the
      *  tab visible so the user can retry. */
     async closeSession(id) {
+      // Ompy is the window's own chat, not a tab: never closable, whatever
+      // the caller (Ruling B-R6).
+      if (PERSONA.isPersona(sessionRegistry.get(id))) return false;
       if (!sessionRegistry.has(id) || _closingVoiceTabs.has(id)) return false;
       _closingVoiceTabs.add(id);
       try {
@@ -4936,11 +5099,14 @@
       promptHistories.delete(id);
       _modeRestartMissed.delete(id);
       if (id === activeSessionId) {
-        const remaining = [...sessionRegistry.keys()];
+        const remaining = _realTabs().map(s => s.id);
         if (remaining.length > 0) {
           await _switchToSession(remaining[remaining.length - 1]);
         } else {
-          // No sessions left — reset to empty state
+          // No project tab left — reset to empty state. Ompy is not a
+          // survivor (Ruling B-R6): closing the last real tab parks the
+          // window on the empty workspace, not on the Ompy chat, which is
+          // only reached by activating it.
           await _detachActiveSession();
           // No active tab: the active profile falls back to the startup one.
           _syncRecentsProfile();
@@ -4959,7 +5125,7 @@
      *  closing a busy tab" is on and the tab's agent is busy. Resolves to
      *  whether the tab was closed. */
     async closeSessionGuarded(id) {
-      const confirm = PREFS.tabCloseConfirm(sessionPrefs, _sessionsView(), id);
+      const confirm = PREFS.tabCloseConfirm(sessionPrefs, PERSONA.realTabs(_sessionsView()), id);
       if (confirm && !(await _askClose(confirm))) return false;
       if (!sessionRegistry.has(id)) return false; // closed meanwhile
       return window.OMP_BRIDGE.closeSession(id);
@@ -4997,10 +5163,13 @@
      *  untouched: they only ever `set` existing keys, which keeps the new
      *  position. `notify` persists the order (`open-tabs.json`). */
     reorderTabs(ids) {
-      if (!window.OMP_PROJECT_NAV.isReorderOf(ids, [...sessionRegistry.keys()])) return false;
+      // Only a permutation of the project tabs is applied: Ompy is not one
+      // of them and keeps its registered (pinned) position.
+      if (!window.OMP_PROJECT_NAV.isReorderOf(ids, _realTabs().map(s => s.id))) return false;
+      const persona = [...sessionRegistry.entries()].filter(([, s]) => PERSONA.isPersona(s));
       const entries = ids.map(id => [id, sessionRegistry.get(id)]);
       sessionRegistry.clear();
-      for (const [id, entry] of entries) sessionRegistry.set(id, entry);
+      for (const [id, entry] of [...persona, ...entries]) sessionRegistry.set(id, entry);
       notify();
       return true;
     },
@@ -5077,6 +5246,56 @@
       if (window.OMP_PROMPT_HISTORY.trimAll(promptHistories, promptHistoryLimit)) notify();
     },
 
+    // ── Ompy persona (src-tauri/src/persona/, docs/architecture/persona-daemon.md) ──
+    // Thin wrappers over the persona commands. Status and inbox are cached
+    // snapshots in Rust, so they answer without a service round trip; the
+    // rest queue a request and wait for the service's reply. `persona_send`
+    // is reached through `_invokeSend`, so a composer message to the active
+    // Ompy tab needs no separate path.
+    personaStatus() { return _invokeSafe("persona_status", undefined, null); },
+    personaInbox() { return _invokeSafe("persona_inbox", undefined, []); },
+    personaError() { return _invokeSafe("persona_error", undefined, null); },
+    /** The service's queued wakes and its next interval wake
+     *  (`list_schedule`), as `{ok, value | error}`. */
+    personaSchedule() { return _invokeResult("persona_schedule"); },
+    /** Open `<app config>/persona/instructions.md` in the system editor;
+     *  the service writes the file on its first start. */
+    personaOpenInstructions() { return _invokeResult("persona_open_instructions"); },
+    /** Answer one inbox item; `answer` null dismisses it. */
+    personaResolve(id, answer) { return _invokeResult("persona_resolve", { id, answer: answer ?? null }); },
+    personaSettings(settings) { return _invokeResult("persona_set_settings", { settings }); },
+    personaPause() { return _invokeResult("persona_pause"); },
+    personaResume() { return _invokeResult("persona_resume"); },
+    personaWakeNow() { return _invokeResult("persona_wake_now"); },
+    /** Enable starts (or keeps) the login service: its absence stops being
+     *  the expected state. */
+    personaEnable() {
+      return _invokeResult("persona_enable").then(result => {
+        if (result?.ok !== false) personaExpectedOff = false;
+        return result;
+      });
+    },
+    /** Disable makes the service's absence the expected state: the strip
+     *  then shows Enable instead of the connection `io` error the platform
+     *  tool would have produced. */
+    personaDisable() {
+      return _invokeResult("persona_disable").then(result => {
+        if (result?.ok !== false) personaExpectedOff = true;
+        notify();
+        return result;
+      });
+    },
+    /** Whether the user's last Enable/Disable left Ompy off on purpose. */
+    personaExpectedOff() { return personaExpectedOff; },
+    /** Subscribe to one service event (`status` | `inbox` | `error` |
+     *  `error-cleared`); `cb(payload)`. Returns the unsubscribe function. */
+    onPersona(kind, cb) {
+      const event = { status: "persona://status", inbox: "persona://inbox", error: "persona://error", "error-cleared": "persona://error/cleared" }[kind];
+      if (!event || typeof cb !== "function") return () => {};
+      const handle = _listen(event, cb);
+      return () => handle.stop();
+    },
+
     /** Subscribe to state snapshots. Returns an unsubscribe function. */
     onUpdate(cb) {
       subscribers.add(cb);
@@ -5114,6 +5333,14 @@
       .then(() => _restoreOpenTabs())
       .catch(e => console.error("[live] restoring the open tabs failed:", e))
       .finally(_setupExternalOpens);
+
+    // Ompy's relay generation: the status stream decides whether the tab's
+    // cursor still belongs to the service's sequence source. The fetch
+    // covers a status the service emitted before this listener existed
+    // (`setup` starts the client before the webview loads).
+    _listen("persona://status", _onPersonaStatus);
+    _invokeSafe("persona_status", undefined, null)
+      .then(status => { if (status) _onPersonaStatus(status); });
 
     // Busy-close confirmation for an OS close Rust held (`_requestQuit`),
     // and the guard's real state: a reloaded webview may find it armed by
