@@ -315,6 +315,53 @@ check("collapsedSummary: a multi-question dialog reports its answer count", () =
   assert.deepEqual(summary, { answer: null, answerCount: 2, status: null, prompt: "One?", negative: false });
 });
 
+check("collapsedSummary: a multi-question dialog ignores empty pick-any answers", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "ask", title: "", questions: [{ question: "One?" }, { question: "Two?" }],
+    answered: true, cancelled: false,
+    answers: [
+      { id: "one", selectedOptions: [] },
+      { id: "two", selectedOptions: ["", "   "] },
+    ],
+  }), { answer: null, answerCount: null, status: "nothing picked", prompt: "One?", negative: true });
+  assert.deepEqual(A.collapsedSummary({
+    method: "ask", title: "", questions: [{ question: "One?" }, { question: "Two?" }],
+    answered: true, cancelled: false,
+    answers: [
+      { id: "one", selectedOptions: ["Lint"] },
+      { id: "two", selectedOptions: [] },
+    ],
+  }), { answer: "Lint", answerCount: null, status: null, prompt: "One?", negative: false });
+  assert.deepEqual(A.collapsedSummary({
+    method: "ask", title: "", questions: [{ question: "One?" }, { question: "Two?" }, { question: "Three?" }],
+    answered: true, cancelled: false,
+    answers: [
+      { id: "one", selectedOptions: ["Yes"] },
+      { id: "two", selectedOptions: [] },
+      { id: "three", selectedOptions: [], customInput: "Later" },
+    ],
+  }), { answer: null, answerCount: 2, status: null, prompt: "One?", negative: false });
+});
+
+check("collapsedSummary: leading blank lines are skipped and confirm falls back to message", () => {
+  assert.equal(A.collapsedSummary({
+    method: "select", title: "\n  Allow tool: bash\nCommand: ls", answered: true, answer: "Approve",
+  }).prompt, "Allow tool: bash");
+  assert.deepEqual(A.collapsedSummary({
+    method: "confirm", title: "", message: "\nDelete temp files?\nCannot be undone",
+    answered: true, cancelled: false, answer: "Confirm",
+  }), { answer: "Confirm", answerCount: null, status: null, prompt: "Delete temp files?", negative: false });
+});
+
+check("collapsedSummary: free-text 'deny' is not styled as a negative choice", () => {
+  assert.equal(A.collapsedSummary({
+    method: "input", title: "Word?", answered: true, cancelled: false, answer: "deny",
+  }).negative, false);
+  assert.equal(A.collapsedSummary({
+    method: "editor", title: "Notes?", answered: true, cancelled: false, answer: "Deny",
+  }).negative, false);
+});
+
 check("collapsedSummary: cancellation and omp-side timeout keep their status wording", () => {
   assert.deepEqual(A.collapsedSummary({ title: "Continue?", answered: false, cancelled: true }),
     { answer: null, answerCount: null, status: "cancelled", prompt: "Continue?", negative: true });

@@ -145,13 +145,22 @@
     return runs;
   }
 
+  function answerParts(entry) {
+    const parts = Array.isArray(entry?.selectedOptions)
+      ? entry.selectedOptions.map(label => nonBlank(label)?.trim()).filter(Boolean)
+      : [];
+    if (nonBlank(entry?.customInput)) parts.push(entry.customInput.trim());
+    return parts;
+  }
+
   /** The settled desktop bubble's one-line summary. Cancellation (including
    *  omp closing a timed-out dialog) keeps the existing status wording; an
-   *  answered multi-question dialog exposes a count for translated plurals. */
+   *  answered multi-question dialog exposes its non-empty answer count for
+   *  translated plurals (or the lone answer when only one question was filled). */
   function collapsedSummary(msg) {
     if (!msg?.answered && !msg?.cancelled) return null;
-    const source = nonBlank(msg.title) ?? msg.questions?.[0]?.question ?? "";
-    const prompt = String(source).split(/\r?\n/, 1)[0].trim();
+    const source = nonBlank(msg.title) ?? nonBlank(msg.message) ?? msg.questions?.[0]?.question ?? "";
+    const prompt = String(source).trimStart().split(/\r?\n/, 1)[0].trim();
     if (msg.cancelled) {
       return { answer: null, answerCount: null, status: msg.closedByOmp ? "closed by omp" : "cancelled", prompt, negative: true };
     }
@@ -159,19 +168,25 @@
     let answer = nonBlank(msg.answer);
     let answerCount = null;
     if (msg.method === "ask") {
-      const answers = Array.isArray(msg.answers) ? msg.answers : [];
-      if (answers.length > 1) {
+      const answered = (Array.isArray(msg.answers) ? msg.answers : [])
+        .map(answerParts)
+        .filter(parts => parts.length > 0);
+      if (answered.length > 1) {
         answer = null;
-        answerCount = answers.length;
+        answerCount = answered.length;
       } else {
-        const first = answers[0];
-        const parts = Array.isArray(first?.selectedOptions) ? first.selectedOptions.map((label) => nonBlank(label)?.trim()).filter(Boolean) : [];
-        if (nonBlank(first?.customInput)) parts.push(first.customInput.trim());
-        answer = parts.length ? parts.join(", ") : null;
+        answer = answered.length === 1 ? answered[0].join(", ") : null;
       }
     }
+    const isChoice = !msg.method || msg.method === "select" || msg.method === "confirm";
     const status = answer === null && answerCount === null ? "nothing picked" : null;
-    return { answer, answerCount, status, prompt, negative: status !== null || answer?.trim().toLowerCase() === "deny" };
+    return {
+      answer,
+      answerCount,
+      status,
+      prompt,
+      negative: status !== null || (isChoice && answer?.trim().toLowerCase() === "deny"),
+    };
   }
 
   /** The rows of a `select` request (a tool approval, an extension picker, or
