@@ -16,7 +16,11 @@ const { approvalInfo: _AskApprovalInfo } = window.OMP_APPROVAL;
 function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm, onCancelAsk, onGrant, hasProjectPath, submitKey = "enter" }) {
   window.OMP_I18N.useLocale();
   const [draft, setDraft] = React.useState(msg.method === "editor" ? (msg.prefill ?? "") : "");
+  const [expanded, setExpanded] = React.useState(false);
+  const detailsId = React.useId();
   const done = msg.answered || msg.cancelled;
+  const summary = done ? _AskDialogRules.collapsedSummary(msg) : null;
+  React.useEffect(() => { setExpanded(false); }, [done]);
   const method = msg.method ?? "select";
   const approval = method === "select" ? _AskApprovalInfo(msg) : null;
   const tool = approval?.tool ?? null;
@@ -198,6 +202,15 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
     );
   }
 
+  const summaryAnswer = summary
+    ? (summary.answerCount !== null
+      ? window.OMP_I18N.plural(summary.answerCount, "{n} answer", "{n} answers")
+      : summary.answer
+        ? (method === "confirm" ? OMP_TR(summary.answer) : summary.answer)
+        : OMP_TR(summary.status))
+    : "";
+  const summaryIcon = !summary?.negative ? "check" : summary.status === "nothing picked" ? "minus" : "close";
+
   return (
     <div className={`row ask fade-up${highlighted ? " mm-hot" : ""}`} data-msg-idx={idx}>
       <div className="ass-rail">
@@ -207,25 +220,33 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
         <div className="ass-thread" />
       </div>
       <div className="ass-body">
-        <div className="ass-meta">
-          <span className="mono" style={{ color: "var(--amber)" }}>{OMP_TR("Ask")}</span>
-          <span className="chip muted">{msg.time}</span>
-          {dialogOpen && msg.questions.length > 1 && (
-            <span className="chip muted">{msg.questions.length} {OMP_TR("questions")}</span>
-          )}
-          {timeoutNote && <span className="chip warn">{timeoutNote}</span>}
-          {msg.answered && (
-            <span className="chip" style={{ color: "var(--accent)", borderColor: "color-mix(in oklab, var(--accent) 30%, var(--line))" }}>
-              {OMP_TR("answered")}
-            </span>
-          )}
-          {msg.cancelled && (
-            <span className="chip" style={{ color: "var(--fg-4)", borderColor: "var(--line-bright)" }}>
-              {msg.closedByOmp ? OMP_TR("closed by omp") : OMP_TR("cancelled")}
-            </span>
-          )}
-        </div>
-        {body}
+        {summary && (
+          <button
+            type="button"
+            className={`ask-collapsed${expanded ? " expanded" : ""}${summary.negative ? " negative" : ""}`}
+            aria-expanded={expanded}
+            aria-controls={detailsId}
+            title={expanded ? OMP_TR("Collapse prompt") : OMP_TR("Expand prompt")}
+            onClick={() => setExpanded(value => !value)}
+          >
+            <_AskIcon name={summaryIcon} size={12} strokeWidth={2.2} dotColor="transparent" aria-hidden="true" />
+            <span className="ask-collapsed-answer" title={summaryAnswer || undefined}>{summaryAnswer}</span>
+            <span className="ask-collapsed-prompt" title={summary.prompt || undefined}>{summary.prompt}</span>
+            <span className="chip muted">{msg.time}</span>
+            <_AskIcon name={expanded ? "chev" : "chevR"} size={10} color="var(--fg-4)" dotColor="transparent" aria-hidden="true" />
+          </button>
+        )}
+        {!summary && (
+          <div className="ass-meta">
+            <span className="mono" style={{ color: "var(--amber)" }}>{OMP_TR("Ask")}</span>
+            <span className="chip muted">{msg.time}</span>
+            {dialogOpen && msg.questions.length > 1 && (
+              <span className="chip muted">{msg.questions.length} {OMP_TR("questions")}</span>
+            )}
+            {timeoutNote && <span className="chip warn">{timeoutNote}</span>}
+          </div>
+        )}
+        <div id={detailsId} hidden={summary ? !expanded : undefined}>{body}</div>
       </div>
     </div>
   );

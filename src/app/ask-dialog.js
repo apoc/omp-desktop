@@ -145,6 +145,50 @@
     return runs;
   }
 
+  function answerParts(entry) {
+    const parts = Array.isArray(entry?.selectedOptions)
+      ? entry.selectedOptions.map(label => nonBlank(label)?.trim()).filter(Boolean)
+      : [];
+    if (nonBlank(entry?.customInput)) parts.push(entry.customInput.trim());
+    return parts;
+  }
+
+  /** The settled desktop bubble's one-line summary. Cancellation (including
+   *  omp closing a timed-out dialog) keeps the existing status wording; an
+   *  answered multi-question dialog exposes its non-empty answer count for
+   *  translated plurals (or the lone answer when only one question was filled). */
+  function collapsedSummary(msg) {
+    if (!msg?.answered && !msg?.cancelled) return null;
+    const source = nonBlank(msg.title) ?? nonBlank(msg.message) ?? msg.questions?.[0]?.question ?? "";
+    const prompt = String(source).trimStart().split(/\r?\n/, 1)[0].trim();
+    if (msg.cancelled) {
+      return { answer: null, answerCount: null, status: msg.closedByOmp ? "closed by omp" : "cancelled", prompt, negative: true };
+    }
+
+    let answer = nonBlank(msg.answer);
+    let answerCount = null;
+    if (msg.method === "ask") {
+      const answered = (Array.isArray(msg.answers) ? msg.answers : [])
+        .map(answerParts)
+        .filter(parts => parts.length > 0);
+      if (answered.length > 1) {
+        answer = null;
+        answerCount = answered.length;
+      } else {
+        answer = answered.length === 1 ? answered[0].join(", ") : null;
+      }
+    }
+    const isChoice = !msg.method || msg.method === "select" || msg.method === "confirm";
+    const status = answer === null && answerCount === null ? "nothing picked" : null;
+    return {
+      answer,
+      answerCount,
+      status,
+      prompt,
+      negative: status !== null || (isChoice && answer?.trim().toLowerCase() === "deny"),
+    };
+  }
+
   /** The rows of a `select` request (a tool approval, an extension picker, or
    *  one choice field of an ask form), from omp's optional `selectionMarker`
    *  ("radio" | "checkbox"), `checkedIndices` and `markableCount` (the marker
@@ -173,6 +217,6 @@
 
   window.OMP_ASK_DIALOG = {
     parseQuestions, emptyDraft, pick, type, unanswered, missing, answersOnClick, answers, timeoutLabel, timeoutNote,
-    codeRuns, selectRows,
+    codeRuns, collapsedSummary, selectRows,
   };
 })();

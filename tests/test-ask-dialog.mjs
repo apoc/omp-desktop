@@ -219,6 +219,156 @@ check("backtick pairs become code runs; an unpaired backtick stays literal", () 
   assert.deepEqual(A.codeRuns(""), []);
 });
 
+// ── collapsedSummary: the desktop's one-line settled bubble ─────────────
+
+check("collapsedSummary: an open prompt stays expanded", () => {
+  assert.equal(A.collapsedSummary({ title: "Continue?", answered: false, cancelled: false }), null);
+});
+
+check("collapsedSummary: a select uses its picked label and the title's first line", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "select", title: "Allow tool: bash\nCommand: npm test", options: ["Approve", "Deny"],
+    answered: true, cancelled: false, answer: "Approve",
+  }), { answer: "Approve", answerCount: null, status: null, prompt: "Allow tool: bash", negative: false });
+});
+
+check("collapsedSummary: a denied confirm is neutral, not a success", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "confirm", title: "Deploy?", answered: true, cancelled: false, answer: "Deny",
+  }), { answer: "Deny", answerCount: null, status: null, prompt: "Deploy?", negative: true });
+});
+
+check("collapsedSummary: an input answer uses the typed text", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "input", title: "Name?", answered: true, cancelled: false, answer: "omp",
+  }), { answer: "omp", answerCount: null, status: null, prompt: "Name?", negative: false });
+});
+
+check("collapsedSummary: an editor answer uses the typed text", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "editor", title: "Notes?", answered: true, cancelled: false, answer: "First line\nSecond line",
+  }), { answer: "First line\nSecond line", answerCount: null, status: null, prompt: "Notes?", negative: false });
+});
+
+check("collapsedSummary: a blank editor answer reads as nothing picked", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "editor", title: "Notes?", answered: true, cancelled: false, answer: " \n\t ",
+  }), { answer: null, answerCount: null, status: "nothing picked", prompt: "Notes?", negative: true });
+});
+
+check("collapsedSummary: a denied approval is negative", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "select", title: "Allow tool: bash", options: ["Approve", "Deny"],
+    answered: true, cancelled: false, answer: "Deny",
+  }), { answer: "Deny", answerCount: null, status: null, prompt: "Allow tool: bash", negative: true });
+});
+
+check("collapsedSummary: a checkbox select uses its picked label", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "select", title: "Choose features", selectionMarker: "checkbox",
+    answered: true, cancelled: false, answer: "Done selecting",
+  }), { answer: "Done selecting", answerCount: null, status: null, prompt: "Choose features", negative: false });
+});
+
+check("collapsedSummary: a one-question dialog with nothing picked shows its status", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "ask", title: "Extras?", answered: true, cancelled: false,
+    answers: [{ id: "extras", selectedOptions: [] }],
+  }), { answer: null, answerCount: null, status: "nothing picked", prompt: "Extras?", negative: true });
+});
+
+check("collapsedSummary: missing dialog answers show the nothing-picked status", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "ask", title: "Extras?", answered: true, cancelled: false, answers: null,
+  }), { answer: null, answerCount: null, status: "nothing picked", prompt: "Extras?", negative: true });
+});
+
+check("collapsedSummary: blank option labels fall back to the nothing-picked status", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "ask", title: "Extras?", answered: true, cancelled: false,
+    answers: [{ id: "extras", selectedOptions: ["", "   "] }],
+  }), { answer: null, answerCount: null, status: "nothing picked", prompt: "Extras?", negative: true });
+  assert.equal(A.collapsedSummary({
+    method: "ask", title: "Extras?", answered: true, cancelled: false,
+    answers: [{ id: "extras", selectedOptions: ["", " Lint "], customInput: " more " }],
+  }).answer, "Lint, more");
+});
+
+check("collapsedSummary: a one-question dialog shows its answer", () => {
+  const summary = A.collapsedSummary({
+    method: "ask", title: "", questions: [{ question: "Which version?\nChoose carefully" }],
+    answered: true, cancelled: false,
+    answers: [{ id: "version", selectedOptions: ["18.4.9 now"] }],
+  });
+  assert.deepEqual(summary, { answer: "18.4.9 now", answerCount: null, status: null, prompt: "Which version?", negative: false });
+});
+
+check("collapsedSummary: a multi-question dialog reports its answer count", () => {
+  const summary = A.collapsedSummary({
+    method: "ask", title: "", questions: [{ question: "One?" }, { question: "Two?" }],
+    answered: true, cancelled: false,
+    answers: [
+      { id: "one", selectedOptions: ["Yes"] },
+      { id: "two", selectedOptions: [], customInput: "Later" },
+    ],
+  });
+  assert.deepEqual(summary, { answer: null, answerCount: 2, status: null, prompt: "One?", negative: false });
+});
+
+check("collapsedSummary: a multi-question dialog ignores empty pick-any answers", () => {
+  assert.deepEqual(A.collapsedSummary({
+    method: "ask", title: "", questions: [{ question: "One?" }, { question: "Two?" }],
+    answered: true, cancelled: false,
+    answers: [
+      { id: "one", selectedOptions: [] },
+      { id: "two", selectedOptions: ["", "   "] },
+    ],
+  }), { answer: null, answerCount: null, status: "nothing picked", prompt: "One?", negative: true });
+  assert.deepEqual(A.collapsedSummary({
+    method: "ask", title: "", questions: [{ question: "One?" }, { question: "Two?" }],
+    answered: true, cancelled: false,
+    answers: [
+      { id: "one", selectedOptions: ["Lint"] },
+      { id: "two", selectedOptions: [] },
+    ],
+  }), { answer: "Lint", answerCount: null, status: null, prompt: "One?", negative: false });
+  assert.deepEqual(A.collapsedSummary({
+    method: "ask", title: "", questions: [{ question: "One?" }, { question: "Two?" }, { question: "Three?" }],
+    answered: true, cancelled: false,
+    answers: [
+      { id: "one", selectedOptions: ["Yes"] },
+      { id: "two", selectedOptions: [] },
+      { id: "three", selectedOptions: [], customInput: "Later" },
+    ],
+  }), { answer: null, answerCount: 2, status: null, prompt: "One?", negative: false });
+});
+
+check("collapsedSummary: leading blank lines are skipped and confirm falls back to message", () => {
+  assert.equal(A.collapsedSummary({
+    method: "select", title: "\n  Allow tool: bash\nCommand: ls", answered: true, answer: "Approve",
+  }).prompt, "Allow tool: bash");
+  assert.deepEqual(A.collapsedSummary({
+    method: "confirm", title: "", message: "\nDelete temp files?\nCannot be undone",
+    answered: true, cancelled: false, answer: "Confirm",
+  }), { answer: "Confirm", answerCount: null, status: null, prompt: "Delete temp files?", negative: false });
+});
+
+check("collapsedSummary: free-text 'deny' is not styled as a negative choice", () => {
+  assert.equal(A.collapsedSummary({
+    method: "input", title: "Word?", answered: true, cancelled: false, answer: "deny",
+  }).negative, false);
+  assert.equal(A.collapsedSummary({
+    method: "editor", title: "Notes?", answered: true, cancelled: false, answer: "Deny",
+  }).negative, false);
+});
+
+check("collapsedSummary: cancellation and omp-side timeout keep their status wording", () => {
+  assert.deepEqual(A.collapsedSummary({ title: "Continue?", answered: false, cancelled: true }),
+    { answer: null, answerCount: null, status: "cancelled", prompt: "Continue?", negative: true });
+  assert.deepEqual(A.collapsedSummary({ title: "Continue?", answered: false, cancelled: true, closedByOmp: true }),
+    { answer: null, answerCount: null, status: "closed by omp", prompt: "Continue?", negative: true });
+});
+
 // ── selectRows: the rows of a `select` request ──────────────────────────
 const row = (label, mark, role, checked, picked = false) => ({ label, mark, role, checked, picked });
 const radios = (...labels) => labels.map(l => row(l, "radio", "radio", false));
