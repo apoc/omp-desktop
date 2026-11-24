@@ -504,6 +504,45 @@ fn awaiting_end_and_get_state_report_background_work_until_settled() {
 }
 
 #[test]
+fn settled_clears_only_background_and_preserves_turn_accounting() {
+    let t = Tracker::default();
+    let sink = Collect::default();
+    t.set_sink(Arc::new(sink.clone()));
+    let now = Instant::now();
+    let live = AtomicBool::new(true);
+    t.on_frame("s1", Some("agent_start"), None, now, &live);
+    t.on_frame(
+        "s1",
+        Some("extension_ui_request"),
+        Some(&json!({"id":"q","method":"input"})),
+        now,
+        &live,
+    );
+    t.on_frame("s1", Some("session_settled"), None, now, &live);
+
+    assert_eq!(state(&t.snapshot().sessions["s1"]), shown(true, 1));
+    assert_eq!(
+        sink.notifications(),
+        2,
+        "settling must not emit push events"
+    );
+
+    t.on_frame(
+        "s1",
+        Some("agent_end"),
+        None,
+        now + Duration::from_secs(40),
+        &live,
+    );
+    assert_eq!(state(&t.snapshot().sessions["s1"]), shown(false, 0));
+    assert!(matches!(
+        sink.transitions().as_slice(),
+        [("s1", Transition::QuestionOpened), ("s1", Transition::TurnFinished { ran })]
+            if *ran == Duration::from_secs(40)
+    ));
+}
+
+#[test]
 fn a_background_only_change_notifies_once_and_repeats_are_ignored() {
     let t = Tracker::default();
     let sink = Collect::default();

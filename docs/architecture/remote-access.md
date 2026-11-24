@@ -57,7 +57,7 @@ Per omp session, independent of the active webview tab: `busy`, `turn_started`, 
 - `agent_start` sets busy, starts the turn clock (a continuation keeps the first start) and clears `background`.
 - `agent_end` counts only when it yields control: `yielded`, else `isTerminal`, else yes. An `agent_end` that continues into another run changes nothing. A yielding end clears busy and every open question and reports the turn's duration; its `awaitingAsyncWork` (measured on omp 18.6.0) sets `background`.
 - A `get_state` response carries `hasPendingAsyncWork`, the same flag the webview's `asyncPending` uses; it sets `background` too. The active tab asks for one on every activation and `agent_end`; a background tab keeps its last answer until `session_settled` or a yielding end names the flag.
-- `session_settled` (nothing can wake the session) clears busy and `background`.
+- `session_settled` (no background work can wake the session) clears only `background`; it leaves busy, open questions and the turn clock untouched.
 - `extension_ui_request` with `select`, `confirm`, `input`, `editor` **or `ask`** and a string id (≤ 256 bytes) opens a question; a duplicate id opens nothing. At most 64 open questions per session. Each opened question also takes the next value of a process-wide sequence (`asksOpened`), so a watcher sees a new question even when another in the same batch was answered.
 - `extension_ui_request` with `method: "cancel"` and a `targetId` (omp itself withdrawing a dialog) closes that question.
 - An answer written and flushed by `AgentBridge::send` / the approval-and-grant path removes the id (`on_answered`); process exit, stop and replacement remove the session. Auto-approved tool prompts and retired readers are excluded.

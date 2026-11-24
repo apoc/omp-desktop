@@ -218,10 +218,9 @@ fn apply(
         }
         Event::Settled => {
             if let Some(state) = sessions.get_mut(sid) {
-                // Nothing can wake the session: no run and no background work.
-                let changed = state.busy || state.background;
-                state.busy = false;
-                state.turn_started = None;
+                // Settling reports only that no background work can wake the
+                // session; the run still owns busy, dialogs and turn timing.
+                let changed = state.background;
                 state.background = false;
                 Outcome::when(changed, None)
             } else {
