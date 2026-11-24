@@ -112,32 +112,46 @@
    * (0-based), and cell column `x`'s (1-based) UTF-16 offset in it. Cells are
    * read one by one, so a wide character contributes its own string length
    * and a following continuation cell contributes nothing; a combining
-   * character stays part of its base cell. Concealed cells (SGR 8) become
-   * spaces: their text is not on screen and may not become part of a URL.
-   * Null for a line beyond the scan cap or an `x` that is not on it.
+   * character stays part of its base cell. An erased or skipped-over cell
+   * (ECH, or a cursor moved across it) holds no characters but still covers
+   * a column, so it reads as one space, as xterm's own `translateToString`
+   * shows it; only the blank pad a wrapped row gets when its last column
+   * cannot take a wide character stays empty (`translateToString(true)`
+   * trims it, and it is no content). Concealed cells (SGR 8) become spaces:
+   * their text is not on screen and may not become part of a URL.
+   *
+   * Null for a line beyond the scan cap or an `x` that is not on it. The cap
+   * applies in both directions: a wrapped line that continues past
+   * `MAX_LINK_ROWS` is not returned in part, because its token could
+   * continue on the rows that are not read.
    */
   function logicalLineAt(buffer, y, x) {
     let first = y;
-    while (first > 0 && buffer.getLine(first)?.isWrapped) first--;
-    if (first < 0 || y - first > MAX_LINK_ROWS) return null;
+    while (first > 0 && buffer.getLine(first)?.isWrapped && y - first < MAX_LINK_ROWS) first--;
+    if (y - first >= MAX_LINK_ROWS) return null;
     const cell = buffer.getNullCell();
     let text = "";
     let offset = -1;
-    for (let row = first; row < buffer.length && row - first <= MAX_LINK_ROWS; row++) {
+    for (let row = first; row < buffer.length; row++) {
       const line = buffer.getLine(row);
       if (!line) return null;
+      const nextWrapped = Boolean(buffer.getLine(row + 1)?.isWrapped);
       for (let col = 0; col < line.length; col++) {
         if (row === y && col === x - 1) offset = text.length;
         line.getCell(col, cell);
+        if (!cell.getWidth()) continue;
         const chars = cell.getChars();
         if (cell.isInvisible?.()) {
-          if (chars.length || cell.getWidth()) text += " ".repeat(Math.max(1, chars.length));
-        } else {
+          text += " ".repeat(Math.max(1, chars.length));
+        } else if (chars) {
           text += chars;
+        } else if (!(nextWrapped && col === line.length - 1)) {
+          text += " ";
         }
         if (text.length > MAX_LINK_LINE) return null;
       }
-      if (!buffer.getLine(row + 1)?.isWrapped) break;
+      if (!nextWrapped) break;
+      if (row - first + 1 >= MAX_LINK_ROWS) return null;
     }
     return offset < 0 ? null : { text, offset };
   }

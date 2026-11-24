@@ -123,16 +123,43 @@ function textCells(text, extra = {}) {
   return Array.from(text, (chars) => ({ chars, width: 1, ...extra }));
 }
 
-/** Run the real vendored provider against fixed-width wrapped buffer lines. */
-function realProvider(lines, options, activate, term) {
-  const bufferLines = lines.map((entry, index) => {
-    const text = typeof entry === "string" ? entry : entry.text;
-    const cells = typeof entry === "string" || !entry.cells ? textCells(text) : entry.cells;
-    const isWrapped = typeof entry === "string" ? index > 0 : entry.isWrapped;
+/** xterm's cell for a column with no character: one blank column. */
+function nullCell() { return { chars: "", width: 1 }; }
+
+/** `text`'s cells, padded with null cells to a terminal row of `cols`. */
+function rowCells(text, cols) {
+  const cells = textCells(text);
+  while (cells.length < cols) cells.push(nullCell());
+  return cells;
+}
+
+/** Full-width terminal text wrapped into `cols`-wide rows, like xterm. */
+function wrappedRows(text, cols) {
+  const rows = [];
+  for (let at = 0; at < text.length; at += cols) {
+    rows.push({ cells: rowCells(text.slice(at, at + cols), cols), isWrapped: at > 0 });
+  }
+  return rows;
+}
+
+/**
+ * Buffer lines shaped like xterm's: every row `cols` cells wide, a row that
+ * continues the previous one flagged `isWrapped`, and `translateToString`
+ * built from the cells the way xterm does it (null cells read as spaces,
+ * continuation cells are skipped, `trimRight` drops the pad).
+ */
+function bufferLines(rows) {
+  return rows.map((entry, index) => {
+    const cells = entry.cells ?? textCells(entry.text ?? entry);
+    const isWrapped = entry.cells ? Boolean(entry.isWrapped) : entry.isWrapped ?? index > 0;
     return {
       length: cells.length,
       isWrapped,
-      translateToString: () => text,
+      translateToString(trimRight) {
+        let text = "";
+        for (const cell of cells) if (cell.width) text += cell.chars || " ";
+        return trimRight ? text.replace(/ +$/, "") : text;
+      },
       getCell(x, cell) {
         const source = cells[x] ?? { chars: "", width: 0 };
         cell.chars = source.chars ?? "";
@@ -144,18 +171,23 @@ function realProvider(lines, options, activate, term) {
       },
     };
   });
+}
+
+/** A buffer view over `rows`; `onRead` sees every `getLine` (a walk probe). */
+function bufferOf(rows, onRead) {
+  const lines = bufferLines(rows);
+  return { active: {
+    length: lines.length,
+    getLine(index) { onRead?.(index); return lines[index]; },
+    getNullCell: () => ({ ...nullCell(), invisible: false, getChars() { return this.chars; }, getWidth() { return this.width; }, isInvisible() { return this.invisible; } }),
+  } };
+}
+
+/** Run the real vendored provider against xterm-shaped wrapped buffer lines. */
+function realProvider(rows, options, activate, term) {
   let provider;
   const terminal = {
-    buffer: { active: {
-      length: lines.length,
-      getLine: (index) => bufferLines[index],
-      getNullCell: () => ({
-        chars: "", width: 0, invisible: false,
-        getChars() { return this.chars; },
-        getWidth() { return this.width; },
-        isInvisible() { return this.invisible; },
-      }),
-    } },
+    buffer: bufferOf(rows),
     registerLinkProvider(p) { provider = p; return { dispose() {} }; },
   };
   if (term) term.buffer = terminal.buffer;
@@ -403,6 +435,70 @@ check("a logical line beyond the scan cap never activates", () => {
   links[0].hover({}, links[0].text, links[0].range);
   links[0].activate({ button: 0, metaKey: true }, links[0].text);
   assert.deepEqual(opened, []);
+});
+
+check("erased cell gaps split the token; a skipped cell keeps a following URL apart", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const cols = 80;
+  const splitCells = [...textCells("https://example.test/a"), nullCell(), ...textCells("/../../admin")];
+  while (splitCells.length < cols) splitCells.push(nullCell());
+  const gapCells = [...textCells("abc"), nullCell(), nullCell(), nullCell(), ...textCells("https://example.test/gap")];
+  while (gapCells.length < cols) gapCells.push(nullCell());
+  const cases = [
+    [splitCells, "https://example.test/a", "the token ends at the erased column"],
+    [gapCells, "https://example.test/gap", "the skipped columns end the prose token"],
+  ];
+  for (const [cells, target, why] of cases) {
+    const links = realProvider([{ cells, isWrapped: false }], options, handler, term)();
+    assert.equal(links.length, 1, why);
+    links[0].hover({}, links[0].text, links[0].range);
+    links[0].activate({ button: 0, metaKey: true }, links[0].text);
+    assert.equal(opened.at(-1), target, why);
+  }
+  assert.deepEqual(opened, ["https://example.test/a", "https://example.test/gap"]);
+});
+
+check("a wrapped line over 64 rows never activates; exactly 64 rows still do", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const cols = 20;
+  const over = `https://example.test/a(${"x".repeat(1400)})`;
+  assert.ok(wrappedRows(over, cols).length > 64, "the repro line is longer than the cap");
+  const truncated = realProvider(wrappedRows(over, cols), options, handler, term)();
+  assert.equal(truncated.length, 1, "the addon still finds the URL prefix");
+  truncated[0].hover({}, truncated[0].text, truncated[0].range);
+  truncated[0].activate({ button: 0, metaKey: true }, truncated[0].text);
+  assert.deepEqual(opened, [], "a line the cell walk cannot read whole is refused");
+
+  const exact = `https://example.test/${"x".repeat(1259)}`;
+  assert.equal(exact.length, 1280);
+  assert.equal(wrappedRows(exact, cols).length, 64, "exactly at the row cap");
+  const complete = realProvider(wrappedRows(exact, cols), options, handler, term)();
+  assert.equal(complete.length, 1);
+  complete[0].hover({}, complete[0].text, complete[0].range);
+  complete[0].activate({ button: 0, metaKey: true }, complete[0].text);
+  assert.deepEqual(opened, [exact], "the cap is inclusive");
+});
+
+check("the backward wrapped-line walk stops at the row cap", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://example.test/late";
+  const rows = 200;
+  const lines = [];
+  for (let i = 0; i < rows; i++) {
+    lines.push({ cells: rowCells(i === rows - 1 ? url : "x".repeat(80), 80), isWrapped: i > 0 });
+  }
+  let reads = 0;
+  term.buffer = bufferOf(lines, () => { reads++; });
+  options.hover({}, url, { start: { x: 1, y: rows }, end: { x: url.length, y: rows } });
+  handler({ button: 0, metaKey: true }, url);
+  assert.deepEqual(opened, [], "the line is longer than the cap");
+  assert.ok(reads <= 65, `the walk stays within the 64-row window (read ${reads} rows)`);
 });
 
 check("createXterm: scrollback from the terminalScrollback tweak", () => {

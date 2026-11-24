@@ -465,8 +465,9 @@ test("hook: a retained terminal opener ignores clicks from an inactive tab", asy
   const useBrowser = runInNewContext(source("src/app/use-browser.jsx") + "\nuseBrowser", { window, React });
   const navigated = [];
   const external = [];
+  const panels = [];
   const bridge = {
-    browserOpenPanel: () => Promise.resolve(),
+    browserOpenPanel: (sid) => { panels.push(sid); return Promise.resolve(); },
     browserNavigate: (...args) => navigated.push(args),
     browserClosePanel() {},
     openExternalUrl: (url) => { external.push(url); return Promise.resolve({ ok: true }); },
@@ -487,13 +488,17 @@ test("hook: a retained terminal opener ignores clicks from an inactive tab", asy
   assert.deepEqual(external, []);
   assert.equal(openBy.b, undefined, "the active tab's panel is not opened");
 
-  openBy.a = true;
+  // The panel's elements must be bound before the commit that opens it, or
+  // the open effect returns early and never flushes anything.
   ui = show("a");
   ui.canvasRef.current = {};
   ui.viewRef.current = {};
   ui.sinkRef.current = {};
+  openBy.a = true;
+  ui = show("a");
   await flush();
-  assert.deepEqual(navigated, []);
+  assert.deepEqual(panels, ["a"], "the panel opened with its elements bound");
+  assert.deepEqual(navigated, [], "no URL from the inactive tab is flushed");
   unmount();
 });
 
