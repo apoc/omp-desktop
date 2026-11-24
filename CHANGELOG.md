@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Secret input prompts (omp `input` with `secret: true`) show a password field in the desktop chat and on the phone, and the answer no longer stays readable in the transcript, the message state or the phone view; it still reaches omp. Before, the credential sanitizer also replaced the `secret` flag itself, so such prompts were never masked.
+- A prompt that omp re-sends under the id of a prompt still open now closes the older bubble as superseded instead of leaving two answerable prompts, so an answer always reaches the newest request.
 
 ## [0.15.2] - 2026-11-23
 
