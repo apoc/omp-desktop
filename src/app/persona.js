@@ -110,8 +110,8 @@
 
   const kindRank = (kind) => (kind === "approval" ? 0 : 1);
 
-  /** Open approvals then decisions (oldest first), the newest five results,
-   *  and the badge count of everything still waiting for the human. */
+  /** Open approvals then decisions (oldest first), the newest five results
+   *  and notices, and the badge count of everything waiting for an answer. */
   function inboxView(items) {
     const list = Array.isArray(items) ? items : [];
     const open = list
@@ -121,7 +121,11 @@
       .filter(i => i?.state === "open" && i.kind === "result")
       .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
       .slice(0, RESULTS_SHOWN);
-    return { open, results, badge: open.length };
+    const notices = list
+      .filter(i => i?.state === "open" && i.kind === "notice")
+      .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+      .slice(0, RESULTS_SHOWN);
+    return { open, results, notices, badge: open.length };
   }
 
   /**

@@ -1080,6 +1080,7 @@ window.OMP_I18N.add("zh", {
   "{n} open": "{n} 项待处理",
   "Nothing waiting.": "暂无待处理事项。",
   "Recent": "最近",
+  "Notices": "通知",
   "Scheduled": "已计划",
   "Scheduled wake": "计划的唤醒",
   "Next check": "下次检查",

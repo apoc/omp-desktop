@@ -147,6 +147,7 @@ check("inbox_view_badge_counts_open_approvals_and_decisions", () => {
   assert.equal(view.badge, 2);
   assert.deepEqual(view.open.map(i => i.id), ["a", "b"]); // approvals first, oldest first
   assert.deepEqual(view.results.map(i => i.id), ["c"]);    // results only
+  assert.deepEqual(view.notices.map(i => i.id), ["d"]);   // service notices are visible too
 });
 
 check("inbox_view_hides_dismissed_results", () => {
@@ -167,8 +168,8 @@ check("inbox_view_results_newest_first_capped_at_five", () => {
 });
 
 check("inbox_view_empty_is_empty", () => {
-  assert.deepEqual(P.inboxView([]), { open: [], results: [], badge: 0 });
-  assert.deepEqual(P.inboxView(undefined), { open: [], results: [], badge: 0 });
+  assert.deepEqual(P.inboxView([]), { open: [], results: [], notices: [], badge: 0 });
+  assert.deepEqual(P.inboxView(undefined), { open: [], results: [], notices: [], badge: 0 });
 });
 
 // ── compactTokens ────────────────────────────────────────────────────────

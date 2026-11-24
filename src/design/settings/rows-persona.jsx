@@ -164,14 +164,15 @@ function _PR_Enable({ row, ctx, query }) {
     setPending(value => (value === null || !!status === value ? null : value));
     if (status) setStartFailed(false);
   }, [status]);
+  const waiting = pending !== null && !!status !== pending ? pending : null;
   React.useEffect(() => {
-    if (pending !== true) return undefined;
+    if (waiting !== true) return undefined;
     const timer = setTimeout(() => {
       setPending(null);
       setStartFailed(true);
     }, 10_000);
     return () => clearTimeout(timer);
-  }, [pending]);
+  }, [waiting]);
   const toggle = enable => {
     if (busy) return;
     setBusy(true);
@@ -190,7 +191,7 @@ function _PR_Enable({ row, ctx, query }) {
   };
   return (
     <Row label={row.label} desc={row.desc} query={query}>
-      <Toggle value={pending ?? !!status} onChange={toggle} label={row.label} disabled={busy} />
+      <Toggle value={waiting ?? !!status} onChange={toggle} label={row.label} disabled={busy} />
       {(control || error || startFailed) && (
         <div className="st-row-error" title={control?.detail || undefined}>
           {control?.text || error || window.OMP_PERSONA.enableStartError()}

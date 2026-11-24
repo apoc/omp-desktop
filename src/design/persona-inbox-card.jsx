@@ -139,6 +139,13 @@ function PersonaInboxCard({ status, items, bridge }) {
         </>
       )}
 
+      {view.notices.length > 0 && (
+        <>
+          <div className="persona-inbox-sub">{OMP_TR("Notices")}</div>
+          {view.notices.map(entry => item(entry))}
+        </>
+      )}
+
       {sched.entries.length > 0 && (
         <>
           <div className="persona-inbox-sub">{OMP_TR("Scheduled")}</div>
