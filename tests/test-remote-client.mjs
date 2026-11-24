@@ -307,17 +307,33 @@ await check("streaming views preserve live question input nodes and answer their
   await b.message({ t: "view", view: { ...inner, asks: [] } });
   assert.ok(!b.nodes().some(n => n.tagName === "input"));
 });
-await check("secret phone answers use a password input and leave only a mask after submit", async () => {
+await check("secret phone answers are cleared after submit and never resent after a failed delivery", async () => {
   const b = browser(); await b.connect();
-  const inner = { ...view(false).view, asks: [{ id: "secret", kind: "input", title: "Password", secret: true }] };
+  const secret = { id: "secret", kind: "input", title: "Password", secret: true };
+  const inner = { ...view(false).view, asks: [secret] };
   await b.message({ t: "view", view: inner });
   const input = b.nodes().find(n => n.tagName === "input");
   assert.equal(input.type, "password");
+  assert.equal(input.value, "", "a secret field starts empty");
   input.value = "phone-plaintext"; await input.emit("input");
   await b.button("Answer").emit("click");
   assert.equal(b.frames.at(-1).value, "phone-plaintext", "the answer still reaches the desktop action");
-  assert.equal(input.value, "••••••••");
+  assert.equal(input.value, "", "submitting clears the plaintext from the field");
+  assert.ok(b.nodes().some(n => n.tagName === "span" && n.textContent === "••••••••"),
+    "the mask is rendered apart from the input value");
   assert.equal(b.app.textContent.includes("phone-plaintext"), false, "the transcript kept the secret");
+  // A failed delivery leaves the question open for a retry; the field must
+  // ask for the credential again instead of offering the sent mask.
+  await b.message({ t: "ack", reqId: b.frames.at(-1).reqId, kind: "answer", ok: false, error: "desktop could not deliver" });
+  assert.equal(input.value, "", "a failed delivery leaves no prefilled credential");
+  const frames = b.frames.length;
+  await b.button("Answer").emit("click");
+  assert.equal(b.frames.length, frames, "an empty field sends nothing");
+  // Rebuilding the ask list (a second question arrives) must not restore a
+  // stored mask either.
+  await b.message({ t: "view", view: { ...inner, asks: [secret, { id: "other", kind: "confirm", title: "Sure?" }] } });
+  const rebuilt = b.nodes().find(n => n.tagName === "input");
+  assert.equal(rebuilt.value, "", "a rebuilt secret field is empty");
   await b.message({ t: "view", view: { ...inner, asks: [] } });
   assert.equal(JSON.stringify(inner).includes("phone-plaintext"), false, "the published phone payload contains an answer");
 });

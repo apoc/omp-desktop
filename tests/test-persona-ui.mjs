@@ -166,3 +166,40 @@ test("running status before Enable resolves prevents the stale start failure", a
   tree = render();
   assert.equal(text(tree).includes("Ompy did not start"), false);
 });
+
+test("a status matching the later command result clears the pending intent instead of resurrecting it", async () => {
+  let statusListener;
+  let finishEnable;
+  const bridge = {
+    onPersona: async (_name, listener) => { statusListener = listener; return () => {}; },
+    personaStatus: async () => null,
+    personaEnable: () => new Promise(resolve => { finishEnable = resolve; }),
+  };
+  const h = component("src/design/settings/rows-persona.jsx", {
+    SettingsRow: "settings-row",
+    SettingsToggle: "settings-toggle",
+  });
+  const row = { label: "Run Ompy", desc: "" };
+  const render = () => h.render(() => h.window.OMP_SETTINGS_ROWS.personaEnable({ row, ctx: { bridge }, query: "" }));
+  render();
+  await flush();
+  let tree = render();
+  find(tree, node => node.type === "settings-toggle").props.onChange(true);
+  // The service reports running before `personaEnable` resolves, so the
+  // later intent matches a status that is already on screen.
+  statusListener({ state: "running", settings: {} });
+  tree = render();
+  finishEnable({ ok: true });
+  await flush();
+  tree = render();
+  // The service stops again: a stale intent would flip the toggle back on
+  // and start the "did not start" timer.
+  statusListener(null);
+  tree = render();
+  assert.equal(find(tree, node => node.type === "settings-toggle").props.value, false,
+    "the toggle follows the stopped service");
+  assert.equal(h.timers.size, 0, "no stale start-failure timer");
+  for (const timer of [...h.timers.values()]) timer.fn();
+  tree = render();
+  assert.equal(text(tree).includes("Ompy did not start"), false);
+});

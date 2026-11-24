@@ -147,14 +147,26 @@
         input.className = controls.multiline ? "ask-editor-textarea selectable" : "ask-other-input";
         if (ask.secret) input.type = "password";
         input.setAttribute("aria-label", ask.title || "Answer");
-        input.value = askDrafts.get(key) ?? ask.value ?? "";
-        input.addEventListener("input", () => askDrafts.set(key, input.value));
+        // A secret never enters the draft map: the plaintext lives only in
+        // this field until submit, so a rebuild or a retry cannot replay it.
+        input.value = ask.secret ? "" : askDrafts.get(key) ?? ask.value ?? "";
+        if (!ask.secret) input.addEventListener("input", () => askDrafts.set(key, input.value));
         wrap.append(input);
+        // The sent mask is shown next to the field, never as its value: an
+        // open question after a failed delivery asks for the credential again.
+        const mask = ask.secret ? node("span", "••••••••", "chip muted") : null;
+        if (mask) {
+          mask.hidden = true;
+          wrap.append(mask);
+          input.addEventListener("input", () => { mask.hidden = true; });
+        }
         const submit = button(controls.multiline ? "Submit" : "Answer", () => {
+          if (ask.secret && input.value === "") return;
           onAnswer(ask.id, input.value);
           if (ask.secret) {
-            input.value = "••••••••";
-            askDrafts.set(key, input.value);
+            input.value = "";
+            askDrafts.delete(key);
+            mask.hidden = false;
           }
         });
         submit.className = "ask-submit";

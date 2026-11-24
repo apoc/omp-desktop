@@ -161,9 +161,12 @@ function _PR_Enable({ row, ctx, query }) {
   // own text stays in the tooltip (`OMP_PERSONA.errorView`).
   const [control, setControl] = React.useState(null);
   React.useEffect(() => {
+    // Clear the intent as soon as a status matches it, whether the status
+    // arrived before or after the command resolved: a later opposite status
+    // must not resurrect an intent the service already confirmed.
     setPending(value => (value === null || !!status === value ? null : value));
     if (status) setStartFailed(false);
-  }, [status]);
+  }, [status, pending]);
   const waiting = pending !== null && !!status !== pending ? pending : null;
   React.useEffect(() => {
     if (waiting !== true) return undefined;
