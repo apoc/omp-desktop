@@ -13,6 +13,9 @@ fn main() {
         out.flush().unwrap();
     };
     say(r#"{"type":"ready","protocolVersion":1}"#);
+    if std::env::var_os("FAKE_OMP_STALL").is_some() {
+        std::thread::park();
+    }
     for line in std::io::stdin().lock().lines() {
         let line = line.unwrap();
         if let Some(p) = &log {
