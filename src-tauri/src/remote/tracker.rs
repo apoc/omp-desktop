@@ -82,7 +82,7 @@ impl<'a> Event<'a> {
 /// Busy change carried by one relayed omp frame, if any: the tracker's own
 /// start/end rule (a continuing `agent_end` leaves the turn running), without
 /// touching its per-agent state or push transitions.
-pub(crate) fn persona_turn_busy(frame: &Value) -> Option<bool> {
+pub fn persona_turn_busy(frame: &Value) -> Option<bool> {
     match Event::classify(frame.get("type").and_then(Value::as_str), Some(frame)) {
         Some(Event::Start) => Some(true),
         Some(Event::End) => Some(false),

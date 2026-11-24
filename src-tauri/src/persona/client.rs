@@ -161,8 +161,7 @@ impl Client {
             retry_at: Some(Instant::now()),
             backoff: INITIAL_BACKOFF,
             seen_inbox: HashSet::new(),
-            persona_busy: false,
-            persona_has_ask: false,
+            persona_activity: (false, false),
             outage_reported: false,
             expect_off: false,
             stopped: false,
@@ -332,10 +331,9 @@ struct Worker {
     /// reconnect (the service replays its whole inbox) and diverges from the
     /// snapshot's contents, which are cleared when the service goes away.
     seen_inbox: HashSet<String>,
-    /// The Ompy tab's phone-chip state, derived from the relayed turn frames
-    /// and the inbox snapshot the app already receives.
-    persona_busy: bool,
-    persona_has_ask: bool,
+    /// The Ompy tab's phone-chip state `(busy, has_ask)`, derived from the
+    /// relayed turn frames and the inbox snapshot the app already receives.
+    persona_activity: (bool, bool),
     /// Whether the current outage's `io` error already reached the frontend.
     /// One outage is one error: the retry storm that follows stays silent
     /// until a connection is live again (the outage is over).
@@ -600,12 +598,11 @@ impl Worker {
     /// Update the chip state and tell the remote hub only when it changes.
     /// `None` leaves that half as it was.
     fn set_activity(&mut self, busy: Option<bool>, has_ask: Option<bool>) {
-        let busy = busy.unwrap_or(self.persona_busy);
-        let has_ask = has_ask.unwrap_or(self.persona_has_ask);
-        if (busy, has_ask) != (self.persona_busy, self.persona_has_ask) {
-            self.persona_busy = busy;
-            self.persona_has_ask = has_ask;
-            self.emitter.activity(busy, has_ask);
+        let (old_busy, old_has_ask) = self.persona_activity;
+        let next = (busy.unwrap_or(old_busy), has_ask.unwrap_or(old_has_ask));
+        if next != self.persona_activity {
+            self.persona_activity = next;
+            self.emitter.activity(next.0, next.1);
         }
     }
 
