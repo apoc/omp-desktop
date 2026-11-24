@@ -224,8 +224,7 @@ fn a_failed_auto_approval_write_stops_the_frame() {
                 failed = true;
                 break;
             }
-            Ok(_) => {}
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }

@@ -465,14 +465,13 @@ fn wake_until(h: &Harness, want: usize) {
 
 /// Answer every open approval with `Deny` so the next wake is not held.
 fn deny_open_approvals(h: &Harness) {
-    let mut req = 800;
-    for item in inbox_items(h)
-        .into_iter()
-        .filter(|item| item.kind == ItemKind::Approval && item.state == ItemState::Open)
-    {
+    for (req, item) in (800..).zip(
+        inbox_items(h)
+            .into_iter()
+            .filter(|item| item.kind == ItemKind::Approval && item.state == ItemState::Open),
+    ) {
         answer(h, req, &item.id, "Deny");
         let _ = reply(h, req);
-        req += 1;
     }
 }
 

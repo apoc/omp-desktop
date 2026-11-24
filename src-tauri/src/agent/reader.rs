@@ -718,7 +718,7 @@ mod tests {
             let raw = json!({
                 "type": "extension_ui_request",
                 "method": "input",
-                "secret": value.clone()
+                "secret": value
             })
             .to_string();
             let (out, parsed) = sanitize_line(raw.as_bytes());

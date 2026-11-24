@@ -1239,6 +1239,7 @@ mod tests {
             let status = events
                 .iter()
                 .position(|(name, payload)| name == "status" && payload["generation"] == 8)?;
+            drop(events);
             // The reset must precede the new generation's status: a later
             // reset would only be the disconnect at the end of the test.
             (busy < reset && reset < status).then_some(())
@@ -1338,6 +1339,7 @@ mod tests {
                 .map(|(index, _)| index)
                 .collect();
             let marker = *statuses.get(1)?;
+            drop(events);
             (reset < marker).then_some(())
         });
         assert!(

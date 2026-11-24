@@ -36,7 +36,7 @@ struct File {
 #[derive(Debug)]
 pub enum RpcAnswer {
     /// The single open item bound to the id was answered or dismissed.
-    Settled(InboxItem),
+    Settled(Box<InboxItem>),
     /// More than one open item claimed the id, so no answer could be
     /// attributed: every one of them was expired and nothing was stored.
     Ambiguous,
@@ -260,27 +260,16 @@ impl Inbox {
     /// duplicates expire and no answer is stored. A secret item never stores
     /// its answer, whichever item matched.
     pub fn resolve_by_rpc(&mut self, rpc_id: &str, answer: Option<String>) -> RpcAnswer {
-        let open = self
-            .items
-            .iter()
-            .filter(|item| {
-                item.rpc_request_id.as_deref() == Some(rpc_id) && item.state == ItemState::Open
-            })
-            .count();
-        match open {
-            0 => RpcAnswer::Unbound,
-            1 => {
-                let item = self
-                    .items
-                    .iter_mut()
-                    .find(|item| {
-                        item.rpc_request_id.as_deref() == Some(rpc_id)
-                            && item.state == ItemState::Open
-                    })
-                    .expect("exactly one open item claims the id");
-                RpcAnswer::Settled(Self::settle(item, answer))
+        let mut claimants = self.items.iter().enumerate().filter(|(_, item)| {
+            item.rpc_request_id.as_deref() == Some(rpc_id) && item.state == ItemState::Open
+        });
+        let (first, second) = (claimants.next().map(|(i, _)| i), claimants.next().is_some());
+        match (first, second) {
+            (None, _) => RpcAnswer::Unbound,
+            (Some(index), false) => {
+                RpcAnswer::Settled(Box::new(Self::settle(&mut self.items[index], answer)))
             }
-            _ => {
+            (Some(_), true) => {
                 self.expire_rpc(rpc_id);
                 RpcAnswer::Ambiguous
             }
