@@ -90,6 +90,15 @@
     return true;
   }
 
+  // The addon scans at most 2048 characters forwards and backwards through
+  // wrapped lines. A match that reaches that limit may be only a URL prefix;
+  // never navigate to it. Its stock expression also rejects a final `]`, so
+  // the first alternative covers bracketed IPv6 (with optional port/path).
+  const WEB_LINK_SCAN_LIMIT = 2048;
+  const WEB_LINK_OPTIONS = {
+    urlRegex: /(https?|HTTPS?):[/]{2}(?:\[[\da-fA-F:.]+\](?::\d+)?(?:[/?#](?:[^\s"'!*(){}|\\\^<>`]*[^\s"':,.!?{}|\\\^~\[\]`()<>])?)?|[^\s"'!*(){}|\\\^<>`]*[^\s"':,.!?{}|\\\^~\[\]`()<>])/,
+  };
+
   /**
    * A new xterm and its fit addon. `tryRestart()` is asked on an Enter
    * keydown: true when it restarted the shell (that Enter then never reaches
@@ -116,7 +125,9 @@
     term.parser.registerOscHandler(8, () => true);
     const fit = new window.FitAddon.FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new window.WebLinksAddon.WebLinksAddon(onLink));
+    term.loadAddon(new window.WebLinksAddon.WebLinksAddon((event, url) => {
+      if (url.length < WEB_LINK_SCAN_LIMIT) onLink(event, url);
+    }, WEB_LINK_OPTIONS));
     let restartEnter = false;
     term.attachCustomKeyEventHandler((e) => {
       if (e.key === "Enter" && restartEnter) {

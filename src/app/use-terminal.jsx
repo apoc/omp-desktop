@@ -219,12 +219,15 @@ function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak, ap
       },
       onData: (data) => bridge.terminalWrite(sid, data),
       onLink: (event, url) => {
+        // The addon may retain this callback after a tab switch or recreate:
+        // only the terminal record that created it may open its own tab.
+        if (recs.current.get(sid) !== rec || rec.disposed) return;
         const link = window.OMP_BROWSER.terminalLinkClick(
           url, event, localLinksRef.current, window.OMP_KEYMAP.detectMac(),
         );
         if (!link) return;
         event.preventDefault();
-        openLinkRef.current?.(link.url, link.external);
+        openLinkRef.current?.(sid, link.url, link.external);
       },
       // Only a live shell has a pty to resize; the size a shell starts at is
       // the one `spawn` sends (and corrects once the reply is in).

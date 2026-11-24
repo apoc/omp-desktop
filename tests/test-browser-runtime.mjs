@@ -458,6 +458,110 @@ test("hook: a stale open completion cannot release the newer tab's queued resize
   assert.deepEqual(closed, ["old", "new"]);
 });
 
+test("hook: a retained terminal opener still targets its originating tab", async () => {
+  const { React, render, unmount } = fakeReact();
+  const window = { OMP_BROWSER_SCREEN: { createScreen: () => ({ frame() {}, destroy() {}, size: () => ({ width: 1, height: 1, dpr: 1 }) }) } };
+  loadHelpers(window);
+  const useBrowser = runInNewContext(source("src/app/use-browser.jsx") + "\nuseBrowser", { window, React });
+  const navigated = [];
+  const bridge = {
+    browserOpenPanel: () => Promise.resolve(),
+    browserNavigate: (...args) => navigated.push(args),
+    browserClosePanel() {},
+  };
+  const openBy = {};
+  const show = (sid) => render(() => useBrowser({
+    bridge, activeSessionId: sid, sessionIds: ["a", "b"], tweaks: {},
+    open: Boolean(openBy[sid]), setOpen: (on) => { openBy[sid] = on; },
+  }));
+
+  let ui = show("a");
+  const retained = ui.openLink;
+  ui = show("b");
+  retained("a", "http://localhost:3000/from-a", false);
+  assert.deepEqual(navigated, [["a", "http://localhost:3000/from-a"]]);
+  assert.equal(openBy.b, undefined, "the active tab's panel is not opened");
+
+  openBy.a = true;
+  ui = show("a");
+  ui.canvasRef.current = {};
+  ui.viewRef.current = {};
+  ui.sinkRef.current = {};
+  await flush();
+  assert.deepEqual(navigated, [["a", "http://localhost:3000/from-a"]]);
+  unmount();
+});
+
+test("hook: disposed and replaced terminal link callbacks stay inert", async () => {
+  const { React, render, unmount } = fakeReact();
+  const callbacks = [];
+  const opened = [];
+  const window = {
+    OMP_TERMINAL: {
+      EMPTY: {}, openPanel: (s) => s, togglePanel: (s) => s, applyStatus: (s) => s,
+      applyExit: (s) => s, spawnFailed: (s) => s, needsSpawn: () => false,
+      shellLive: () => false, canRestart: () => false,
+      entryOf: () => ({ open: false, created: true, status: null, error: null }),
+    },
+    OMP_SESSION_UI: { pruneEntries: (s) => s },
+    OMP_TERMINAL_XTERM: {
+      SKIPPED_LINE: "", exitLine: () => "", failLine: () => "", theme: () => ({}),
+      applyWindowsPty() {}, scrollbackLines: () => 5000, copySelection: () => false,
+      createXterm(options) {
+        callbacks.push(options.onLink);
+        return { term: {
+          open() {}, refresh() {}, dispose() {}, reset() {}, write() {}, focus() {},
+          options: {}, cols: 80, rows: 24,
+        }, fit: { fit() {} } };
+      },
+    },
+    OMP_TERMINAL_STREAM: {
+      EMPTY: { syncing: 0 }, beginSync: (s) => ({ ...s, syncing: 1 }),
+      onEvent: (s) => ({ stream: s, actions: [] }), replayCursor: () => ({ instance: 0, afterSeq: 0 }),
+      onReplay: (s) => ({ stream: s, actions: [] }), endSync: (s) => ({ stream: { ...s, syncing: 0 }, actions: [] }),
+      onAttach: (s) => ({ stream: s, actions: [] }), onOpened: (s) => ({ stream: s, actions: [] }),
+    },
+    OMP_BROWSER: { terminalLinkClick: (url) => ({ url, external: false }) },
+    OMP_KEYMAP: { detectMac: () => true },
+  };
+  const bridge = {
+    onTerminalData: () => ({ stop() {}, ready: Promise.resolve() }),
+    onTerminalExit: () => ({ stop() {}, ready: Promise.resolve() }),
+    terminalStatus: () => Promise.resolve(null),
+    terminalReplay: () => Promise.resolve(null),
+  };
+  const useTerminal = runInNewContext(source("src/app/use-terminal.jsx") + "\nuseTerminal", {
+    window, React, ResizeObserver: class { observe() {} disconnect() {} },
+    setTimeout, clearTimeout, console,
+  });
+  let ids = ["a", "b"];
+  const show = () => render(() => useTerminal({
+    bridge, activeSessionId: "b", sessionIds: ids, tweaks: {}, setTweak() {},
+    appearance: {}, openLink: (...args) => opened.push(args),
+  }));
+
+  let ui = show();
+  ui.mountFor("a")({});
+  const event = { preventDefault() {} };
+  callbacks[0](event, "http://localhost:3000/a");
+  assert.deepEqual(opened, [["a", "http://localhost:3000/a", false]]);
+
+  ids = ["b"];
+  ui = show();
+  callbacks[0](event, "http://localhost:3000/disposed");
+  assert.equal(opened.length, 1, "disposed callback ignored");
+
+  ids = ["a", "b"];
+  ui = show();
+  ui.mountFor("a")({});
+  callbacks[0](event, "http://localhost:3000/replaced");
+  assert.equal(opened.length, 1, "replaced record's old callback ignored");
+  callbacks[1](event, "http://localhost:3000/new-a");
+  assert.deepEqual(opened.at(-1), ["a", "http://localhost:3000/new-a", false]);
+  await flush();
+  unmount();
+});
+
 test("hook: a localhost chat link opens in the panel; a modifier click goes to the system browser", () => {
   const { React, render } = fakeReact();
   const window = { OMP_BROWSER_SCREEN: { createScreen: () => ({ frame() {}, destroy() {}, size: () => ({ width: 1, height: 1, dpr: 1 }) }) } };

@@ -175,14 +175,18 @@ function useBrowser({ bridge, activeSessionId, sessionIds, open: shown, setOpen,
   // Show `url` (already normalised) in the panel, opening it first if needed.
   // While `browserOpenPanel` is still in flight the backend has no view to
   // navigate yet, so the URL is queued (latest wins) and the open flushes it.
-  const openUrl = React.useCallback((url) => {
-    if (!sid) return;
-    if (open && !openInFlight.current?.pending) {
-      bridge?.browserNavigate(sid, url);
+  const openUrl = React.useCallback((url, targetSid = sid) => {
+    if (!targetSid) return;
+    if (targetSid !== sid) {
+      bridge?.browserNavigate(targetSid, url);
       return;
     }
-    wantUrl.current = { sid, url };
-    if (!open) setOpen(true);
+    if (open && !openInFlight.current?.pending) {
+      bridge?.browserNavigate(targetSid, url);
+      return;
+    }
+    wantUrl.current = { sid: targetSid, url };
+    if (targetSid === sid && !open) setOpen(true);
   }, [bridge, sid, open, setOpen]);
 
   // A plain click on a localhost link in the chat opens it here (when the
@@ -194,20 +198,20 @@ function useBrowser({ bridge, activeSessionId, sessionIds, open: shown, setOpen,
   // chat does not re-render as the panel changes.
   const localLinks = (tweaks?.browserLocalhostInPanel ?? true) && Boolean(sid);
   const openLink = React.useRef(null);
-  openLink.current = (url, external) => {
-    if (!external) return openUrl(url);
+  openLink.current = (targetSid, url, external) => {
+    if (!external) return openUrl(url, targetSid);
     Promise.resolve(bridge?.openExternalUrl(url)).then(
       (res) => { if (res && !res.ok) console.error("[browser] open failed:", res.error); },
       (err) => console.error("[browser] open failed:", err),
     );
   };
-  const openLinkStable = React.useCallback((url, external) => openLink.current(url, external), []);
+  const openLinkStable = React.useCallback((targetSid, url, external) => openLink.current(targetSid, url, external), []);
   const onChatClick = React.useMemo(() => (localLinks ? (e) => {
     const link = _UB.linkClick(e);
     if (!link) return;
     e.preventDefault();
-    openLink.current(link.url, link.external);
-  } : null), [localLinks]);
+    openLink.current(sid, link.url, link.external);
+  } : null), [localLinks, sid]);
 
   const savePending = React.useCallback((comment) => {
     const text = comment.trim();
