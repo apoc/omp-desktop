@@ -115,10 +115,17 @@
    * character stays part of its base cell. An erased or skipped-over cell
    * (ECH, or a cursor moved across it) holds no characters but still covers
    * a column, so it reads as one space, as xterm's own `translateToString`
-   * shows it; only the blank pad a wrapped row gets when its last column
-   * cannot take a wide character stays empty (`translateToString(true)`
-   * trims it, and it is no content). Concealed cells (SGR 8) become spaces:
-   * their text is not on screen and may not become part of a URL.
+   * shows it. The one empty cell that is no content is the pad a wrapped row
+   * gets when its last column cannot take a wide character: xterm leaves
+   * that column empty and starts the next, wrapped row with the width-2
+   * character, so only that empty last cell is dropped (and only there).
+   * Concealed cells (SGR 8) become spaces: their text is not on screen and
+   * may not become part of a URL.
+   *
+   * The unused columns after the last cell with content on the final row are
+   * no text either: they are trimmed before the cap applies, so a long URL on
+   * a wide terminal is not refused for the padding behind it. A gap before
+   * content on that row stays a space.
    *
    * Null for a line beyond the scan cap or an `x` that is not on it. The cap
    * applies in both directions: a wrapped line that continues past
@@ -130,12 +137,27 @@
     while (first > 0 && buffer.getLine(first)?.isWrapped && y - first < MAX_LINK_ROWS) first--;
     if (y - first >= MAX_LINK_ROWS) return null;
     const cell = buffer.getNullCell();
+    const nextCell = buffer.getNullCell();
     let text = "";
     let offset = -1;
     for (let row = first; row < buffer.length; row++) {
       const line = buffer.getLine(row);
       if (!line) return null;
-      const nextWrapped = Boolean(buffer.getLine(row + 1)?.isWrapped);
+      const nextLine = buffer.getLine(row + 1);
+      const nextWrapped = Boolean(nextLine?.isWrapped);
+      // xterm's pad: a wide character that cannot fit the last column is
+      // moved to the next, wrapped row, so that row starts width-2 while the
+      // column here stays empty. No other empty last cell is a pad.
+      let padColumn = -1;
+      if (nextWrapped && nextLine.length) {
+        nextLine.getCell(0, nextCell);
+        if (nextCell.getWidth() === 2) padColumn = line.length - 1;
+      }
+      // Where the final row's last content cell ends: the empty columns after
+      // it are unused terminal width, not text, so they stay out of `text`
+      // and of the cap. A gap before later content stays a space.
+      let trailing = -1;
+      const lastRow = !nextWrapped;
       for (let col = 0; col < line.length; col++) {
         if (row === y && col === x - 1) offset = text.length;
         line.getCell(col, cell);
@@ -143,16 +165,23 @@
         const chars = cell.getChars();
         if (cell.isInvisible?.()) {
           text += " ".repeat(Math.max(1, chars.length));
+          trailing = -1;
         } else if (chars) {
           text += chars;
-        } else if (!(nextWrapped && col === line.length - 1)) {
+          trailing = -1;
+        } else if (col !== padColumn) {
+          if (trailing < 0) trailing = text.length;
           text += " ";
         }
-        if (text.length > MAX_LINK_LINE) return null;
+        if (!lastRow && text.length > MAX_LINK_LINE) return null;
       }
-      if (!nextWrapped) break;
+      if (lastRow) {
+        if (trailing >= 0) text = text.slice(0, trailing);
+        break;
+      }
       if (row - first + 1 >= MAX_LINK_ROWS) return null;
     }
+    if (text.length > MAX_LINK_LINE) return null;
     return offset < 0 ? null : { text, offset };
   }
 

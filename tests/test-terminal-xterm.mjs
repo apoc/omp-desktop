@@ -460,6 +460,63 @@ check("erased cell gaps split the token; a skipped cell keeps a following URL ap
   assert.deepEqual(opened, ["https://example.test/a", "https://example.test/gap"]);
 });
 
+check("an erased cell in a wrapped row's last column is a gap, not the wide-character pad", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const cols = 23;
+  const url = "https://example.test/aX/note";
+  const rows = wrappedRows(url, cols);
+  assert.equal(rows.length, 2, "row 1 ends with the X, row 2 is the wrapped rest");
+  assert.equal(rows[0].cells[cols - 1].chars, "X");
+  rows[0].cells[cols - 1] = nullCell();
+  const links = realProvider(rows, options, handler, term)();
+  assert.equal(links.length, 1, "the addon reads the erased column as a space and still matches");
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, [], "the erased column splits the URL, so /a/note never opens");
+});
+
+check("the wide-character pad at a wrapped row's end stays out of the line", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const cols = 23;
+  const url = "https://example.test/a界";
+  const rows = [
+    { cells: rowCells("https://example.test/a", cols), isWrapped: false },
+    {
+      cells: [{ chars: "界", width: 2 }, { chars: "", width: 0 }, ...Array(cols - 2).fill(nullCell())],
+      isWrapped: true,
+    },
+  ];
+  assert.equal(rows[1].cells.length, cols);
+  assert.equal(rows[1].cells[0].width, 2, "xterm starts the wrapped row with the width-2 cell");
+  const links = realProvider(rows, options, handler, term)();
+  assert.equal(links.length, 1);
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, [url], "the pad column is no content, so the URL crosses the wrap");
+});
+
+check("unused columns after the final row's content do not count toward the cap", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = `https://example.test/${"a".repeat(2019)}`;
+  assert.equal(url.length, 2040);
+  const rows = wrappedRows(url, 80);
+  const last = rows.at(-1).cells;
+  assert.equal(last.length, 80);
+  assert.ok(last.filter((cell) => !cell.chars).length >= 40, "the final row ends in unused columns");
+  const links = realProvider(rows, options, handler, term)();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, url);
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, [url], "the trailing pad is no text, so the 2,040-character URL still opens");
+});
+
 check("a wrapped line over 64 rows never activates; exactly 64 rows still do", () => {
   const opened = [];
   const { term } = make({ onLink: (event, url) => opened.push(url) });
