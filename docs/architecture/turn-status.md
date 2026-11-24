@@ -92,6 +92,11 @@ state; a background tab reads its frozen snapshot.
   and its live state settles, but a delayed, misordered or coalesced
   report can never make a quit, a close or a restart treat live work as
   idle. `_trackerEvidence` exists only for the dot; guards never read it.
+  Because either source can settle the union, a deferred approval-mode
+  change is evaluated from both (`live.js` `_applySettledApprovalModes`, in
+  the `get_state` branch and in `_applyAttention`), so a change whose only
+  idle point is the tracker's report still restarts the tab before the next
+  prompt.
 
 The dots therefore track in both directions: an ask that opens in a
 background tab shows the amber dot before the tab is opened, and one

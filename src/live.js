@@ -1497,6 +1497,12 @@
     trackerLive = next;
     trackerLoaded = true;
     notify();
+    // The tracker's side of the approval-mode idle hook: the guard state is
+    // the union of the tab's own state and this report, so a tab whose own
+    // `get_state` already settled stays busy until the tracker does too — and
+    // this settle is then the only idle point its pending mode change would
+    // ever get. A still-busy guard defers inside the shared evaluation.
+    _applySettledApprovalModes();
   }
 
   /** Detach the active session's listeners and clear all per-session state,
@@ -1729,13 +1735,32 @@
     }
   }
 
+  /** The pending-approval-change evaluation, shared by both routes that can
+   *  settle a tab's guard state: an applied `get_state` (the active tab's
+   *  own state, `_handleResponse`) and a tracker payload (`_applyAttention`).
+   *  The guard state is the union of the two (`TURN.guardRunState`), so a
+   *  tab can become idle through either: its own `get_state` settles while
+   *  the tracker still holds its last busy report, and the tracker's later
+   *  settle is then the only idle point left. A busy tab has no entry in the
+   *  plan's `now` list, so this never restarts while the guard is still
+   *  busy; a tab whose mode already reached its target is not in the plan
+   *  either, and `_applyApprovalModes` skips respawns in flight
+   *  (`_respawning`) and failed targets (`_modeRestartMissed`) — one restart
+   *  per pending change. `_applyApprovalModes` stays the side-effecting part
+   *  and is not called directly from either idle route. */
+  function _applySettledApprovalModes() {
+    if (!approvalModes) return;
+    if (!AMODE.restartPlan(approvalModes, _sessionsView()).now.length) return;
+    void _applyApprovalModes();
+  }
+
   /** Bring every open tab's omp onto the approval mode its folder now
    *  resolves to (`OMP_APPROVAL_MODE.restartPlan` over the snapshot's
    *  `sessions`): idle tabs restart now, with `--resume` so the
    *  conversation continues; busy ones are left running and picked up at
-   *  their next idle point — the active tab's next applied `get_state`
-   *  (the one its `agent_end` asks for, or the one `_initFetch` sends when
-   *  it is activated; see the `get_state` branch of `_handleResponse`).
+   *  their next idle point — an applied `get_state` or a tracker payload
+   *  (`_applySettledApprovalModes`, called from the `get_state` branch of
+   *  `_handleResponse` and from `_applyAttention`).
    *  Resolves to `{ restarted, deferred }` tab ids (`restarted`: respawns
    *  that succeeded).
    *
@@ -2230,13 +2255,15 @@
 
     if (command === "get_state") {
       _applyRpcState(data);
-      // The approval-mode idle hook: the active tab's run state is current
-      // now, so a mode change it was too busy for applies here. Every
-      // get_state counts (a busy one simply defers again), which covers both
-      // idle points — the get_state its `agent_end` asks for and the one
-      // `_initFetch` sends when it is activated — without per-request
-      // bookkeeping that an out-of-order response could defeat.
-      void _applyApprovalModes();
+      // The approval-mode idle hook on the own-state side: the active tab's
+      // run state is current now, so a mode change it was too busy for
+      // applies here. Every get_state counts (a busy guard simply defers
+      // again), which covers both idle points — the get_state its `agent_end`
+      // asks for and the one `_initFetch` sends when it is activated —
+      // without per-request bookkeeping that an out-of-order response could
+      // defeat. The tracker's settle is the other idle route
+      // (`_applyAttention`); both go through `_applySettledApprovalModes`.
+      _applySettledApprovalModes();
 
     } else if (command === "get_messages") {
       const completed = window.adaptAgentMessages(data.messages ?? []);

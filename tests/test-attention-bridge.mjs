@@ -16,20 +16,26 @@ const load = (win, file) => new Function("window", readFileSync(`${root}src/${fi
 let focused = false;
 globalThis.document = { hasFocus: () => focused, visibilityState: "visible" };
 
-function harness(initial = null, { wireGuardsToDisplay = false } = {}) {
+function harness(initial = null, { wireGuardsToDisplay = false, dropTrackerSettle = false } = {}) {
   const listeners = new Map(), journal = new Map(), bounces = [], commands = [], guardCalls = [];
   const initialRef = { snapshot: initial };
+  // The fake approval-mode store: `start_session` resolves the mode its
+  // folder maps to, as Rust's `ApprovalModeStore::resolve` does, so a
+  // restart's recorded `approvalMode` is the one a real spawn would carry.
+  const modes = { default: "write", projects: {} };
+  const modeView = () => ({ default: modes.default, projects: { ...modes.projects } });
   const w = {
     OMP_SLASH: { LOCAL_COMMANDS: [], adaptAvailableCommands: cs => cs, mergeSlashCommands: (a) => a, isCommandInvocation: () => false, queuedFrame: () => null },
     OMP_SUBAGENTS: { emptySubagents: () => ({}), subscriptionLevelFor: () => "progress", mergeSnapshots: () => ({}) },
-    OMP_QUEUE: { EMPTY_QUEUE: {} }, OMP_GOAL: { UNKNOWN: {} }, OMP_EXT_WIDGETS: { EMPTY: {} },
-    OMP_PROMPT_HISTORY: { DEFAULT_LIMIT: 100 },
+    OMP_EXT_WIDGETS: { EMPTY: {} },
     OMP_TWEAKS_STORE: { read: () => ({}) },
+    // adapter.js's context breakdown; a get_state response needs one.
+    buildCtx: () => ({}),
     DEFAULT_PROFILE_ID: "default", INTENT_FRAMING: () => "", timeNow: () => "00:00",
   };
   for (const file of ["app/live-voice.js", "app/turn-status.js", "app/attention.js", "app/ask-dialog.js", "app/project-nav.js",
     "app/transcript-merge.js", "app/stream-delta.js", "app/approval.js", "app/live-context.js", "app/approval-mode.js", "app/session-title.js",
-    "app/session-prefs.js"]) load(w, file);
+    "app/session-prefs.js", "app/message-queue.js", "app/goal.js", "app/prompt-history.js"]) load(w, file);
   const timeout = (fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; };
   let liveSource = readFileSync(`${root}src/live.js`, "utf8");
   if (wireGuardsToDisplay) {
@@ -39,6 +45,16 @@ function harness(initial = null, { wireGuardsToDisplay = false } = {}) {
     liveSource = liveSource.replace(
       "runState: TURN.guardRunState(cached, live, trackerLoaded),",
       "runState: s.id === activeSessionId ? cached : TURN.displayRunState(cached, live, trackerLoaded, _trackerEvidenceNewer(s.id, snapshot?.trackerEvidence ?? null)),",
+    );
+    if (liveSource === before) throw new Error("counter-probe patch did not apply");
+  }
+  if (dropTrackerSettle) {
+    // Counter-probe: drop the tracker's idle hook. A change deferred while
+    // the tracker still held its busy report must then never apply.
+    const before = liveSource;
+    liveSource = liveSource.replace(
+      "    // ever get. A still-busy guard defers inside the shared evaluation.\n    _applySettledApprovalModes();\n",
+      "",
     );
     if (liveSource === before) throw new Error("counter-probe patch did not apply");
   }
@@ -52,11 +68,19 @@ function harness(initial = null, { wireGuardsToDisplay = false } = {}) {
           return Promise.resolve(null);
         }
         if (command === "list_profiles") return Promise.resolve({ profiles: [{ id: "default", name: "default" }] });
-        if (command === "start_session") return Promise.resolve("write");
-        if (command === "approval_mode_get") return Promise.resolve({ default: "write", projects: {} });
-        if (command === "approval_mode_set_default") return Promise.resolve({ default: args.mode, projects: {} });
+        if (command === "start_session") {
+          const cwd = args?.args?.cwd;
+          return Promise.resolve(modes.projects[cwd] ?? modes.default);
+        }
+        if (command === "approval_mode_get") return Promise.resolve(modeView());
+        if (command === "approval_mode_set_default") {
+          modes.default = args.mode;
+          return Promise.resolve(modeView());
+        }
         if (command === "approval_mode_set_project") {
-          return Promise.resolve({ default: "write", projects: { [args.projectRoot]: args.mode } });
+          if (args.mode) modes.projects[args.projectRoot] = args.mode;
+          else delete modes.projects[args.projectRoot];
+          return Promise.resolve(modeView());
         }
         if (command === "attention_snapshot") {
           // Resolved by `tick`, so a test can seed the answer after the tab id
@@ -123,6 +147,11 @@ async function check(label, fn) {
   }
   passed++;
 }
+
+/** Let promise chains and fire-and-forget restarts run to completion. */
+const flush = async (n = 20) => {
+  for (let i = 0; i < n; i++) await new Promise(resolve => setTimeout(resolve, 0));
+};
 
 await check("a question in a background tab shows waiting-user, then clears on the tracker", async () => {
   focused = false;
@@ -379,6 +408,73 @@ await check("guards stay armed when a delayed idle reply lowers the dot", async 
   assert.deepEqual(changed.deferred, [a], "the approval-mode change defers the tab");
   assert.equal(changed.restarted.includes(a), false, "the working tab was not restarted");
   assert.equal(h.commands.some(c => c.command === "stop_session" && c.args.sessionId === a), false);
+});
+
+await check("a deferred approval change applies when the tracker settles the guard", async () => {
+  focused = false;
+  const h = harness();
+  const a = await h.bridge.openSession("/alpha");
+  await h.bridge.activateSession(a);
+  const stops = () => h.commands.filter(c => c.command === "stop_session" && c.args.sessionId === a).length;
+  const modeOf = id => h.getSnapshot()?.sessions.find(s => s.id === id)?.approvalMode;
+
+  h.emit(a, { type: "turn_start" });
+  h.attention({ [a]: { busy: true, asks: 0, asksOpened: 0, background: false } }, 1);
+  const changed = await h.bridge.setApprovalModeProject("/alpha", "always-ask");
+  assert.equal(changed.ok, true);
+  assert.deepEqual(changed.deferred, [a], "the busy tab defers the change");
+  assert.deepEqual(changed.restarted, [], "and is not restarted mid-turn");
+  assert.equal(stops(), 0, "no restart while the turn runs");
+
+  // The run ends: the tab's own state is idle now, but the tracker still
+  // holds its busy report, so the combined guard stays busy.
+  h.emit(a, { type: "turn_end" });
+  h.emit(a, { type: "response", command: "get_state", success: true, data: { isStreaming: false } });
+  assert.equal(h.runState(a), "running", "the tracker still holds the guard busy");
+  assert.equal(stops(), 0, "the settled get_state defers again");
+  assert.equal(modeOf(a), "write", "still the old process");
+
+  // The tracker's report settles the guard: the pending change applies now.
+  h.attention({ [a]: { busy: false, asks: 0, asksOpened: 0, background: false } }, 2);
+  await flush();
+  assert.equal(h.runState(a), "idle");
+  assert.equal(stops(), 1, "exactly one restart");
+  assert.equal(modeOf(a), "always-ask", "the new process runs always-ask");
+
+  // The restart is done before the next prompt goes out.
+  assert.equal(await h.bridge.send("next prompt"), true);
+  const restartIdx = h.commands.findLastIndex(c => c.command === "start_session" && c.args.args.sessionId === a);
+  const promptIdx = h.commands.findLastIndex(c =>
+    c.command === "send_command" && JSON.parse(c.args.json).type === "prompt");
+  assert.ok(restartIdx !== -1 && promptIdx > restartIdx, "the restart precedes the prompt");
+  assert.equal(h.commands[promptIdx].args.sessionId, a, "the prompt went to the restarted tab");
+
+  // A later, unchanged idle report is not another restart.
+  h.attention({ [a]: { busy: false, asks: 0, asksOpened: 0, background: false } }, 3);
+  await flush();
+  assert.equal(stops(), 1, "one restart per pending change");
+});
+
+await check("counter-probe: without the tracker hook the deferred change never applies", async () => {
+  focused = false;
+  const h = harness(null, { dropTrackerSettle: true });
+  const a = await h.bridge.openSession("/alpha");
+  await h.bridge.activateSession(a);
+  const stops = () => h.commands.filter(c => c.command === "stop_session" && c.args.sessionId === a).length;
+
+  h.emit(a, { type: "turn_start" });
+  h.attention({ [a]: { busy: true, asks: 0, asksOpened: 0, background: false } }, 1);
+  const changed = await h.bridge.setApprovalModeProject("/alpha", "always-ask");
+  assert.deepEqual(changed.deferred, [a], "the busy tab defers the change");
+
+  h.emit(a, { type: "turn_end" });
+  h.emit(a, { type: "response", command: "get_state", success: true, data: { isStreaming: false } });
+  h.attention({ [a]: { busy: false, asks: 0, asksOpened: 0, background: false } }, 2);
+  await flush();
+  assert.equal(h.runState(a), "idle", "the guard settled through the tracker");
+  assert.equal(stops(), 0, "P1: the change never applies");
+  assert.equal(h.getSnapshot()?.sessions.find(s => s.id === a)?.approvalMode, "write",
+    "P1: the next prompt still reaches a process in write mode");
 });
 
 await check("counter-probe: wiring guards to the dot reopens the P1 hole", async () => {
