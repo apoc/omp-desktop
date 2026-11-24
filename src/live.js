@@ -487,6 +487,20 @@
     });
   }
 
+  /** Whether tab `id`'s protective guard state says work is running — the
+   *  same union `_sessionsView` publishes as `runState` (the tab's own state
+   *  or the tracker's, whichever is busier). A deferred approval-mode
+   *  restart re-reads it immediately before it kills the process: the
+   *  dictation stop in between is a real IPC round-trip, and the tracker can
+   *  report the tab running inside it. */
+  function _tabBusy(id) {
+    if (!sessionRegistry.has(id)) return false;
+    const cached = runStateCached(
+      id === activeSessionId ? state : sessionSnapshots.get(id) ?? _EMPTY_SESSION_FIELDS,
+    );
+    return TURN.isBusyRunState(TURN.guardRunState(cached, trackerLive?.[id] ?? null, trackerLoaded));
+  }
+
   /** Whether the tracker reported `id` after its tab was frozen with
    *  `frozen` (the evidence revision `_saveCurrentSession` recorded). An
    *  entry that never changed since, or a snapshot that never mentioned the
@@ -1564,7 +1578,10 @@
    *
    *  The dictation-before-restart ordering is covered by the fake IPC bridge
    *  in test-live-voice.mjs; the remaining ordering relies on the comments
-   *  at each await and the pure profile/approval-mode decisions. */
+   *  at each await and the pure profile/approval-mode decisions. A mode
+   *  restart that finds the guard busy again after an await resolves to
+   *  `{ok: false, busy: true}` without killing the process: the change stays
+   *  pending for the tab's next idle point, it is not a failed restart. */
   async function _respawnSession(id, { profile, resume = null, fresh = false }) {
     if (!window.__TAURI__) return { ok: false, error: "not connected" };
     const entry = sessionRegistry.get(id);
@@ -1580,6 +1597,7 @@
       return { ok: false, error: "omp is already restarting in this tab" };
     }
     _respawning.add(id);
+    let abortedBusy = false;
     try {
       if (id === activeSessionId && (state.dictation.active || _dictationStopPending)) {
         const stopped = await _dictationStop();
@@ -1591,6 +1609,19 @@
       let savedVoice = !fresh && resume ? (id === activeSessionId ? state.liveVoice : sessionSnapshots.get(id)?.liveVoice) : null;
       if (savedVoice?.active) {
         savedVoice = LIVE.apply(LIVE.apply(savedVoice, { type: "stop" }), { type: "stop_success", paused: true });
+      }
+      // Busy-guard recheck, immediately before the irreversible step. The
+      // dictation stop above is a real IPC round-trip, and an approval
+      // restart began only because the guard was idle when the plan read it.
+      // Inside that round-trip the tracker can report the tab running again
+      // (the `dictation_stop` response is still owed, so nothing settled the
+      // tab's own state either) — killing the process then aborts live work.
+      // Abort this attempt instead and leave the change pending; the next
+      // idle point re-runs `_applySettledApprovalModes`. A profile switch
+      // (`fresh`) is the user's explicit choice and keeps its old behaviour.
+      if (!fresh && _tabBusy(id)) {
+        abortedBusy = true;
+        return { ok: false, busy: true, error: "tab became busy" };
       }
       // Awaited: `stop_session` must have removed the old incarnation from
       // the backend's session map before `_spawnSession` installs the new
@@ -1732,6 +1763,13 @@
       return spawnError ? { ok: false, error: spawnError } : { ok: true };
     } finally {
       _respawning.delete(id);
+      // A busy abort leaves the change pending. The busy report that caused
+      // it already ran `_applySettledApprovalModes`, but that pass skipped
+      // this tab (`_respawning` held the id until just now) and the tracker
+      // reports on change only, so a second idle report may never come.
+      // Re-run the plan with the id free: still busy is a no-op, and a
+      // guard that settled idle again in the meantime gets its evaluation.
+      if (abortedBusy) queueMicrotask(_applySettledApprovalModes);
     }
   }
 
@@ -1762,7 +1800,9 @@
    *  (`_applySettledApprovalModes`, called from the `get_state` branch of
    *  `_handleResponse` and from `_applyAttention`).
    *  Resolves to `{ restarted, deferred }` tab ids (`restarted`: respawns
-   *  that succeeded).
+   *  that succeeded; `deferred`: tabs that were busy when planned plus
+   *  attempts that found the guard busy again before the kill and stay
+   *  pending).
    *
    *  Side-effectful (respawns through `_respawnSession`), so not
    *  unit-tested directly; which tab restarts when is the pure
@@ -1779,6 +1819,7 @@
       const target = AMODE.effectiveFor(approvalModes, byId.get(id).path || null);
       return _modeRestartMissed.get(id) !== target;
     });
+    const aborted = [];
     const results = await Promise.all(todo.map(async id => {
       const entry = sessionRegistry.get(id);
       const target = AMODE.effectiveFor(approvalModes, entry?.path || null);
@@ -1787,13 +1828,18 @@
         : { ok: false };
       const reached = r.ok && sessionRegistry.get(id)?.approvalMode === target;
       if (reached) _modeRestartMissed.delete(id);
+      // A busy abort is not a missed target: the tab went busy again inside
+      // the restart's own await, the change is still pending, and the next
+      // idle point retries it. `_modeRestartMissed` would suppress exactly
+      // that retry; it is reported as deferred instead.
+      else if (r.busy) aborted.push(id);
       else if (sessionRegistry.has(id)) {
         _modeRestartMissed.set(id, target);
         console.warn(`[live] approval mode restart of '${id}' did not reach '${target}'`, r.error ?? "");
       }
       return reached ? id : null;
     }));
-    return { restarted: results.filter(Boolean), deferred: later };
+    return { restarted: results.filter(Boolean), deferred: [...later, ...aborted] };
   }
 
   /** Store a set command's view, notify, and apply it to the open tabs.

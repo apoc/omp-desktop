@@ -16,8 +16,8 @@ const load = (win, file) => new Function("window", readFileSync(`${root}src/${fi
 let focused = false;
 globalThis.document = { hasFocus: () => focused, visibilityState: "visible" };
 
-function harness(initial = null, { wireGuardsToDisplay = false, dropTrackerSettle = false } = {}) {
-  const listeners = new Map(), journal = new Map(), bounces = [], commands = [], guardCalls = [];
+function harness(initial = null, { wireGuardsToDisplay = false, dropTrackerSettle = false, dropBusyRecheck = false } = {}) {
+  const listeners = new Map(), journal = new Map(), bounces = [], commands = [], sent = [], guardCalls = [];
   const initialRef = { snapshot: initial };
   // The fake approval-mode store: `start_session` resolves the mode its
   // folder maps to, as Rust's `ApprovalModeStore::resolve` does, so a
@@ -58,6 +58,16 @@ function harness(initial = null, { wireGuardsToDisplay = false, dropTrackerSettl
     );
     if (liveSource === before) throw new Error("counter-probe patch did not apply");
   }
+  if (dropBusyRecheck) {
+    // Counter-probe: remove the pre-kill guard recheck. A restart that went
+    // busy inside its dictation-stop await must then kill the working tab.
+    const before = liveSource;
+    liveSource = liveSource.replace(
+      /      \/\/ Busy-guard recheck[\s\S]*?return \{ ok: false, busy: true, error: "tab became busy" \};\n      \}\n/,
+      "",
+    );
+    if (liveSource === before) throw new Error("counter-probe patch did not apply");
+  }
   new Function("window", "setTimeout", "clearTimeout", liveSource)(w, timeout, clearTimeout);
   w.__TAURI__ = {
     core: {
@@ -88,6 +98,10 @@ function harness(initial = null, { wireGuardsToDisplay = false, dropTrackerSettl
           return new Promise(resolve => pendingInitial.push(() => resolve(initialRef.snapshot)));
         }
         if (command === "replay_events") return Promise.resolve({ dropped: false, events: (journal.get(args.sessionId) ?? []).filter(e => e.seq > args.afterSeq) });
+        if (command === "send_command") {
+          sent.push({ ...JSON.parse(args.json), sessionId: args.sessionId });
+          return Promise.resolve(null);
+        }
         return Promise.resolve(null);
       },
     },
@@ -123,6 +137,11 @@ function harness(initial = null, { wireGuardsToDisplay = false, dropTrackerSettl
   function fire(name, payload) {
     listeners.get(name)?.({ payload });
   }
+  // Answer a command captured in `sent` (its RPC id correlates it), as the
+  // fake bridge does for a pending `dictation_stop`.
+  function reply(cmd, success = true, data = null) {
+    emit(cmd.sessionId, { type: "response", command: cmd.type, id: cmd.id, success, data });
+  }
   const runState = id => snapshot?.sessions.find(s => s.id === id)?.runState;
   const displayRunState = id => snapshot?.sessions.find(s => s.id === id)?.displayRunState;
   const armed = () => guardCalls.at(-1) ?? null;
@@ -132,7 +151,7 @@ function harness(initial = null, { wireGuardsToDisplay = false, dropTrackerSettl
     await new Promise(resolve => setTimeout(resolve, 0));
   };
   return {
-    bridge: w.OMP_BRIDGE, emit, attention, fire, runState, displayRunState, armed, commands,
+    bridge: w.OMP_BRIDGE, emit, attention, fire, reply, sent, runState, displayRunState, armed, commands,
     bounces, setInitial, tick, getSnapshot: () => snapshot,
   };
 }
@@ -477,9 +496,89 @@ await check("counter-probe: without the tracker hook the deferred change never a
     "P1: the next prompt still reaches a process in write mode");
 });
 
+await check("a restart that goes busy in its dictation stop is deferred, then applies once", async () => {
+  focused = false;
+  const h = harness();
+  const a = await h.bridge.openSession("/alpha");
+  await h.bridge.activateSession(a);
+  const stops = () => h.commands.filter(c => c.command === "stop_session" && c.args.sessionId === a).length;
+  const modeOf = id => h.getSnapshot()?.sessions.find(s => s.id === id)?.approvalMode;
+  const idle = rev => h.attention({ [a]: { busy: false, asks: 0, asksOpened: 0, background: false } }, rev);
+  const running = rev => h.attention({ [a]: { busy: true, asks: 0, asksOpened: 0, background: false } }, rev);
+
+  // Dictation is recording in the active tab; the tracker reports it idle.
+  const starting = h.bridge.dictationStart();
+  await flush(2);
+  const startCmd = h.sent.find(c => c.type === "dictation_start");
+  assert.ok(startCmd, "the dictation start was sent");
+  h.reply(startCmd);
+  assert.deepEqual(await starting, { ok: true });
+  idle(1);
+
+  // The mode change starts the restart, which must first stop the dictation:
+  // `dictation_stop` is sent and its answer is still pending.
+  const changing = h.bridge.setApprovalModeProject("/alpha", "always-ask");
+  await flush();
+  const stopCmd = h.sent.find(c => c.type === "dictation_stop");
+  assert.ok(stopCmd, "the restart waits for the dictation stop");
+  assert.equal(stops(), 0, "nothing is killed while the dictation stop is pending");
+
+  // The tracker reports a new run inside that round-trip: the guard the
+  // restart read as idle is busy again.
+  running(2);
+  assert.equal(h.runState(a), "running", "the tracker raised the guard");
+  h.reply(stopCmd, true, { text: "draft" });
+  await flush();
+  const result = await changing;
+  assert.deepEqual(result, { ok: true, restarted: [], deferred: [a] },
+    "the attempt aborts, the change stays pending");
+  assert.equal(stops(), 0, "no stop_session for a tab that went busy again");
+  assert.equal(modeOf(a), "write", "the working process survives");
+
+  // Its next idle point applies the change, exactly once.
+  idle(3);
+  await flush();
+  assert.equal(stops(), 1, "exactly one restart at the next idle point");
+  assert.equal(modeOf(a), "always-ask", "the new process runs the new mode");
+  idle(4);
+  await flush();
+  assert.equal(stops(), 1, "one restart per pending change");
+});
+
+await check("counter-probe: without the pre-kill recheck the busy tab is killed", async () => {
+  focused = false;
+  const h = harness(null, { dropBusyRecheck: true });
+  const a = await h.bridge.openSession("/alpha");
+  await h.bridge.activateSession(a);
+  const stops = () => h.commands.filter(c => c.command === "stop_session" && c.args.sessionId === a).length;
+  const modeOf = id => h.getSnapshot()?.sessions.find(s => s.id === id)?.approvalMode;
+
+  const starting = h.bridge.dictationStart();
+  await flush(2);
+  h.reply(h.sent.find(c => c.type === "dictation_start"));
+  await starting;
+  h.attention({ [a]: { busy: false, asks: 0, asksOpened: 0, background: false } }, 1);
+
+  const changing = h.bridge.setApprovalModeProject("/alpha", "always-ask");
+  await flush();
+  const stopCmd = h.sent.find(c => c.type === "dictation_stop");
+  assert.ok(stopCmd, "the restart waits for the dictation stop");
+  h.attention({ [a]: { busy: true, asks: 0, asksOpened: 0, background: false } }, 2);
+
+  h.reply(stopCmd, true, { text: "draft" });
+  await flush();
+  const result = await changing;
+  assert.equal(result.restarted.includes(a), true, "P1: the busy tab is restarted mid-work");
+  assert.equal(stops(), 1, "P1: the working process was stopped");
+  assert.equal(modeOf(a), "always-ask", "P1: the new mode replaced the working process");
+});
+
 await check("counter-probe: wiring guards to the dot reopens the P1 hole", async () => {
   focused = false;
-  const h = harness(null, { wireGuardsToDisplay: true });
+  // Both guard reads are wired to the dot: the plan's (`wireGuardsToDisplay`)
+  // and the pre-kill recheck, which would otherwise catch the frozen run on
+  // its own (`_tabBusy` still reads the real guard).
+  const h = harness(null, { wireGuardsToDisplay: true, dropBusyRecheck: true });
   const a = await h.bridge.openSession("/alpha");
   const b = await h.bridge.openSession("/beta");
   await h.bridge.activateSession(a);
