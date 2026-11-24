@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A tab waiting for an answer no longer hides its amber dot while it is in the background: the tab dots follow the backend's per-process state for every tab, so a question that opens in another tab shows there before it is opened, and one answered, cancelled or timed out elsewhere clears it. Background jobs show the hollow "background" dot the same way, and a new question bounces the dock once while the window is not focused.
+
 ## [0.15.2] - 2026-11-23
 
 ### Changed

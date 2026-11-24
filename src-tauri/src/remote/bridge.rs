@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter, Manager, Webview};
 use super::emit::{Action, RemoteEmit, Status};
 use super::hub::Hub;
 use super::manager::RemoteManager;
-use super::tracker::{tracker, TrackerSink, Transition};
+use super::tracker::{tracker, Snapshot, TrackerSink, Transition};
 
 /// The webview whose listeners answer phone requests.
 const MAIN_WINDOW: &str = "main";
@@ -41,6 +41,12 @@ impl RemoteEmit for TauriRemoteEmit {
     fn status(&self, status: &Status) {
         self.send("remote://status", status);
     }
+
+    /// Per-session busy / ask / background state for the desktop's tab dots,
+    /// including tabs whose stdout nobody is listening to.
+    fn tracker(&self, snapshot: &Snapshot) {
+        self.send("agent://attention", snapshot);
+    }
 }
 
 /// What the tracker reported since the worker last ran: whether the tab list
@@ -54,6 +60,7 @@ struct Queue {
 
 struct FanOutInner {
     hub: Arc<Hub>,
+    emit: Arc<dyn RemoteEmit>,
     push: Mutex<Option<Arc<dyn TrackerSink>>>,
     queue: Mutex<Queue>,
     wake: Condvar,
@@ -87,6 +94,10 @@ impl FanOutInner {
             if refresh {
                 self.hub.refresh();
             }
+            // Coalesced with the refresh: one event per batch of changes, so
+            // the webview's tab dots follow every session, not just the one
+            // with a live listener.
+            self.emit.tracker(&tracker().snapshot());
             let target = self
                 .push
                 .lock()
@@ -113,9 +124,10 @@ pub struct FanOut {
 }
 
 impl FanOut {
-    pub fn new(hub: Arc<Hub>) -> Result<Self, String> {
+    pub fn new(hub: Arc<Hub>, emit: Arc<dyn RemoteEmit>) -> Result<Self, String> {
         let inner = Arc::new(FanOutInner {
             hub,
+            emit,
             push: Mutex::new(None),
             queue: Mutex::new(Queue::default()),
             wake: Condvar::new(),

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::settings::RemoteSettings;
+use super::tracker::Snapshot;
 
 /// A phone request handed to the desktop webview.
 #[derive(Serialize, Deserialize, Clone)]
@@ -62,4 +63,8 @@ pub trait RemoteEmit: Send + Sync {
     fn connections(&self, device_ids: &[String]);
     fn action(&self, action: &Action);
     fn status(&self, status: &Status);
+    /// Every session's busy / open-ask / background state after a committed
+    /// tracker change, for the desktop's tab dots. Default: nothing (test
+    /// emitters and hub-internal forwarders only carry phone traffic).
+    fn tracker(&self, _snapshot: &Snapshot) {}
 }

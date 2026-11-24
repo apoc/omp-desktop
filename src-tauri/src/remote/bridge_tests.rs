@@ -1,8 +1,9 @@
 use super::*;
 use crate::remote::devices::DeviceStore;
 use crate::remote::emit::{Action, Status};
-use std::sync::mpsc;
-use std::time::Duration;
+use std::sync::atomic::AtomicBool;
+use std::sync::{mpsc, Mutex};
+use std::time::{Duration, Instant};
 
 struct NoEmit;
 
@@ -11,6 +12,26 @@ impl RemoteEmit for NoEmit {
     fn connections(&self, _device_ids: &[String]) {}
     fn action(&self, _action: &Action) {}
     fn status(&self, _status: &Status) {}
+}
+
+/// Keeps every tracker snapshot the fan-out hands to the webview edge.
+#[derive(Default)]
+struct RecordingEmit(Mutex<Vec<Snapshot>>);
+
+impl RecordingEmit {
+    fn snapshots(&self) -> Vec<Snapshot> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl RemoteEmit for RecordingEmit {
+    fn watch(&self, _tab_ids: &[String]) {}
+    fn connections(&self, _device_ids: &[String]) {}
+    fn action(&self, _action: &Action) {}
+    fn status(&self, _status: &Status) {}
+    fn tracker(&self, snapshot: &Snapshot) {
+        self.0.lock().unwrap().push(snapshot.clone());
+    }
 }
 
 type Recorded = (String, Option<Transition>);
@@ -27,7 +48,7 @@ fn fan_out(name: &str) -> (FanOut, Arc<Hub>, mpsc::Receiver<Recorded>) {
     let dir = crate::test_support::tempdir("remote-bridge", name);
     let devices = Arc::new(DeviceStore::load(dir.join("devices.json")));
     let hub = Arc::new(Hub::new(devices, Arc::new(NoEmit)));
-    let fan_out = FanOut::new(Arc::clone(&hub)).unwrap();
+    let fan_out = FanOut::new(Arc::clone(&hub), Arc::new(NoEmit)).unwrap();
     let (tx, rx) = mpsc::sync_channel(16);
     fan_out.set_push(Some(Arc::new(Recorder(tx))));
     (fan_out, hub, rx)
@@ -74,4 +95,41 @@ fn a_stopped_fan_out_forwards_nothing_more() {
     fan_out.stop();
     fan_out.changed("a", Some(Transition::QuestionOpened));
     assert!(seen.recv_timeout(Duration::from_millis(300)).is_err());
+}
+
+#[test]
+fn the_webview_edge_receives_the_tracker_snapshot_after_an_open() {
+    use crate::remote::tracker::SessionSnapshot;
+
+    let dir = crate::test_support::tempdir("remote-bridge", "attention");
+    let devices = Arc::new(DeviceStore::load(dir.join("devices.json")));
+    let hub = Arc::new(Hub::new(devices, Arc::new(NoEmit)));
+    let emit = Arc::new(RecordingEmit::default());
+    let fan_out = FanOut::new(Arc::clone(&hub), Arc::clone(&emit) as Arc<dyn RemoteEmit>).unwrap();
+    let sid = "bridge-attention-open";
+    tracker().on_frame(
+        sid,
+        Some("extension_ui_request"),
+        Some(&serde_json::json!({"id":"q","method":"select"})),
+        Instant::now(),
+        &AtomicBool::new(true),
+    );
+    fan_out.changed(sid, Some(Transition::QuestionOpened));
+    let seen = crate::test_support::eventually(Duration::from_secs(2), || {
+        emit.snapshots()
+            .into_iter()
+            .rev()
+            .find(|snapshot| snapshot.get(sid).is_some_and(|entry| entry.asks == 1))
+    })
+    .expect("the tracker snapshot reached the webview edge");
+    assert_eq!(
+        seen[sid],
+        SessionSnapshot {
+            busy: false,
+            asks: 1,
+            background: false,
+        }
+    );
+    tracker().on_exit(sid);
+    fan_out.stop();
 }

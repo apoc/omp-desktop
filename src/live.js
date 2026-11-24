@@ -158,6 +158,12 @@
   // respawns only that tab (see switchSessionProfile).
   const sessionRegistry = new Map();
   const sessionSnapshots = new Map(); // id -> saved state + volatile vars
+  // Every session's tracker entry from Rust (`agent://attention`, initial
+  // `attention_snapshot`): `{ busy, asks, background }` per tab id,
+  // background ones included. Non-active tab dots overlay it on their
+  // frozen snapshot (`TURN.backgroundRunState`); null until the backend
+  // answers.
+  let trackerLive = null;
   const respawnVoice = new Map(); // same-conversation voice awaiting a fresh process activation
   const gitListeners = new Map();  // session_id → Tauri unlisten fn for git://branch/{id}
   // Prompt history — one list per tab, newest-first, in memory only. Never
@@ -425,17 +431,25 @@
   }
 
   // Snapshot `sessions[]`: the registry entries plus each tab's run state.
-  // Active tab reads live state; background tabs read their cached snapshot
-  // (never activated yet = "idle" defaults).
+  // The active tab reads live state. A background tab reads its cached
+  // snapshot (never activated yet = "idle" defaults), overlaid with the
+  // backend tracker's `busy` / `asks` / `background` — its own listener is
+  // gone, so an ask that arrives (or is answered elsewhere) never reaches
+  // that snapshot.
   function _sessionsView() {
-    return [...sessionRegistry.values()].map(s => ({
-      ...s,
-      runState: runStateCached(
+    return [...sessionRegistry.values()].map(s => {
+      const cached = runStateCached(
         s.id === activeSessionId
           ? state
           : sessionSnapshots.get(s.id) ?? _EMPTY_SESSION_FIELDS
-      ),
-    }));
+      );
+      return {
+        ...s,
+        runState: s.id === activeSessionId
+          ? cached
+          : TURN.backgroundRunState(cached, trackerLive?.[s.id] ?? null),
+      };
+    });
   }
 
   // Invoke a Tauri command, returning `fallback` when there's no Tauri
@@ -968,6 +982,7 @@
   let _switchPromise = Promise.resolve();
   async function _switchToSession(id) {
     if (!window.__TAURI__) return;
+    _ensureAttention();
     let done;
     const p = new Promise(resolve => { done = resolve; });
     _switchPromise = p;
@@ -1370,6 +1385,37 @@
       },
       ready,
     };
+  }
+
+  // The tracker overlay, subscribed once per page: `agent://attention`
+  // carries every session's state after any committed tracker change, and
+  // `attention_snapshot` covers a reload. An event that lands before the
+  // initial answer wins (`_attentionEvents`), so the slower first read
+  // cannot roll the dots back to an older snapshot.
+  let _attentionStarted = false;
+  let _attentionEvents = 0;
+  function _ensureAttention() {
+    if (_attentionStarted || !window.__TAURI__) return;
+    _attentionStarted = true;
+    const listener = _listen("agent://attention", payload => _applyAttention(payload));
+    listener.ready
+      .then(() => _invokeSafe("attention_snapshot", {}, null))
+      .then(snapshot => {
+        if (snapshot && _attentionEvents === 0) _applyAttention(snapshot);
+      });
+  }
+
+  function _applyAttention(snapshot) {
+    const next = snapshot && typeof snapshot === "object" ? snapshot : {};
+    // A question opened in any tab bounces the dock once while the window
+    // is not focused; a focused window already shows the tab dot.
+    const focused = typeof document !== "undefined" && document.hasFocus?.() === true;
+    if (window.OMP_ATTENTION?.shouldBounce({ previous: trackerLive, next, focused })) {
+      window.OMP_ATTENTION.requestAttention(window);
+    }
+    trackerLive = next;
+    _attentionEvents++;
+    notify();
   }
 
   /** Detach the active session's listeners and clear all per-session state,

@@ -9,13 +9,10 @@ const _UW_GLOBAL_KEY = "__global__";
 const _UW_NO_IDS = [];
 const _UW_EMPTY_CONFIG = { plugins: [], errors: [], fatal: null, configPath: null };
 
-// One dock bounce (macOS; the OS decides elsewhere): Informational, no-op
-// without the Tauri window API or the capability.
+// One dock bounce (macOS; the OS decides elsewhere): the shared helper in
+// app/attention.js, so a new ask elsewhere bounces exactly the same way.
 function _uwRequestAttention() {
-  try {
-    const w = window.__TAURI__?.window;
-    w?.getCurrentWindow().requestUserAttention(w.UserAttentionType?.Informational ?? 2)?.catch?.(() => {});
-  } catch { /* unsupported: no bounce */ }
+  window.OMP_ATTENTION?.requestAttention?.(window);
 }
 
 function _uwVisible() {

@@ -1006,11 +1006,13 @@ mod tests {
             true,
             &alive,
         );
-        assert_eq!(tracker.snapshot()[sid], (true, 1));
+        let snapshot = tracker.snapshot();
+        assert_eq!((snapshot[sid].busy, snapshot[sid].asks), (true, 1));
         alive.store(false, Ordering::Release);
         record_tracker_frame(sid, Some("agent_end"), None, false, &alive);
+        let snapshot = tracker.snapshot();
         assert_eq!(
-            tracker.snapshot()[sid],
+            (snapshot[sid].busy, snapshot[sid].asks),
             (true, 1),
             "retired reader must not finish a replacement turn"
         );

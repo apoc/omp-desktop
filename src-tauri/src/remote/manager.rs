@@ -108,7 +108,7 @@ impl RemoteManager {
                 }),
             }
         });
-        let fan_out = match FanOut::new(Arc::clone(&core.hub)) {
+        let fan_out = match FanOut::new(Arc::clone(&core.hub), Arc::clone(&core.emit)) {
             Ok(fan_out) => {
                 fan_out.set_push(Some(Arc::clone(&core.pusher) as Arc<dyn TrackerSink>));
                 Some(Arc::new(fan_out))

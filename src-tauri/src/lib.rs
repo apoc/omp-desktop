@@ -1652,6 +1652,7 @@ pub fn run() {
             remote::commands::remote_action_result,
             remote::commands::remote_ready,
             remote::commands::remote_push_test,
+            remote::commands::attention_snapshot,
             remote::commands::remote_default_contact,
         ])
         .setup(|app| {

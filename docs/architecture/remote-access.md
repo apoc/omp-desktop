@@ -17,16 +17,17 @@ Code: `src-tauri/src/remote/` (Rust: server, auth, tracker, push), `src/remote/`
 ```
 phone page ⇄ TLS/WebSocket ⇄ Rust hub ⇄ Tauri events/commands ⇄ webview (publisher + executor) ⇄ OMP_BRIDGE ⇄ omp
                                   ▲
-        agent stdout reader → tracker (busy / open questions, all tabs) → push
+        agent stdout reader → tracker (busy / open questions / background, all tabs) → push
+                                 └→ agent://attention → webview tab dots (also without phones)
 ```
 
 - The desktop webview stays the single source of truth. It publishes the **active** tab's view (`remote_publish`) and executes phone actions through the existing bridge (`send`/`steer`/`abort`/`answerAsk`/`answerConfirm`/`answerAskDialog`/`cancelAsk`). A phone tab **is** the desktop tab: selecting a tab on the phone activates it on the desktop, and the desktop user sees the switch.
 - Rust owns transport, auth, certificates, settings (`remote.json`) and devices (`remote-devices.json`, mode 0600 on Unix). The webview never sees a token or a key.
-- Events Rust → webview: `remote://watch` (tab ids phones need, empty while no phone is connected), `remote://action`, `remote://status` (`Status`). The webview calls `remote_ready(true)` only after its listeners exist; Rust resets readiness on page load and closes phone sockets with 4503 while the webview is not ready.
+- Events Rust → webview: `remote://watch` (tab ids phones need, empty while no phone is connected), `remote://action`, `remote://status` (`Status`), `agent://attention` (per-session `{busy, asks, background}` after every tracker change, also with remote access disabled). The webview calls `remote_ready(true)` only after its listeners exist; Rust resets readiness on page load and closes phone sockets with 4503 while the webview is not ready.
 
 ## Commands and `Status`
 
-`remote_status`, `remote_interfaces`, `remote_apply_settings` (always the **complete** `RemoteSettings`: enabled, interface name, port, host name, cert `generated | files{cert,key}`, push{enabled, questions, finished, onlyWhenLocked, contact}), `remote_pair_start` (→ `{url, svg, expiresAt}`), `remote_pair_cancel`, `remote_device_rename`, `remote_device_revoke`, `remote_regenerate_cert`, `remote_push_test`, `remote_default_contact` (global git `user.email`), `remote_publish`, `remote_action_result`, `remote_ready`.
+`remote_status`, `remote_interfaces`, `remote_apply_settings` (always the **complete** `RemoteSettings`: enabled, interface name, port, host name, cert `generated | files{cert,key}`, push{enabled, questions, finished, onlyWhenLocked, contact}), `remote_pair_start` (→ `{url, svg, expiresAt}`), `remote_pair_cancel`, `remote_device_rename`, `remote_device_revoke`, `remote_regenerate_cert`, `remote_push_test`, `remote_default_contact` (global git `user.email`), `remote_publish`, `remote_action_result`, `remote_ready`, `attention_snapshot`.
 
 `Status` carries `enabled`, `listening`, `url`, `ip`, `error`, `fingerprint`, `pushError`, `lockDetection` (whether this platform can tell a locked desktop: macOS, Windows, Linux), `devices[{id,name,pairedAt,lastSeen,connected,pushSubscribed}]` and the saved `settings`, so the Settings rows prefill from it and refresh on every `remote://status`.
 
@@ -51,14 +52,17 @@ phone page ⇄ TLS/WebSocket ⇄ Rust hub ⇄ Tauri events/commands ⇄ webview 
 
 ## Tracker (`tracker.rs`)
 
-Per omp session, independent of the active webview tab: `busy`, `turn_started`, and the set of open question ids. The stdout reader hands its already parsed frame to `tracker().on_frame` before publishing it in the journal or recording extension UI, so replay cannot expose a question before the tracker knows it.
+Per omp session, independent of the active webview tab: `busy`, `turn_started`, the set of open question ids, and `background` (async work that can still wake the session). The stdout reader hands its already parsed frame to `tracker().on_frame` before publishing it in the journal or recording extension UI, so replay cannot expose a question before the tracker knows it.
 
-- `agent_start` sets busy and starts the turn clock (a continuation keeps the first start).
-- `agent_end` counts only when it yields control: `yielded`, else `isTerminal`, else yes. An `agent_end` that continues into another run changes nothing. A yielding end clears busy and every open question and reports the turn's duration.
+- `agent_start` sets busy, starts the turn clock (a continuation keeps the first start) and clears `background`.
+- `agent_end` counts only when it yields control: `yielded`, else `isTerminal`, else yes. An `agent_end` that continues into another run changes nothing. A yielding end clears busy and every open question and reports the turn's duration; its `awaitingAsyncWork` (omp ≥ 18.21) sets `background`.
+- A `get_state` response carries `hasPendingAsyncWork`, the same flag the webview's `asyncPending` uses; it sets `background` too. The active tab asks for one on every activation and `agent_end`, so at the 18.20 floor that answer is the only source; a background tab keeps its last answer until `session_settled`.
+- `session_settled` (nothing can wake the session) clears busy and `background`.
 - `extension_ui_request` with `select`, `confirm`, `input`, `editor` **or `ask`** and a string id (≤ 256 bytes) opens a question; a duplicate id opens nothing. At most 64 open questions per session.
 - `extension_ui_request` with `method: "cancel"` and a `targetId` (omp itself withdrawing a dialog) closes that question.
 - An answer written and flushed by `AgentBridge::send` / the approval-and-grant path removes the id (`on_answered`); process exit, stop and replacement remove the session. Auto-approved tool prompts and retired readers are excluded.
 - **The hook must stay O(1) and non-blocking**: stream deltas and non-dialog traffic classify to `None` and take no lock; question membership is a hash set; the sink is called with both mutexes released and must only enqueue (transport and push belong to the manager's worker).
+- The published snapshot is `{busy, asks, background}` per session id. The phone's tab list reads `busy`/`hasAsk` from it; the manager's fan-out also emits it to the desktop as `agent://attention`, and `attention_snapshot` returns it for a page load (`docs/architecture/turn-status.md`).
 
 ## Publisher (webview)
 

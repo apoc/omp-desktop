@@ -959,7 +959,8 @@ mod tests {
                 r#"{"type":"extension_ui_response","id":"q","value":"Deny"}"#,
             )
             .unwrap();
-        assert_eq!(tracker().snapshot()[sid], (false, 0));
+        let snapshot = tracker().snapshot();
+        assert_eq!((snapshot[sid].busy, snapshot[sid].asks), (false, 0));
         tracker().on_exit(sid);
     }
 
@@ -1004,7 +1005,8 @@ mod tests {
                 r#"{"type":"extension_ui_response","id":"q","value":"Deny"}"#
             )
             .is_err());
-        assert_eq!(tracker().snapshot()[sid], (false, 1));
+        let snapshot = tracker().snapshot();
+        assert_eq!((snapshot[sid].busy, snapshot[sid].asks), (false, 1));
         tracker().on_exit(sid);
     }
 

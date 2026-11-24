@@ -47,6 +47,32 @@
   const busyInRepo = (sessions, root) =>
     !!root && sessions.some(s => s.repoRoot === root && isBusyRunState(s.runState));
 
+  /** A background tab's run state after overlaying the backend tracker
+   *  (`agent://attention`, `src-tauri/src/remote/tracker.rs`) on the run
+   *  state its frozen snapshot carries. A background tab has no live
+   *  `agent://line` listener, so its snapshot's asks and turn never move;
+   *  the tracker sees every process's frames and knows better.
+   *
+   *  `cached` is `runStateOf` over the snapshot (`live.js`
+   *  `_sessionsView`), `live` the tracker entry (`busy`, `asks`,
+   *  `background`) or null when it has none (never started, already
+   *  exited). Both directions follow the tracker: a new ask shows
+   *  `waiting-user` before the tab is opened, and an ask cancelled,
+   *  answered elsewhere or ended by omp stops showing it. `failed` is the
+   *  process's own verdict and wins. */
+  function backgroundRunState(cached, live) {
+    if (cached === "failed" || !live) return cached;
+    if (live.asks > 0) return "waiting-user";
+    // Only states that mean the agent is still working can go stale; an
+    // idle tab the tracker has no run for stays as its snapshot said.
+    if (cached === "waiting-user" || cached === "running" || cached === "background") {
+      if (live.busy) return "running";
+      if (live.background) return "background";
+      return "idle";
+    }
+    return cached;
+  }
+
   /** Whether an `agent_end` is the agent yielding its turn. `yielded: false`
    *  ends are the agent's own continuations (a retry, compaction, a
    *  stop-time reminder); frames without the field count when terminal —
@@ -368,7 +394,7 @@
   }
 
   window.OMP_TURN_STATUS = Object.freeze({
-    runStateOf, isBusyRunState, busyElsewhere, busyInRepo, isYield, stripDiagnostics, providerHeadline, failureOf, finalFailures,
+    runStateOf, backgroundRunState, isBusyRunState, busyElsewhere, busyInRepo, isYield, stripDiagnostics, providerHeadline, failureOf, finalFailures,
     withPromptError, finishedJobsOf,
     failedStop, producedOutput, isHidden, retryIndex, retryStarted, retryAttempting, retryEnded, retryFinished, retryYielded, retryCleared,
   });

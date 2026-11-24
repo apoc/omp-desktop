@@ -493,4 +493,52 @@ check("a yield without a retry row and a dead process leave no trace", () => {
   assert.equal(T.retryIndex(T.retryCleared(waiting)), -1);
 });
 
+// ── backgroundRunState: the backend tracker over a frozen snapshot ───────
+// A background tab has no live listener; Rust's tracker (all processes) is
+// overlaid on what the tab froze when it was left.
+const tracker = (busy, asks, background = false) => ({ busy, asks, background });
+
+check("a new ask reaches an unfocused background tab from the tracker", () => {
+  for (const cached of ["idle", "running", "background", "retrying"]) {
+    assert.equal(T.backgroundRunState(cached, tracker(true, 1)), "waiting-user", cached);
+  }
+  assert.equal(T.backgroundRunState("idle", tracker(false, 2)), "waiting-user", "a queued form field");
+});
+
+check("failed wins over the tracker and a missing entry keeps the snapshot", () => {
+  assert.equal(T.backgroundRunState("failed", tracker(true, 3)), "failed", "a dead process keeps its verdict");
+  for (const cached of ["idle", "waiting-user", "running", "background", "retrying"]) {
+    assert.equal(T.backgroundRunState(cached, null), cached);
+  }
+});
+
+check("a stale ask or turn in the snapshot follows the tracker back to idle", () => {
+  // Answered on another tab, cancelled or timed out; the turn ended.
+  for (const cached of ["waiting-user", "running", "background"]) {
+    assert.equal(T.backgroundRunState(cached, tracker(false, 0)), "idle", cached);
+  }
+  assert.equal(T.backgroundRunState("idle", tracker(false, 0)), "idle");
+});
+
+check("the tracker's running and background work replace the snapshot state", () => {
+  assert.equal(T.backgroundRunState("waiting-user", tracker(true, 0)), "running", "the ask was answered, the turn goes on");
+  assert.equal(T.backgroundRunState("running", tracker(false, 0, true)), "background");
+  assert.equal(T.backgroundRunState("background", tracker(false, 0, true)), "background");
+  assert.equal(T.backgroundRunState("waiting-user", tracker(false, 0, true)), "background");
+});
+
+check("states that are not a live run are left to the snapshot", () => {
+  // `retrying` has its own live row; `failed` and `idle` cannot go stale.
+  assert.equal(T.backgroundRunState("retrying", tracker(true, 0)), "retrying");
+  assert.equal(T.backgroundRunState("idle", tracker(true, 0)), "idle");
+});
+
+check("counter-probe: without the overlay the frozen snapshot stays wrong", () => {
+  const frozen = (cached) => cached; // `_sessionsView` before the tracker overlay
+  assert.equal(frozen("idle"), "idle");
+  assert.equal(frozen("running"), "running");
+  assert.notEqual(T.backgroundRunState("idle", tracker(true, 1)), frozen("idle"));
+  assert.notEqual(T.backgroundRunState("waiting-user", tracker(false, 0)), frozen("waiting-user"));
+});
+
 console.log(`test-turn-status: ${passed} checks passed`);

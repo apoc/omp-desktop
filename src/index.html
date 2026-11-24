@@ -558,6 +558,10 @@
        Dependency-free IIFE; live.js reads window.OMP_STREAM_DELTA at its
        top-level init, so it must load before live.js. -->
   <script src="app/stream-delta.js"></script>
+  <!-- OS attention (dock bounce) shared by rail widget attention and a new
+       ask in any tab. Dependency-free IIFE; live.js and app/use-widgets.jsx
+       read window.OMP_ATTENTION at call time, so it must load before both. -->
+  <script src="app/attention.js"></script>
   <script src="live.js"></script>
 
   <!-- App root — wired to OMP_BRIDGE, no demo effects -->

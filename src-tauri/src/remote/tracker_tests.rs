@@ -2,6 +2,15 @@ use super::*;
 use serde_json::json;
 use std::sync::atomic::AtomicBool;
 
+/// A snapshot entry without background work.
+fn shown(busy: bool, asks: usize) -> SessionSnapshot {
+    SessionSnapshot {
+        busy,
+        asks,
+        background: false,
+    }
+}
+
 #[derive(Clone, Default)]
 struct Collect(Arc<Mutex<Vec<Option<Transition>>>>);
 
@@ -58,11 +67,11 @@ fn question_lifecycle_and_turn_finish() {
     );
     assert_eq!(
         t.snapshot()["s1"],
-        (true, 1),
+        shown(true, 1),
         "status frames are not questions"
     );
     t.on_answered("s1", "q1", &AtomicBool::new(true));
-    assert_eq!(t.snapshot()["s1"], (true, 0));
+    assert_eq!(t.snapshot()["s1"], shown(true, 0));
     t.on_frame(
         "s1",
         Some("agent_end"),
@@ -70,7 +79,7 @@ fn question_lifecycle_and_turn_finish() {
         now + Duration::from_secs(40),
         &AtomicBool::new(true),
     );
-    assert_eq!(t.snapshot()["s1"], (false, 0));
+    assert_eq!(t.snapshot()["s1"], shown(false, 0));
     assert!(
         matches!(sink.transitions().as_slice(), [("s1", Transition::QuestionOpened), ("s1", Transition::TurnFinished { ran })] if *ran >= Duration::from_secs(40))
     );
@@ -97,7 +106,7 @@ fn exit_forgets_the_session_and_sessions_are_independent() {
     t.on_exit("a");
     let s = t.snapshot();
     assert!(!s.contains_key("a"));
-    assert_eq!(s["b"], (false, 1));
+    assert_eq!(s["b"], shown(false, 1));
 }
 
 #[test]
@@ -140,10 +149,10 @@ fn only_dialogs_with_string_ids_open_and_duplicate_ids_do_not_notify() {
             &AtomicBool::new(true),
         );
     }
-    assert_eq!(t.snapshot()["s1"], (false, 5));
+    assert_eq!(t.snapshot()["s1"], shown(false, 5));
     assert_eq!(sink.transitions().len(), 5);
     t.on_frame("s1", Some("agent_end"), None, now, &AtomicBool::new(true));
-    assert_eq!(t.snapshot()["s1"], (false, 0));
+    assert_eq!(t.snapshot()["s1"], shown(false, 0));
 }
 
 #[test]
@@ -196,7 +205,7 @@ fn finish_uses_first_start_across_retries_and_does_not_repeat_finished_transitio
 
 struct ReentrantSink {
     tracker: std::sync::Weak<Tracker>,
-    changes: Mutex<Vec<(bool, usize)>>,
+    changes: Mutex<Vec<SessionSnapshot>>,
 }
 
 impl TrackerSink for ReentrantSink {
@@ -239,7 +248,7 @@ fn callbacks_observe_committed_state_outside_both_locks_and_sink_is_replaceable(
     t.on_answered("s1", "q", &AtomicBool::new(true));
     assert_eq!(
         *first.changes.lock().unwrap(),
-        [(true, 0), (true, 1), (true, 0)]
+        [shown(true, 0), shown(true, 1), shown(true, 0)]
     );
     let second = Arc::new(ReentrantSink {
         tracker: Arc::downgrade(&t),
@@ -250,7 +259,7 @@ fn callbacks_observe_committed_state_outside_both_locks_and_sink_is_replaceable(
     t.on_exit("s1");
     t.on_exit("s1");
     assert_eq!(first.changes.lock().unwrap().len(), 3);
-    assert_eq!(*second.changes.lock().unwrap(), [(false, 0)]);
+    assert_eq!(*second.changes.lock().unwrap(), [shown(false, 0)]);
 }
 
 #[test]
@@ -277,7 +286,7 @@ fn omp_cancel_removes_only_target_and_notifies_only_when_removed() {
         now,
         &AtomicBool::new(true),
     );
-    assert_eq!(t.snapshot()["s1"], (false, 1));
+    assert_eq!(t.snapshot()["s1"], shown(false, 1));
     assert_eq!(sink.notifications(), 3);
     for frame in [
         cancel,
@@ -303,7 +312,7 @@ fn omp_cancel_removes_only_target_and_notifies_only_when_removed() {
     assert_eq!(sink.notifications(), 3);
     assert!(!t.snapshot().contains_key("missing"));
     t.on_answered("s1", "q2", &AtomicBool::new(true));
-    assert_eq!(t.snapshot()["s1"], (false, 0));
+    assert_eq!(t.snapshot()["s1"], shown(false, 0));
     assert_eq!(sink.notifications(), 4);
 }
 
@@ -343,7 +352,7 @@ fn non_yielding_end_preserves_run_questions_timing_and_emits_nothing() {
             now + Duration::from_secs(10),
             &AtomicBool::new(true),
         );
-        assert_eq!(t.snapshot()["s1"], (true, 1));
+        assert_eq!(t.snapshot()["s1"], shown(true, 1));
         assert_eq!(sink.notifications(), 2);
         t.on_frame(
             "s1",
@@ -352,7 +361,7 @@ fn non_yielding_end_preserves_run_questions_timing_and_emits_nothing() {
             now + Duration::from_secs(20),
             &AtomicBool::new(true),
         );
-        assert_eq!(t.snapshot()["s1"], (true, 1));
+        assert_eq!(t.snapshot()["s1"], shown(true, 1));
         t.on_frame(
             "s1",
             Some("agent_end"),
@@ -360,7 +369,7 @@ fn non_yielding_end_preserves_run_questions_timing_and_emits_nothing() {
             now + Duration::from_secs(40),
             &AtomicBool::new(true),
         );
-        assert_eq!(t.snapshot()["s1"], (false, 0));
+        assert_eq!(t.snapshot()["s1"], shown(false, 0));
         assert!(matches!(
             sink.transitions().as_slice(),
             [("s1", Transition::QuestionOpened), ("s1", Transition::TurnFinished { ran })]
@@ -403,7 +412,7 @@ fn question_ids_are_bounded_by_bytes_and_open_count_and_space_is_reusable() {
             &AtomicBool::new(true),
         );
     }
-    assert_eq!(t.snapshot()["s1"], (false, 64));
+    assert_eq!(t.snapshot()["s1"], shown(false, 64));
     assert_eq!(sink.notifications(), 64);
     t.on_answered("s1", "q63", &AtomicBool::new(true));
     assert_eq!(sink.notifications(), 64, "overflow id was never tracked");
@@ -415,7 +424,7 @@ fn question_ids_are_bounded_by_bytes_and_open_count_and_space_is_reusable() {
         now,
         &AtomicBool::new(true),
     );
-    assert_eq!(t.snapshot()["s1"], (false, 64));
+    assert_eq!(t.snapshot()["s1"], shown(false, 64));
     assert_eq!(sink.notifications(), 66);
 }
 
@@ -448,8 +457,86 @@ fn a_retired_reader_changes_nothing_and_notifies_nobody() {
     );
     t.on_frame("s1", Some("agent_end"), None, now, &retired);
     t.on_answered("s1", "q", &retired);
-    assert_eq!(t.snapshot()["s1"], (true, 1));
+    assert_eq!(t.snapshot()["s1"], shown(true, 1));
     assert_eq!(sink.notifications(), 2);
+}
+
+#[test]
+fn awaiting_end_and_get_state_report_background_work_until_settled() {
+    let t = Tracker::default();
+    let now = Instant::now();
+    let live = AtomicBool::new(true);
+    // omp ≥ 18.21 names the awaiting state on the yielding end.
+    t.on_frame("bg-end", Some("agent_start"), None, now, &live);
+    t.on_frame(
+        "bg-end",
+        Some("agent_end"),
+        Some(&json!({"yielded": true, "awaitingAsyncWork": true})),
+        now,
+        &live,
+    );
+    assert_eq!(
+        t.snapshot()["bg-end"],
+        SessionSnapshot {
+            busy: false,
+            asks: 0,
+            background: true,
+        }
+    );
+    t.on_frame("bg-end", Some("session_settled"), None, now, &live);
+    assert_eq!(t.snapshot()["bg-end"], shown(false, 0));
+    // The active tab's get_state answer is the source at the version floor.
+    let running = json!({
+        "type": "response", "command": "get_state", "success": true,
+        "data": {"hasPendingAsyncWork": true},
+    });
+    t.on_frame("bg-state", Some("response"), Some(&running), now, &live);
+    assert_eq!(
+        t.snapshot()["bg-state"],
+        SessionSnapshot {
+            busy: false,
+            asks: 0,
+            background: true,
+        }
+    );
+    // A new run consumed the job; without `awaitingAsyncWork` the last
+    // answer stands until the next get_state or `session_settled`.
+    t.on_frame("bg-state", Some("agent_start"), None, now, &live);
+    assert_eq!(t.snapshot()["bg-state"], shown(true, 0));
+    t.on_frame(
+        "bg-state",
+        Some("agent_end"),
+        Some(&json!({"yielded": true})),
+        now,
+        &live,
+    );
+    assert_eq!(t.snapshot()["bg-state"], shown(false, 0));
+}
+
+#[test]
+fn a_background_only_change_notifies_once_and_repeats_are_ignored() {
+    let t = Tracker::default();
+    let sink = Collect::default();
+    t.set_sink(Arc::new(sink.clone()));
+    let response = json!({"command":"get_state","data":{"hasPendingAsyncWork":true}});
+    let live = AtomicBool::new(true);
+    t.on_frame(
+        "s1",
+        Some("response"),
+        Some(&response),
+        Instant::now(),
+        &live,
+    );
+    assert!(t.snapshot()["s1"].background);
+    assert_eq!(sink.notifications(), 1);
+    t.on_frame(
+        "s1",
+        Some("response"),
+        Some(&response),
+        Instant::now(),
+        &live,
+    );
+    assert_eq!(sink.notifications(), 1, "an unchanged answer is no change");
 }
 
 #[test]
@@ -464,5 +551,5 @@ fn snapshot_reads_without_locking_sessions_mutex() {
     );
     let _held = t.inner.lock().unwrap();
     let snap = t.snapshot();
-    assert_eq!(snap["s1"], (true, 0));
+    assert_eq!(snap["s1"], shown(true, 0));
 }

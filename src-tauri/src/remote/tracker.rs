@@ -1,11 +1,13 @@
-//! Busy / dialog state for every agent process, including background tabs.
-//! The reader reuses its parsed frame; callbacks must only enqueue work.
+//! Busy / dialog / background-work state for every agent process, including
+//! background tabs. The reader reuses its parsed frame; callbacks must only
+//! enqueue work.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use serde_json::Value;
 
 const MAX_ID_BYTES: usize = 256;
@@ -28,9 +30,21 @@ struct SessionState {
     busy: bool,
     turn_started: Option<Instant>,
     open: HashSet<String>,
+    /// omp reports background work (an async job) that can still wake the
+    /// session after it yielded.
+    background: bool,
 }
 
-pub type Snapshot = HashMap<String, (bool, usize)>;
+/// One session as the webview and the phones see it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSnapshot {
+    pub busy: bool,
+    pub asks: usize,
+    pub background: bool,
+}
+
+pub type Snapshot = HashMap<String, SessionSnapshot>;
 
 #[derive(Default)]
 pub struct Tracker {
@@ -42,7 +56,9 @@ pub struct Tracker {
 /// The frames that change tracked state; everything else is ignored.
 enum Event<'a> {
     Start,
-    End,
+    End { awaiting: Option<bool> },
+    Settled,
+    AsyncWork(bool),
     Open(&'a str),
     Cancel(&'a str),
 }
@@ -51,7 +67,28 @@ impl<'a> Event<'a> {
     fn classify(frame_type: Option<&str>, frame: Option<&'a Value>) -> Option<Self> {
         match frame_type? {
             "agent_start" => Some(Self::Start),
-            "agent_end" => Self::yields(frame).then_some(Self::End),
+            "agent_end" => Self::yields(frame).then(|| Self::End {
+                awaiting: frame
+                    .and_then(|end| end.get("awaitingAsyncWork"))
+                    .and_then(Value::as_bool),
+            }),
+            "session_settled" => Some(Self::Settled),
+            // The active tab asks for `get_state` on every activation and
+            // `agent_end`; its `hasPendingAsyncWork` is the same flag the
+            // webview's `asyncPending` uses. Background tabs keep the last
+            // value until `session_settled` (or an `agent_end` that names
+            // `awaitingAsyncWork`, omp ≥ 18.21).
+            "response" => {
+                let frame = frame?;
+                if frame.get("command").and_then(Value::as_str) != Some("get_state") {
+                    return None;
+                }
+                frame
+                    .get("data")
+                    .and_then(|data| data.get("hasPendingAsyncWork"))
+                    .and_then(Value::as_bool)
+                    .map(Self::AsyncWork)
+            }
             "extension_ui_request" => {
                 let frame = frame?;
                 let text = |key: &str| frame.get(key).and_then(Value::as_str);
@@ -119,6 +156,8 @@ fn apply(
                 } else {
                     state.busy = true;
                     state.turn_started = Some(now);
+                    // Running outranks background; the job that woke us is gone.
+                    state.background = false;
                     Outcome::Changed(None)
                 }
             } else {
@@ -128,23 +167,60 @@ fn apply(
                         busy: true,
                         turn_started: Some(now),
                         open: HashSet::new(),
+                        background: false,
                     },
                 );
                 Outcome::Changed(None)
             }
         }
-        Event::End => {
+        Event::End { awaiting } => {
             if let Some(state) = sessions.get_mut(sid) {
                 let started = state.turn_started.take();
-                let changed = state.busy || !state.open.is_empty();
+                let changed = state.busy
+                    || !state.open.is_empty()
+                    || awaiting.is_some_and(|v| v != state.background);
                 state.busy = false;
                 state.open.clear();
+                // Without the field (omp < 18.21) the following `get_state`
+                // settles it for the active tab; a background tab keeps what
+                // it last reported until `session_settled`.
+                if let Some(awaiting) = awaiting {
+                    state.background = awaiting;
+                }
                 let finished = started.map(|start| Transition::TurnFinished {
                     ran: now.saturating_duration_since(start),
                 });
                 Outcome::when(changed || finished.is_some(), finished)
             } else {
                 Outcome::Unchanged
+            }
+        }
+        Event::Settled => {
+            if let Some(state) = sessions.get_mut(sid) {
+                // Nothing can wake the session: no run and no background work.
+                let changed = state.busy || state.background;
+                state.busy = false;
+                state.turn_started = None;
+                state.background = false;
+                Outcome::when(changed, None)
+            } else {
+                Outcome::Unchanged
+            }
+        }
+        Event::AsyncWork(background) => {
+            if let Some(state) = sessions.get_mut(sid) {
+                let changed = state.background != background;
+                state.background = background;
+                Outcome::when(changed, None)
+            } else {
+                sessions.insert(
+                    sid.to_owned(),
+                    SessionState {
+                        background,
+                        ..SessionState::default()
+                    },
+                );
+                Outcome::when(true, None)
             }
         }
         Event::Open(id) => {
@@ -166,7 +242,7 @@ impl Tracker {
         self.inner.lock().ok()
     }
 
-    fn publish_snapshot(&self, changed_sid: (&str, Option<(bool, usize)>)) {
+    fn publish_snapshot(&self, changed_sid: (&str, Option<SessionSnapshot>)) {
         let (sid, entry) = changed_sid;
         let mut guard = self
             .snapshot
@@ -241,9 +317,11 @@ impl Tracker {
             }
             let outcome = change(&mut sessions);
             if matches!(outcome, Outcome::Changed(_)) {
-                let entry = sessions
-                    .get(sid)
-                    .map(|state| (state.busy, state.open.len()));
+                let entry = sessions.get(sid).map(|state| SessionSnapshot {
+                    busy: state.busy,
+                    asks: state.open.len(),
+                    background: state.background,
+                });
                 self.publish_snapshot((sid, entry));
             }
             outcome
