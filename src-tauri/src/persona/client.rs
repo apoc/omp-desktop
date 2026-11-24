@@ -157,6 +157,8 @@ impl Client {
             connection: None,
             next_connection: 1,
             next_req: 1,
+            detach_requested: None,
+            relay_muted: false,
             pending: HashMap::new(),
             retry_at: Some(Instant::now()),
             backoff: INITIAL_BACKOFF,
@@ -324,6 +326,16 @@ struct Worker {
     connection: Option<Connection>,
     next_connection: u64,
     next_req: u64,
+    /// The outstanding [`ClientMsg::Detach`] request id. The relay's busy
+    /// state is only cleared when the service acknowledges this request: a
+    /// frame relayed just before the reply must not leave the chip busy for
+    /// a stream that ends there.
+    detach_requested: Option<u64>,
+    /// Set from a detach request until the next attach. Frames relayed after
+    /// the detach was sent are stale — the service may still be draining
+    /// frames queued before it processed the detach — so they are dropped
+    /// instead of rebuilding the busy state the detach is about to clear.
+    relay_muted: bool,
     pending: HashMap<u64, (Sender<Result<Value, String>>, Instant)>,
     retry_at: Option<Instant>,
     backoff: Duration,
@@ -481,9 +493,8 @@ impl Worker {
             let _ = response.send(Err("persona service not connected".into()));
             return;
         };
-        // The service stops relaying omp frames after a detach, so the
-        // chip's `busy` can never be corrected by a later frame.
         let detaches = matches!(&body, ClientMsg::Detach);
+        let attaches = matches!(&body, ClientMsg::Attach { .. });
         let req = self.next_req;
         self.next_req += 1;
         let line = match encode_msg(&Envelope {
@@ -515,10 +526,19 @@ impl Worker {
             return;
         }
         if detaches {
-            // The service stops relaying omp frames after this request. Drop
-            // the relayed turn state instead of leaving the chip busy for a
-            // stream that will never send its `agent_end`.
-            self.set_activity(Some(false), None);
+            // Frames can still be in flight until the service processes this
+            // request and replies. They are stale for a stream that is
+            // stopping, so drop them — including an `agent_start` that would
+            // otherwise set `busy` again after the detach. The chip's state
+            // is cleared on the ordered acknowledgement in `server_msg`.
+            self.detach_requested = Some(req);
+            self.relay_muted = true;
+        }
+        if attaches {
+            // A new attach asks for the relay again; frames from before the
+            // detach were already dropped and the service replays this
+            // connection's cursor, so accept relayed frames from here on.
+            self.relay_muted = false;
         }
         self.pending
             .insert(req, (response, Instant::now() + REQUEST_TIMEOUT));
@@ -538,6 +558,20 @@ impl Worker {
                 data,
                 error,
             } => {
+                // The detach's own reply is the ordered point where the
+                // service has stopped relaying: clear the chip's turn state
+                // here, not when the request was sent, so a frame relayed
+                // while the detach was in flight cannot leave it busy. A
+                // failed detach means the relay is still attached, so resume
+                // accepting its frames instead.
+                if self.detach_requested == Some(req) {
+                    self.detach_requested = None;
+                    if ok {
+                        self.set_activity(Some(false), None);
+                    } else {
+                        self.relay_muted = false;
+                    }
+                }
                 if let Some((response, _)) = self.pending.remove(&req) {
                     let result = if ok {
                         Ok(data.unwrap_or(Value::Null))
@@ -582,6 +616,14 @@ impl Worker {
                 self.push_new_items(&items, quiet);
             }
             ServerMsg::Rpc { seq, frame } => {
+                // Frames received after a detach was requested belong to a
+                // stream that is stopping; the service may still be
+                // draining what it queued before it processed the detach.
+                // Dropping them keeps a stale `agent_start` from rebuilding
+                // the busy state the acknowledgement clears.
+                if self.relay_muted {
+                    return;
+                }
                 // A relayed omp frame is an omp frame: the same redaction the
                 // agent's stdout reader runs before the webview sees it.
                 let (text, parsed) = sanitize_line(frame.get().as_bytes());
@@ -664,6 +706,10 @@ impl Worker {
             drop(connection.writer);
         }
         self.fail_pending("persona service disconnected");
+        // A fresh connection starts without a detach in flight and does not
+        // relay until the app attaches; neither flag can outlive the socket.
+        self.detach_requested = None;
+        self.relay_muted = false;
         {
             let mut snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
             snapshot.status = None;
@@ -1345,6 +1391,357 @@ mod tests {
         assert!(
             observed.is_some(),
             "busy survived the detach: {:?}",
+            events.0.lock().unwrap()
+        );
+        drop(client);
+        server.join().unwrap();
+    }
+
+    /// Clear `busy` on the detach reply, not when the request is written: the
+    /// service has not stopped relaying yet at send time, so a frame can be
+    /// followed by more frames until its ordered acknowledgement. The marker
+    /// status is emitted before the reply; a reset before that marker would
+    /// be the old send-time clear.
+    #[test]
+    fn client_keeps_busy_until_the_detach_reply_arrives() {
+        let temp = TempDir::new("pc", "det-ack");
+        let paths = test_paths(&temp, "det-ack");
+        ensure_private_dir(&paths.persona).unwrap();
+        let listener = ListenerOptions::new()
+            .name(socket_name(&paths).unwrap())
+            .create_sync()
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let _hello = read_client(stream.try_clone().unwrap());
+            write_msg(&mut stream, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            write_msg(
+                &mut stream,
+                &ServerMsg::Status {
+                    status: daytime_status(),
+                },
+            )
+            .unwrap();
+            write_msg(&mut stream, &ServerMsg::Inbox { items: vec![] }).unwrap();
+            let frame = |value: Value| serde_json::value::RawValue::from_string(value.to_string());
+            write_msg(
+                &mut stream,
+                &ServerMsg::Rpc {
+                    seq: 1,
+                    frame: frame(serde_json::json!({"type":"agent_start"})).unwrap(),
+                },
+            )
+            .unwrap();
+            let request = read_client(stream.try_clone().unwrap());
+            assert!(
+                matches!(&request.body, ClientMsg::Detach),
+                "expected the detach request"
+            );
+            // The detach is in flight: still busy, no reset yet.
+            write_msg(
+                &mut stream,
+                &ServerMsg::Status {
+                    status: daytime_status(),
+                },
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            write_msg(
+                &mut stream,
+                &ServerMsg::Reply {
+                    req: request.req.expect("detach carries a req"),
+                    ok: true,
+                    data: None,
+                    error: None,
+                },
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        let events = Arc::new(Recorder::default());
+        let client = Client::start(paths, events.clone());
+        let busy = eventually(Duration::from_secs(3), || {
+            events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(name, payload)| name == "activity" && payload["busy"] == true)
+                .then_some(())
+        });
+        assert!(busy.is_some(), "the relayed turn never reported busy");
+        client
+            .handle()
+            .request(ClientMsg::Detach)
+            .expect("the detach is answered");
+        let ordered = eventually(Duration::from_secs(3), || {
+            let events = events.0.lock().unwrap();
+            let reset = events
+                .iter()
+                .position(|(name, payload)| name == "activity" && payload["busy"] == false)?;
+            let statuses: Vec<usize> = events
+                .iter()
+                .enumerate()
+                .filter(|(_, (name, _))| name == "status")
+                .map(|(index, _)| index)
+                .collect();
+            let marker = *statuses.get(1)?;
+            (reset > marker).then_some(())
+        });
+        assert!(
+            ordered.is_some(),
+            "busy was cleared before the detach reply: {:?}",
+            events.0.lock().unwrap()
+        );
+        drop(client);
+        server.join().unwrap();
+    }
+
+    /// Frames relayed after the detach was requested — one queued before the
+    /// service processed the detach, one straggling after its reply — belong
+    /// to a stream that is stopping. Dropping them keeps the stale
+    /// `agent_start` from re-setting `busy` and from reaching the webview.
+    #[test]
+    fn client_drops_relay_frames_after_the_detach_request() {
+        let temp = TempDir::new("pc", "det-stale");
+        let paths = test_paths(&temp, "det-stale");
+        ensure_private_dir(&paths.persona).unwrap();
+        let listener = ListenerOptions::new()
+            .name(socket_name(&paths).unwrap())
+            .create_sync()
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let _hello = read_client(stream.try_clone().unwrap());
+            write_msg(&mut stream, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            write_msg(
+                &mut stream,
+                &ServerMsg::Status {
+                    status: daytime_status(),
+                },
+            )
+            .unwrap();
+            write_msg(&mut stream, &ServerMsg::Inbox { items: vec![] }).unwrap();
+            let frame = |value: Value| serde_json::value::RawValue::from_string(value.to_string());
+            write_msg(
+                &mut stream,
+                &ServerMsg::Rpc {
+                    seq: 1,
+                    frame: frame(serde_json::json!({"type":"agent_start"})).unwrap(),
+                },
+            )
+            .unwrap();
+            let request = read_client(stream.try_clone().unwrap());
+            assert!(
+                matches!(&request.body, ClientMsg::Detach),
+                "expected the detach request"
+            );
+            // Relay frames the service had already queued when the detach
+            // arrived, before its acknowledgement.
+            write_msg(
+                &mut stream,
+                &ServerMsg::Rpc {
+                    seq: 2,
+                    frame: frame(serde_json::json!({"type":"agent_start"})).unwrap(),
+                },
+            )
+            .unwrap();
+            write_msg(
+                &mut stream,
+                &ServerMsg::Reply {
+                    req: request.req.expect("detach carries a req"),
+                    ok: true,
+                    data: None,
+                    error: None,
+                },
+            )
+            .unwrap();
+            // A straggler after the reply must not revive the relay either.
+            write_msg(
+                &mut stream,
+                &ServerMsg::Rpc {
+                    seq: 3,
+                    frame: frame(serde_json::json!({"type":"agent_start"})).unwrap(),
+                },
+            )
+            .unwrap();
+            // Marker for "the reply was processed".
+            write_msg(
+                &mut stream,
+                &ServerMsg::Status {
+                    status: daytime_status(),
+                },
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        let events = Arc::new(Recorder::default());
+        let client = Client::start(paths, events.clone());
+        let busy = eventually(Duration::from_secs(3), || {
+            events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(name, payload)| name == "activity" && payload["busy"] == true)
+                .then_some(())
+        });
+        assert!(busy.is_some(), "the relayed turn never reported busy");
+        client
+            .handle()
+            .request(ClientMsg::Detach)
+            .expect("the detach is answered");
+        let settled = eventually(Duration::from_secs(3), || {
+            let events = events.0.lock().unwrap();
+            let reset = events
+                .iter()
+                .position(|(name, payload)| name == "activity" && payload["busy"] == false)?;
+            let marker = events
+                .iter()
+                .enumerate()
+                .filter(|(_, (name, _))| name == "status")
+                .map(|(index, _)| index)
+                .nth(1)?;
+            (reset < marker).then_some(())
+        });
+        assert!(
+            settled.is_some(),
+            "the detach reply never settled the chip: {:?}",
+            events.0.lock().unwrap()
+        );
+        let (lines, activity) = {
+            let events = events.0.lock().unwrap();
+            let lines: Vec<Value> = events
+                .iter()
+                .filter(|(name, _)| name == "line")
+                .map(|(_, payload)| payload.clone())
+                .collect();
+            let activity: Vec<bool> = events
+                .iter()
+                .filter(|(name, _)| name == "activity")
+                .map(|(_, payload)| payload["busy"].as_bool().unwrap())
+                .collect();
+            (lines, activity)
+        };
+        assert_eq!(
+            lines
+                .iter()
+                .map(|payload| payload["seq"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            [1],
+            "frames relayed after the detach request reached the webview"
+        );
+        assert_eq!(
+            activity,
+            [true, false],
+            "a stale frame re-set busy after the detach"
+        );
+        drop(client);
+        server.join().unwrap();
+    }
+
+    /// A later attach re-opens the relay: the mute installed by a detach must
+    /// not swallow the next session's frames.
+    #[test]
+    fn client_resumes_relay_frames_after_attach() {
+        let temp = TempDir::new("pc", "det-reattach");
+        let paths = test_paths(&temp, "det-reattach");
+        ensure_private_dir(&paths.persona).unwrap();
+        let listener = ListenerOptions::new()
+            .name(socket_name(&paths).unwrap())
+            .create_sync()
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let _hello = read_client(stream.try_clone().unwrap());
+            write_msg(&mut stream, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            write_msg(
+                &mut stream,
+                &ServerMsg::Status {
+                    status: daytime_status(),
+                },
+            )
+            .unwrap();
+            write_msg(&mut stream, &ServerMsg::Inbox { items: vec![] }).unwrap();
+            let frame = |value: Value| serde_json::value::RawValue::from_string(value.to_string());
+            write_msg(
+                &mut stream,
+                &ServerMsg::Rpc {
+                    seq: 1,
+                    frame: frame(serde_json::json!({"type":"agent_start"})).unwrap(),
+                },
+            )
+            .unwrap();
+            let detach = read_client(stream.try_clone().unwrap());
+            assert!(
+                matches!(&detach.body, ClientMsg::Detach),
+                "expected the detach request"
+            );
+            write_msg(
+                &mut stream,
+                &ServerMsg::Reply {
+                    req: detach.req.expect("detach carries a req"),
+                    ok: true,
+                    data: None,
+                    error: None,
+                },
+            )
+            .unwrap();
+            let attach = read_client(stream.try_clone().unwrap());
+            assert!(
+                matches!(&attach.body, ClientMsg::Attach { .. }),
+                "expected the attach request"
+            );
+            write_msg(
+                &mut stream,
+                &ServerMsg::Reply {
+                    req: attach.req.expect("attach carries a req"),
+                    ok: true,
+                    data: None,
+                    error: None,
+                },
+            )
+            .unwrap();
+            write_msg(
+                &mut stream,
+                &ServerMsg::Rpc {
+                    seq: 2,
+                    frame: frame(serde_json::json!({"type":"agent_start"})).unwrap(),
+                },
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        let events = Arc::new(Recorder::default());
+        let client = Client::start(paths, events.clone());
+        let busy = eventually(Duration::from_secs(3), || {
+            events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(name, payload)| name == "activity" && payload["busy"] == true)
+                .then_some(())
+        });
+        assert!(busy.is_some(), "the relayed turn never reported busy");
+        client
+            .handle()
+            .request(ClientMsg::Detach)
+            .expect("the detach is answered");
+        client
+            .handle()
+            .request(ClientMsg::Attach { after_seq: 0 })
+            .expect("the attach is answered");
+        let resumed = eventually(Duration::from_secs(3), || {
+            let events = events.0.lock().unwrap();
+            events
+                .iter()
+                .any(|(name, payload)| name == "line" && payload["seq"].as_u64() == Some(2))
+                .then_some(())
+        });
+        assert!(
+            resumed.is_some(),
+            "the relay stayed muted after attach: {:?}",
             events.0.lock().unwrap()
         );
         drop(client);
