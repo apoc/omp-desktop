@@ -91,6 +91,15 @@
     return { url, external: Boolean(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) };
   }
 
+  // A terminal URL activated by Cmd (macOS) or Ctrl (other platforms).
+  // Local links share chat's classification and panel preference; Shift,
+  // remote URLs and an unavailable panel use the system browser.
+  function terminalLinkClick(href, e, localLinks, isMac) {
+    if (e.button !== 0 || !(isMac ? e.metaKey : e.ctrlKey)) return null;
+    const local = localUrl(href);
+    return { url: local ?? href, external: Boolean(e.shiftKey || !local || !localLinks) };
+  }
+
   // ---- Annotations ---------------------------------------------------------
 
   const round = (v) => Math.round(v);
@@ -360,6 +369,7 @@
     browserCommand,
     localUrl,
     linkClick,
+    terminalLinkClick,
     annotationText,
     neutralise,
     neutralisePage,

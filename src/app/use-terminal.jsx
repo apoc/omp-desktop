@@ -47,7 +47,7 @@ const {
 
 const _UT_FONT_PX = 13;
 
-function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak, appearance }) {
+function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak, appearance, openLink }) {
   const [state, setState] = React.useState(_UT_EMPTY);
   const stateRef = React.useRef(state);
   stateRef.current = state;
@@ -71,6 +71,10 @@ function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak, ap
   const scrollbackRef = React.useRef(scrollback);
   scrollbackRef.current = scrollback;
   const height = tweaks.terminalHeight;
+  const openLinkRef = React.useRef(openLink);
+  openLinkRef.current = openLink;
+  const localLinksRef = React.useRef(false);
+  localLinksRef.current = (tweaks.browserLocalhostInPanel ?? true) && Boolean(activeSessionId);
 
   const fit = React.useCallback((sid) => {
     const rec = recs.current.get(sid);
@@ -214,6 +218,14 @@ function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak, ap
         return true;
       },
       onData: (data) => bridge.terminalWrite(sid, data),
+      onLink: (event, url) => {
+        const link = window.OMP_BROWSER.terminalLinkClick(
+          url, event, localLinksRef.current, window.OMP_KEYMAP.detectMac(),
+        );
+        if (!link) return;
+        event.preventDefault();
+        openLinkRef.current?.(link.url, link.external);
+      },
       // Only a live shell has a pty to resize; the size a shell starts at is
       // the one `spawn` sends (and corrects once the reply is in).
       onResize: ({ cols, rows }) => {

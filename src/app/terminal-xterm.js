@@ -2,11 +2,11 @@
 // the hook writes into it, for app/use-terminal.jsx (which owns the
 // instances and their sync with Rust).
 //
-// - `createXterm(opts)`: a `window.Terminal` with the fit addon, OSC 8
-//   swallowed and the key routing (restart on Enter, copy / paste chords,
-//   chords handed back to the global keymap — the decisions themselves are
-//   app/keymap.js's `guestShouldBypass` and app/terminal.js's
-//   `clipboardAction`).
+// - `createXterm(opts)`: a `window.Terminal` with the fit and web-links
+//   addons, OSC 8 swallowed and the key routing (restart on Enter, copy /
+//   paste chords, chords handed back to the global keymap — the decisions
+//   themselves are app/keymap.js's `guestShouldBypass` and
+//   app/terminal.js's `clipboardAction`).
 // - `applyWindowsPty(term, status)`: Rust's ConPTY info onto the instance.
 // - `copySelection(term)`: the selection to the clipboard (ctrl+shift+c,
 //   the panel's right-click).
@@ -104,18 +104,19 @@
    * copy the selection and paste; `preventDefault` keeps the keymap and the
    * WebView's own paste out of them. macOS keeps native ⌘C / ⌘V.
    */
-  function createXterm({ fontSize, scrollback, theme: colours, tryRestart, onData, onResize }) {
+  function createXterm({ fontSize, scrollback, theme: colours, tryRestart, onData, onResize, onLink }) {
     const T = window.OMP_TERMINAL;
     const term = new window.Terminal({
       scrollback: scrollbackLines(scrollback), fontSize, theme: colours, allowProposedApi: false, cursorBlink: true,
     });
     // OSC 8 hyperlinks are on by default in xterm 6, and every one a program
     // prints keeps an invisible link entry for as long as its cells live —
-    // unbounded for a shell that streams them. No links addon is loaded, so
-    // nothing could use them: swallow the sequence before any output arrives.
+    // unbounded for a shell that streams them. Only visible URL text is
+    // linkified by the web-links addon: swallow OSC 8 before output arrives.
     term.parser.registerOscHandler(8, () => true);
     const fit = new window.FitAddon.FitAddon();
     term.loadAddon(fit);
+    term.loadAddon(new window.WebLinksAddon.WebLinksAddon(onLink));
     let restartEnter = false;
     term.attachCustomKeyEventHandler((e) => {
       if (e.key === "Enter" && restartEnter) {

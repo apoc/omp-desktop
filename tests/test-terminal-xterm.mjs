@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Regression script for src/app/terminal-xterm.js — building a tab's xterm
-// (options, OSC 8 swallowed, fit addon, data / resize wiring), its key
+// (options, OSC 8 swallowed, fit and web-links addons, data / resize wiring), its key
 // routing (restart on Enter without leaking "\r", copy / paste chords,
 // chords handed back to the keymap), the ConPTY option and the lines it
 // writes. xterm itself is replaced by a recording fake; the routing
@@ -32,12 +32,16 @@ class FakeTerminal {
   paste(text) { (this.pasted ||= []).push(text); }
 }
 class FakeFit {}
+class FakeWebLinks {
+  constructor(handler) { this.handler = handler; }
+}
 
 const copied = [];
 let clipboardText = "";
 const win = {
   Terminal: FakeTerminal,
   FitAddon: { FitAddon: FakeFit },
+  WebLinksAddon: { WebLinksAddon: FakeWebLinks },
   copyText: (t) => copied.push(t),
   navigator: { clipboard: { readText: async () => clipboardText } },
   OMP_TERMINAL: {
@@ -67,7 +71,7 @@ const key = (type, k) => {
   return e;
 };
 
-function make({ restart = () => false, scrollback } = {}) {
+function make({ restart = () => false, scrollback, onLink = () => {} } = {}) {
   const seen = { data: [], resize: [], restarts: 0 };
   const made = X.createXterm({
     fontSize: 14,
@@ -76,6 +80,7 @@ function make({ restart = () => false, scrollback } = {}) {
     tryRestart: () => { const ok = restart(); if (ok) seen.restarts++; return ok; },
     onData: (d) => seen.data.push(d),
     onResize: (s) => seen.resize.push(s),
+    onLink,
   });
   return { ...made, seen };
 }
@@ -92,6 +97,16 @@ check("createXterm: options, OSC 8 swallowed, fit addon, wiring", () => {
   term.resize({ cols: 90, rows: 20 });
   assert.deepEqual(seen.data, ["ls\r"]);
   assert.deepEqual(seen.resize, [{ cols: 90, rows: 20 }]);
+});
+
+check("createXterm loads web links with the terminal's activation handler", () => {
+  const opened = [];
+  const { term } = make({ onLink: (e, url) => opened.push([e, url]) });
+  const links = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  assert.ok(links, "web-links addon loaded");
+  const event = { button: 0, metaKey: true };
+  links.handler(event, "https://example.com/");
+  assert.deepEqual(opened, [[event, "https://example.com/"]]);
 });
 
 check("createXterm: scrollback from the terminalScrollback tweak", () => {

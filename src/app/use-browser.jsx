@@ -201,6 +201,7 @@ function useBrowser({ bridge, activeSessionId, sessionIds, open: shown, setOpen,
       (err) => console.error("[browser] open failed:", err),
     );
   };
+  const openLinkStable = React.useCallback((url, external) => openLink.current(url, external), []);
   const onChatClick = React.useMemo(() => (localLinks ? (e) => {
     const link = _UB.linkClick(e);
     if (!link) return;
@@ -242,7 +243,7 @@ function useBrowser({ bridge, activeSessionId, sessionIds, open: shown, setOpen,
   }), [bridge, sid, showAnnotate]);
 
   return {
-    open, close, openUrl, onChatClick, fullView, setFullView,
+    open, close, openUrl, openLink: openLinkStable, onChatClick, fullView, setFullView,
     width: tweaks?.browserWidth ?? 0, // px; 0 = default (half the stage) — see OMP_BROWSER.clampWidth
     setWidth: (px) => setTweak("browserWidth", Math.round(px)),
     state, tabs, page, annotate, setAnnotate,

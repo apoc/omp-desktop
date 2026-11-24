@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Terminal URLs are underlined on hover and open with Cmd+click on macOS or Ctrl+click on Windows/Linux. Localhost links can open in the tab's browser panel; other links use the system browser, as do local links with Shift held.
+
 ## [0.15.2] - 2026-11-23
 
 ### Changed
