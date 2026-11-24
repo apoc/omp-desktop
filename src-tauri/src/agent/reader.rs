@@ -36,8 +36,8 @@ pub struct LineEvent<'a> {
 /// frame whose top-level boolean `secret` member is a UI hint (password-style
 /// fields on desktop and phone) instead of a credential value. Read off the
 /// parsed frame, so a duplicate `secret` member that a later boolean shadows
-/// is invisible here; [`sanitize_frame`] re-serializes whenever this holds,
-/// which drops the shadowed value from the emitted text.
+/// is invisible here; the frame is always re-serialized from the parse (see
+/// [`sanitize_line`]), which drops the shadowed value from the emitted text.
 fn is_secret_flag_frame(frame: &serde_json::Value) -> bool {
     frame.get("type").and_then(serde_json::Value::as_str) == Some("extension_ui_request")
         && frame.get("method").and_then(serde_json::Value::as_str) == Some("input")
@@ -64,24 +64,16 @@ fn is_secret_flag_frame(frame: &serde_json::Value) -> bool {
 /// redacted, as is a nested boolean `secret` on any frame — the exception is
 /// scoped to that one top-level member and never inherited by children.
 ///
-/// Returns `true` when the frame must be re-serialized before it is emitted:
-/// something was redacted, or the flag exception was used. The latter matters
-/// even with no redaction because the parsed map has already dropped a
-/// duplicate member the JSON text still contains; emitting `raw` would leak
-/// a credential shadowed by a later boolean `secret`.
-///
 /// [`REDACTED_KEYS`]: crate::redaction::REDACTED_KEYS
-fn sanitize_frame(value: &mut serde_json::Value) -> bool {
+fn sanitize_frame(value: &mut serde_json::Value) {
     let secret_flag_frame = is_secret_flag_frame(value);
-    let redacted = sanitize_members(value, secret_flag_frame);
-    redacted || secret_flag_frame
+    sanitize_members(value, secret_flag_frame);
 }
 
 /// [`sanitize_frame`]'s recursive walk. `allow_secret_flag` is true only for
 /// the root of a [`is_secret_flag_frame`] frame, so the exception cannot be
 /// reached by a nested object.
-fn sanitize_members(value: &mut serde_json::Value, allow_secret_flag: bool) -> bool {
-    let mut redacted = false;
+fn sanitize_members(value: &mut serde_json::Value, allow_secret_flag: bool) {
     match value {
         serde_json::Value::Object(map) => {
             for (key, val) in map.iter_mut() {
@@ -89,20 +81,18 @@ fn sanitize_members(value: &mut serde_json::Value, allow_secret_flag: bool) -> b
                     allow_secret_flag && key.eq_ignore_ascii_case("secret") && val.is_boolean();
                 if is_credential_key(key) && !secret_flag {
                     *val = serde_json::Value::String(REDACTED_PLACEHOLDER.to_string());
-                    redacted = true;
                 } else {
-                    redacted |= sanitize_members(val, false);
+                    sanitize_members(val, false);
                 }
             }
         }
         serde_json::Value::Array(items) => {
             for item in items {
-                redacted |= sanitize_members(item, false);
+                sanitize_members(item, false);
             }
         }
         _ => {}
     }
-    redacted
 }
 
 /// Sanitize one raw RPC line. Parses `raw` as JSON and redacts sensitive
@@ -119,26 +109,25 @@ fn sanitize_members(value: &mut serde_json::Value, allow_secret_flag: bool) -> b
 /// `persona://line/ompy` frame is an omp frame and passes the same
 /// redaction before it can reach the webview.
 ///
-/// Once anything was redacted — or the input-request `secret` flag exception
-/// was used — the returned text is the re-serialized parsed frame, never
-/// `raw`: the parse has already collapsed duplicate members, so the original
-/// bytes can carry a value that a later duplicate shadowed. A frame that
-/// needs neither stays byte-identical, the overwhelmingly common case.
+/// A JSON line is always returned as the re-serialized parsed frame, never
+/// as `raw`: the parse has already collapsed duplicate members, so the
+/// original bytes can carry a credential that a later duplicate object
+/// shadowed — including a duplicate *parent* object, which leaves no
+/// credential-named key in the parsed map for redaction to find. Detecting
+/// duplicates instead would require a second, custom parse of every frame;
+/// one extra serializer pass over a frame that was just parsed is the
+/// cheaper correct option, including on the streaming-delta hot path
+/// (frames are capped at [`MAX_LINE_BYTES`], and deltas are small).
 pub fn sanitize_line(raw: &[u8]) -> (String, Option<serde_json::Value>) {
     serde_json::from_slice::<serde_json::Value>(raw).map_or_else(
         |_| (String::from_utf8_lossy(raw).into_owned(), None),
         |mut value| {
-            // Re-serializing costs a second full pass (escaping, number
-            // formatting, map ordering) over the whole frame, so it only
-            // runs when the frame changed. Serializing a `Value` cannot
-            // fail; the placeholder fallback still refuses to fall back to
-            // `raw`, which may carry the value being removed.
-            let text = if sanitize_frame(&mut value) {
-                serde_json::to_string(&value)
-                    .unwrap_or_else(|_| format!("\"{REDACTED_PLACEHOLDER}\""))
-            } else {
-                String::from_utf8_lossy(raw).into_owned()
-            };
+            sanitize_frame(&mut value);
+            // Serializing a `Value` cannot fail; the placeholder fallback
+            // still refuses to fall back to `raw`, which may carry the
+            // value being removed.
+            let text = serde_json::to_string(&value)
+                .unwrap_or_else(|_| format!("\"{REDACTED_PLACEHOLDER}\""));
             (text, Some(value))
         },
     )
@@ -597,7 +586,7 @@ fn read_until_capped<R: BufRead>(
 mod tests {
     use super::*;
     use crate::agent::tests::approval_prompt;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     #[test]
     fn sanitize_redacts_nested_credential_keys() {
@@ -763,17 +752,17 @@ mod tests {
         }
     }
 
-    /// `sanitize_frame`'s return value gates the re-serialize path, so a
-    /// frame with nothing to redact must report `false`, one with a secret
-    /// nested deep inside must report `true`, and the kept input flag alone
-    /// must also report `true` (the parse already collapsed duplicates).
+    /// `sanitize_frame` redacts nested credentials, leaves the one input
+    /// `secret` flag alone, and mutates the frame in place — the caller
+    /// always re-serializes the result.
     #[test]
-    fn sanitize_frame_reports_whether_it_needs_reserializing() {
+    fn sanitize_frame_redacts_nested_credentials_and_keeps_the_input_flag() {
         let mut clean = json!({ "type": "turn_start", "usage": { "input_tokens": 3 } });
-        assert!(!sanitize_frame(&mut clean));
+        sanitize_frame(&mut clean);
+        assert_eq!(clean["usage"]["input_tokens"], 3);
 
         let mut nested = json!({ "a": [ { "b": { "api_key": "sekrit" } } ] });
-        assert!(sanitize_frame(&mut nested));
+        sanitize_frame(&mut nested);
         assert_eq!(nested["a"][0]["b"]["api_key"], REDACTED_PLACEHOLDER);
 
         let mut flag = json!({
@@ -781,21 +770,60 @@ mod tests {
             "method": "input",
             "secret": true
         });
-        assert!(sanitize_frame(&mut flag));
+        sanitize_frame(&mut flag);
         assert_eq!(flag["secret"], true);
     }
 
-    /// A frame with nothing to redact must come back byte-identical to the
-    /// input, not re-serialized — that is what makes skipping the second
-    /// serializer pass safe.
+    /// A valid JSON frame is re-serialized even when the parsed map has
+    /// nothing to redact: raw bytes can still carry a member a duplicate
+    /// shadowed. This is the canonical serializer output, not the input
+    /// spacing/order, which proves the raw fast path is gone.
     #[test]
-    fn sanitize_line_preserves_untouched_frame_verbatim() {
-        // Key order and spacing here are deliberately *not* what serde_json
-        // would re-emit, proving the fast path returns the original bytes.
+    fn sanitize_line_reserializes_clean_frames_instead_of_forwarding_raw_bytes() {
         let raw = br#"{"z":1,  "a":  [1,2,3],"nested":{"k":"v"}}"#;
         let (out, parsed) = sanitize_line(raw);
-        assert_eq!(out.as_bytes(), raw);
-        assert!(parsed.is_some());
+        assert_eq!(out, r#"{"a":[1,2,3],"nested":{"k":"v"},"z":1}"#);
+        assert_eq!(
+            parsed.unwrap(),
+            serde_json::from_str::<Value>(out.as_str()).unwrap()
+        );
+    }
+
+    /// A duplicate *parent* object shadows a whole subtree: the parsed map
+    /// keeps the later, empty object, so no credential-named key survives
+    /// for redaction to find while the raw bytes still carry the first
+    /// object's secret. Always re-serializing the parse drops it. Covers
+    /// top level, several nesting depths, arrays, and non-input frames.
+    #[test]
+    fn sanitize_shadowed_duplicate_parent_objects_cannot_leak_credentials() {
+        for raw in [
+            // Top-level duplicate parent on a non-input frame.
+            br#"{"type":"response","data":{"api_key":"hunter2"},"data":{}}"#.as_slice(),
+            // Duplicate parent nested two objects deep.
+            br#"{"type":"response","outer":{"inner":{"password":"hunter2"},"inner":{"ok":true}}}"#
+                .as_slice(),
+            // Duplicate parent inside an array element.
+            br#"{"type":"response","items":[{"auth":{"access_token":"hunter2"},"auth":{}}]}"#
+                .as_slice(),
+            // Duplicate parent around an array that carries the secret.
+            br#"{"type":"response","a":[{"b":[{"secret_key":"hunter2"}],"b":[]}]}"#.as_slice(),
+            // The same shadowing on an input-request frame, next to the flag.
+            br#"{"type":"extension_ui_request","method":"input","secret":true,"params":{"api_key":"hunter2"},"params":{}}"#
+                .as_slice(),
+        ] {
+            let (out, parsed) = sanitize_line(raw);
+            let parsed = parsed.expect("valid JSON parses");
+            assert!(
+                !out.contains("hunter2"),
+                "shadowed credential leaked from {}: {out}",
+                String::from_utf8_lossy(raw)
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&out).unwrap(),
+                parsed,
+                "emitted text must be the parsed frame"
+            );
+        }
     }
 
     #[test]
