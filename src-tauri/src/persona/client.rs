@@ -5,8 +5,9 @@ use interprocess::TryClone;
 use omp_desktop_core::persona_paths::Paths;
 use omp_desktop_core::persona_pipe_security::{connect_verified, PipeConnectError};
 use omp_desktop_core::persona_protocol::{
-    encode_msg, read_line_capped, write_msg, ClientKind, ClientMsg, Envelope, InboxItem, LineRead,
-    ServerMsg, StatusInfo, MAX_LINE_BYTES, PROTOCOL,
+    encode_msg, read_line_capped, read_line_capped_with, write_msg, ClientKind, ClientMsg,
+    Envelope, InboxItem, ItemKind, ItemState, LineRead, ServerMsg, StatusInfo, MAX_LINE_BYTES,
+    PROTOCOL,
 };
 use omp_desktop_core::persona_quiet;
 use serde_json::Value;
@@ -21,6 +22,13 @@ use std::time::{Duration, Instant};
 const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// Bytes [`ServerMsg::Rpc`] adds around the relayed frame: the fixed JSON
+/// syntax plus a maximal `u64` sequence number (20 decimal digits).
+const RELAY_ENVELOPE_OVERHEAD: usize = br#"{"type":"rpc","seq":,"frame":}"#.len() + 20;
+/// The service enforces [`MAX_LINE_BYTES`] on the state or frame a client
+/// sends and on relayed frames. A relay envelope may legitimately exceed
+/// that by its own syntax, so the app accepts the bounded maximum.
+const MAX_SERVER_LINE_BYTES: usize = MAX_LINE_BYTES + RELAY_ENVELOPE_OVERHEAD;
 
 pub(super) trait Emitter: Send + Sync + 'static {
     fn status(&self, status: Option<&StatusInfo>);
@@ -37,6 +45,10 @@ pub(super) trait Emitter: Send + Sync + 'static {
     fn persona_push(&self, title: &str, urgent: bool) {
         let _ = (title, urgent);
     }
+
+    /// The Ompy tab's phone-chip state: a relayed turn is running and open
+    /// approvals or decisions wait in the inbox.
+    fn activity(&self, busy: bool, has_ask: bool);
 }
 
 struct TauriEmitter(tauri::AppHandle);
@@ -73,6 +85,10 @@ impl Emitter for TauriEmitter {
 
     fn persona_push(&self, title: &str, urgent: bool) {
         crate::remote::bridge::notify_persona(&self.0, title, urgent);
+    }
+
+    fn activity(&self, busy: bool, has_ask: bool) {
+        crate::remote::bridge::sync_persona_activity(&self.0, busy, has_ask);
     }
 }
 
@@ -145,6 +161,8 @@ impl Client {
             retry_at: Some(Instant::now()),
             backoff: INITIAL_BACKOFF,
             seen_inbox: HashSet::new(),
+            persona_busy: false,
+            persona_has_ask: false,
             outage_reported: false,
             expect_off: false,
             stopped: false,
@@ -314,6 +332,10 @@ struct Worker {
     /// reconnect (the service replays its whole inbox) and diverges from the
     /// snapshot's contents, which are cleared when the service goes away.
     seen_inbox: HashSet<String>,
+    /// The Ompy tab's phone-chip state, derived from the relayed turn frames
+    /// and the inbox snapshot the app already receives.
+    persona_busy: bool,
+    persona_has_ask: bool,
     /// Whether the current outage's `io` error already reached the frontend.
     /// One outage is one error: the retry storm that follows stays silent
     /// until a connection is live again (the outage is over).
@@ -535,13 +557,20 @@ impl Worker {
                     snapshot.inbox.clone_from(&items); // event and cached snapshot each own a copy
                     quiet
                 };
+                self.set_activity(None, Some(has_open_ask(&items)));
                 self.emitter.inbox(&items);
                 self.push_new_items(&items, quiet);
             }
             ServerMsg::Rpc { seq, frame } => {
                 // A relayed omp frame is an omp frame: the same redaction the
                 // agent's stdout reader runs before the webview sees it.
-                let (text, _) = sanitize_line(frame.get().as_bytes());
+                let (text, parsed) = sanitize_line(frame.get().as_bytes());
+                if let Some(busy) = parsed
+                    .as_ref()
+                    .and_then(crate::remote::tracker::persona_turn_busy)
+                {
+                    self.set_activity(Some(busy), None);
+                }
                 self.emitter.line(seq, &text);
             }
             ServerMsg::Hello { protocol } if protocol != PROTOCOL => {
@@ -565,6 +594,18 @@ impl Worker {
         self.seen_inbox = items.iter().map(|item| item.id.clone()).collect();
         for item in targets {
             self.emitter.persona_push(&item.title, item.urgent);
+        }
+    }
+
+    /// Update the chip state and tell the remote hub only when it changes.
+    /// `None` leaves that half as it was.
+    fn set_activity(&mut self, busy: Option<bool>, has_ask: Option<bool>) {
+        let busy = busy.unwrap_or(self.persona_busy);
+        let has_ask = has_ask.unwrap_or(self.persona_has_ask);
+        if (busy, has_ask) != (self.persona_busy, self.persona_has_ask) {
+            self.persona_busy = busy;
+            self.persona_has_ask = has_ask;
+            self.emitter.activity(busy, has_ask);
         }
     }
 
@@ -619,6 +660,7 @@ impl Worker {
         }
         self.emitter.status(None);
         self.emitter.inbox(&[]);
+        self.set_activity(Some(false), Some(false));
         if let Some((kind, message)) = error {
             // One outage, one `io` error: the retries that follow a down
             // service stay silent until a connection is live again. A service
@@ -685,6 +727,14 @@ fn connect(paths: &Paths, id: u64, tx: &Sender<WorkerMsg>) -> Result<Connection,
                 kind: "protocol",
                 message: format!("service protocol {protocol}, expected {PROTOCOL}"),
             });
+        }
+        Ok(ServerMsg::Reply {
+            req: 0,
+            ok: false,
+            error: Some(error),
+            ..
+        }) if error == "too many connections" => {
+            return Err(ConnectError::Io(error));
         }
         Ok(ServerMsg::Reply {
             req: 0,
@@ -786,7 +836,7 @@ fn reap(reader: JoinHandle<()>, writer: &Stream) {
 fn read_server(id: u64, mut reader: BufReader<Stream>, tx: Sender<WorkerMsg>) {
     let mut buf = Vec::new();
     let reason = loop {
-        match read_line_capped(&mut reader, &mut buf) {
+        match read_line_capped_with(&mut reader, &mut buf, MAX_SERVER_LINE_BYTES) {
             Ok(LineRead::Line) => match serde_json::from_slice::<ServerMsg>(&buf) {
                 Ok(msg) => {
                     if tx
@@ -814,6 +864,15 @@ fn read_server(id: u64, mut reader: BufReader<Stream>, tx: Sender<WorkerMsg>) {
 
 fn next_backoff(prev: Duration) -> Duration {
     prev.checked_mul(2).unwrap_or(MAX_BACKOFF).min(MAX_BACKOFF)
+}
+
+/// Open approvals and decisions are what the phone chip's question mark
+/// stands for; results and notices stay informational.
+fn has_open_ask(items: &[InboxItem]) -> bool {
+    items.iter().any(|item| {
+        item.state == ItemState::Open
+            && matches!(item.kind, ItemKind::Approval | ItemKind::Decision)
+    })
 }
 
 #[cfg(test)]
@@ -877,6 +936,13 @@ mod tests {
             self.0.lock().unwrap().push((
                 "push".into(),
                 serde_json::json!({"title": title, "urgent": urgent}),
+            ));
+        }
+
+        fn activity(&self, busy: bool, has_ask: bool) {
+            self.0.lock().unwrap().push((
+                "activity".into(),
+                serde_json::json!({"busy": busy, "hasAsk": has_ask}),
             ));
         }
     }
@@ -979,6 +1045,97 @@ mod tests {
         });
         assert_eq!(emitted.unwrap().0, "status");
         assert_eq!(client.status().unwrap().generation, 7);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn client_reports_ompy_busy_and_open_asks() {
+        let temp = TempDir::new("pc", "act");
+        let paths = test_paths(&temp, "act");
+        ensure_private_dir(&paths.persona).unwrap();
+        let listener = ListenerOptions::new()
+            .name(socket_name(&paths).unwrap())
+            .create_sync()
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let _hello = read_client(stream.try_clone().unwrap());
+            write_msg(&mut stream, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            let frame = |value: Value| serde_json::value::RawValue::from_string(value.to_string());
+            write_msg(
+                &mut stream,
+                &ServerMsg::Rpc {
+                    seq: 1,
+                    frame: frame(serde_json::json!({"type":"agent_start"})).unwrap(),
+                },
+            )
+            .unwrap();
+            let mut result = open_item("result");
+            result.kind = omp_desktop_core::persona_protocol::ItemKind::Result;
+            write_msg(
+                &mut stream,
+                &ServerMsg::Inbox {
+                    items: vec![open_item("approval"), result],
+                },
+            )
+            .unwrap();
+            // A continuation is still the same busy turn.
+            write_msg(
+                &mut stream,
+                &ServerMsg::Rpc {
+                    seq: 2,
+                    frame: frame(
+                        serde_json::json!({"type":"agent_end","yielded":false,"isTerminal":false}),
+                    )
+                    .unwrap(),
+                },
+            )
+            .unwrap();
+            write_msg(
+                &mut stream,
+                &ServerMsg::Rpc {
+                    seq: 3,
+                    frame: frame(serde_json::json!({"type":"agent_end","isTerminal":true}))
+                        .unwrap(),
+                },
+            )
+            .unwrap();
+            write_msg(&mut stream, &ServerMsg::Inbox { items: vec![] }).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        let events = Arc::new(Recorder::default());
+        let client = Client::start(paths, events.clone());
+        let done = eventually(Duration::from_secs(3), || {
+            events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(name, payload)| {
+                    name == "activity" && payload["busy"] == false && payload["hasAsk"] == false
+                })
+                .then_some(())
+        });
+        assert!(done.is_some(), "the settled activity never arrived");
+        let activity: Vec<Value> = events
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name == "activity")
+            .map(|(_, payload)| payload.clone())
+            .collect();
+        assert_eq!(
+            activity,
+            [
+                serde_json::json!({"busy": true, "hasAsk": false}),
+                serde_json::json!({"busy": true, "hasAsk": true}),
+                serde_json::json!({"busy": false, "hasAsk": true}),
+                serde_json::json!({"busy": false, "hasAsk": false}),
+            ],
+            "busy and hasAsk do not follow the relayed turn and inbox"
+        );
         drop(client);
         server.join().unwrap();
     }
@@ -1185,6 +1342,67 @@ mod tests {
             !server.join().unwrap(),
             "client retried after protocol mismatch"
         );
+        drop(client);
+    }
+
+    #[test]
+    fn admission_refusal_backs_off_and_reconnects() {
+        let temp = TempDir::new("persona-client", "admission");
+        let paths = test_paths(&temp, "admission");
+        ensure_private_dir(&paths.persona).unwrap();
+        let listener = ListenerOptions::new()
+            .name(socket_name(&paths).unwrap())
+            .nonblocking(ListenerNonblockingMode::Accept)
+            .create_sync()
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut first = loop {
+                match listener.accept() {
+                    Ok(conn) => break conn,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("accept failed: {e}"),
+                }
+            };
+            let _hello = read_client(first.try_clone().unwrap());
+            write_msg(
+                &mut first,
+                &ServerMsg::Reply {
+                    req: 0,
+                    ok: false,
+                    data: None,
+                    error: Some("too many connections".into()),
+                },
+            )
+            .unwrap();
+            drop(first);
+
+            let deadline = std::time::Instant::now() + Duration::from_secs(4);
+            let mut second = loop {
+                match listener.accept() {
+                    Ok(conn) => break conn,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() >= deadline {
+                            return false;
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(e) => panic!("accept failed: {e}"),
+                }
+            };
+            let _hello = read_client(second.try_clone().unwrap());
+            write_msg(&mut second, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            write_msg(&mut second, &ServerMsg::Status { status: status() }).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            true
+        });
+        let events = Arc::new(Recorder::default());
+        let client = Client::start(paths, events);
+        let reconnected = eventually(Duration::from_secs(3), || client.status().map(|_| ()));
+        assert!(server.join().unwrap(), "no connection followed admission");
+        assert!(reconnected.is_some(), "admission refusal stopped retries");
+        assert!(client.errors().connection.is_none());
         drop(client);
     }
 
@@ -1529,6 +1747,63 @@ mod tests {
             closed_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
             "the old connection stayed open after a reconnect"
         );
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn relay_frame_at_the_payload_limit_is_delivered() {
+        let temp = TempDir::new("pc", "rl");
+        let paths = test_paths(&temp, "rl");
+        ensure_private_dir(&paths.persona).unwrap();
+        let listener = ListenerOptions::new()
+            .name(socket_name(&paths).unwrap())
+            .create_sync()
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let _hello = read_client(stream.try_clone().unwrap());
+            write_msg(&mut stream, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            let prefix = r#"{"type":"message","data":""#;
+            let suffix = r#""}"#;
+            let text = format!(
+                "{prefix}{}{suffix}",
+                "x".repeat(MAX_LINE_BYTES - prefix.len() - suffix.len())
+            );
+            assert_eq!(text.len(), MAX_LINE_BYTES);
+            let frame = serde_json::value::RawValue::from_string(text).unwrap();
+            write_msg(
+                &mut stream,
+                &ServerMsg::Rpc {
+                    seq: u64::MAX,
+                    frame,
+                },
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        let events = Arc::new(Recorder::default());
+        let client = Client::start(paths, events.clone());
+        let delivered = eventually(Duration::from_secs(5), || {
+            events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(name, payload)| name == "line" && payload["seq"] == u64::MAX)
+                .then_some(())
+        });
+        assert!(
+            delivered.is_some(),
+            "a payload at the protocol limit disconnected the reader"
+        );
+        let events = events.0.lock().unwrap();
+        let line = events
+            .iter()
+            .find(|(name, _)| name == "line")
+            .expect("relay line missing");
+        assert_eq!(line.1["text"].as_str().unwrap().len(), MAX_LINE_BYTES);
+        drop(events);
         drop(client);
         server.join().unwrap();
     }
