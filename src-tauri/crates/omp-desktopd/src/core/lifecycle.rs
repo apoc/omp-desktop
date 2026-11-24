@@ -134,8 +134,14 @@ impl Core {
             .map(|item| item.title.clone())
             .collect();
         let tokens_left = self.budget.limit.saturating_sub(self.budget.used);
-        let message = wake::prompt(reason, now.local, tokens_left, &decisions);
-        if !self.send_prompt(&message) {
+        let instructions = std::fs::read_to_string(&self.launch.instructions).unwrap_or_else(|error| {
+            eprintln!(
+                "[omp-desktopd] could not read instructions for wake-up: {error}"
+            );
+            String::new()
+        });
+        let message = wake::prompt(reason, now.local, tokens_left, &decisions, &instructions);
+        if !self.send_prompt(&message, now) {
             self.scheduler.handle(Event::Busy(false), now);
         }
         self.broadcast_status();
@@ -187,7 +193,9 @@ impl Core {
                 self.scheduler.handle(Event::Blocked(self.blocked()), now);
             }
             SessionEvent::AutoApproved { .. } => {}
-            SessionEvent::Exited { reason } => self.on_exited(&reason, now),
+            SessionEvent::StdinFailed { reason } | SessionEvent::Exited { reason } => {
+                self.on_exited(&reason, now);
+            }
         }
     }
 
@@ -229,9 +237,12 @@ impl Core {
     }
 
     /// omp's stdout ended: expire its open requests and restart with backoff.
-    fn on_exited(&mut self, reason: &str, now: &Now) {
+    pub(super) fn on_exited(&mut self, reason: &str, now: &Now) {
+        let Some(mut session) = self.session.take() else {
+            return;
+        };
         eprintln!("[omp-desktopd] omp stopped: {reason}");
-        self.session = None;
+        session.kill();
         if self.inbox.expire_all_bound() > 0 {
             self.inbox.add(
                 ItemKind::Notice,

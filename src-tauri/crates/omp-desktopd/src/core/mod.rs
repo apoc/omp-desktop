@@ -134,8 +134,7 @@ pub struct Core {
 
 impl Core {
     /// Build the core from the state files under `paths`. A missing file means
-    /// defaults; a corrupt one is reported in the inbox from now on, but is
-    /// not overwritten until the corresponding message changes it.
+    /// defaults; an unreadable one is moved aside before defaults can be saved.
     #[must_use]
     pub fn new(paths: Paths, launch: Launch, clock: Box<dyn Fn() -> Now + Send>) -> Self {
         let now = clock();
@@ -145,10 +144,13 @@ impl Core {
                 paths.persona.display()
             );
         }
-        let (settings, settings_ok) = read_json::<PersonaSettings>(&paths.settings, "settings");
-        let (wakes, wakes_ok) = read_json::<Vec<Scheduled>>(&paths.schedule, "schedule");
+        let (settings, settings_ok) =
+            read_json::<PersonaSettings>(&paths.settings, "settings", now.utc_ms);
+        let (wakes, wakes_ok) =
+            read_json::<Vec<Scheduled>>(&paths.schedule, "schedule", now.utc_ms);
         let (mut inbox, inbox_notice) = Inbox::load(paths.inbox.clone(), now.utc_ms);
-        let (mut budget, budget_notice, budget_writable) = load_budget(&paths.budget, &now);
+        let (mut budget, budget_notice, budget_writable) =
+            load_budget(&paths.budget, &now, settings.daily_token_limit);
         budget.roll(now.local.date());
         budget.set_limit(settings.daily_token_limit);
         let mut notices: Vec<String> = Vec::new();
@@ -321,21 +323,23 @@ impl Core {
         self.session.is_none() || self.inbox.has_open_bound()
     }
 
-    /// Write one frame to the session. Returns whether it was handed to omp.
-    fn send_frame(&self, frame: &str) -> bool {
+    /// Write one frame to the session. Returns whether omp received it.
+    fn send_frame(&mut self, frame: &str, now: &Now) -> bool {
         let Some(session) = &self.session else {
             return false;
         };
         if let Err(error) = session.send(frame) {
-            eprintln!("[omp-desktopd] could not write to omp: {error}");
+            let reason = format!("omp stdin failed: {error}");
+            eprintln!("[omp-desktopd] {reason}");
+            self.on_exited(&reason, now);
             return false;
         }
         true
     }
 
     /// Send `message` as a `prompt` frame that queues behind a running turn.
-    fn send_prompt(&self, message: &str) -> bool {
-        self.send_frame(&prompt_frame(message))
+    fn send_prompt(&mut self, message: &str, now: &Now) -> bool {
+        self.send_frame(&prompt_frame(message), now)
     }
 
     /// The deadline the loop sleeps until: the scheduler's next wake or, while

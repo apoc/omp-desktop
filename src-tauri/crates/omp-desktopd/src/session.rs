@@ -16,10 +16,11 @@ use serde_json::Value;
 use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// Frames kept for a client that reconnects and asks to replay.
 pub const REPLAY_MAX: usize = 5000;
@@ -121,6 +122,11 @@ pub enum SessionEvent {
         /// The approved tool name.
         tool: String,
     },
+    /// Writing to omp's stdin failed or timed out.
+    StdinFailed {
+        /// Why the session is unhealthy.
+        reason: String,
+    },
     /// omp's stdout ended, so the process is gone.
     Exited {
         /// Why the session stopped.
@@ -193,9 +199,87 @@ impl ReplayRing {
 }
 
 /// A running omp process.
+struct WriteRequest {
+    line: String,
+    done: SyncSender<io::Result<()>>,
+}
+
+/// omp stdin owned by a writer thread. Callers wait only for the bounded queue
+/// and the write-acknowledgement timeout, never for the writer thread itself.
+#[derive(Clone)]
+struct StdinWriter {
+    tx: SyncSender<WriteRequest>,
+    timeout: Duration,
+    events: Sender<SessionEvent>,
+}
+
+impl StdinWriter {
+    fn new<W: Write + Send + 'static>(
+        mut writer: W,
+        capacity: usize,
+        timeout: Duration,
+        events: Sender<SessionEvent>,
+    ) -> io::Result<Self> {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<WriteRequest>(capacity);
+        std::thread::Builder::new()
+            .name("ompy-stdin".into())
+            .spawn(move || {
+                while let Ok(request) = rx.recv() {
+                    let result = writeln!(writer, "{}", request.line).and_then(|()| writer.flush());
+                    let failed = result.is_err();
+                    let _ = request.done.send(result);
+                    if failed {
+                        break;
+                    }
+                }
+            })?;
+        Ok(Self { tx, timeout, events })
+    }
+
+    fn send(&self, frame_json: &str) -> io::Result<()> {
+        let line = frame_json.replace(['\r', '\n'], "");
+        let (done, ack) = std::sync::mpsc::sync_channel(0);
+        if let Err(error) = self.tx.try_send(WriteRequest { line, done }) {
+            let error = match error {
+                TrySendError::Full(_) => io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "omp stdin queue is full",
+                ),
+                TrySendError::Disconnected(_) => {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "omp stdin writer stopped")
+                }
+            };
+            self.failed(&error);
+            return Err(error);
+        }
+        let result = match ack.recv_timeout(self.timeout) {
+            Ok(result) => result,
+            Err(RecvTimeoutError::Timeout) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "omp stdin write timed out",
+            )),
+            Err(RecvTimeoutError::Disconnected) => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "omp stdin writer stopped",
+            )),
+        };
+        if let Err(error) = &result {
+            self.failed(error);
+        }
+        result
+    }
+
+    fn failed(&self, error: &io::Error) {
+        let _ = self.events.send(SessionEvent::StdinFailed {
+            reason: format!("omp stdin failed: {error}"),
+        });
+    }
+}
+
+/// A running omp process.
 pub struct Session {
     child: Child,
-    stdin: Arc<Mutex<ChildStdin>>,
+    stdin: StdinWriter,
     replay: Replay,
 }
 
@@ -396,11 +480,23 @@ impl Session {
             cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
         }
         let mut child = cmd.spawn()?;
-        let stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped stdin")));
+        let stdin = match StdinWriter::new(
+            child.stdin.take().expect("piped stdin"),
+            32,
+            Duration::from_secs(5),
+            events.clone(),
+        ) {
+            Ok(stdin) => stdin,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
         let stdout = child.stdout.take().expect("piped stdout");
         let replay: Replay = Arc::new(Mutex::new(ReplayRing::new(REPLAY_MAX, REPLAY_MAX_BYTES)));
         let (read_stdin, read_replay, home) =
-            (Arc::clone(&stdin), Arc::clone(&replay), l.home.clone());
+            (stdin.clone(), Arc::clone(&replay), l.home.clone());
         let reader = std::thread::Builder::new()
             .name("ompy-stdout".into())
             .spawn(move || {
@@ -416,9 +512,7 @@ impl Session {
                                 }) else {
                                     return;
                                 };
-                                let written = read_stdin.lock().is_ok_and(|mut w| {
-                                    writeln!(w, "{answer}").and_then(|()| w.flush()).is_ok()
-                                });
+                                let written = read_stdin.send(&answer).is_ok();
                                 if written {
                                     let _ = events.send(SessionEvent::AutoApproved {
                                         tool: tool.to_owned(),
@@ -455,21 +549,16 @@ impl Session {
         })
     }
 
-    /// Writes one frame to omp's stdin. Line endings in `frame_json` are
-    /// stripped, so one call is always one line.
+    /// Writes one frame to omp's stdin through the bounded writer queue.
+    /// Line endings in `frame_json` are stripped, so one call is one line.
+    /// Success means the writer flushed the complete line to the live process.
     ///
     /// # Errors
     ///
-    /// Returns the write error, or a poisoned-lock error when a previous
-    /// writer panicked.
+    /// Returns an error when the queue is full, the writer failed, or the write
+    /// did not finish before the health timeout.
     pub fn send(&self, frame_json: &str) -> io::Result<()> {
-        let line = frame_json.replace(['\r', '\n'], "");
-        let mut writer = self
-            .stdin
-            .lock()
-            .map_err(|_| io::Error::other("stdin poisoned"))?;
-        writeln!(writer, "{line}")?;
-        writer.flush()
+        self.stdin.send(frame_json)
     }
 
     /// The frames stored after `seq`, oldest first.
@@ -570,5 +659,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             [2, 3]
         );
+    }
+
+    struct StuckWriter;
+
+    impl Write for StuckWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            std::thread::park();
+            unreachable!()
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn stuck_stdin_times_out_and_a_full_queue_refuses_more_writes() {
+        let (events, _rx) = std::sync::mpsc::channel();
+        let writer = StdinWriter::new(StuckWriter, 1, Duration::from_millis(20), events).unwrap();
+        let started = std::time::Instant::now();
+
+        assert_eq!(
+            writer.send("first").unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            writer.send("second").unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            writer.send("third").unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(started.elapsed() < Duration::from_millis(500));
+        drop(writer);
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 }

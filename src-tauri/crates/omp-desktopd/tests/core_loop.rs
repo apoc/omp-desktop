@@ -25,6 +25,7 @@ struct Harness {
     clock: Arc<AtomicI64>,
     paths: Paths,
     log: PathBuf,
+    instructions: PathBuf,
 }
 
 const fn t0_ms() -> i64 {
@@ -57,12 +58,13 @@ fn start_with(
     let paths = Paths::under(&root);
     ensure_private_dir(&paths.persona).unwrap();
     let log = root.join("sent.log");
+    let instructions = root.join("i.md");
     let launch = Launch {
         program: omp_desktopd::session::ProgramSource::Fixed(program),
         home: root.clone(),
         sessions: paths.sessions.clone(),
         extension: root.join("e.mjs"),
-        instructions: root.join("i.md"),
+        instructions: instructions.clone(),
         socket_env: "x".into(),
         env: vec![("FAKE_OMP_LOG".into(), log.display().to_string())],
     };
@@ -99,6 +101,7 @@ fn start_with(
         clock,
         paths,
         log,
+        instructions,
     }
 }
 
@@ -252,8 +255,26 @@ fn wait_until(h: &Harness, done: impl Fn(&[InboxItem]) -> bool) -> Vec<InboxItem
 #[test]
 fn wake_now_sends_prompt_and_approval_lands_in_inbox() {
     let h = start("wake", ClientKind::App);
+    std::fs::write(&h.instructions, "first instructions").unwrap();
     send(&h, 1, ClientMsg::WakeNow);
-    wait_log(&h, "[ompy wake] trigger: manual");
+    wait_log(&h, "first instructions");
+    assert!(matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }));
+    let first_approval = wait_until(&h, |items| {
+        items
+            .iter()
+            .any(|i| i.kind == ItemKind::Approval && i.state == ItemState::Open)
+    })
+    .into_iter()
+    .find(|i| i.kind == ItemKind::Approval)
+    .unwrap()
+    .id;
+    answer(&h, 3, &first_approval, "Deny");
+    assert!(matches!(reply(&h, 3), ServerMsg::Reply { ok: true, .. }));
+
+    std::fs::write(&h.instructions, "edited instructions").unwrap();
+    send(&h, 2, ClientMsg::WakeNow);
+    assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: true, .. }));
+    wait_log(&h, "edited instructions");
     for _ in 0..100 {
         let items = inbox_items(&h);
         if items
@@ -265,6 +286,32 @@ fn wake_now_sends_prompt_and_approval_lands_in_inbox() {
         std::thread::sleep(Duration::from_millis(50));
     }
     panic!("no approval item");
+}
+
+#[test]
+fn stdin_failure_restarts_the_live_session() {
+    let h = start("stdin-restart", ClientKind::App);
+    let first_generation = current_generation(&h);
+    h.tx.send(CoreMsg::Session {
+        gen: first_generation,
+        ev: SessionEvent::StdinFailed {
+            reason: "test stdin timeout".into(),
+        },
+    })
+    .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(Instant::now() < deadline, "session did not restart");
+        send(&h, 91, ClientMsg::Status);
+        match reply(&h, 91) {
+            ServerMsg::Reply {
+                data: Some(data), ..
+            } if data["generation"].as_u64().unwrap() > first_generation => break,
+            _ => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+    let _ = h.tx.send(CoreMsg::Shutdown);
 }
 
 #[test]
@@ -311,6 +358,59 @@ fn answering_approval_writes_response_and_unblocks() {
         },
     );
     wait_log(&h, r#""value":"Approve""#);
+}
+
+#[test]
+fn offline_answers_fail_and_leave_the_item_open() {
+    let missing = std::env::temp_dir().join(format!("ompy-offline-answer-{}", std::process::id()));
+    let h = start_with("offline-answer", ClientKind::App, missing, |_| {});
+    let gen = current_generation(&h);
+    h.tx.send(CoreMsg::Session {
+        gen,
+        ev: SessionEvent::UiRequest {
+            id: "offline1".into(),
+            kind: ItemKind::Decision,
+            title: "Wait for Ompy?".into(),
+            body: None,
+            options: vec!["Yes".into(), "No".into()],
+            method: "select".into(),
+            ask_questions: None,
+            secret: false,
+        },
+    })
+    .unwrap();
+    let id = wait_until(&h, |items| {
+        items.iter().any(|item| {
+            item.rpc_request_id.as_deref() == Some("offline1") && item.state == ItemState::Open
+        })
+    })
+    .into_iter()
+    .find(|item| item.rpc_request_id.as_deref() == Some("offline1"))
+    .unwrap()
+    .id;
+
+    answer(&h, 2, &id, "Yes");
+    assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: false, .. }));
+    assert!(inbox_items(&h)
+        .iter()
+        .any(|item| item.id == id && item.state == ItemState::Open));
+
+    send(
+        &h,
+        3,
+        ClientMsg::Rpc {
+            frame: serde_json::json!({
+                "type": "extension_ui_response",
+                "id": "offline1",
+                "value": "Yes",
+            }),
+        },
+    );
+    assert!(matches!(reply(&h, 3), ServerMsg::Reply { ok: false, .. }));
+    assert!(inbox_items(&h)
+        .iter()
+        .any(|item| item.id == id && item.state == ItemState::Open));
+    let _ = h.tx.send(CoreMsg::Shutdown);
 }
 
 fn open_request(h: &Harness, prompt: &str, rpc_id: &str) -> InboxItem {
@@ -955,7 +1055,10 @@ fn corrupt_budget_is_moved_aside_and_replaced() {
     send(&h, 1, ClientMsg::Status);
     assert!(matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }));
     let budget = std::fs::read_to_string(&h.paths.budget).unwrap();
-    assert!(budget.contains("\"used\": 7"), "a fresh budget is written");
+    assert!(
+        budget.contains("\"used\": 2000007"),
+        "the daily limit counts as spent before this usage: {budget}"
+    );
 }
 
 #[test]

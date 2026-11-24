@@ -116,21 +116,28 @@ impl Core {
     }
 
     fn on_rpc(&mut self, conn: ConnId, req: Option<u64>, frame: &Value, now: &Now) {
-        if frame.get("type").and_then(Value::as_str) == Some("extension_ui_response") {
-            if let Some(id) = frame.get("id").and_then(Value::as_str) {
+        let inbox_answer = if frame.get("type").and_then(Value::as_str)
+            == Some("extension_ui_response")
+        {
+            frame.get("id").and_then(Value::as_str).map(|id| {
                 let cancelled = frame.get("cancelled").and_then(Value::as_bool) == Some(true);
                 let answer = if cancelled {
                     None
                 } else {
                     Some(ui_answer(frame))
                 };
-                if self.inbox.resolve_by_rpc(id, answer).is_some() {
+                (id.to_owned(), answer)
+            })
+        } else {
+            None
+        };
+        if self.send_frame(&frame.to_string(), now) {
+            if let Some((id, answer)) = inbox_answer {
+                if self.inbox.resolve_by_rpc(&id, answer).is_some() {
                     self.scheduler.handle(Event::Blocked(self.blocked()), now);
                     self.inbox_changed(now);
                 }
             }
-        }
-        if self.send_frame(&frame.to_string()) {
             self.reply_ok(conn, req, None);
         } else {
             self.reply_err(conn, req, "Ompy is not running");
@@ -172,54 +179,53 @@ impl Core {
         answer: Option<&str>,
         now: &Now,
     ) {
-        let response = if let Some(answer) = answer {
-            let Some(item) = self.inbox.open(id) else {
-                self.reply_err(conn, req, "no open inbox item with that id");
-                return;
-            };
+        let Some(item) = self.inbox.open(id) else {
+            self.reply_err(conn, req, "no open inbox item with that id");
+            return;
+        };
+        if let Some(answer) = answer {
             if item.rpc_request_id.is_some() {
-                match Self::respond(item, answer) {
-                    Ok(frame) => Some(frame),
+                let frame = match Self::respond(item, answer) {
+                    Ok(frame) => frame,
                     Err(error) => {
                         self.reply_err(conn, req, error);
                         return;
                     }
+                };
+                if !self.send_frame(&frame.to_string(), now) {
+                    self.reply_err(conn, req, "Ompy is not running; answer was not delivered");
+                    return;
                 }
-            } else {
-                None
+            } else if item.kind == ItemKind::Decision {
+                let message = format!("[ompy decision] {}: {answer}", item.title);
+                if !self.send_prompt(&message, now) {
+                    self.reply_err(conn, req, "Ompy is not running; answer was not delivered");
+                    return;
+                }
             }
-        } else {
-            None
-        };
+        } else if let Some(rpc) = item.rpc_request_id.clone() {
+            if !self.dismiss(&rpc, now) {
+                self.reply_err(conn, req, "Ompy is not running; dismissal was not delivered");
+                return;
+            }
+        }
         let Some(item) = self.inbox.resolve(id, answer.map(str::to_owned)) else {
             self.reply_err(conn, req, "no open inbox item with that id");
             return;
         };
-        if let Some(frame) = response {
-            self.send_frame(&frame.to_string());
-        } else if answer.is_none() {
-            if let Some(rpc) = item.rpc_request_id.as_deref() {
-                self.dismiss(rpc);
-            }
-        } else if item.kind == ItemKind::Decision && item.rpc_request_id.is_none() {
-            if let Some(answer) = answer {
-                let message = format!("[ompy decision] {}: {answer}", item.title);
-                self.send_prompt(&message);
-            }
-        }
         self.scheduler.handle(Event::Blocked(self.blocked()), now);
         self.inbox_changed(now);
         self.reply_ok(conn, req, Some(json!({ "id": item.id })));
     }
 
     /// Withdraw omp's request `rpc` because the user dismissed its inbox item.
-    fn dismiss(&self, rpc: &str) {
+    fn dismiss(&mut self, rpc: &str, now: &Now) -> bool {
         let frame = json!({
             "type": "extension_ui_response",
             "id": rpc,
             "cancelled": true,
         });
-        self.send_frame(&frame.to_string());
+        self.send_frame(&frame.to_string(), now)
     }
 
     /// Build the response shape belonging to the original omp request.

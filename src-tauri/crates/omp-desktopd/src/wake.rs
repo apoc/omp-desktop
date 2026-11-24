@@ -11,6 +11,7 @@ pub fn prompt(
     local: NaiveDateTime,
     tokens_left: u64,
     open_decisions: &[String],
+    instructions: &str,
 ) -> String {
     let trigger = match reason {
         WakeReason::Interval => "interval".to_owned(),
@@ -23,7 +24,7 @@ pub fn prompt(
         open_decisions.join("; ")
     };
     format!(
-        "[ompy wake] trigger: {trigger}\nlocal time: {}\ntokens left today: {tokens_left}\nopen decisions: {open}\n\nDo what this trigger calls for (see your instructions).",
+        "[ompy wake] trigger: {trigger}\nlocal time: {}\ntokens left today: {tokens_left}\nopen decisions: {open}\n\n[ompy instructions]\n{instructions}\n\nDo what this trigger calls for (see your instructions).",
         local.format("%Y-%m-%d %H:%M (%a)")
     )
 }
@@ -46,11 +47,13 @@ mod tests {
             t,
             1200,
             &[],
+            "Current instructions",
         );
         assert!(p.starts_with(
             "[ompy wake] trigger: scheduled: check invoices\nlocal time: 2026-11-16 08:30 (Mon)\ntokens left today: 1200\nopen decisions: none"
         ));
         assert!(p.ends_with("Do what this trigger calls for (see your instructions)."));
+        assert!(p.contains("[ompy instructions]\nCurrent instructions"));
     }
 
     #[test]
@@ -64,6 +67,7 @@ mod tests {
             t,
             0,
             &["Archive the invoice?".into(), "Send the draft?".into()],
+            "",
         );
         assert!(p.contains("open decisions: Archive the invoice?; Send the draft?"));
     }
