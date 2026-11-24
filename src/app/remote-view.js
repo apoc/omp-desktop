@@ -29,6 +29,7 @@
         ...(ask.markableCount !== undefined ? { markableCount: ask.markableCount } : {}),
       } : {}),
       ...(kind === "editor" && typeof (ask.prefill ?? ask.value) === "string" ? { value: ask.prefill ?? ask.value } : {}),
+      ...(kind === "input" && ask.secret === true ? { secret: true } : {}),
       ...(kind === "dialog" ? { questions: ask.questions ?? [] } : {}),
     };
   }

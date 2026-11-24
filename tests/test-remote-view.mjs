@@ -116,13 +116,25 @@ test("buildView forwards a select's checkbox fields and leaves other kinds alone
     ask("plain", "select", { options: ["Approve", "Deny"] }),
     ask("conf", "confirm", fields),
     ask("inp", "input", fields),
+    ask("secret", "input", { secret: true }),
   ] }));
   assert.deepEqual(own(view.asks), [
     { id: "cb", kind: "select", title: "Continue?", message: "", options: ["A", "B", "C", "✔ Done selecting"], ...fields },
     { id: "plain", kind: "select", title: "Continue?", message: "", options: ["Approve", "Deny"] },
     { id: "conf", kind: "confirm", title: "Continue?", message: "" },
     { id: "inp", kind: "input", title: "Continue?", message: "" },
+    { id: "secret", kind: "input", title: "Continue?", message: "", secret: true },
   ]);
+});
+
+test("buildView never publishes an answered secret prompt or its value", () => {
+  const { api } = load();
+  const view = api.buildView(snapshot({ messages: [
+    ask("secret-answered", "input", { secret: true, answered: true, answer: "phone-secret-value" }),
+    ask("secret-open", "input", { secret: true }),
+  ] }));
+  assert.deepEqual(Array.from(view.asks, entry => entry.id), ["secret-open"]);
+  assert.equal(JSON.stringify(view).includes("phone-secret-value"), false);
 });
 
 test("buildView trims to last 100 messages and 2 000 tool characters without losing older open asks", () => {
