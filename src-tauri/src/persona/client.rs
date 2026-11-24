@@ -989,6 +989,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn only_open_approvals_and_decisions_are_asks() {
+        use super::has_open_ask;
+        use omp_desktop_core::persona_protocol::{ItemKind, ItemState};
+
+        assert!(has_open_ask(&[open_item("approval")]));
+        let mut decision = open_item("decision");
+        decision.kind = ItemKind::Decision;
+        assert!(has_open_ask(&[decision]));
+
+        let mut result = open_item("result");
+        result.kind = ItemKind::Result;
+        let mut notice = open_item("notice");
+        notice.kind = ItemKind::Notice;
+        assert!(!has_open_ask(&[result, notice]), "results are not asks");
+
+        let mut answered = open_item("answered");
+        answered.state = ItemState::Answered;
+        let mut dismissed = open_item("dismissed");
+        dismissed.kind = ItemKind::Decision;
+        dismissed.state = ItemState::Dismissed;
+        assert!(
+            !has_open_ask(&[answered, dismissed]),
+            "settled items are not asks"
+        );
+    }
+
     fn read_client<R: std::io::Read>(stream: R) -> Envelope<ClientMsg> {
         let mut reader = BufReader::new(stream);
         let mut buf = Vec::new();
@@ -1365,6 +1392,7 @@ mod tests {
                     Err(e) => panic!("accept failed: {e}"),
                 }
             };
+            first.set_nonblocking(false).unwrap();
             let _hello = read_client(first.try_clone().unwrap());
             write_msg(
                 &mut first,
@@ -1391,6 +1419,7 @@ mod tests {
                     Err(e) => panic!("accept failed: {e}"),
                 }
             };
+            second.set_nonblocking(false).unwrap();
             let _hello = read_client(second.try_clone().unwrap());
             write_msg(&mut second, &ServerMsg::Hello { protocol: 1 }).unwrap();
             write_msg(&mut second, &ServerMsg::Status { status: status() }).unwrap();
