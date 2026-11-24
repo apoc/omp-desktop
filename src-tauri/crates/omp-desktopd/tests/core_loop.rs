@@ -460,19 +460,40 @@ fn wake_until(h: &Harness, want: usize) {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
-    panic!("omp received {} wakes, wanted {want}", wake_count(h));
+    panic!(
+        "omp received {} wakes, wanted {want}; inbox: {:?}",
+        wake_count(h),
+        inbox_items(h)
+    );
 }
 
-/// Answer every open approval with `Deny` so the next wake is not held.
-fn deny_open_approvals(h: &Harness) {
+/// Deny the approval the wake's prompt produced so the next wake is not held.
+///
+/// The fake logs the prompt before the service has turned the resulting
+/// `extension_ui_request` into an inbox item, so the item is awaited first: a
+/// snapshot taken too early would miss it, and a request nobody answered holds
+/// every later wake.
+fn deny_wake_approval(h: &Harness) {
+    let items = wait_until(h, |items| {
+        items
+            .iter()
+            .any(|item| item.kind == ItemKind::Approval && item.state == ItemState::Open)
+    });
     for (req, item) in (800..).zip(
-        inbox_items(h)
+        items
             .into_iter()
             .filter(|item| item.kind == ItemKind::Approval && item.state == ItemState::Open),
     ) {
         answer(h, req, &item.id, "Deny");
         let _ = reply(h, req);
     }
+    let items = inbox_items(h);
+    assert!(
+        items
+            .iter()
+            .all(|item| !(item.state == ItemState::Open && item.rpc_request_id.is_some())),
+        "the wake's approval must be answered before the next wake: {items:?}"
+    );
 }
 
 #[test]
@@ -1417,7 +1438,7 @@ fn a_non_file_instructions_path_surfaces_a_notice_and_keeps_the_wake() {
     );
 
     // The next delivered wake reports the same problem once, not per wake.
-    deny_open_approvals(&h);
+    deny_wake_approval(&h);
     wake_until(&h, 2);
     let notices = inbox_items(&h)
         .into_iter()
@@ -1434,7 +1455,7 @@ fn edited_instructions_restart_the_session_before_the_wake() {
     // The first wake may itself restart the session: the edit can land after
     // the spawn read. Either way the session runs with "alpha" afterwards.
     wake_until(&h, 1);
-    deny_open_approvals(&h);
+    deny_wake_approval(&h);
     let settled = current_generation(&h);
 
     std::fs::write(&h.instructions, "instructions-marker-beta").unwrap();
