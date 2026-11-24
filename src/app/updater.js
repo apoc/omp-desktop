@@ -128,9 +128,10 @@
     return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   }
 
-  // Tabs a restart would interrupt: every busy run state
+  // Tabs a restart would interrupt: every busy guard run state
   // (app/turn-status.js `isBusyRunState`; a background job dies with the
-  // process too). Looked up at call time: turn-status.js loads later.
+  // process too). The guard never lets a tracker report lower a frozen run.
+  // Looked up at call time: turn-status.js loads later.
   function busyTabCount(sessions) {
     if (!Array.isArray(sessions)) return 0;
     const { isBusyRunState } = window.OMP_TURN_STATUS;

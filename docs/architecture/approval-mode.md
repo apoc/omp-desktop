@@ -49,7 +49,7 @@ The frontend's "what should run" is `OMP_APPROVAL_MODE.effectiveFor(view, path)`
 `setApprovalModeDefault` / `setApprovalModeProject` store the returned view and call `_applyApprovalModes()`, which is `OMP_APPROVAL_MODE.restartPlan(view, sessions)`:
 
 - A tab is in the plan iff its `approvalMode` is a mode and differs from `effectiveFor(view, path)`.
-- **Idle** tabs (`!isBusyRunState(runState)`, not `failed`) are restarted now: `_respawnSession(id, { profile, resume: sessionFile })`.
+- **Idle** tabs (`!isBusyRunState(runState)`, not `failed`) are restarted now: `_respawnSession(id, { profile, resume: sessionFile })`. `runState` is the guard state (`docs/architecture/turn-status.md`): the tab's own state unioned with the backend tracker, so a delayed or misordered tracker report cannot make a working tab restart.
 - **Busy** tabs (`running`, `retrying`, `waiting-user`, `background`) are left alone and recomputed later. The idle hook is every applied `get_state` response (the `get_state` branch of `_handleResponse`): the one the active tab's `agent_end` asks for and the one `_initFetch` sends on activation both pass through it, so a busy tab is re-planned at its next idle point. A background tab's `agent_end` is not processed until it is active, so it is checked on activation.
 - **`failed`** tabs (omp process gone) are in neither list; their next start uses the new mode.
 - A per-tab `_respawning` guard (generalised from `_profileSwitching`) keeps a second pass from respawning the same tab while one is in flight.

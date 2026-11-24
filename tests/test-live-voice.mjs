@@ -250,7 +250,7 @@ function bridgeHarness() {
     OMP_TRANSCRIPT: {}, OMP_PROMPT_HISTORY: { DEFAULT_LIMIT: 100 },
     OMP_SESSION_PREFS: { fromTweaks: () => ({ autoCompaction: true, autoRetry: true }), closeGuardArmed: () => false },
     OMP_TWEAKS_STORE: { read: () => ({}) },
-    OMP_TURN_STATUS: { runStateOf: () => "idle", backgroundRunState: cached => cached, isBusyRunState: () => false, retryCleared: messages => messages },
+    OMP_TURN_STATUS: { runStateOf: () => "idle", displayRunState: cached => cached, guardRunState: cached => cached, isBusyRunState: () => false, retryCleared: messages => messages },
     OMP_PROJECT_NAV: { basename: path => path.split("/").at(-1), findConversationTab: () => null },
     DEFAULT_PROFILE_ID: "default", INTENT_FRAMING: () => "", timeNow: () => "00:00",
   };

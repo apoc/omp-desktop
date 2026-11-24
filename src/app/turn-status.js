@@ -47,11 +47,12 @@
   const busyInRepo = (sessions, root) =>
     !!root && sessions.some(s => s.repoRoot === root && isBusyRunState(s.runState));
 
-  /** A background tab's run state after overlaying the backend tracker
-   *  (`agent://attention`, `src-tauri/src/remote/tracker.rs`) on the run
-   *  state its frozen snapshot carries. A background tab has no live
-   *  `agent://line` listener, so its snapshot's asks and turn never move;
-   *  the tracker sees every process's frames and knows better.
+  /** The displayed run state (the tab dot) of a background tab after
+   *  overlaying the backend tracker (`agent://attention`,
+   *  `src-tauri/src/remote/tracker.rs`) on the run state its frozen
+   *  snapshot carries. A background tab has no live `agent://line`
+   *  listener, so its snapshot's asks and turn never move; the tracker
+   *  sees every process's frames and knows better.
    *
    *  `cached` is `runStateOf` over the snapshot (`live.js`
    *  `_sessionsView`), `live` the tracker entry (`busy`, `asks`,
@@ -59,21 +60,37 @@
    *  has received the tracker snapshot at all, and `fresh` whether the
    *  tracker reported this session after the tab was frozen.
    *
-   *  A newer report owns the state: the run settled, the ask cleared or the
-   *  process exited. An older one may still know more than the snapshot
-   *  does — an ask that arrived, a run the tab never saw — but it may never
-   *  make the tab look less busy: absence alone is not proof of exit (the
-   *  busy fan-out for the tab just left may still be in flight), and a
-   *  frozen ask or run stands until a later report retires it.
-   *  `retrying` survives only while the tracker has not moved since the
-   *  freeze: the row lives in the frozen transcript, and a busy → idle →
-   *  busy wake makes it a run of the past. `failed` is the process's own
-   *  verdict and wins. */
-  function backgroundRunState(cached, live, loaded, fresh = false) {
+   *  Only the dot reads this. A newer report owns the display: the run
+   *  settled, the ask cleared or the process exited. An older one may
+   *  still know more than the snapshot does — an ask that arrived, a run
+   *  the tab never saw — but it may not make the dot look less busy:
+   *  absence alone is not proof of exit (the busy fan-out for the tab just
+   *  left may still be in flight), and a frozen ask or run stands until a
+   *  later report retires it. `retrying` survives only while the tracker
+   *  has not moved since the freeze: the row lives in the frozen
+   *  transcript, and a busy → idle → busy wake makes it a run of the past.
+   *  `failed` is the process's own verdict and wins. */
+  function displayRunState(cached, live, loaded, fresh = false) {
     if (cached === "failed") return "failed";
     if (!loaded) return cached;
     const tracked = _trackedRunState(live);
     if (fresh) return tracked;
+    return RUN_STATE_RANK[tracked] > RUN_STATE_RANK[cached] ? tracked : cached;
+  }
+
+  /** The protective run state: quit and busy-tab confirmation, the Rust
+   *  close guard, approval-mode restarts, the updater's busy count, PR
+   *  automation and every other consumer that decides whether work is
+   *  running. It is busy whenever the tab's own state — live, or frozen
+   *  when it was left — or the tracker says so. The tracker may raise it,
+   *  never lower it: a delayed or misordered report must not let a close,
+   *  a quit or a restart treat live work as idle. `failed` stays the
+   *  process's own verdict, and before the first tracker payload the tab's
+   *  own state is all there is. */
+  function guardRunState(cached, live, loaded) {
+    if (cached === "failed") return "failed";
+    if (!loaded) return cached;
+    const tracked = _trackedRunState(live);
     return RUN_STATE_RANK[tracked] > RUN_STATE_RANK[cached] ? tracked : cached;
   }
 
@@ -410,7 +427,7 @@
   }
 
   window.OMP_TURN_STATUS = Object.freeze({
-    runStateOf, backgroundRunState, isBusyRunState, busyElsewhere, busyInRepo, isYield, stripDiagnostics, providerHeadline, failureOf, finalFailures,
+    runStateOf, displayRunState, guardRunState, isBusyRunState, busyElsewhere, busyInRepo, isYield, stripDiagnostics, providerHeadline, failureOf, finalFailures,
     withPromptError, finishedJobsOf,
     failedStop, producedOutput, isHidden, retryIndex, retryStarted, retryAttempting, retryEnded, retryFinished, retryYielded, retryCleared,
   });

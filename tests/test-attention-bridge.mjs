@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Bridge regression: a background tab's run dot follows Rust's tracker
 // (`agent://attention`, src-tauri/src/remote/tracker.rs) and a new question
-// bounces the dock once. Loads the real live.js/turn-status.js/attention.js
-// into a stubbed Tauri.
+// bounces the dock once. Protective consumers read the separate guard state,
+// which a tracker report may raise but never lower. Loads the real
+// live.js/turn-status.js/attention.js into a stubbed Tauri.
 // Run: node tests/test-attention-bridge.mjs
 
 import assert from "node:assert/strict";
@@ -15,8 +16,8 @@ const load = (win, file) => new Function("window", readFileSync(`${root}src/${fi
 let focused = false;
 globalThis.document = { hasFocus: () => focused, visibilityState: "visible" };
 
-function harness(initial = null) {
-  const listeners = new Map(), journal = new Map(), bounces = [];
+function harness(initial = null, { wireGuardsToDisplay = false } = {}) {
+  const listeners = new Map(), journal = new Map(), bounces = [], commands = [], guardCalls = [];
   const initialRef = { snapshot: initial };
   const w = {
     OMP_SLASH: { LOCAL_COMMANDS: [], adaptAvailableCommands: cs => cs, mergeSlashCommands: (a) => a, isCommandInvocation: () => false, queuedFrame: () => null },
@@ -30,12 +31,33 @@ function harness(initial = null) {
     "app/transcript-merge.js", "app/stream-delta.js", "app/approval.js", "app/live-context.js", "app/approval-mode.js", "app/session-title.js",
     "app/session-prefs.js"]) load(w, file);
   const timeout = (fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; };
-  new Function("window", "setTimeout", "clearTimeout", readFileSync(`${root}src/live.js`, "utf8"))(w, timeout, clearTimeout);
+  let liveSource = readFileSync(`${root}src/live.js`, "utf8");
+  if (wireGuardsToDisplay) {
+    // Counter-probe: make every guard read the dot's state. The guard
+    // regression below must then observe the unprotected behaviour.
+    const before = liveSource;
+    liveSource = liveSource.replace(
+      "runState: TURN.guardRunState(cached, live, trackerLoaded),",
+      "runState: s.id === activeSessionId ? cached : TURN.displayRunState(cached, live, trackerLoaded, _trackerEvidenceNewer(s.id, snapshot?.trackerEvidence ?? null)),",
+    );
+    if (liveSource === before) throw new Error("counter-probe patch did not apply");
+  }
+  new Function("window", "setTimeout", "clearTimeout", liveSource)(w, timeout, clearTimeout);
   w.__TAURI__ = {
     core: {
       invoke(command, args) {
+        commands.push({ command, args });
+        if (command === "set_close_guard") {
+          guardCalls.push(args?.armed === true);
+          return Promise.resolve(null);
+        }
         if (command === "list_profiles") return Promise.resolve({ profiles: [{ id: "default", name: "default" }] });
         if (command === "start_session") return Promise.resolve("write");
+        if (command === "approval_mode_get") return Promise.resolve({ default: "write", projects: {} });
+        if (command === "approval_mode_set_default") return Promise.resolve({ default: args.mode, projects: {} });
+        if (command === "approval_mode_set_project") {
+          return Promise.resolve({ default: "write", projects: { [args.projectRoot]: args.mode } });
+        }
         if (command === "attention_snapshot") {
           // Resolved by `tick`, so a test can seed the answer after the tab id
           // exists — that is when the real backend reply is in flight.
@@ -78,12 +100,17 @@ function harness(initial = null) {
     listeners.get(name)?.({ payload });
   }
   const runState = id => snapshot?.sessions.find(s => s.id === id)?.runState;
+  const displayRunState = id => snapshot?.sessions.find(s => s.id === id)?.displayRunState;
+  const armed = () => guardCalls.at(-1) ?? null;
   const setInitial = next => { initialRef.snapshot = next; };
   const tick = async () => {
     while (pendingInitial.length > 0) pendingInitial.shift()();
     await new Promise(resolve => setTimeout(resolve, 0));
   };
-  return { bridge: w.OMP_BRIDGE, emit, attention, fire, runState, bounces, setInitial, tick, getSnapshot: () => snapshot };
+  return {
+    bridge: w.OMP_BRIDGE, emit, attention, fire, runState, displayRunState, armed, commands,
+    bounces, setInitial, tick, getSnapshot: () => snapshot,
+  };
 }
 
 let passed = 0;
@@ -106,16 +133,16 @@ await check("a question in a background tab shows waiting-user, then clears on t
   h.emit(a, { type: "agent_start" });
   h.emit(a, { type: "turn_start" });
   await h.bridge.activateSession(b); // the user looks at another tab; A freezes mid-turn
-  assert.equal(h.runState(a), "running");
+  assert.equal(h.displayRunState(a), "running");
 
   // Rust's tracker saw A's ask (a background tab has no line listener).
   h.attention({ [a]: { busy: true, asks: 1, background: false }, [b]: { busy: false, asks: 0, background: false } });
-  assert.equal(h.runState(a), "waiting-user", "the background tab's dot shows the new ask");
-  assert.equal(h.runState(b), "idle", "the active tab is untouched");
+  assert.equal(h.displayRunState(a), "waiting-user", "the background tab's dot shows the new ask");
+  assert.equal(h.displayRunState(b), "idle", "the active tab is untouched");
 
   // The ask was cancelled/timed out and the turn ended: no stale orange.
   h.attention({ [a]: { busy: false, asks: 0, background: false }, [b]: { busy: false, asks: 0, background: false } });
-  assert.equal(h.runState(a), "idle", "a stale waiting-user clears when the ask is gone");
+  assert.equal(h.displayRunState(a), "idle", "a stale waiting-user clears when the ask is gone");
 });
 
 await check("the tracker's busy and background flags drive the background dot", async () => {
@@ -127,9 +154,9 @@ await check("the tracker's busy and background flags drive the background dot", 
   h.emit(a, { type: "turn_start" });
   await h.bridge.activateSession(b);
   h.attention({ [a]: { busy: true, asks: 0, background: false } });
-  assert.equal(h.runState(a), "running");
+  assert.equal(h.displayRunState(a), "running");
   h.attention({ [a]: { busy: false, asks: 0, background: true } });
-  assert.equal(h.runState(a), "background");
+  assert.equal(h.displayRunState(a), "background");
 });
 
 await check("a failed process keeps its verdict over the tracker", async () => {
@@ -141,7 +168,7 @@ await check("a failed process keeps its verdict over the tracker", async () => {
   h.fire(`agent://exit/${a}`, "omp exited: boom");
   await h.bridge.activateSession(b);
   h.attention({ [a]: { busy: true, asks: 1, background: false } });
-  assert.equal(h.runState(a), "failed", "a dead process outranks an ask left open");
+  assert.equal(h.displayRunState(a), "failed", "a dead process outranks an ask left open");
 });
 
 await check("counter-probe: without the overlay the frozen snapshot stays wrong", async () => {
@@ -152,11 +179,11 @@ await check("counter-probe: without the overlay the frozen snapshot stays wrong"
   h.emit(a, { type: "agent_start" });
   h.emit(a, { type: "turn_start" });
   await h.bridge.activateSession(b);
-  const frozen = h.runState(a);
+  const frozen = h.displayRunState(a);
   assert.equal(frozen, "running", "the snapshot froze mid-turn");
   h.attention({ [a]: { busy: false, asks: 0, background: false } });
-  assert.equal(h.runState(a), "idle");
-  assert.notEqual(h.runState(a), frozen, "the overlay is what clears the stale dot");
+  assert.equal(h.displayRunState(a), "idle");
+  assert.notEqual(h.displayRunState(a), frozen, "the overlay is what clears the stale dot");
 });
 
 await check("a new ask bounces the dock once, and not while focused", async () => {
@@ -202,13 +229,13 @@ await check("the initial read is ordered and never bounces", async () => {
   await h.tick();
   assert.deepEqual(h.bounces, [], "a reload's open ask is not a new ask");
   await h.bridge.activateSession(b);
-  assert.equal(h.runState(a), "waiting-user", "the initial snapshot seeded the background dot");
+  assert.equal(h.displayRunState(a), "waiting-user", "the initial snapshot seeded the background dot");
   // A late event carrying an older revision is ignored, dot and bounce alike.
   h.attention({ [a]: { busy: false, asks: 0, asksOpened: 0, background: false } }, 8);
-  assert.equal(h.runState(a), "waiting-user", "an older snapshot cannot roll the dot back");
+  assert.equal(h.displayRunState(a), "waiting-user", "an older snapshot cannot roll the dot back");
   assert.deepEqual(h.bounces, []);
   h.attention({ [a]: { busy: false, asks: 0, asksOpened: 0, background: false } }, 10);
-  assert.equal(h.runState(a), "idle", "a newer revision does apply");
+  assert.equal(h.displayRunState(a), "idle", "a newer revision does apply");
   assert.deepEqual(h.bounces, [], "an answered ask does not bounce");
 });
 
@@ -224,7 +251,7 @@ await check("a newer initial reply applies without bouncing the dock", async () 
   await h.tick();
   assert.deepEqual(h.bounces, [], "a page load's open ask is not a new ask");
   await h.bridge.activateSession(b);
-  assert.equal(h.runState(a), "waiting-user", "the newer reply did apply");
+  assert.equal(h.displayRunState(a), "waiting-user", "the newer reply did apply");
 });
 
 await check("a delayed event for a closed tab neither sets a dot nor bounces", async () => {
@@ -240,7 +267,7 @@ await check("a delayed event for a closed tab neither sets a dot nor bounces", a
   h.attention({ [a]: { busy: true, asks: 1, asksOpened: 1, background: false },
     [b]: { busy: false, asks: 0, asksOpened: 0, background: false } });
   assert.deepEqual(h.bounces, [], "P2: a closed tab must not bounce");
-  assert.equal(h.runState(a), undefined, "the tab is gone");
+  assert.equal(h.displayRunState(a), undefined, "the tab is gone");
 });
 
 await check("an exited background process retires its stale ask", async () => {
@@ -250,15 +277,15 @@ await check("an exited background process retires its stale ask", async () => {
   const b = await h.bridge.openSession("/beta");
   await h.bridge.activateSession(a);
   h.emit(a, { type: "extension_ui_request", id: "q1", method: "input", title: "Your name" });
-  assert.equal(h.runState(a), "waiting-user");
+  assert.equal(h.displayRunState(a), "waiting-user");
   await h.bridge.activateSession(b);
-  assert.equal(h.runState(a), "waiting-user", "the frozen snapshot keeps the ask");
+  assert.equal(h.displayRunState(a), "waiting-user", "the frozen snapshot keeps the ask");
   // The tracker still has the process, so the ask stands.
   h.attention({ [a]: { busy: true, asks: 1, asksOpened: 1, background: false } });
-  assert.equal(h.runState(a), "waiting-user");
+  assert.equal(h.displayRunState(a), "waiting-user");
   // The process exited: Rust removed its entry. The frozen ask must go.
   h.attention({});
-  assert.equal(h.runState(a), "idle", "P2: no entry means the process is gone");
+  assert.equal(h.displayRunState(a), "idle", "P2: no entry means the process is gone");
 });
 
 await check("a frozen run survives an empty tracker snapshot until evidence arrives", async () => {
@@ -271,7 +298,7 @@ await check("a frozen run survives an empty tracker snapshot until evidence arri
   h.emit(a, { type: "agent_start" });
   h.emit(a, { type: "turn_start" });
   await h.bridge.activateSession(b); // A freezes mid-turn; its busy fan-out is in flight
-  assert.equal(h.runState(a), "running", "absence alone does not prove the process exited");
+  assert.equal(h.displayRunState(a), "running", "absence alone does not prove the process exited");
 
   await h.bridge.setSessionPrefs({ confirmBusyClose: true });
   const closing = h.bridge.closeSessionGuarded(a);
@@ -282,15 +309,15 @@ await check("a frozen run survives an empty tracker snapshot until evidence arri
   assert.equal(h.getSnapshot()?.closeConfirm?.kind, "tab", "the busy prompt names the tab");
   h.bridge.resolveCloseConfirm(false);
   assert.equal(await closing, false, "the user kept the tab");
-  assert.equal(h.runState(a), "running", "the tab still exists, still busy");
+  assert.equal(h.displayRunState(a), "running", "the tab still exists, still busy");
 
   // The tracker's report for the same frame lands: the dot agrees, and the
   // tab stays busy for the guard.
   h.attention({ [a]: { busy: true, asks: 0, asksOpened: 0, background: false } });
-  assert.equal(h.runState(a), "running");
+  assert.equal(h.displayRunState(a), "running");
 });
 
-await check("counter-probe: a newer removal is evidence — the tab closes unasked", async () => {
+await check("a newer removal retires the dot but not the guard", async () => {
   focused = false;
   const h = harness();
   const a = await h.bridge.openSession("/alpha");
@@ -300,11 +327,82 @@ await check("counter-probe: a newer removal is evidence — the tab closes unask
   h.emit(a, { type: "turn_start" });
   h.attention({ [a]: { busy: true, asks: 0, asksOpened: 0, background: false } }, 1);
   await h.bridge.activateSession(b);
-  assert.equal(h.runState(a), "running", "frozen mid-turn");
+  assert.equal(h.displayRunState(a), "running", "frozen mid-turn");
   h.attention({}, 2); // the process exited: Rust removed its entry
-  assert.equal(h.runState(a), "idle", "a removal after the freeze retires the run");
+  assert.equal(h.displayRunState(a), "idle", "a removal after the freeze retires the dot");
+  assert.equal(h.runState(a), "running", "the guard keeps the frozen run");
   await h.bridge.setSessionPrefs({ confirmBusyClose: true });
-  assert.equal(await h.bridge.closeSessionGuarded(a), true, "an idle tab closes without prompting");
+  assert.equal(h.armed(), true, "the quit guard stays armed");
+  const closing = h.bridge.closeSessionGuarded(a);
+  let settled = false;
+  void closing.then(() => { settled = true; });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(settled, false, "the frozen tab still asks before closing");
+  assert.equal(h.getSnapshot()?.closeConfirm?.kind, "tab", "the prompt names the tab");
+  h.bridge.resolveCloseConfirm(false);
+  assert.equal(await closing, false, "the user kept the tab");
+});
+
+await check("guards stay armed when a delayed idle reply lowers the dot", async () => {
+  focused = false;
+  const h = harness();
+  const a = await h.bridge.openSession("/alpha");
+  const b = await h.bridge.openSession("/beta");
+  await h.bridge.activateSession(a);
+  // The initial `attention_snapshot` read was captured while A was idle and
+  // is still in flight: nothing has been applied at the freeze.
+  h.setInitial({ revision: 1, sessions: {
+    [a]: { busy: false, asks: 0, asksOpened: 0, background: false },
+    [b]: { busy: false, asks: 0, asksOpened: 0, background: false },
+  } });
+  h.emit(a, { type: "agent_start" });
+  h.emit(a, { type: "turn_start" });
+  await h.bridge.activateSession(b); // A freezes mid-turn
+  await h.tick();                    // the delayed idle reply lands first
+  await h.tick();
+  assert.equal(h.displayRunState(a), "idle", "the delayed reply lowers the dot");
+  assert.equal(h.runState(a), "running", "the guard keeps the frozen run");
+
+  await h.bridge.setSessionPrefs({ confirmBusyClose: true });
+  assert.equal(h.armed(), true, "quit guard stays armed");
+
+  const closing = h.bridge.closeSessionGuarded(a);
+  let settled = false;
+  void closing.then(() => { settled = true; });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(settled, false, "the busy prompt appears");
+  assert.equal(h.getSnapshot()?.closeConfirm?.kind, "tab", "the prompt names the tab");
+  h.bridge.resolveCloseConfirm(false);
+  assert.equal(await closing, false, "the user kept the tab");
+
+  const changed = await h.bridge.setApprovalModeProject("/alpha", "yolo");
+  assert.deepEqual(changed.deferred, [a], "the approval-mode change defers the tab");
+  assert.equal(changed.restarted.includes(a), false, "the working tab was not restarted");
+  assert.equal(h.commands.some(c => c.command === "stop_session" && c.args.sessionId === a), false);
+});
+
+await check("counter-probe: wiring guards to the dot reopens the P1 hole", async () => {
+  focused = false;
+  const h = harness(null, { wireGuardsToDisplay: true });
+  const a = await h.bridge.openSession("/alpha");
+  const b = await h.bridge.openSession("/beta");
+  await h.bridge.activateSession(a);
+  h.setInitial({ revision: 1, sessions: {
+    [a]: { busy: false, asks: 0, asksOpened: 0, background: false },
+    [b]: { busy: false, asks: 0, asksOpened: 0, background: false },
+  } });
+  h.emit(a, { type: "agent_start" });
+  h.emit(a, { type: "turn_start" });
+  await h.bridge.activateSession(b);
+  await h.tick();
+  await h.tick();
+  assert.equal(h.runState(a), "idle", "guards wired to the dot see idle");
+  await h.bridge.setSessionPrefs({ confirmBusyClose: true });
+  assert.equal(h.armed(), false, "the quit guard is disarmed");
+  const changed = await h.bridge.setApprovalModeProject("/alpha", "yolo");
+  assert.equal(changed.deferred.includes(a), false, "the tab is not deferred");
+  assert.equal(h.commands.some(c => c.command === "stop_session" && c.args.sessionId === a), true, "the working tab is restarted");
+  assert.equal(await h.bridge.closeSessionGuarded(a), true, "the tab closes without the busy prompt");
 });
 
 await check("a frozen retry row does not outlive the run it belongs to", async () => {
@@ -317,18 +415,18 @@ await check("a frozen retry row does not outlive the run it belongs to", async (
   h.emit(a, { type: "auto_retry_start", errorMessage: "boom", attempt: 1, maxAttempts: 3, delayMs: 1000 });
   h.attention({ [a]: { busy: true, asks: 0, asksOpened: 0, background: false } }, 1);
   await h.bridge.activateSession(b);
-  assert.equal(h.runState(a), "retrying", "the frozen retry row shows while the tracker has not moved");
+  assert.equal(h.displayRunState(a), "retrying", "the frozen retry row shows while the tracker has not moved");
 
   // An identical entry at a newer revision is not a change: the row stands.
   h.attention({ [a]: { busy: true, asks: 0, asksOpened: 0, background: false } }, 2);
-  assert.equal(h.runState(a), "retrying", "an unchanged busy entry keeps the retry row");
+  assert.equal(h.displayRunState(a), "retrying", "an unchanged busy entry keeps the retry row");
 
   // The retries gave up and the agent yielded with background work pending.
   h.attention({ [a]: { busy: false, asks: 0, asksOpened: 0, background: true } }, 3);
-  assert.equal(h.runState(a), "background", "the yield ends the retries");
+  assert.equal(h.displayRunState(a), "background", "the yield ends the retries");
   // An ordinary new wake starts a run: not the old retry row again.
   h.attention({ [a]: { busy: true, asks: 0, asksOpened: 0, background: false } }, 4);
-  assert.equal(h.runState(a), "running", "P2: a new wake is running, not the old retry");
+  assert.equal(h.displayRunState(a), "running", "P2: a new wake is running, not the old retry");
 });
 
 console.log(`test-attention-bridge: ${passed} checks passed`);

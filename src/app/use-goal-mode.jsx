@@ -6,7 +6,9 @@
    profile; and the goal strip the composer renders (design/goal-strip.jsx).
 
    `goal` is the active tab's `{known, goal}` from the bridge snapshot;
-   `runState` its run state (app/turn-status.js). `onRestoreDraft(draft,
+   `runState` its guard run state (app/turn-status.js `guardRunState`: busy
+   whenever either the tab or the backend tracker says work is running, so
+   the strip never offers goal actions a frozen tab might still be doing). `onRestoreDraft(draft,
    { tabId, shown })` hands back an objective omp refused (`{ text, images,
    chips, marks }`, as `start` got it) to the tab it was typed in: `shown`
    says whether that tab is still the one on screen, so its text can go back

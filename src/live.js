@@ -162,7 +162,8 @@
   // `attention_snapshot`): `{ busy, asks, asksOpened, background }` per
   // tab id, background ones included, filtered to the tabs currently
   // registered. Non-active tab dots overlay it on their frozen snapshot
-  // (`TURN.backgroundRunState`); null until the backend answers.
+  // (`TURN.displayRunState`), while every guard reads the conservative
+  // union (`TURN.guardRunState`); null until the backend answers.
   let trackerLive = null;
   // Whether a tracker snapshot ever arrived. Distinguishes "no data yet"
   // (keep the frozen snapshot) from a loaded one; whether its report may
@@ -171,8 +172,10 @@
   // Per session, the tracker revision at which its entry last changed
   // (`_applyAttention`). A frozen tab compares this against the stamp it
   // recorded when it was left: only a later change says anything about
-  // work done since, so the overlay cannot retire a run whose busy fan-out
-  // is still in flight (`TURN.backgroundRunState`). Removed with the tab.
+  // work done since, so the dot overlay cannot retire a run whose busy
+  // fan-out is still in flight (`TURN.displayRunState`). Guards never read
+  // it: `runState` is the union and can only be raised by the tracker.
+  // Removed with the tab.
   const _trackerEvidence = new Map(); // session id → revision
   // Highest tracker revision applied (the tracker snapshot carries one per
   // committed change). Older events and the initial command reply are
@@ -429,8 +432,8 @@
       codexLogin:      state.codexLogin,
       dictationCompleted: _dictationCompleted,
       // Tab list — derived from session registry, not per-session state.
-      // runState: active tab reads live state; background tabs read their
-      // cached snapshot (never activated yet = "idle" defaults).
+      // Each entry carries the guard `runState` and the dot's
+      // `displayRunState` (see `_sessionsView`).
       sessions:        _sessionsView(),
       activeSessionId,
       // Active tab's prompt history only — never persisted, see promptHistories above.
@@ -445,12 +448,21 @@
     };
   }
 
-  // Snapshot `sessions[]`: the registry entries plus each tab's run state.
+  // Snapshot `sessions[]`: the registry entries plus each tab's run states.
   // The active tab reads live state. A background tab reads its cached
   // snapshot (never activated yet = "idle" defaults), overlaid with the
   // backend tracker's `busy` / `asks` / `background` — its own listener is
   // gone, so an ask that arrives (or is answered elsewhere) never reaches
   // that snapshot.
+  //
+  // Two fields, deliberately:
+  //  - `displayRunState` is what the tab dot shows. Only it may follow a
+  //    tracker report down; a report newer than the freeze owns the dot.
+  //  - `runState` is the guard state every protective consumer reads (quit
+  //    and tab-close confirmation, close guard, approval-mode restarts,
+  //    updater, PR automation). It is busy while either the tab's own state
+  //    or the tracker says so, so a delayed or misordered report can never
+  //    lower it. See docs/architecture/turn-status.md.
   function _sessionsView() {
     return [...sessionRegistry.values()].map(s => {
       const snapshot = s.id === activeSessionId ? null : sessionSnapshots.get(s.id);
@@ -459,13 +471,15 @@
           ? state
           : snapshot ?? _EMPTY_SESSION_FIELDS
       );
+      const live = trackerLive?.[s.id] ?? null;
       return {
         ...s,
-        runState: s.id === activeSessionId
+        runState: TURN.guardRunState(cached, live, trackerLoaded),
+        displayRunState: s.id === activeSessionId
           ? cached
-          : TURN.backgroundRunState(
+          : TURN.displayRunState(
               cached,
-              trackerLive?.[s.id] ?? null,
+              live,
               trackerLoaded,
               _trackerEvidenceNewer(s.id, snapshot?.trackerEvidence ?? null),
             ),
@@ -3912,7 +3926,8 @@
         return (
           canSend() && current() && !!entry?.path &&
           !userAbortInFlight && !entry.autoRenameInFlight &&
-          state.rpcState?.isSettled === true && runStateCached(state) === "idle" &&
+          state.rpcState?.isSettled === true &&
+          TURN.guardRunState(runStateCached(state), trackerLive?.[sessionId] ?? null, trackerLoaded) === "idle" &&
           !state.queueSending.length && !(state.rpcState?.queuedMessageCount > 0) &&
           !state.queue.steering.length && !state.queue.followUp.length &&
           !GOAL.isOpen(state.goal) &&
