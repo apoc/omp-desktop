@@ -53,20 +53,30 @@ even with no phone connected. `revision` rises with every committed change.
 
 `live.js` keeps the session entries as `trackerLive`, filtered to the tabs
 that are currently registered (a delayed event for a tab closed meanwhile
-must not set a dot or bounce), and the highest applied revision. A payload at
-or below that revision is ignored, so an event that lands before the initial
+must not set a dot or bounce), the highest applied revision, and
+`_trackerEvidence`: the revision at which each session's entry last changed,
+appearance and removal included. A payload at or below the highest applied
+revision is ignored, so an event that lands before the initial
 `attention_snapshot` answer wins and the slower answer cannot roll the dots
 back.
 
 `_sessionsView` still reads the active tab's live state; for every other tab
 it overlays the tracker on the tab's frozen snapshot through
-`OMP_TURN_STATUS.backgroundRunState(cached, live, loaded)`. `failed` wins (the
-process's own verdict). Before the first tracker payload (`loaded` false) the
-snapshot stands. Afterwards the tracker owns the state: no entry means the
-process is gone (Rust removes it on exit), so a frozen ask retires to `idle`;
-an open ask is `waiting-user`; `busy` is `running`, or `retrying` while the
-frozen snapshot still shows the live retry row; a pending job is
-`background`; otherwise `idle`. Both directions therefore track: an ask that
+`OMP_TURN_STATUS.backgroundRunState(cached, live, loaded, fresh)`. `fresh`
+means the tracker reported that tab after it was frozen: `_saveCurrentSession`
+stores the session's evidence revision in the snapshot, and any later change
+wins. `failed` wins over everything (the process's own verdict), and before
+the first tracker payload (`loaded` false) the snapshot stands. A fresh report
+owns the state: no entry means the process is gone (Rust removes it on exit),
+so a frozen ask retires to `idle`; an open ask is `waiting-user`; `busy` is
+`running`, or `retrying` while the snapshot still shows the live retry row; a
+pending job is `background`; otherwise `idle`. An older report may still raise
+the dot — an ask that opened, a run the tab never saw — but never lower it:
+the busy fan-out for the tab just left can still be in flight, and absence
+alone proves no exit. A background tab frozen mid-turn therefore stays busy
+(quit confirmation armed, approval-mode restart deferred) until a later
+report retires it, and a retry row ends as soon as a busy → idle → busy wake
+moves the tracker. Both directions therefore track: an ask that
 opens in a background tab shows the amber dot before the tab is opened, and
 one cancelled, answered elsewhere or ended with the turn clears it. A run
 the frozen snapshot never saw (a tab left at `idle`) also shows while it goes

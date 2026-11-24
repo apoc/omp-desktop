@@ -55,19 +55,36 @@
    *
    *  `cached` is `runStateOf` over the snapshot (`live.js`
    *  `_sessionsView`), `live` the tracker entry (`busy`, `asks`,
-   *  `background`) or null when it has none, and `loaded` whether
-   *  `live.js` has received the tracker snapshot at all. Until it has, the
-   *  snapshot is all there is; once it has, the tracker owns the state: a
-   *  missing entry means the process is gone (Rust removes it on exit), so
-   *  a frozen ask cannot survive it. `failed` is the process's own verdict
-   *  and wins. `retrying` survives only while the tracker says the run
-   *  still goes on: the retry row lives in the frozen transcript. */
-  function backgroundRunState(cached, live, loaded) {
+   *  `background`) or null when it has none, `loaded` whether `live.js`
+   *  has received the tracker snapshot at all, and `fresh` whether the
+   *  tracker reported this session after the tab was frozen.
+   *
+   *  A newer report owns the state: the run settled, the ask cleared or the
+   *  process exited. An older one may still know more than the snapshot
+   *  does — an ask that arrived, a run the tab never saw — but it may never
+   *  make the tab look less busy: absence alone is not proof of exit (the
+   *  busy fan-out for the tab just left may still be in flight), and a
+   *  frozen ask or run stands until a later report retires it.
+   *  `retrying` survives only while the tracker has not moved since the
+   *  freeze: the row lives in the frozen transcript, and a busy → idle →
+   *  busy wake makes it a run of the past. `failed` is the process's own
+   *  verdict and wins. */
+  function backgroundRunState(cached, live, loaded, fresh = false) {
     if (cached === "failed") return "failed";
     if (!loaded) return cached;
+    const tracked = _trackedRunState(live);
+    if (fresh) return tracked;
+    return RUN_STATE_RANK[tracked] > RUN_STATE_RANK[cached] ? tracked : cached;
+  }
+
+  // Strongest first, as `runStateOf` decides: an older tracker report may
+  // still raise a tab's state to a stronger one, never lower it.
+  const RUN_STATE_RANK = { idle: 0, background: 1, running: 2, retrying: 3, "waiting-user": 4 };
+
+  function _trackedRunState(live) {
     if (!live) return "idle";
     if (Number.isFinite(live.asks) && live.asks > 0) return "waiting-user";
-    if (live.busy) return cached === "retrying" ? "retrying" : "running";
+    if (live.busy) return "running";
     if (live.background) return "background";
     return "idle";
   }

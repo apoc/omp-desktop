@@ -165,9 +165,15 @@
   // (`TURN.backgroundRunState`); null until the backend answers.
   let trackerLive = null;
   // Whether a tracker snapshot ever arrived. Distinguishes "no data yet"
-  // (keep the frozen snapshot) from "loaded, this tab has no entry" (its
-  // process is gone; a stale ask must not linger).
+  // (keep the frozen snapshot) from a loaded one; whether its report may
+  // retire a frozen tab is `_trackerEvidence`'s decision.
   let trackerLoaded = false;
+  // Per session, the tracker revision at which its entry last changed
+  // (`_applyAttention`). A frozen tab compares this against the stamp it
+  // recorded when it was left: only a later change says anything about
+  // work done since, so the overlay cannot retire a run whose busy fan-out
+  // is still in flight (`TURN.backgroundRunState`). Removed with the tab.
+  const _trackerEvidence = new Map(); // session id → revision
   // Highest tracker revision applied (the tracker snapshot carries one per
   // committed change). Older events and the initial command reply are
   // ignored, so a slow first read cannot roll the dots — or a dock
@@ -447,18 +453,33 @@
   // that snapshot.
   function _sessionsView() {
     return [...sessionRegistry.values()].map(s => {
+      const snapshot = s.id === activeSessionId ? null : sessionSnapshots.get(s.id);
       const cached = runStateCached(
         s.id === activeSessionId
           ? state
-          : sessionSnapshots.get(s.id) ?? _EMPTY_SESSION_FIELDS
+          : snapshot ?? _EMPTY_SESSION_FIELDS
       );
       return {
         ...s,
         runState: s.id === activeSessionId
           ? cached
-          : TURN.backgroundRunState(cached, trackerLive?.[s.id] ?? null, trackerLoaded),
+          : TURN.backgroundRunState(
+              cached,
+              trackerLive?.[s.id] ?? null,
+              trackerLoaded,
+              _trackerEvidenceNewer(s.id, snapshot?.trackerEvidence ?? null),
+            ),
       };
     });
+  }
+
+  /** Whether the tracker reported `id` after its tab was frozen with
+   *  `frozen` (the evidence revision `_saveCurrentSession` recorded). An
+   *  entry that never changed since, or a snapshot that never mentioned the
+   *  tab, says nothing about work the tab did after it was left. */
+  function _trackerEvidenceNewer(id, frozen) {
+    const evidence = _trackerEvidence.get(id);
+    return evidence != null && (frozen == null || evidence > frozen);
   }
 
   // Invoke a Tauri command, returning `fallback` when there's no Tauri
@@ -925,6 +946,9 @@
       // An abort whose pause frame and response are still in the tab's
       // journal: the replay on the way back labels the pause and clears it.
       userAbortInFlight,
+      // Tracker revision this tab last heard about itself: the background
+      // overlay may only act on a later one (`_trackerEvidenceNewer`).
+      trackerEvidence: _trackerEvidence.get(activeSessionId) ?? null,
     });
   }
 
@@ -1350,6 +1374,7 @@
     }
     _dropGitListener(id);
     sessionSnapshots.delete(id);
+    _trackerEvidence.delete(id);
     return stopped;
   }
 
@@ -1369,6 +1394,7 @@
     _dropGitListener(id);
     respawnVoice.delete(id);
     sessionSnapshots.delete(id);
+    _trackerEvidence.delete(id);
     return closed;
   }
 
@@ -1415,6 +1441,15 @@
       });
   }
 
+  /** Whether two tracker entries report the same state; a missing entry
+   *  differs from any present one, so appearance and removal both count as
+   *  new evidence (`_trackerEvidence`). */
+  function _sameTrackerEntry(a, b) {
+    if (!a || !b) return !a && !b;
+    return a.busy === b.busy && a.asks === b.asks
+      && a.asksOpened === b.asksOpened && a.background === b.background;
+  }
+
   function _applyAttention(snapshot, bounce = true) {
     const sessions = snapshot?.sessions;
     if (!sessions || typeof sessions !== "object") return;
@@ -1426,8 +1461,18 @@
     // readers' frames and removes an entry when its process exits, so an
     // entry here always belongs to the tab's current process.
     const next = {};
+    const previous = trackerLive ?? {};
     for (const [id, entry] of Object.entries(sessions)) {
-      if (sessionRegistry.has(id)) next[id] = entry;
+      if (!sessionRegistry.has(id)) continue;
+      next[id] = entry;
+      if (!_sameTrackerEntry(previous[id], entry)) _trackerEvidence.set(id, revision);
+    }
+    // A vanished entry is evidence too — Rust removes it when the process
+    // exits — but only for a tab that still exists: one closed meanwhile is
+    // not the tracker's business, and a never-reported session proves
+    // nothing by its absence.
+    for (const id of Object.keys(previous)) {
+      if (next[id] === undefined && sessionRegistry.has(id)) _trackerEvidence.set(id, revision);
     }
     // A question opened in any tab bounces the dock once while the window
     // is not focused; a focused window already shows the tab dot.
