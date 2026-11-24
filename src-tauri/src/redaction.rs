@@ -4,9 +4,10 @@
 //! matcher, so the two paths cannot drift apart.
 
 /// Object keys whose values are redacted before a frame ever reaches the
-/// webview, except omp's exact boolean `secret` input-request flag (a UI
-/// hint, not a credential value). Matched case-insensitively after stripping
-/// `_`/`-` separators,
+/// webview, except the top-level boolean `secret` flag of omp's
+/// `extension_ui_request` with method `input` (a UI hint, not a credential
+/// value; nested flags and every non-boolean value stay redacted). Matched
+/// case-insensitively after stripping `_`/`-` separators,
 /// so `Authorization`, `api_key`, `api-key`, and `apiKey` are all caught by
 /// one entry. Matching is by *suffix*, not exact equality, so compound
 /// provider-credential spellings like `x-api-key`, `OPENAI_API_KEY`, and

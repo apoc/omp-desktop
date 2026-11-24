@@ -481,6 +481,9 @@ impl Worker {
             let _ = response.send(Err("persona service not connected".into()));
             return;
         };
+        // The service stops relaying omp frames after a detach, so the
+        // chip's `busy` can never be corrected by a later frame.
+        let detaches = matches!(&body, ClientMsg::Detach);
         let req = self.next_req;
         self.next_req += 1;
         let line = match encode_msg(&Envelope {
@@ -511,6 +514,12 @@ impl Worker {
             self.disconnect(Some(("io", error.to_string())));
             return;
         }
+        if detaches {
+            // The service stops relaying omp frames after this request. Drop
+            // the relayed turn state instead of leaving the chip busy for a
+            // stream that will never send its `agent_end`.
+            self.set_activity(Some(false), None);
+        }
         self.pending
             .insert(req, (response, Instant::now() + REQUEST_TIMEOUT));
     }
@@ -539,10 +548,23 @@ impl Worker {
                 }
             }
             ServerMsg::Status { status } => {
-                let mut snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
-                snapshot.status = Some(status.clone()); // event and cached snapshot each own a copy
-                snapshot.error = None;
-                drop(snapshot);
+                let generation_changed = {
+                    let mut snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+                    let changed = snapshot
+                        .status
+                        .as_ref()
+                        .is_some_and(|old| old.generation != status.generation);
+                    snapshot.status = Some(status.clone()); // event and cached snapshot each own a copy
+                    snapshot.error = None;
+                    changed
+                };
+                if generation_changed {
+                    // A new omp session generation retires the process whose
+                    // frames set `busy`; its `agent_end` (if any) will never
+                    // arrive and the status carries no turn flag, so the
+                    // relayed turn state cannot carry over.
+                    self.set_activity(Some(false), None);
+                }
                 self.emitter.status(Some(&status));
             }
             ServerMsg::Inbox { items } => {
@@ -1159,6 +1181,169 @@ mod tests {
                 serde_json::json!({"busy": false, "hasAsk": false}),
             ],
             "busy and hasAsk do not follow the relayed turn and inbox"
+        );
+        drop(client);
+        server.join().unwrap();
+    }
+
+    /// The service's `status` carries no turn flag, so a new omp session
+    /// generation (restart/crash after a relayed `agent_start` whose end
+    /// frame never came) must clear the chip's `busy` instead of leaving it
+    /// claimed for a process that no longer exists.
+    #[test]
+    fn client_resets_busy_on_a_new_session_generation() {
+        let temp = TempDir::new("pc", "gen");
+        let paths = test_paths(&temp, "gen");
+        ensure_private_dir(&paths.persona).unwrap();
+        let listener = ListenerOptions::new()
+            .name(socket_name(&paths).unwrap())
+            .create_sync()
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let _hello = read_client(stream.try_clone().unwrap());
+            write_msg(&mut stream, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            write_msg(
+                &mut stream,
+                &ServerMsg::Status {
+                    status: daytime_status(),
+                },
+            )
+            .unwrap();
+            write_msg(&mut stream, &ServerMsg::Inbox { items: vec![] }).unwrap();
+            let frame = |value: Value| serde_json::value::RawValue::from_string(value.to_string());
+            write_msg(
+                &mut stream,
+                &ServerMsg::Rpc {
+                    seq: 1,
+                    frame: frame(serde_json::json!({"type":"agent_start"})).unwrap(),
+                },
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            let mut next = daytime_status();
+            next.generation = 8;
+            write_msg(&mut stream, &ServerMsg::Status { status: next }).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        let events = Arc::new(Recorder::default());
+        let client = Client::start(paths, events.clone());
+        let observed = eventually(Duration::from_secs(3), || {
+            let events = events.0.lock().unwrap();
+            let busy = events
+                .iter()
+                .position(|(name, payload)| name == "activity" && payload["busy"] == true)?;
+            let reset = events
+                .iter()
+                .position(|(name, payload)| name == "activity" && payload["busy"] == false)?;
+            let status = events
+                .iter()
+                .position(|(name, payload)| name == "status" && payload["generation"] == 8)?;
+            // The reset must precede the new generation's status: a later
+            // reset would only be the disconnect at the end of the test.
+            (busy < reset && reset < status).then_some(())
+        });
+        assert!(
+            observed.is_some(),
+            "busy survived the new session generation: {:?}",
+            events.0.lock().unwrap()
+        );
+        drop(client);
+        server.join().unwrap();
+    }
+
+    /// `busy` is only known while the relay is attached: a detach request
+    /// stops the frame stream, so the chip must drop the stale turn state.
+    #[test]
+    fn client_resets_busy_when_the_relay_is_detached() {
+        let temp = TempDir::new("pc", "det");
+        let paths = test_paths(&temp, "det");
+        ensure_private_dir(&paths.persona).unwrap();
+        let listener = ListenerOptions::new()
+            .name(socket_name(&paths).unwrap())
+            .create_sync()
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let _hello = read_client(stream.try_clone().unwrap());
+            write_msg(&mut stream, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            write_msg(
+                &mut stream,
+                &ServerMsg::Status {
+                    status: daytime_status(),
+                },
+            )
+            .unwrap();
+            write_msg(&mut stream, &ServerMsg::Inbox { items: vec![] }).unwrap();
+            let frame = |value: Value| serde_json::value::RawValue::from_string(value.to_string());
+            write_msg(
+                &mut stream,
+                &ServerMsg::Rpc {
+                    seq: 1,
+                    frame: frame(serde_json::json!({"type":"agent_start"})).unwrap(),
+                },
+            )
+            .unwrap();
+            let request = read_client(stream.try_clone().unwrap());
+            assert!(
+                matches!(&request.body, ClientMsg::Detach),
+                "expected the detach request"
+            );
+            write_msg(
+                &mut stream,
+                &ServerMsg::Reply {
+                    req: request.req.expect("detach carries a req"),
+                    ok: true,
+                    data: None,
+                    error: None,
+                },
+            )
+            .unwrap();
+            // Same generation: the reset must come from the detach itself,
+            // not from a generation change or the disconnect below.
+            write_msg(
+                &mut stream,
+                &ServerMsg::Status {
+                    status: daytime_status(),
+                },
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        let events = Arc::new(Recorder::default());
+        let client = Client::start(paths, events.clone());
+        let busy = eventually(Duration::from_secs(3), || {
+            events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(name, payload)| name == "activity" && payload["busy"] == true)
+                .then_some(())
+        });
+        assert!(busy.is_some(), "the relayed turn never reported busy");
+        client
+            .handle()
+            .request(ClientMsg::Detach)
+            .expect("the detach is answered");
+        let observed = eventually(Duration::from_secs(3), || {
+            let events = events.0.lock().unwrap();
+            let reset = events
+                .iter()
+                .position(|(name, payload)| name == "activity" && payload["busy"] == false)?;
+            let statuses: Vec<usize> = events
+                .iter()
+                .enumerate()
+                .filter(|(_, (name, _))| name == "status")
+                .map(|(index, _)| index)
+                .collect();
+            let marker = *statuses.get(1)?;
+            (reset < marker).then_some(())
+        });
+        assert!(
+            observed.is_some(),
+            "busy survived the detach: {:?}",
+            events.0.lock().unwrap()
         );
         drop(client);
         server.join().unwrap();

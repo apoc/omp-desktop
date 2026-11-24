@@ -32,41 +32,72 @@ pub struct LineEvent<'a> {
     pub text: &'a str,
 }
 
+/// Whether this frame is omp's `extension_ui_request`/`input` ask — the one
+/// frame whose top-level boolean `secret` member is a UI hint (password-style
+/// fields on desktop and phone) instead of a credential value. Read off the
+/// parsed frame, so a duplicate `secret` member that a later boolean shadows
+/// is invisible here; [`sanitize_frame`] re-serializes whenever this holds,
+/// which drops the shadowed value from the emitted text.
+fn is_secret_flag_frame(frame: &serde_json::Value) -> bool {
+    frame.get("type").and_then(serde_json::Value::as_str) == Some("extension_ui_request")
+        && frame.get("method").and_then(serde_json::Value::as_str) == Some("input")
+        && frame
+            .get("secret")
+            .is_some_and(serde_json::Value::is_boolean)
+}
+
 /// Recursively replace credential values under object keys matching
-/// [`REDACTED_KEYS`] with [`REDACTED_PLACEHOLDER`]. The exact boolean `secret`
-/// flag of an omp input request survives: it controls password-style UI and
-/// is not itself a secret. Every non-boolean value under that key is still
-/// redacted. A key otherwise matches when its normalized form
-/// *ends with* one of [`REDACTED_KEYS`] — not just when it equals one —
-/// so compound spellings like `x-api-key`/`OPENAI_API_KEY` (normalizing to
-/// `xapikey`/`openaiapikey`, both ending in `apikey`) are caught, without a
-/// bare substring/`contains` match that would also catch unrelated fields
-/// such as `input_tokens`/`output_tokens` if a `token` entry were ever
-/// added. Redacted subtrees are not descended into — once a key is
-/// sensitive, nothing under it is worth preserving.
+/// [`REDACTED_KEYS`] with [`REDACTED_PLACEHOLDER`]. A key matches when its
+/// normalized form *ends with* one of [`REDACTED_KEYS`] — not just when it
+/// equals one — so compound spellings like
+/// `x-api-key`/`OPENAI_API_KEY` (normalizing to
+/// `xapikey`/`openaiapikey`) are caught, without a bare substring/`contains`
+/// match that would also catch unrelated fields such as
+/// `input_tokens`/`output_tokens` if a `token` entry were ever added.
+/// Redacted subtrees are not descended into — once a key is sensitive,
+/// nothing under it is worth preserving.
 ///
-/// Returns `true` when at least one value was actually redacted, so the
-/// caller can skip re-serializing an untouched frame — the overwhelmingly
-/// common case.
+/// The sole exception is the top-level boolean `secret` member of an
+/// `extension_ui_request` with method `input` (see
+/// [`is_secret_flag_frame`]): that flag drives the password-style prompt and
+/// is not itself a secret. Every value under any other `secret`-named key is
+/// redacted, as is a nested boolean `secret` on any frame — the exception is
+/// scoped to that one top-level member and never inherited by children.
+///
+/// Returns `true` when the frame must be re-serialized before it is emitted:
+/// something was redacted, or the flag exception was used. The latter matters
+/// even with no redaction because the parsed map has already dropped a
+/// duplicate member the JSON text still contains; emitting `raw` would leak
+/// a credential shadowed by a later boolean `secret`.
 ///
 /// [`REDACTED_KEYS`]: crate::redaction::REDACTED_KEYS
 fn sanitize_frame(value: &mut serde_json::Value) -> bool {
+    let secret_flag_frame = is_secret_flag_frame(value);
+    let redacted = sanitize_members(value, secret_flag_frame);
+    redacted || secret_flag_frame
+}
+
+/// [`sanitize_frame`]'s recursive walk. `allow_secret_flag` is true only for
+/// the root of a [`is_secret_flag_frame`] frame, so the exception cannot be
+/// reached by a nested object.
+fn sanitize_members(value: &mut serde_json::Value, allow_secret_flag: bool) -> bool {
     let mut redacted = false;
     match value {
         serde_json::Value::Object(map) => {
             for (key, val) in map.iter_mut() {
-                let secret_flag = key.eq_ignore_ascii_case("secret") && val.is_boolean();
+                let secret_flag =
+                    allow_secret_flag && key.eq_ignore_ascii_case("secret") && val.is_boolean();
                 if is_credential_key(key) && !secret_flag {
                     *val = serde_json::Value::String(REDACTED_PLACEHOLDER.to_string());
                     redacted = true;
                 } else {
-                    redacted |= sanitize_frame(val);
+                    redacted |= sanitize_members(val, false);
                 }
             }
         }
         serde_json::Value::Array(items) => {
             for item in items {
-                redacted |= sanitize_frame(item);
+                redacted |= sanitize_members(item, false);
             }
         }
         _ => {}
@@ -87,17 +118,24 @@ fn sanitize_frame(value: &mut serde_json::Value) -> bool {
 /// Shared with the persona client (`persona::client`): a relayed
 /// `persona://line/ompy` frame is an omp frame and passes the same
 /// redaction before it can reach the webview.
+///
+/// Once anything was redacted — or the input-request `secret` flag exception
+/// was used — the returned text is the re-serialized parsed frame, never
+/// `raw`: the parse has already collapsed duplicate members, so the original
+/// bytes can carry a value that a later duplicate shadowed. A frame that
+/// needs neither stays byte-identical, the overwhelmingly common case.
 pub fn sanitize_line(raw: &[u8]) -> (String, Option<serde_json::Value>) {
     serde_json::from_slice::<serde_json::Value>(raw).map_or_else(
         |_| (String::from_utf8_lossy(raw).into_owned(), None),
         |mut value| {
             // Re-serializing costs a second full pass (escaping, number
-            // formatting, map ordering) over the whole frame. Only pay it
-            // when something was actually redacted; otherwise `raw` already
-            // *is* the correct text.
+            // formatting, map ordering) over the whole frame, so it only
+            // runs when the frame changed. Serializing a `Value` cannot
+            // fail; the placeholder fallback still refuses to fall back to
+            // `raw`, which may carry the value being removed.
             let text = if sanitize_frame(&mut value) {
                 serde_json::to_string(&value)
-                    .unwrap_or_else(|_| String::from_utf8_lossy(raw).into_owned())
+                    .unwrap_or_else(|_| format!("\"{REDACTED_PLACEHOLDER}\""))
             } else {
                 String::from_utf8_lossy(raw).into_owned()
             };
@@ -601,6 +639,98 @@ mod tests {
         assert!(!out.contains("do-not-leak"));
     }
 
+    /// A JSON object may name a member twice. `serde_json` keeps the last
+    /// value, so a trailing boolean `secret` shadows an earlier credential
+    /// string in the parsed map — but the raw bytes still carry that string.
+    /// Emitting the parsed frame on the flag exception is what keeps the
+    /// shadowed credential out of the journal and the persona webview.
+    #[test]
+    fn sanitize_duplicate_secret_member_cannot_smuggle_the_shadowed_value() {
+        let raw =
+            br#"{"type":"extension_ui_request","method":"input","secret":"hunter2","secret":true}"#;
+        let (out, parsed) = sanitize_line(raw);
+        assert!(
+            !out.contains("hunter2"),
+            "shadowed credential leaked: {out}"
+        );
+        assert_eq!(parsed.expect("valid JSON parses")["secret"], true);
+
+        // The other duplicate order keeps the credential itself, so the
+        // normal redaction path must still scrub it.
+        let raw =
+            br#"{"type":"extension_ui_request","method":"input","secret":true,"secret":"hunter2"}"#;
+        let (out, parsed) = sanitize_line(raw);
+        assert!(
+            !out.contains("hunter2"),
+            "duplicate credential leaked: {out}"
+        );
+        assert_eq!(
+            parsed.expect("valid JSON parses")["secret"],
+            REDACTED_PLACEHOLDER
+        );
+    }
+
+    /// The flag exception is only the top-level `secret` of omp's
+    /// `extension_ui_request`/`input`; every nested `secret` keeps the old
+    /// value redaction, including a boolean that a duplicate key shadowed a
+    /// credential with.
+    #[test]
+    fn sanitize_redacts_nested_secret_members_next_to_an_input_flag() {
+        let raw = br#"{"type":"extension_ui_request","method":"input","secret":true,"params":{"secret":"hunter2","secret":true}}"#;
+        let (out, parsed) = sanitize_line(raw);
+        assert!(!out.contains("hunter2"), "nested credential leaked: {out}");
+        assert_eq!(
+            parsed.expect("valid JSON parses")["params"]["secret"],
+            REDACTED_PLACEHOLDER
+        );
+    }
+
+    /// A boolean `secret` is only a UI flag on the input request itself; on
+    /// every other frame it is just another value under a credential key.
+    #[test]
+    fn sanitize_redacts_boolean_secret_outside_an_input_request() {
+        for raw in [
+            br#"{"type":"response","secret":true}"#.as_slice(),
+            br#"{"type":"extension_ui_request","method":"confirm","secret":true}"#.as_slice(),
+            br#"{"type":"extension_ui_request","secret":true}"#.as_slice(),
+        ] {
+            let (out, parsed) = sanitize_line(raw);
+            assert!(!out.contains("\"secret\":true"), "flag survived: {out}");
+            assert_eq!(
+                parsed.expect("valid JSON parses")["secret"],
+                REDACTED_PLACEHOLDER
+            );
+        }
+    }
+
+    /// Regression: the exception is exactly one boolean flag — every other
+    /// value under a `secret`-named key (string, number, null, array,
+    /// object) is still replaced wholesale.
+    #[test]
+    fn sanitize_redacts_every_non_flag_value_under_a_secret_key() {
+        for value in [
+            json!("hunter2"),
+            json!(0),
+            json!(null),
+            json!(["hunter2"]),
+            json!({ "password": "hunter2" }),
+        ] {
+            let raw = json!({
+                "type": "extension_ui_request",
+                "method": "input",
+                "secret": value.clone()
+            })
+            .to_string();
+            let (out, parsed) = sanitize_line(raw.as_bytes());
+            assert!(!out.contains("hunter2"), "value {value} leaked: {out}");
+            assert_eq!(
+                parsed.expect("valid JSON parses")["secret"],
+                REDACTED_PLACEHOLDER,
+                "value {value} not redacted"
+            );
+        }
+    }
+
     #[test]
     fn sanitize_matches_key_regardless_of_separator_style() {
         for key in ["api_key", "api-key", "apiKey", "API_KEY"] {
@@ -633,17 +763,26 @@ mod tests {
         }
     }
 
-    /// `sanitize_frame`'s return value gates the re-serialize fast path, so
-    /// a frame with nothing to redact must report `false` — and one with a
-    /// secret nested deep inside must still report `true`.
+    /// `sanitize_frame`'s return value gates the re-serialize path, so a
+    /// frame with nothing to redact must report `false`, one with a secret
+    /// nested deep inside must report `true`, and the kept input flag alone
+    /// must also report `true` (the parse already collapsed duplicates).
     #[test]
-    fn sanitize_frame_reports_whether_it_redacted_anything() {
+    fn sanitize_frame_reports_whether_it_needs_reserializing() {
         let mut clean = json!({ "type": "turn_start", "usage": { "input_tokens": 3 } });
         assert!(!sanitize_frame(&mut clean));
 
         let mut nested = json!({ "a": [ { "b": { "api_key": "sekrit" } } ] });
         assert!(sanitize_frame(&mut nested));
         assert_eq!(nested["a"][0]["b"]["api_key"], REDACTED_PLACEHOLDER);
+
+        let mut flag = json!({
+            "type": "extension_ui_request",
+            "method": "input",
+            "secret": true
+        });
+        assert!(sanitize_frame(&mut flag));
+        assert_eq!(flag["secret"], true);
     }
 
     /// A frame with nothing to redact must come back byte-identical to the
