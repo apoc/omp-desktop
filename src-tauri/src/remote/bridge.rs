@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter, Manager, Webview};
 use super::emit::{Action, RemoteEmit, Status};
 use super::hub::Hub;
 use super::manager::RemoteManager;
-use super::tracker::{tracker, Snapshot, TrackerSink, Transition};
+use super::tracker::{tracker, AttentionSnapshot, TrackerSink, Transition};
 
 /// The webview whose listeners answer phone requests.
 const MAIN_WINDOW: &str = "main";
@@ -44,7 +44,7 @@ impl RemoteEmit for TauriRemoteEmit {
 
     /// Per-session busy / ask / background state for the desktop's tab dots,
     /// including tabs whose stdout nobody is listening to.
-    fn tracker(&self, snapshot: &Snapshot) {
+    fn tracker(&self, snapshot: &AttentionSnapshot) {
         self.send("agent://attention", snapshot);
     }
 }

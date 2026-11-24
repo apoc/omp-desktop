@@ -3,7 +3,7 @@
 //! enqueue work.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
@@ -25,11 +25,18 @@ pub trait TrackerSink: Send + Sync {
     fn changed(&self, sid: &str, t: Option<Transition>);
 }
 
+/// Stamp for a newly opened question. One sequence for the whole process,
+/// so a tab respawned under the same id continues upward instead of
+/// restarting at 1 — a watcher never mistakes an old count for a new ask.
+static ASK_OPEN_SEQ: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Default)]
 struct SessionState {
     busy: bool,
     turn_started: Option<Instant>,
     open: HashSet<String>,
+    /// `ASK_OPEN_SEQ` stamp of the last question opened in this session.
+    asks_opened: u64,
     /// omp reports background work (an async job) that can still wake the
     /// session after it yielded.
     background: bool,
@@ -41,15 +48,30 @@ struct SessionState {
 pub struct SessionSnapshot {
     pub busy: bool,
     pub asks: usize,
+    /// Rising with every question opened here, independent of how many are
+    /// still open: answering one while another opens in the same batch
+    /// leaves `asks` unchanged but raises this. Carries no prompt content.
+    pub asks_opened: u64,
     pub background: bool,
 }
 
 pub type Snapshot = HashMap<String, SessionSnapshot>;
 
+/// What the webview receives after every committed change: all sessions plus
+/// a monotonic revision. A snapshot older than the last applied one is
+/// ignored, so an initial `attention_snapshot` reply racing live events
+/// cannot roll the tab dots (or a dock bounce) back.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttentionSnapshot {
+    pub revision: u64,
+    pub sessions: Snapshot,
+}
+
 #[derive(Default)]
 pub struct Tracker {
     inner: Mutex<HashMap<String, SessionState>>,
-    snapshot: RwLock<Arc<Snapshot>>,
+    snapshot: RwLock<Arc<AttentionSnapshot>>,
     sink: Mutex<Option<Arc<dyn TrackerSink>>>,
 }
 
@@ -76,8 +98,8 @@ impl<'a> Event<'a> {
             // The active tab asks for `get_state` on every activation and
             // `agent_end`; its `hasPendingAsyncWork` is the same flag the
             // webview's `asyncPending` uses. Background tabs keep the last
-            // value until `session_settled` (or an `agent_end` that names
-            // `awaitingAsyncWork`, omp ≥ 18.21).
+            // value until `session_settled` (or a yielding `agent_end` that
+            // names `awaitingAsyncWork`).
             "response" => {
                 let frame = frame?;
                 if frame.get("command").and_then(Value::as_str) != Some("get_state") {
@@ -166,8 +188,7 @@ fn apply(
                     SessionState {
                         busy: true,
                         turn_started: Some(now),
-                        open: HashSet::new(),
-                        background: false,
+                        ..SessionState::default()
                     },
                 );
                 Outcome::Changed(None)
@@ -181,9 +202,9 @@ fn apply(
                     || awaiting.is_some_and(|v| v != state.background);
                 state.busy = false;
                 state.open.clear();
-                // Without the field (omp < 18.21) the following `get_state`
-                // settles it for the active tab; a background tab keeps what
-                // it last reported until `session_settled`.
+                // Without the field the following `get_state` settles it for
+                // the active tab; a background tab keeps what it last
+                // reported until `session_settled`.
                 if let Some(awaiting) = awaiting {
                     state.background = awaiting;
                 }
@@ -225,10 +246,16 @@ fn apply(
         }
         Event::Open(id) => {
             let opened = if let Some(state) = sessions.get_mut(sid) {
-                state.open.len() < MAX_OPEN_QUESTIONS && state.open.insert(id.to_owned())
+                if state.open.len() < MAX_OPEN_QUESTIONS && state.open.insert(id.to_owned()) {
+                    state.asks_opened = ASK_OPEN_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+                    true
+                } else {
+                    false
+                }
             } else {
                 let mut state = SessionState::default();
                 state.open.insert(id.to_owned());
+                state.asks_opened = ASK_OPEN_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
                 sessions.insert(sid.to_owned(), state);
                 true
             };
@@ -248,18 +275,23 @@ impl Tracker {
             .snapshot
             .write()
             .unwrap_or_else(PoisonError::into_inner);
+        let published = Arc::make_mut(&mut *guard);
         match entry {
             Some(value) => {
-                if let Some(slot) = Arc::make_mut(&mut *guard).get_mut(sid) {
+                if let Some(slot) = published.sessions.get_mut(sid) {
                     *slot = value;
                 } else {
-                    Arc::make_mut(&mut *guard).insert(sid.to_owned(), value);
+                    published.sessions.insert(sid.to_owned(), value);
                 }
             }
             None => {
-                Arc::make_mut(&mut *guard).remove(sid);
+                published.sessions.remove(sid);
             }
         }
+        // One step per committed change, so a coalesced fan-out event and an
+        // `attention_snapshot` reply can be ordered against each other.
+        published.revision += 1;
+        drop(guard);
     }
 
     pub fn set_sink(&self, sink: Arc<dyn TrackerSink>) {
@@ -320,6 +352,7 @@ impl Tracker {
                 let entry = sessions.get(sid).map(|state| SessionSnapshot {
                     busy: state.busy,
                     asks: state.open.len(),
+                    asks_opened: state.asks_opened,
                     background: state.background,
                 });
                 self.publish_snapshot((sid, entry));
@@ -347,7 +380,7 @@ impl Tracker {
         }
     }
 
-    pub fn snapshot(&self) -> Arc<Snapshot> {
+    pub fn snapshot(&self) -> Arc<AttentionSnapshot> {
         let guard = self.snapshot.read().unwrap_or_else(PoisonError::into_inner);
         Arc::clone(&*guard)
     }

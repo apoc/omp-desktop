@@ -159,11 +159,20 @@
   const sessionRegistry = new Map();
   const sessionSnapshots = new Map(); // id -> saved state + volatile vars
   // Every session's tracker entry from Rust (`agent://attention`, initial
-  // `attention_snapshot`): `{ busy, asks, background }` per tab id,
-  // background ones included. Non-active tab dots overlay it on their
-  // frozen snapshot (`TURN.backgroundRunState`); null until the backend
-  // answers.
+  // `attention_snapshot`): `{ busy, asks, asksOpened, background }` per
+  // tab id, background ones included, filtered to the tabs currently
+  // registered. Non-active tab dots overlay it on their frozen snapshot
+  // (`TURN.backgroundRunState`); null until the backend answers.
   let trackerLive = null;
+  // Whether a tracker snapshot ever arrived. Distinguishes "no data yet"
+  // (keep the frozen snapshot) from "loaded, this tab has no entry" (its
+  // process is gone; a stale ask must not linger).
+  let trackerLoaded = false;
+  // Highest tracker revision applied (the tracker snapshot carries one per
+  // committed change). Older events and the initial command reply are
+  // ignored, so a slow first read cannot roll the dots — or a dock
+  // bounce — back.
+  let _attentionRevision = -1;
   const respawnVoice = new Map(); // same-conversation voice awaiting a fresh process activation
   const gitListeners = new Map();  // session_id → Tauri unlisten fn for git://branch/{id}
   // Prompt history — one list per tab, newest-first, in memory only. Never
@@ -447,7 +456,7 @@
         ...s,
         runState: s.id === activeSessionId
           ? cached
-          : TURN.backgroundRunState(cached, trackerLive?.[s.id] ?? null),
+          : TURN.backgroundRunState(cached, trackerLive?.[s.id] ?? null, trackerLoaded),
       };
     });
   }
@@ -1389,11 +1398,12 @@
 
   // The tracker overlay, subscribed once per page: `agent://attention`
   // carries every session's state after any committed tracker change, and
-  // `attention_snapshot` covers a reload. An event that lands before the
-  // initial answer wins (`_attentionEvents`), so the slower first read
-  // cannot roll the dots back to an older snapshot.
+  // `attention_snapshot` covers a reload. Every payload names the tracker
+  // revision it reflects (`AttentionSnapshot`), so whichever arrives
+  // second is dropped when it is older than the applied one — an event
+  // that lands before the initial answer wins, and the answer cannot bounce
+  // for asks that are not new.
   let _attentionStarted = false;
-  let _attentionEvents = 0;
   function _ensureAttention() {
     if (_attentionStarted || !window.__TAURI__) return;
     _attentionStarted = true;
@@ -1401,20 +1411,32 @@
     listener.ready
       .then(() => _invokeSafe("attention_snapshot", {}, null))
       .then(snapshot => {
-        if (snapshot && _attentionEvents === 0) _applyAttention(snapshot);
+        if (snapshot) _applyAttention(snapshot, false);
       });
   }
 
-  function _applyAttention(snapshot) {
-    const next = snapshot && typeof snapshot === "object" ? snapshot : {};
+  function _applyAttention(snapshot, bounce = true) {
+    const sessions = snapshot?.sessions;
+    if (!sessions || typeof sessions !== "object") return;
+    const revision = Number.isFinite(snapshot.revision) ? snapshot.revision : -1;
+    if (revision <= _attentionRevision) return;
+    _attentionRevision = revision;
+    // Only tabs that exist now: a delayed event for a tab closed meanwhile
+    // must neither set a dot nor bounce the dock. Rust drops retired
+    // readers' frames and removes an entry when its process exits, so an
+    // entry here always belongs to the tab's current process.
+    const next = {};
+    for (const [id, entry] of Object.entries(sessions)) {
+      if (sessionRegistry.has(id)) next[id] = entry;
+    }
     // A question opened in any tab bounces the dock once while the window
     // is not focused; a focused window already shows the tab dot.
     const focused = typeof document !== "undefined" && document.hasFocus?.() === true;
-    if (window.OMP_ATTENTION?.shouldBounce({ previous: trackerLive, next, focused })) {
+    if (bounce && window.OMP_ATTENTION?.shouldBounce({ previous: trackerLive, next, focused })) {
       window.OMP_ATTENTION.requestAttention(window);
     }
     trackerLive = next;
-    _attentionEvents++;
+    trackerLoaded = true;
     notify();
   }
 

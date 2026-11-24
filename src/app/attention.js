@@ -16,14 +16,19 @@
     } catch { /* unsupported: no bounce */ }
   }
 
-  const asks = entry => (Number.isFinite(entry?.asks) ? entry.asks : 0);
+  // The tracker's per-session ask-open sequence (`asksOpened` in
+  // `SessionSnapshot`): it rises with every new question, even when another
+  // was answered in the same batch. An outstanding count cannot do that.
+  const opened = entry => (Number.isFinite(entry?.asksOpened) ? entry.asksOpened : 0);
 
-  /** Whether `next` has more open questions than `previous` in any session:
-   *  the dock bounce fires once per new ask, not once per snapshot. A first
-   *  snapshot (no `previous`) does not bounce — its asks are not new. */
+  /** Whether `next` has a question that opened after `previous` in any
+   *  session: the dock bounce fires once per new ask, not once per snapshot.
+   *  A first snapshot (no `previous`) does not bounce — its asks are not
+   *  new. Two questions in one snapshot count once, which is enough: the
+   *  window is already bouncing. */
   function newAsk(previous, next) {
     if (!previous || !next) return false;
-    return Object.keys(next).some(id => asks(next[id]) > asks(previous[id]));
+    return Object.keys(next).some(id => opened(next[id]) > opened(previous[id]));
   }
 
   /** Whether a tracker snapshot should bounce the dock: a new ask while the

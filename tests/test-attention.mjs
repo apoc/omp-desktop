@@ -53,41 +53,62 @@ check("no Tauri window API and a rejecting request are silent", () => {
   A.requestAttention({ __TAURI__: { window: { getCurrentWindow: () => { throw new Error("boom"); } } } });
 });
 
-check("a new ask is any session whose open-question count rose", () => {
-  assert.equal(A.newAsk(null, { a: { asks: 1 } }), false, "the first snapshot is not a new ask");
-  assert.equal(A.newAsk({}, { a: { asks: 1 } }), true);
-  assert.equal(A.newAsk({ a: { asks: 1 } }, { a: { asks: 1 } }), false);
-  assert.equal(A.newAsk({ a: { asks: 1 } }, { a: { asks: 2 } }), true, "a second form field");
-  assert.equal(A.newAsk({ a: { asks: 2 } }, { a: { asks: 1 } }), false, "answered, cancelled or timed out");
-  assert.equal(A.newAsk({ a: { asks: 1 } }, {}), false, "the session exited");
+check("a new ask is any session whose open-question sequence rose", () => {
+  assert.equal(A.newAsk(null, { a: { asksOpened: 1 } }), false, "the first snapshot is not a new ask");
+  assert.equal(A.newAsk({}, { a: { asksOpened: 1 } }), true);
+  assert.equal(A.newAsk({ a: { asksOpened: 1 } }, { a: { asksOpened: 1 } }), false);
+  assert.equal(A.newAsk({ a: { asksOpened: 1 } }, { a: { asksOpened: 2 } }), true, "a second form field");
+  assert.equal(A.newAsk({ a: { asksOpened: 2 } }, { a: { asksOpened: 2 } }), false, "answered, cancelled or timed out");
+  assert.equal(A.newAsk({ a: { asksOpened: 1 } }, {}), false, "the session exited");
   assert.equal(
-    A.newAsk({ a: { asks: 0 }, b: { asks: 0 } }, { a: { asks: 0 }, b: { asks: 1 } }),
+    A.newAsk({ a: { asksOpened: 0 }, b: { asksOpened: 0 } }, { a: { asksOpened: 0 }, b: { asksOpened: 1 } }),
     true,
     "any session counts, not just the first",
   );
-  assert.equal(A.newAsk({ a: { asks: 1 } }, { a: { asks: 0 }, b: { asks: 1 } }), true);
-  assert.equal(A.newAsk({}, { a: { asks: 0 } }), false, "a session without asks is not a question");
-  assert.equal(A.newAsk({ a: {} }, { a: { asks: 1 } }), true, "a malformed previous entry reads as none");
+  assert.equal(A.newAsk({ a: { asksOpened: 1 } }, { a: { asksOpened: 0 }, b: { asksOpened: 1 } }), true);
+  assert.equal(A.newAsk({}, { a: { asksOpened: 0 } }), false, "a session without asks is not a question");
+  assert.equal(A.newAsk({ a: {} }, { a: { asksOpened: 1 } }), true, "a malformed previous entry reads as none");
+});
+
+check("answer one question and open another in the same batch still bounces", () => {
+  // The open count is 1 before and after: only the sequence stamp moves.
+  assert.equal(
+    A.newAsk(
+      { a: { asks: 1, asksOpened: 7 } },
+      { a: { asks: 1, asksOpened: 8 } },
+    ),
+    true,
+    "P2: the outstanding count hid the new ask",
+  );
+});
+
+check("two questions in one snapshot bounce once, never zero", () => {
+  assert.equal(A.shouldBounce({
+    previous: { a: { asks: 0, asksOpened: 3 } },
+    next: { a: { asks: 2, asksOpened: 5 } },
+    focused: false,
+  }), true);
 });
 
 check("bounce only while the window is not focused", () => {
-  assert.equal(A.shouldBounce({ previous: {}, next: { a: { asks: 1 } }, focused: true }), false);
-  assert.equal(A.shouldBounce({ previous: {}, next: { a: { asks: 1 } }, focused: false }), true);
-  assert.equal(A.shouldBounce({ previous: null, next: { a: { asks: 1 } }, focused: false }), false);
+  assert.equal(A.shouldBounce({ previous: {}, next: { a: { asksOpened: 1 } }, focused: true }), false);
+  assert.equal(A.shouldBounce({ previous: {}, next: { a: { asksOpened: 1 } }, focused: false }), true);
+  assert.equal(A.shouldBounce({ previous: null, next: { a: { asksOpened: 1 } }, focused: false }), false);
 });
 
-check("counter-probe: comparing counts only upward is what makes it once per ask", () => {
-  // The property under test: an unchanged count never bounces. The two
-  // plausible wrong rules — "any open ask" and "any changed count" — fail
-  // on a repeated snapshot and on an answer respectively.
-  const open = { a: { asks: 1 } };
-  const anyOpen = next => Object.keys(next).some(id => (next[id]?.asks ?? 0) > 0);
-  const anyChange = (previous, next) =>
-    Object.keys(next).some(id => (next[id]?.asks ?? 0) !== (previous?.[id]?.asks ?? 0));
-  assert.equal(A.newAsk(open, open), false);
-  assert.equal(anyOpen(open), true, "the wrong rule re-bounces the same open ask");
-  assert.equal(A.newAsk({ a: { asks: 2 } }, { a: { asks: 1 } }), false);
-  assert.equal(anyChange({ a: { asks: 2 } }, { a: { asks: 1 } }), true, "the wrong rule bounces on an answer");
+check("counter-probe: counting outstanding questions misses an answer plus an open", () => {
+  // The pre-fix rule compared `asks` only.
+  const byCount = (previous, next) => Object.keys(next).some(id =>
+    (next[id]?.asks ?? 0) > (previous?.[id]?.asks ?? 0));
+  const previous = { a: { asks: 1, asksOpened: 7 } };
+  const next = { a: { asks: 1, asksOpened: 8 } };
+  assert.equal(byCount(previous, next), false, "the old rule saw no new question");
+  assert.equal(A.newAsk(previous, next), true, "the sequence stamp does");
+  // An unchanged stamp never bounces, so a repeated snapshot is quiet.
+  assert.equal(A.newAsk(next, next), false);
+  assert.equal(byCount(next, next), false);
+  // A changed count downward (an answer) is not a new ask either way.
+  assert.equal(A.newAsk({ a: { asks: 2, asksOpened: 9 } }, { a: { asks: 1, asksOpened: 9 } }), false);
 });
 
 console.log(`test-attention: ${passed} checks passed`);

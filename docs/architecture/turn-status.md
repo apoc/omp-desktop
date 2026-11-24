@@ -14,19 +14,25 @@
 
 `src-tauri/src/remote/tracker.rs` keeps process-level busy, open-dialog and
 background-work state independently of the active webview tab. The stdout
-reader feeds its already parsed frames immediately after `ext_ui::record`:
+reader feeds its already parsed frames to the tracker *before* publishing them
+in the journal and before `ext_ui::record`, so a background tab activated in
+between cannot replay and answer a question the tracker has not seen yet:
 `agent_start` starts timing a turn and clears background work; a yielding
 `agent_end` (`yielded`, else `isTerminal`, else yes) clears busy and
 unanswered dialogs and reports the elapsed time, while one that continues into
-another run changes nothing. `agent_end`'s `awaitingAsyncWork` (omp ≥ 18.21)
-sets the session's `background` flag; `session_settled` clears it, and so does
-every `get_state` response's `hasPendingAsyncWork` (the active tab asks for one
-on each activation and `agent_end`; at the 18.20 floor that answer is the only
-source). `select`, `confirm`, `input`, `editor` and `ask` requests with string
+another run changes nothing. `agent_end`'s `awaitingAsyncWork` (measured on
+omp 18.6.0) sets the session's `background` flag; `session_settled` clears it,
+and so does every `get_state` response's `hasPendingAsyncWork` (the active tab
+asks for one on each activation and `agent_end`; a background tab keeps the
+last answer until `session_settled` or a yielding end names the flag).
+`select`, `confirm`, `input`, `editor` and `ask` requests with string
 ids (at most 256 bytes) count as questions, at most 64 open per session;
 duplicate ids do not open another one. omp's own `cancel` request (`targetId`)
-closes that question. Auto-approved tool prompts and retired readers are
-excluded. Details of the remote consumer: `remote-access.md`.
+closes that question. Every opened question also takes the next value of a
+process-wide sequence (`asksOpened` in the snapshot): it rises even when
+another question in the same batch was answered, without carrying any prompt
+content. Auto-approved tool prompts and retired readers are excluded. Details
+of the remote consumer: `remote-access.md`.
 
 `AgentBridge::send` and the atomic approval-and-grant path remove an answered id
 only after writing and flushing the response successfully. Natural process exit,
@@ -40,23 +46,35 @@ Clearing a finished turn releases its remaining questions.
 The tracker is also the desktop's source for tabs whose stdout nobody is
 listening to. The manager's fan-out worker (created with the manager, whether
 or not remote access is enabled) emits `agent://attention` after every
-coalesced tracker change: one object per session id with `{busy, asks,
-background}`. `attention_snapshot` returns the same shape, so a reloaded page
-starts correct; the fan-out runs even with no phone connected.
+coalesced tracker change: `{revision, sessions}` with one
+`{busy, asks, asksOpened, background}` entry per session id. `attention_snapshot`
+returns the same shape, so a reloaded page starts correct; the fan-out runs
+even with no phone connected. `revision` rises with every committed change.
 
-`live.js` keeps that snapshot as `trackerLive`. `_sessionsView` still reads
-the active tab's live state; for every other tab it overlays the tracker on
-the tab's frozen snapshot through `OMP_TURN_STATUS.backgroundRunState(cached,
-live)`: `failed` wins (the process's own verdict), no tracker entry keeps the
-snapshot, any open ask is `waiting-user`, and a cached `waiting-user`,
-`running` or `background` follows the tracker to `running` (busy), to
-`background` (pending job) or to `idle`. Both directions therefore track: an
-ask that opens in a background tab shows the amber dot before the tab is
-opened, and one cancelled, answered elsewhere or ended with the turn clears
-it. The new event is what re-renders the session list.
+`live.js` keeps the session entries as `trackerLive`, filtered to the tabs
+that are currently registered (a delayed event for a tab closed meanwhile
+must not set a dot or bounce), and the highest applied revision. A payload at
+or below that revision is ignored, so an event that lands before the initial
+`attention_snapshot` answer wins and the slower answer cannot roll the dots
+back.
 
-A question opening anywhere (tracker `asks` rising for any session) bounces
-the dock once while the window is not focused, through the same
+`_sessionsView` still reads the active tab's live state; for every other tab
+it overlays the tracker on the tab's frozen snapshot through
+`OMP_TURN_STATUS.backgroundRunState(cached, live, loaded)`. `failed` wins (the
+process's own verdict). Before the first tracker payload (`loaded` false) the
+snapshot stands. Afterwards the tracker owns the state: no entry means the
+process is gone (Rust removes it on exit), so a frozen ask retires to `idle`;
+an open ask is `waiting-user`; `busy` is `running`, or `retrying` while the
+frozen snapshot still shows the live retry row; a pending job is
+`background`; otherwise `idle`. Both directions therefore track: an ask that
+opens in a background tab shows the amber dot before the tab is opened, and
+one cancelled, answered elsewhere or ended with the turn clears it. A run
+the frozen snapshot never saw (a tab left at `idle`) also shows while it goes
+on, which keeps quit confirmation and approval-mode restarts from treating
+live work as idle. The new event is what re-renders the session list.
+
+A question opening anywhere (tracker `asksOpened` rising for any session)
+bounces the dock once while the window is not focused, through the same
 `app/attention.js` helper rail widget attention uses (`requestUserAttention`,
 Informational). The first snapshot after a page load never bounces: its asks
 are not new. A focused window already shows the tab dot, so it stays quiet.

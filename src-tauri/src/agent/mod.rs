@@ -960,7 +960,10 @@ mod tests {
             )
             .unwrap();
         let snapshot = tracker().snapshot();
-        assert_eq!((snapshot[sid].busy, snapshot[sid].asks), (false, 0));
+        assert_eq!(
+            (snapshot.sessions[sid].busy, snapshot.sessions[sid].asks),
+            (false, 0)
+        );
         tracker().on_exit(sid);
     }
 
@@ -1006,7 +1009,10 @@ mod tests {
             )
             .is_err());
         let snapshot = tracker().snapshot();
-        assert_eq!((snapshot[sid].busy, snapshot[sid].asks), (false, 1));
+        assert_eq!(
+            (snapshot.sessions[sid].busy, snapshot.sessions[sid].asks),
+            (false, 1)
+        );
         tracker().on_exit(sid);
     }
 
@@ -1030,6 +1036,6 @@ mod tests {
         let dir = crate::test_support::TempDir::new("tracker", "stop-session");
         let rules = crate::approval::RuleBook::new(dir.path().to_path_buf());
         bridge.stop_session(sid, &rules);
-        assert!(!tracker.snapshot().contains_key(sid));
+        assert!(!tracker.snapshot().sessions.contains_key(sid));
     }
 }

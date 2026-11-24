@@ -607,7 +607,10 @@ mod tests {
             )),)
             .is_err());
         let snapshot = tracker.snapshot();
-        assert_eq!((snapshot[sid].busy, snapshot[sid].asks), (false, 1));
+        assert_eq!(
+            (snapshot.sessions[sid].busy, snapshot.sessions[sid].asks),
+            (false, 1)
+        );
         assert_eq!(
             approve(
                 &bridge,
@@ -620,7 +623,10 @@ mod tests {
             Ok(None)
         );
         let snapshot = tracker.snapshot();
-        assert_eq!((snapshot[sid].busy, snapshot[sid].asks), (false, 0));
+        assert_eq!(
+            (snapshot.sessions[sid].busy, snapshot.sessions[sid].asks),
+            (false, 0)
+        );
         tracker.on_exit(sid);
     }
 }

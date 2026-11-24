@@ -15,8 +15,9 @@ const load = (win, file) => new Function("window", readFileSync(`${root}src/${fi
 let focused = false;
 globalThis.document = { hasFocus: () => focused, visibilityState: "visible" };
 
-function harness() {
+function harness(initial = null) {
   const listeners = new Map(), journal = new Map(), bounces = [];
+  const initialRef = { snapshot: initial };
   const w = {
     OMP_SLASH: { LOCAL_COMMANDS: [], adaptAvailableCommands: cs => cs, mergeSlashCommands: (a) => a, isCommandInvocation: () => false, queuedFrame: () => null },
     OMP_SUBAGENTS: { emptySubagents: () => ({}), subscriptionLevelFor: () => "progress", mergeSnapshots: () => ({}) },
@@ -35,7 +36,11 @@ function harness() {
       invoke(command, args) {
         if (command === "list_profiles") return Promise.resolve({ profiles: [{ id: "default", name: "default" }] });
         if (command === "start_session") return Promise.resolve("write");
-        if (command === "attention_snapshot") return Promise.resolve(null); // the initial read; events follow
+        if (command === "attention_snapshot") {
+          // Resolved by `tick`, so a test can seed the answer after the tab id
+          // exists — that is when the real backend reply is in flight.
+          return new Promise(resolve => pendingInitial.push(() => resolve(initialRef.snapshot)));
+        }
         if (command === "replay_events") return Promise.resolve({ dropped: false, events: (journal.get(args.sessionId) ?? []).filter(e => e.seq > args.afterSeq) });
         return Promise.resolve(null);
       },
@@ -63,14 +68,22 @@ function harness() {
     journal.set(id, entries);
     listeners.get(`agent://line/${id}`)?.({ payload: entry });
   }
-  function attention(next) {
-    listeners.get("agent://attention")?.({ payload: next });
+  let revision = initial?.revision ?? 0;
+  const pendingInitial = [];
+  function attention(sessions, at = ++revision) {
+    revision = Math.max(revision, at);
+    listeners.get("agent://attention")?.({ payload: { revision: at, sessions } });
   }
   function fire(name, payload) {
     listeners.get(name)?.({ payload });
   }
   const runState = id => snapshot?.sessions.find(s => s.id === id)?.runState;
-  return { bridge: w.OMP_BRIDGE, emit, attention, fire, runState, bounces };
+  const setInitial = next => { initialRef.snapshot = next; };
+  const tick = async () => {
+    while (pendingInitial.length > 0) pendingInitial.shift()();
+    await new Promise(resolve => setTimeout(resolve, 0));
+  };
+  return { bridge: w.OMP_BRIDGE, emit, attention, fire, runState, bounces, setInitial, tick };
 }
 
 let passed = 0;
@@ -151,20 +164,101 @@ await check("a new ask bounces the dock once, and not while focused", async () =
   const h = harness();
   const a = await h.bridge.openSession("/alpha");
   await h.bridge.activateSession(a);
-  const idle = { [a]: { busy: true, asks: 0, background: false } };
+  const idle = { [a]: { busy: true, asks: 0, asksOpened: 0, background: false } };
   h.attention(idle); // first snapshot: nothing new to announce
   assert.deepEqual(h.bounces, []);
-  const asking = { [a]: { busy: true, asks: 1, background: false } };
+  const asking = { [a]: { busy: true, asks: 1, asksOpened: 1, background: false } };
   h.attention(asking);
   assert.deepEqual(h.bounces, [2], "one Informational bounce");
-  h.attention({ [a]: { busy: true, asks: 1, background: false } }); // same ask, new snapshot
+  h.attention({ [a]: { busy: true, asks: 1, asksOpened: 1, background: false } }); // same ask, new snapshot
   assert.deepEqual(h.bounces, [2], "not again for an unchanged ask");
-  h.attention({ [a]: { busy: true, asks: 2, background: false } }); // a second form field
+  h.attention({ [a]: { busy: true, asks: 2, asksOpened: 2, background: false } }); // a second form field
   assert.deepEqual(h.bounces, [2, 2], "a new question bounces again");
   focused = true;
-  h.attention({ [a]: { busy: true, asks: 3, background: false } });
+  h.attention({ [a]: { busy: true, asks: 3, asksOpened: 3, background: false } });
   assert.deepEqual(h.bounces, [2, 2], "a focused window already shows the dot");
   focused = false;
+});
+
+await check("answering one question while another opens in the batch bounces", async () => {
+  focused = false;
+  const h = harness();
+  const a = await h.bridge.openSession("/alpha");
+  await h.bridge.activateSession(a);
+  h.attention({ [a]: { busy: true, asks: 1, asksOpened: 1, background: false } });
+  assert.deepEqual(h.bounces, [], "the first snapshot is not new");
+  // `asks` stays 1: one answered, one opened in the same coalesced change.
+  h.attention({ [a]: { busy: true, asks: 1, asksOpened: 2, background: false } });
+  assert.deepEqual(h.bounces, [2], "P2: the new question still bounces");
+});
+
+await check("the initial read is ordered and never bounces", async () => {
+  focused = false;
+  const h = harness();
+  const a = await h.bridge.openSession("/alpha");
+  const b = await h.bridge.openSession("/beta");
+  h.setInitial({ revision: 9, sessions: { [a]: { busy: true, asks: 1, asksOpened: 4, background: false } } });
+  await h.bridge.activateSession(a);
+  await h.tick();
+  assert.deepEqual(h.bounces, [], "a reload's open ask is not a new ask");
+  await h.bridge.activateSession(b);
+  assert.equal(h.runState(a), "waiting-user", "the initial snapshot seeded the background dot");
+  // A late event carrying an older revision is ignored, dot and bounce alike.
+  h.attention({ [a]: { busy: false, asks: 0, asksOpened: 0, background: false } }, 8);
+  assert.equal(h.runState(a), "waiting-user", "an older snapshot cannot roll the dot back");
+  assert.deepEqual(h.bounces, []);
+  h.attention({ [a]: { busy: false, asks: 0, asksOpened: 0, background: false } }, 10);
+  assert.equal(h.runState(a), "idle", "a newer revision does apply");
+  assert.deepEqual(h.bounces, [], "an answered ask does not bounce");
+});
+
+await check("a newer initial reply applies without bouncing the dock", async () => {
+  focused = false;
+  const h = harness();
+  const a = await h.bridge.openSession("/alpha");
+  const b = await h.bridge.openSession("/beta");
+  // A live event lands while the `attention_snapshot` read is still out.
+  h.attention({ [a]: { busy: true, asks: 0, asksOpened: 0, background: false } }, 1);
+  // The read comes back newer than that event, with an ask already open.
+  h.setInitial({ revision: 2, sessions: { [a]: { busy: true, asks: 1, asksOpened: 5, background: false } } });
+  await h.tick();
+  assert.deepEqual(h.bounces, [], "a page load's open ask is not a new ask");
+  await h.bridge.activateSession(b);
+  assert.equal(h.runState(a), "waiting-user", "the newer reply did apply");
+});
+
+await check("a delayed event for a closed tab neither sets a dot nor bounces", async () => {
+  focused = false;
+  const h = harness();
+  const a = await h.bridge.openSession("/alpha");
+  const b = await h.bridge.openSession("/beta");
+  await h.bridge.activateSession(a);
+  h.attention({ [a]: { busy: false, asks: 0, asksOpened: 0, background: false },
+    [b]: { busy: false, asks: 0, asksOpened: 0, background: false } });
+  assert.deepEqual(await h.bridge.closeSession(a), true);
+  // The tracker's exit cleanup and a queued fan-out event race the close.
+  h.attention({ [a]: { busy: true, asks: 1, asksOpened: 1, background: false },
+    [b]: { busy: false, asks: 0, asksOpened: 0, background: false } });
+  assert.deepEqual(h.bounces, [], "P2: a closed tab must not bounce");
+  assert.equal(h.runState(a), undefined, "the tab is gone");
+});
+
+await check("an exited background process retires its stale ask", async () => {
+  focused = false;
+  const h = harness();
+  const a = await h.bridge.openSession("/alpha");
+  const b = await h.bridge.openSession("/beta");
+  await h.bridge.activateSession(a);
+  h.emit(a, { type: "extension_ui_request", id: "q1", method: "input", title: "Your name" });
+  assert.equal(h.runState(a), "waiting-user");
+  await h.bridge.activateSession(b);
+  assert.equal(h.runState(a), "waiting-user", "the frozen snapshot keeps the ask");
+  // The tracker still has the process, so the ask stands.
+  h.attention({ [a]: { busy: true, asks: 1, asksOpened: 1, background: false } });
+  assert.equal(h.runState(a), "waiting-user");
+  // The process exited: Rust removed its entry. The frozen ask must go.
+  h.attention({});
+  assert.equal(h.runState(a), "idle", "P2: no entry means the process is gone");
 });
 
 console.log(`test-attention-bridge: ${passed} checks passed`);

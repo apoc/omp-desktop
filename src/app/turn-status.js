@@ -55,22 +55,21 @@
    *
    *  `cached` is `runStateOf` over the snapshot (`live.js`
    *  `_sessionsView`), `live` the tracker entry (`busy`, `asks`,
-   *  `background`) or null when it has none (never started, already
-   *  exited). Both directions follow the tracker: a new ask shows
-   *  `waiting-user` before the tab is opened, and an ask cancelled,
-   *  answered elsewhere or ended by omp stops showing it. `failed` is the
-   *  process's own verdict and wins. */
-  function backgroundRunState(cached, live) {
-    if (cached === "failed" || !live) return cached;
-    if (live.asks > 0) return "waiting-user";
-    // Only states that mean the agent is still working can go stale; an
-    // idle tab the tracker has no run for stays as its snapshot said.
-    if (cached === "waiting-user" || cached === "running" || cached === "background") {
-      if (live.busy) return "running";
-      if (live.background) return "background";
-      return "idle";
-    }
-    return cached;
+   *  `background`) or null when it has none, and `loaded` whether
+   *  `live.js` has received the tracker snapshot at all. Until it has, the
+   *  snapshot is all there is; once it has, the tracker owns the state: a
+   *  missing entry means the process is gone (Rust removes it on exit), so
+   *  a frozen ask cannot survive it. `failed` is the process's own verdict
+   *  and wins. `retrying` survives only while the tracker says the run
+   *  still goes on: the retry row lives in the frozen transcript. */
+  function backgroundRunState(cached, live, loaded) {
+    if (cached === "failed") return "failed";
+    if (!loaded) return cached;
+    if (!live) return "idle";
+    if (Number.isFinite(live.asks) && live.asks > 0) return "waiting-user";
+    if (live.busy) return cached === "retrying" ? "retrying" : "running";
+    if (live.background) return "background";
+    return "idle";
   }
 
   /** Whether an `agent_end` is the agent yielding its turn. `yielded: false`

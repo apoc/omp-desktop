@@ -1,6 +1,7 @@
 use super::*;
 use crate::remote::devices::DeviceStore;
 use crate::remote::emit::{Action, Status};
+use crate::remote::tracker::AttentionSnapshot;
 use std::sync::atomic::AtomicBool;
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
@@ -16,10 +17,10 @@ impl RemoteEmit for NoEmit {
 
 /// Keeps every tracker snapshot the fan-out hands to the webview edge.
 #[derive(Default)]
-struct RecordingEmit(Mutex<Vec<Snapshot>>);
+struct RecordingEmit(Mutex<Vec<AttentionSnapshot>>);
 
 impl RecordingEmit {
-    fn snapshots(&self) -> Vec<Snapshot> {
+    fn snapshots(&self) -> Vec<AttentionSnapshot> {
         self.0.lock().unwrap().clone()
     }
 }
@@ -29,7 +30,7 @@ impl RemoteEmit for RecordingEmit {
     fn connections(&self, _device_ids: &[String]) {}
     fn action(&self, _action: &Action) {}
     fn status(&self, _status: &Status) {}
-    fn tracker(&self, snapshot: &Snapshot) {
+    fn tracker(&self, snapshot: &AttentionSnapshot) {
         self.0.lock().unwrap().push(snapshot.clone());
     }
 }
@@ -99,8 +100,6 @@ fn a_stopped_fan_out_forwards_nothing_more() {
 
 #[test]
 fn the_webview_edge_receives_the_tracker_snapshot_after_an_open() {
-    use crate::remote::tracker::SessionSnapshot;
-
     let dir = crate::test_support::tempdir("remote-bridge", "attention");
     let devices = Arc::new(DeviceStore::load(dir.join("devices.json")));
     let hub = Arc::new(Hub::new(devices, Arc::new(NoEmit)));
@@ -116,20 +115,24 @@ fn the_webview_edge_receives_the_tracker_snapshot_after_an_open() {
     );
     fan_out.changed(sid, Some(Transition::QuestionOpened));
     let seen = crate::test_support::eventually(Duration::from_secs(2), || {
-        emit.snapshots()
-            .into_iter()
-            .rev()
-            .find(|snapshot| snapshot.get(sid).is_some_and(|entry| entry.asks == 1))
+        emit.snapshots().into_iter().rev().find(|snapshot| {
+            snapshot
+                .sessions
+                .get(sid)
+                .is_some_and(|entry| entry.asks == 1)
+        })
     })
     .expect("the tracker snapshot reached the webview edge");
+    let entry = seen.sessions[sid];
     assert_eq!(
-        seen[sid],
-        SessionSnapshot {
-            busy: false,
-            asks: 1,
-            background: false,
-        }
+        (entry.busy, entry.asks, entry.background),
+        (false, 1, false)
     );
+    assert!(
+        entry.asks_opened > 0,
+        "the new ask carries its sequence stamp"
+    );
+    assert!(seen.revision > 0, "the edge event is ordered by revision");
     tracker().on_exit(sid);
     fan_out.stop();
 }
