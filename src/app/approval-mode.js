@@ -66,11 +66,8 @@
 
   /** Tabs whose running mode differs from what their folder now resolves
    *  to: `now` for idle ones, `later` for busy ones (restarted when they
-   *  next go idle). Reads the snapshot's guard `runState`, which the
-   *  backend tracker may raise but never lower: a tab frozen mid-turn is
-   *  deferred even if a delayed tracker report says idle. A failed tab has
-   *  no process, and a tab with no running mode yet is still spawning —
-   *  neither needs a restart. */
+   *  next go idle). A failed tab has no process, and a tab with no
+   *  running mode yet is still spawning — neither needs a restart. */
   function restartPlan(view, sessions) {
     const { isBusyRunState } = window.OMP_TURN_STATUS; // late-bound: turn-status.js loads after this file
     const now = [];

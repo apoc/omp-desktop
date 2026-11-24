@@ -63,6 +63,7 @@ Per omp session, independent of the active webview tab: `busy`, `turn_started`, 
 - An answer written and flushed by `AgentBridge::send` / the approval-and-grant path removes the id (`on_answered`); process exit, stop and replacement remove the session. Auto-approved tool prompts and retired readers are excluded.
 - **The hook must stay O(1) and non-blocking**: stream deltas and non-dialog traffic classify to `None` and take no lock; question membership is a hash set; the sink is called with both mutexes released and must only enqueue (transport and push belong to the manager's worker).
 - The published snapshot is `{revision, sessions}` with `{busy, asks, asksOpened, background}` per session id. The phone's tab list reads `busy`/`hasAsk` from it; the manager's fan-out also emits it to the desktop as `agent://attention`, and `attention_snapshot` returns it for a page load (`docs/architecture/turn-status.md`).
+- Known gap, phone and tab dot alike: protocol v2 `rpc_chunk` sequences are reassembled only in the webview, so a chunked frame (an oversized `extension_ui_request` or `get_state` answer) never reaches the tracker. Frames carrying questions fit one chunk in practice; a Rust-side reassembly would close it for both consumers.
 
 ## Publisher (webview)
 

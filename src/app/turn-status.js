@@ -56,41 +56,32 @@
    *
    *  `cached` is `runStateOf` over the snapshot (`live.js`
    *  `_sessionsView`), `live` the tracker entry (`busy`, `asks`,
-   *  `background`) or null when it has none, `loaded` whether `live.js`
-   *  has received the tracker snapshot at all, and `fresh` whether the
-   *  tracker reported this session after the tab was frozen.
+   *  `asksOpened`, `background`) or null when it has none, `loaded` whether
+   *  `live.js` has received the tracker snapshot at all, and `fresh`
+   *  whether the tracker reported this session after the tab was frozen.
    *
-   *  Only the dot reads this. A newer report owns the display: the run
-   *  settled, the ask cleared or the process exited. An older one may
-   *  still know more than the snapshot does — an ask that arrived, a run
-   *  the tab never saw — but it may not make the dot look less busy:
-   *  absence alone is not proof of exit (the busy fan-out for the tab just
-   *  left may still be in flight), and a frozen ask or run stands until a
-   *  later report retires it. `retrying` survives only while the tracker
-   *  has not moved since the freeze: the row lives in the frozen
-   *  transcript, and a busy → idle → busy wake makes it a run of the past.
-   *  `failed` is the process's own verdict and wins. */
+   *  Display only: `runState` (what every guard reads) stays the frozen
+   *  snapshot, exactly as before the tracker existed.
+   *
+   *  A newer report owns the display: the run settled, the ask cleared or
+   *  the process exited. An older one may still know more than the snapshot
+   *  does — an ask that arrived, a run the tab never saw — but it may not
+   *  make the dot look less busy: absence alone is not proof of exit (the
+   *  busy fan-out for the tab just left may still be in flight), and a
+   *  frozen run stands until a later report retires it. An ask is the
+   *  exception: the tracker reads every frame before the tab's own
+   *  listener, so when it names no open question and has stamped a question
+   *  before, the frozen ask can only be one it already closed — the
+   *  `cancel` the frozen snapshot predates. `retrying` survives only while
+   *  the tracker has not moved since the freeze: the row lives in the
+   *  frozen transcript, and a busy → idle → busy wake makes it a run of the
+   *  past. `failed` is the process's own verdict and wins. */
   function displayRunState(cached, live, loaded, fresh = false) {
     if (cached === "failed") return "failed";
     if (!loaded) return cached;
     const tracked = _trackedRunState(live);
+    if (cached === "waiting-user" && tracked !== "waiting-user" && _asksOpened(live) > 0) return tracked;
     if (fresh) return tracked;
-    return RUN_STATE_RANK[tracked] > RUN_STATE_RANK[cached] ? tracked : cached;
-  }
-
-  /** The protective run state: quit and busy-tab confirmation, the Rust
-   *  close guard, approval-mode restarts, the updater's busy count, PR
-   *  automation and every other consumer that decides whether work is
-   *  running. It is busy whenever the tab's own state — live, or frozen
-   *  when it was left — or the tracker says so. The tracker may raise it,
-   *  never lower it: a delayed or misordered report must not let a close,
-   *  a quit or a restart treat live work as idle. `failed` stays the
-   *  process's own verdict, and before the first tracker payload the tab's
-   *  own state is all there is. */
-  function guardRunState(cached, live, loaded) {
-    if (cached === "failed") return "failed";
-    if (!loaded) return cached;
-    const tracked = _trackedRunState(live);
     return RUN_STATE_RANK[tracked] > RUN_STATE_RANK[cached] ? tracked : cached;
   }
 
@@ -104,6 +95,13 @@
     if (live.busy) return "running";
     if (live.background) return "background";
     return "idle";
+  }
+
+  /** How many questions the tracker has ever seen open in this session: an
+   *  entry that never saw one knows nothing about a frozen ask, so its
+   *  closed count cannot retire it. */
+  function _asksOpened(live) {
+    return Number.isFinite(live?.asksOpened) ? live.asksOpened : 0;
   }
 
   /** Whether an `agent_end` is the agent yielding its turn. `yielded: false`
@@ -427,7 +425,7 @@
   }
 
   window.OMP_TURN_STATUS = Object.freeze({
-    runStateOf, displayRunState, guardRunState, isBusyRunState, busyElsewhere, busyInRepo, isYield, stripDiagnostics, providerHeadline, failureOf, finalFailures,
+    runStateOf, displayRunState, isBusyRunState, busyElsewhere, busyInRepo, isYield, stripDiagnostics, providerHeadline, failureOf, finalFailures,
     withPromptError, finishedJobsOf,
     failedStop, producedOutput, isHidden, retryIndex, retryStarted, retryAttempting, retryEnded, retryFinished, retryYielded, retryCleared,
   });

@@ -161,9 +161,10 @@
   // Every session's tracker entry from Rust (`agent://attention`, initial
   // `attention_snapshot`): `{ busy, asks, asksOpened, background }` per
   // tab id, background ones included, filtered to the tabs currently
-  // registered. Non-active tab dots overlay it on their frozen snapshot
-  // (`TURN.displayRunState`), while every guard reads the conservative
-  // union (`TURN.guardRunState`); null until the backend answers.
+  // registered. Display only: a background tab's dot overlays it on its
+  // frozen snapshot (`TURN.displayRunState`), while `runState` — what every
+  // guard reads — stays the active/frozen state it was before the tracker
+  // existed. Null until the backend answers.
   let trackerLive = null;
   // Whether a tracker snapshot ever arrived. Distinguishes "no data yet"
   // (keep the frozen snapshot) from a loaded one; whether its report may
@@ -173,8 +174,7 @@
   // (`_applyAttention`). A frozen tab compares this against the stamp it
   // recorded when it was left: only a later change says anything about
   // work done since, so the dot overlay cannot retire a run whose busy
-  // fan-out is still in flight (`TURN.displayRunState`). Guards never read
-  // it: `runState` is the union and can only be raised by the tracker.
+  // fan-out is still in flight (`TURN.displayRunState`). No guard reads it.
   // Removed with the tab.
   const _trackerEvidence = new Map(); // session id → revision
   // Highest tracker revision applied (the tracker snapshot carries one per
@@ -432,7 +432,7 @@
       codexLogin:      state.codexLogin,
       dictationCompleted: _dictationCompleted,
       // Tab list — derived from session registry, not per-session state.
-      // Each entry carries the guard `runState` and the dot's
+      // Each entry carries the tab's own `runState` and the dot's
       // `displayRunState` (see `_sessionsView`).
       sessions:        _sessionsView(),
       activeSessionId,
@@ -448,21 +448,16 @@
     };
   }
 
-  // Snapshot `sessions[]`: the registry entries plus each tab's run states.
-  // The active tab reads live state. A background tab reads its cached
-  // snapshot (never activated yet = "idle" defaults), overlaid with the
-  // backend tracker's `busy` / `asks` / `background` — its own listener is
-  // gone, so an ask that arrives (or is answered elsewhere) never reaches
-  // that snapshot.
+  // Snapshot `sessions[]`: the registry entries plus each tab's run state.
+  // Active tab reads live state; background tabs read their cached snapshot
+  // (never activated yet = "idle" defaults) — the pre-tracker `runState`,
+  // which every guard still reads unchanged.
   //
-  // Two fields, deliberately:
-  //  - `displayRunState` is what the tab dot shows. Only it may follow a
-  //    tracker report down; a report newer than the freeze owns the dot.
-  //  - `runState` is the guard state every protective consumer reads (quit
-  //    and tab-close confirmation, close guard, approval-mode restarts,
-  //    updater, PR automation). It is busy while either the tab's own state
-  //    or the tracker says so, so a delayed or misordered report can never
-  //    lower it. See docs/architecture/turn-status.md.
+  // `displayRunState` is the dot's separate, display-only state: a
+  // background tab has no live listener, so an ask that arrives (or is
+  // answered elsewhere) never reaches its snapshot; the dot overlays the
+  // backend tracker there. No guard reads it — see
+  // docs/architecture/turn-status.md.
   function _sessionsView() {
     return [...sessionRegistry.values()].map(s => {
       const snapshot = s.id === activeSessionId ? null : sessionSnapshots.get(s.id);
@@ -471,34 +466,19 @@
           ? state
           : snapshot ?? _EMPTY_SESSION_FIELDS
       );
-      const live = trackerLive?.[s.id] ?? null;
       return {
         ...s,
-        runState: TURN.guardRunState(cached, live, trackerLoaded),
+        runState: cached,
         displayRunState: s.id === activeSessionId
           ? cached
           : TURN.displayRunState(
               cached,
-              live,
+              trackerLive?.[s.id] ?? null,
               trackerLoaded,
               _trackerEvidenceNewer(s.id, snapshot?.trackerEvidence ?? null),
             ),
       };
     });
-  }
-
-  /** Whether tab `id`'s protective guard state says work is running — the
-   *  same union `_sessionsView` publishes as `runState` (the tab's own state
-   *  or the tracker's, whichever is busier). A deferred approval-mode
-   *  restart re-reads it immediately before it kills the process: the
-   *  dictation stop in between is a real IPC round-trip, and the tracker can
-   *  report the tab running inside it. */
-  function _tabBusy(id) {
-    if (!sessionRegistry.has(id)) return false;
-    const cached = runStateCached(
-      id === activeSessionId ? state : sessionSnapshots.get(id) ?? _EMPTY_SESSION_FIELDS,
-    );
-    return TURN.isBusyRunState(TURN.guardRunState(cached, trackerLive?.[id] ?? null, trackerLoaded));
   }
 
   /** Whether the tracker reported `id` after its tab was frozen with
@@ -1511,12 +1491,6 @@
     trackerLive = next;
     trackerLoaded = true;
     notify();
-    // The tracker's side of the approval-mode idle hook: the guard state is
-    // the union of the tab's own state and this report, so a tab whose own
-    // `get_state` already settled stays busy until the tracker does too — and
-    // this settle is then the only idle point its pending mode change would
-    // ever get. A still-busy guard defers inside the shared evaluation.
-    _applySettledApprovalModes();
   }
 
   /** Detach the active session's listeners and clear all per-session state,
@@ -1578,10 +1552,7 @@
    *
    *  The dictation-before-restart ordering is covered by the fake IPC bridge
    *  in test-live-voice.mjs; the remaining ordering relies on the comments
-   *  at each await and the pure profile/approval-mode decisions. A mode
-   *  restart that finds the guard busy again after an await resolves to
-   *  `{ok: false, busy: true}` without killing the process: the change stays
-   *  pending for the tab's next idle point, it is not a failed restart. */
+   *  at each await and the pure profile/approval-mode decisions. */
   async function _respawnSession(id, { profile, resume = null, fresh = false }) {
     if (!window.__TAURI__) return { ok: false, error: "not connected" };
     const entry = sessionRegistry.get(id);
@@ -1597,7 +1568,6 @@
       return { ok: false, error: "omp is already restarting in this tab" };
     }
     _respawning.add(id);
-    let abortedBusy = false;
     try {
       if (id === activeSessionId && (state.dictation.active || _dictationStopPending)) {
         const stopped = await _dictationStop();
@@ -1609,19 +1579,6 @@
       let savedVoice = !fresh && resume ? (id === activeSessionId ? state.liveVoice : sessionSnapshots.get(id)?.liveVoice) : null;
       if (savedVoice?.active) {
         savedVoice = LIVE.apply(LIVE.apply(savedVoice, { type: "stop" }), { type: "stop_success", paused: true });
-      }
-      // Busy-guard recheck, immediately before the irreversible step. The
-      // dictation stop above is a real IPC round-trip, and an approval
-      // restart began only because the guard was idle when the plan read it.
-      // Inside that round-trip the tracker can report the tab running again
-      // (the `dictation_stop` response is still owed, so nothing settled the
-      // tab's own state either) — killing the process then aborts live work.
-      // Abort this attempt instead and leave the change pending; the next
-      // idle point re-runs `_applySettledApprovalModes`. A profile switch
-      // (`fresh`) is the user's explicit choice and keeps its old behaviour.
-      if (!fresh && _tabBusy(id)) {
-        abortedBusy = true;
-        return { ok: false, busy: true, error: "tab became busy" };
       }
       // Awaited: `stop_session` must have removed the old incarnation from
       // the backend's session map before `_spawnSession` installs the new
@@ -1763,46 +1720,18 @@
       return spawnError ? { ok: false, error: spawnError } : { ok: true };
     } finally {
       _respawning.delete(id);
-      // A busy abort leaves the change pending. The busy report that caused
-      // it already ran `_applySettledApprovalModes`, but that pass skipped
-      // this tab (`_respawning` held the id until just now) and the tracker
-      // reports on change only, so a second idle report may never come.
-      // Re-run the plan with the id free: still busy is a no-op, and a
-      // guard that settled idle again in the meantime gets its evaluation.
-      if (abortedBusy) queueMicrotask(_applySettledApprovalModes);
     }
-  }
-
-  /** The pending-approval-change evaluation, shared by both routes that can
-   *  settle a tab's guard state: an applied `get_state` (the active tab's
-   *  own state, `_handleResponse`) and a tracker payload (`_applyAttention`).
-   *  The guard state is the union of the two (`TURN.guardRunState`), so a
-   *  tab can become idle through either: its own `get_state` settles while
-   *  the tracker still holds its last busy report, and the tracker's later
-   *  settle is then the only idle point left. A busy tab has no entry in the
-   *  plan's `now` list, so this never restarts while the guard is still
-   *  busy; a tab whose mode already reached its target is not in the plan
-   *  either, and `_applyApprovalModes` skips respawns in flight
-   *  (`_respawning`) and failed targets (`_modeRestartMissed`) — one restart
-   *  per pending change. `_applyApprovalModes` stays the side-effecting part
-   *  and is not called directly from either idle route. */
-  function _applySettledApprovalModes() {
-    if (!approvalModes) return;
-    if (!AMODE.restartPlan(approvalModes, _sessionsView()).now.length) return;
-    void _applyApprovalModes();
   }
 
   /** Bring every open tab's omp onto the approval mode its folder now
    *  resolves to (`OMP_APPROVAL_MODE.restartPlan` over the snapshot's
    *  `sessions`): idle tabs restart now, with `--resume` so the
    *  conversation continues; busy ones are left running and picked up at
-   *  their next idle point — an applied `get_state` or a tracker payload
-   *  (`_applySettledApprovalModes`, called from the `get_state` branch of
-   *  `_handleResponse` and from `_applyAttention`).
+   *  their next idle point — the active tab's next applied `get_state`
+   *  (the one its `agent_end` asks for, or the one `_initFetch` sends when
+   *  it is activated; see the `get_state` branch of `_handleResponse`).
    *  Resolves to `{ restarted, deferred }` tab ids (`restarted`: respawns
-   *  that succeeded; `deferred`: tabs that were busy when planned plus
-   *  attempts that found the guard busy again before the kill and stay
-   *  pending).
+   *  that succeeded).
    *
    *  Side-effectful (respawns through `_respawnSession`), so not
    *  unit-tested directly; which tab restarts when is the pure
@@ -1819,7 +1748,6 @@
       const target = AMODE.effectiveFor(approvalModes, byId.get(id).path || null);
       return _modeRestartMissed.get(id) !== target;
     });
-    const aborted = [];
     const results = await Promise.all(todo.map(async id => {
       const entry = sessionRegistry.get(id);
       const target = AMODE.effectiveFor(approvalModes, entry?.path || null);
@@ -1828,18 +1756,13 @@
         : { ok: false };
       const reached = r.ok && sessionRegistry.get(id)?.approvalMode === target;
       if (reached) _modeRestartMissed.delete(id);
-      // A busy abort is not a missed target: the tab went busy again inside
-      // the restart's own await, the change is still pending, and the next
-      // idle point retries it. `_modeRestartMissed` would suppress exactly
-      // that retry; it is reported as deferred instead.
-      else if (r.busy) aborted.push(id);
       else if (sessionRegistry.has(id)) {
         _modeRestartMissed.set(id, target);
         console.warn(`[live] approval mode restart of '${id}' did not reach '${target}'`, r.error ?? "");
       }
       return reached ? id : null;
     }));
-    return { restarted: results.filter(Boolean), deferred: [...later, ...aborted] };
+    return { restarted: results.filter(Boolean), deferred: later };
   }
 
   /** Store a set command's view, notify, and apply it to the open tabs.
@@ -2301,15 +2224,13 @@
 
     if (command === "get_state") {
       _applyRpcState(data);
-      // The approval-mode idle hook on the own-state side: the active tab's
-      // run state is current now, so a mode change it was too busy for
-      // applies here. Every get_state counts (a busy guard simply defers
-      // again), which covers both idle points — the get_state its `agent_end`
-      // asks for and the one `_initFetch` sends when it is activated —
-      // without per-request bookkeeping that an out-of-order response could
-      // defeat. The tracker's settle is the other idle route
-      // (`_applyAttention`); both go through `_applySettledApprovalModes`.
-      _applySettledApprovalModes();
+      // The approval-mode idle hook: the active tab's run state is current
+      // now, so a mode change it was too busy for applies here. Every
+      // get_state counts (a busy one simply defers again), which covers both
+      // idle points — the get_state its `agent_end` asks for and the one
+      // `_initFetch` sends when it is activated — without per-request
+      // bookkeeping that an out-of-order response could defeat.
+      void _applyApprovalModes();
 
     } else if (command === "get_messages") {
       const completed = window.adaptAgentMessages(data.messages ?? []);
@@ -3999,8 +3920,7 @@
         return (
           canSend() && current() && !!entry?.path &&
           !userAbortInFlight && !entry.autoRenameInFlight &&
-          state.rpcState?.isSettled === true &&
-          TURN.guardRunState(runStateCached(state), trackerLive?.[sessionId] ?? null, trackerLoaded) === "idle" &&
+          state.rpcState?.isSettled === true && runStateCached(state) === "idle" &&
           !state.queueSending.length && !(state.rpcState?.queuedMessageCount > 0) &&
           !state.queue.steering.length && !state.queue.followUp.length &&
           !GOAL.isOpen(state.goal) &&

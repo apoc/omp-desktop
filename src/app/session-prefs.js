@@ -38,8 +38,7 @@
 
   /** The open tabs whose agent is still at work, as `{id, name, state}`
    *  (`state`: what it is doing, for the dialog). `sessions` is the
-   *  snapshot's tab list, each with its guard `runState` (never lowered by
-   *  the backend tracker). */
+   *  snapshot's tab list, each with its `runState`. */
   function busyTabs(sessions) {
     if (!Array.isArray(sessions)) return [];
     const { isBusyRunState } = window.OMP_TURN_STATUS;

@@ -2,7 +2,7 @@
 
 `src/app/turn-status.js` (`window.OMP_TURN_STATUS`, regression `test-turn-status.mjs`) decides, `live.js` holds the state. Everything it reads is omp ≥ 18.3.1, below the floor; the one command it adds is `abort_retry` (in `ALLOWED_COMMAND_TYPES`).
 
-- **Run state** (`runStateOf`): failed > waiting-user > retrying > running > background > idle, shown by `TabRunDot` from each tab's `displayRunState` (tab bar, group chip, sidebar; `groupRunState` ranks the same way). `retrying` = a live retry row (below); the updater counts it busy. `background` = the agent yielded but omp reports background work (an async bash/task/eval job) that will wake it: `state.asyncPending`, per tab (the four snapshot places), set by every `get_state.hasPendingAsyncWork` (each `agent_end` asks for one, and so does an activation), cleared by `session_settled` and by a dead process (`_endDeadProcessState`). The composer footer notes it, and the updater counts it as busy (a restart kills the job). A background tab's dot overlays Rust's tracker (below) on its snapshot, so it follows the real process too; guards read the conservative union of the tab's own state and the tracker (`guardRunState`) and never follow a report down.
+- **Run state** (`runStateOf`): failed > waiting-user > retrying > running > background > idle, shown by `TabRunDot` from each tab's `displayRunState` (tab bar, group chip, sidebar; `groupRunState` ranks the same way). `retrying` = a live retry row (below); the updater counts it busy. `background` = the agent yielded but omp reports background work (an async bash/task/eval job) that will wake it: `state.asyncPending`, per tab (the four snapshot places), set by every `get_state.hasPendingAsyncWork` (each `agent_end` asks for one, and so does an activation), cleared by `session_settled` and by a dead process (`_endDeadProcessState`). The composer footer notes it, and the updater counts it as busy (a restart kills the job). A background tab's dot overlays Rust's tracker (below) on its snapshot, so it follows the real process too; `runState` — what every guard reads — stays the snapshot, exactly as before the tracker.
 - **Failed requests**: `message_end` keeps a failed message's failure hidden (`pendingFailure`) because omp may still retry that attempt (`agent_end` with `yielded: false`). A yield (`isYield`) whose last assistant message has `stopReason: "error"` shows it on that bubble (`_showFailure`, `chat/assistant-bubble.jsx`). `prompt_result {agentInvoked: true, status: "error"}` follows its `agent_end` and adds omp's cleaned error text and its `retryable` verdict (the "temporary" chip). Ordinary prompts carry no id, so `prompt_result` is matched to the last failure, not correlated. After a tab switch the adapter rebuilds the block from get_messages (`errorMessage`, `errorStatus`, minus omp's `raw-http-request=` lines), but only for a failure that ended its run (`finalFailures`): omp keeps some failed attempts it continued from, and marks recovered/superseded retries `retryRecovery`. `retryable` is never persisted; the merge carries it over from the live bubble its copy replaces. An output-less failure leaves `get_messages` whenever omp rebuilds its context — a resume, a compaction, a tool-output prune at `agent_end` (`buildSessionContext` drops `isEmptyErrorTurn` and `retryRecovery` messages); the merge then keeps its live bubble, so it is gone only where no live transcript exists (a relaunch, a session opened from history).
 - **Automatic retries** (measured on omp 18.6.0 against a local provider answering 503): after a failed request omp emits `turn_end`, `auto_retry_start {attempt, maxAttempts, delayMs, errorMessage}`, drops the attempt from its context, sleeps `delayMs` (`retry.baseDelayMs` 500 doubling, capped at 8 s, up to 25 % shorter by jitter — `calculateRetryBackoffDelayMs`; rate limits use their own windows) and starts the next attempt with `agent_start`/`turn_start` — no `agent_end` in between. One attempt can itself take ~30 s while the provider layer retries the HTTP call underneath, invisibly. `retryStarted` keeps one live-only `kind: "retry"` row at the end of the transcript (omp's `attempt`/`maxAttempts` for the title, its own `failed` count — omp's counter restarts after a fallback model and survives an `abort` — `phase` `waiting` → `attempting` at the next `turn_start`, `since`, `delayMs`) and marks the failed bubble `retried`, plus `superseded` (not rendered, not in the minimap or its count) when it showed nothing. The row lives in `messages`, so it is per tab and snapshotted with them; `get_state` reports no retry, so a relaunch loses it. `retryFinished` removes the row and tags the reply `retries: {failed, outcome}` (`recovered` / `failed` / `stopped`, the chip in the reply header) at the `message_end` of the attempt that answered (the run may go on with more turns). A row still there at the run's final yield means no recovery: `retryYielded` uses `agent_end`'s last assistant only when it failed or was aborted (that list may leave out the final attempt, and its last assistant can then be an earlier reply that answered), else the run's last bubble; it shows a `superseded` final attempt again (a cancel between attempts ends on it), reveals its failure without waiting for a `prompt_result` (a run no prompt started gets none), and gives an attempt stopped in flight (`stopReason: "aborted"`, which ends the run with no `auto_retry_end`) the row's failure. `auto_retry_end` only records `ended` (hides the row, ends `retrying`): it precedes the final `agent_end` on a cancel or give-up and follows even that `agent_end` on success. The get_messages merge carries `retries` (and a stopped attempt's failure) onto the persisted copy (`_withLiveFields`). A dead process clears the row (`retryCleared`).
 - **Which bubble is which** (all in `turn-status.js`, regression `test-turn-status.mjs`): a retried attempt is the newest bubble with a `pendingFailure` or `aborted` (`message_end` marks `stopReason: "aborted"`: omp also retries a stream that stalled or dropped without content). Only an answer by omp's own rule (`producedOutput`, its `assistantTurnProducedOutput`: actionable content, not an empty stop) ends the retries at its `message_end`; after an empty stop omp keeps retrying. The yield's fallback scan stops only at a user bubble omp accepted (it has a `ts`; a prompt refused during the wait or a local command has none), skips desktop notes (no `ts`), and before the row accepts only the `retried` attempt. The merge keeps a `retried` attempt hidden even when omp kept it in its context (a failed tool-call turn): `superseded`/`retried` survive and the copy's failure stays pending.
@@ -63,54 +63,56 @@ back.
 `_sessionsView` gives every tab two run states. The active tab reads live
 state; a background tab reads its frozen snapshot.
 
-- **`displayRunState`** is what the tab dot shows (and `groupRunState`
-  ranks for the group chip and sidebar; the composer's background note
-  reads it too). For a background tab it overlays the tracker through
-  `OMP_TURN_STATUS.displayRunState(cached, live, loaded, fresh)`. `fresh`
-  means the tracker reported that tab after it was frozen:
-  `_saveCurrentSession` stores the session's evidence revision in the
-  snapshot, and any later change wins. `failed` wins over everything (the
-  process's own verdict), and before the first tracker payload (`loaded`
-  false) the snapshot stands. A fresh report owns the dot: no entry means
-  the process is gone (Rust removes it on exit), so a frozen ask retires
-  to `idle`; an open ask is `waiting-user`; `busy` is `running`; a pending
-  job is `background`; otherwise `idle`. An older report may still raise
-  the dot — an ask that opened, a run the tab never saw — but never lower
-  it: the busy fan-out for the tab just left can still be in flight, and
-  absence alone proves no exit. A retry row ends as soon as a busy → idle
-  → busy wake moves the tracker.
-- **`runState`** is the guard state every protective consumer reads: quit
-  and busy-tab confirmation, Rust's close guard, `closeSessionGuarded`,
-  approval-mode restarts, the updater's busy count, PR automation, goal
-  mode and `busyElsewhere` / `busyInRepo`. `OMP_TURN_STATUS.guardRunState`
-  unions the tab's own state — live, or frozen when it was left — with the
-  tracker: busy if either says `running`, `retrying`, `waiting-user` or
-  `background`. A report may raise it, never lower it; before the first
-  tracker payload the tab's own state stands, and `failed` stays the
-  process's own verdict. This is deliberately conservative: a frozen tab
-  whose process exited keeps the guard armed until the tab is activated
-  and its live state settles, but a delayed, misordered or coalesced
-  report can never make a quit, a close or a restart treat live work as
-  idle. `_trackerEvidence` exists only for the dot; guards never read it.
-  Because either source can settle the union, a deferred approval-mode
-  change is evaluated from both (`live.js` `_applySettledApprovalModes`, in
-  the `get_state` branch and in `_applyAttention`), so a change whose only
-  idle point is the tracker's report still restarts the tab before the next
-  prompt.
+- **`runState`** is unchanged: the active tab's live state, a background
+  tab's frozen snapshot. Every protective consumer reads it — quit and
+  busy-tab confirmation, Rust's close guard, `closeSessionGuarded`,
+  approval-mode restarts, the updater's busy count, PR automation, goal mode,
+  prompt dispatch and `busyElsewhere` / `busyInRepo` — so the tracker cannot
+  change what any of them decides. Background-tab races that predate this
+  display work (a frozen tab stays idle while a new turn runs through a
+  phone or a queued prompt) stay as they are; see
+  [approval-mode.md](approval-mode.md) and issue "Approval-mode restart and
+  tab-close guards use a frozen state for background tabs".
+- **`displayRunState`** is what the tab dot shows, and nothing else reads
+  it (the composer's background note and `groupRunState` for the group chip
+  and sidebar do). For a background tab it overlays the tracker through
+  `OMP_TURN_STATUS.displayRunState(cached, live, loaded, fresh)`, where
+  `_saveCurrentSession` records the session's evidence revision so `fresh`
+  means the tracker reported that tab after it was frozen. `failed` wins
+  over everything (the process's own verdict), and before the first tracker
+  payload (`loaded` false) the snapshot stands. A fresh report owns the
+  dot: no entry means the process is gone (Rust removes it on exit), so a
+  frozen ask retires to `idle`; an open ask is `waiting-user`; `busy` is
+  `running`; a pending job is `background`; otherwise `idle`. An older
+  report may still raise the dot — an ask that opened, a run the tab never
+  saw — but not lower it: the busy fan-out for the tab just left can still
+  be in flight, and absence alone proves no exit. One exception: a frozen
+  `waiting-user` yields to a tracker entry that names no open ask once it
+  has stamped an ask (`asksOpened > 0`), because the tracker reads every
+  frame before the tab's listener — so the frozen ask is one it already
+  closed, typically the `cancel` line the frozen snapshot predates. A retry
+  row ends as soon as a busy → idle → busy wake moves the tracker.
 
 The dots therefore track in both directions: an ask that opens in a
 background tab shows the amber dot before the tab is opened, and one
 cancelled, answered elsewhere or ended with the turn clears it. A run the
 frozen snapshot never saw (a tab left at `idle`) also shows while it goes
-on. The same reports raise the guard, so quit confirmation and
-approval-mode restarts see that work even before the dot does. The new
-event is what re-renders the session list.
+on. Only the display changes; guards, prompt dispatch and every restart
+decision behave exactly as before the tracker.
 
 A question opening anywhere (tracker `asksOpened` rising for any session)
 bounces the dock once while the window is not focused, through the same
 `app/attention.js` helper rail widget attention uses (`requestUserAttention`,
 Informational). The first snapshot after a page load never bounces: its asks
 are not new. A focused window already shows the tab dot, so it stays quiet.
+
+Known gap (display and phone push alike): protocol v2 sends oversized stdout
+objects as `rpc_chunk` sequences, and only the webview reassembles them
+(`live.js` `_dispatchEnvelope`). The tracker sees the chunk envelopes as
+unrelated frames, so an oversized `extension_ui_request` (or `get_state`
+answer) reaches neither the tab dot nor the phone's `hasAsk`. Every frame
+carrying a question in practice fits one chunk; a Rust-side reassembly would
+close it for both consumers at once.
 
 One replaceable `Arc<dyn TrackerSink>` receives committed changes after both
 tracker locks are released. Sinks must only enqueue work; transport and push
