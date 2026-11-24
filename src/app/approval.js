@@ -10,7 +10,8 @@
 // at 2000 chars), all joined with "\n" (omp tools/approval.ts
 // `formatApprovalPrompt`).
 //
-// Mirrors the Rust-side match in src-tauri/src/approval.rs
+// Mirrors the Rust-side match in
+// src-tauri/crates/omp-desktop-core/src/approval.rs
 // (approval_tool_name + is_valid_tool_name), kept in sync by hand: this is a
 // display-only echo of that fingerprint, not a second enforcement point (the
 // Rust side is what actually auto-answers). The name grammar is enforced

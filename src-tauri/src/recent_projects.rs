@@ -310,7 +310,7 @@ mod tests {
         fs::remove_dir(&b).expect("delete b");
 
         assert_eq!(paths(&store.list("default")), vec![a.as_str()]);
-        let file: RecentFile = crate::json_store::read_or_default(store.file());
+        let file: RecentFile = omp_desktop_core::json_store::read_or_default(store.file());
         assert_eq!(file.entries.len(), 2);
     }
 

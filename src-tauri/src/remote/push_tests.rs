@@ -488,3 +488,42 @@ fn an_unknown_lock_state_still_sends() {
     question(&pusher, "a");
     requests.recv_timeout(Duration::from_secs(5)).unwrap();
 }
+
+#[test]
+fn persona_pushes_respect_questions_and_the_throttle() {
+    let (base, requests) = fake_push_service(vec![]);
+    let dir = tempdir("pusher-persona");
+    let (pusher, _devices, _) = setup(&dir, "dev@omp-desktop.app", &format!("{base}/sub"));
+
+    pusher.configure(&PushSettings {
+        enabled: true,
+        questions: false,
+        finished: true,
+        contact: "dev@omp-desktop.app".to_owned(),
+        only_when_locked: false,
+    });
+    pusher.notify_persona("Approve the deployment", true);
+    assert!(
+        requests.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the questions switch is off"
+    );
+
+    pusher.configure(&PushSettings {
+        enabled: true,
+        questions: true,
+        finished: true,
+        contact: "dev@omp-desktop.app".to_owned(),
+        only_when_locked: false,
+    });
+    pusher.notify_persona("Approve the deployment", true);
+    let (head, body) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+    let lower = head.to_ascii_lowercase();
+    assert!(lower.contains("urgency: high"), "{head}");
+    assert!(body > 86, "an encrypted payload follows the header");
+
+    pusher.notify_persona("Approve the deployment", true);
+    assert!(
+        requests.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the second Ompy push inside 30 s is throttled"
+    );
+}

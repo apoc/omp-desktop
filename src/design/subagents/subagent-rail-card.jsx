@@ -4,13 +4,13 @@
    manager pane on that agent. */
 
 const { Icon: _SAR_Icon, OMP_SUBAGENTS: _SAR, SaDot: _SAR_Dot, SaToolChip: _SAR_ToolChip,
-  SaElapsed: _SAR_Elapsed, saHueStyle: _SAR_hue, useSaNow: _SAR_useNow } = window;
+  SaElapsed: _SAR_Elapsed, saHueStyle: _SAR_hue, useNow: _SAR_useNow } = window;
 
 const SA_RAIL_MAX_ROWS = 5;
 
 function SubagentRailCard({ agents, paneOpen, onOpen, onTogglePane }) {
   const t = _SAR.totals(agents);
-  const now = _SAR_useNow(t.live > 0, 500);
+  const now = _SAR_useNow(t.live > 0, 500)[0];
   // Live first (spawn order), then finished most-recent-first.
   const live = agents.filter(a => _SAR.isLive(a.status));
   const done = agents.filter(a => !_SAR.isLive(a.status)).sort((x, y) => (y.endedAt ?? 0) - (x.endedAt ?? 0));

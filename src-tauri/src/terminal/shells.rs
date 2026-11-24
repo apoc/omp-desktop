@@ -8,7 +8,7 @@ use serde::Serialize;
 
 #[cfg(not(windows))]
 use super::shell;
-use crate::child_path;
+use omp_desktop_core::child_path;
 
 /// One shell the menu offers: a short name and the program it starts.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -90,7 +90,7 @@ pub fn available() -> Vec<ShellChoice> {
         candidates,
         |var| std::env::var_os(var),
         &dirs,
-        crate::program_setting::is_executable_file,
+        omp_desktop_core::proc_util::is_executable_file,
     )
 }
 

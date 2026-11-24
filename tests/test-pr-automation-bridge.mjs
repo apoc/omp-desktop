@@ -60,6 +60,7 @@ function harness() {
     "app/transcript-merge.js",
     "adapter.js",
     "app/pr-automation.js",
+    "app/persona.js",
   ]) {
     new Function("window", source(path))(w);
   }

@@ -102,6 +102,7 @@
 .st-rem-input:disabled { opacity: 0.5; }
 .st-rem-status { font-family: var(--font-mono); font-size: var(--d-text-xs); color: var(--fg-3); overflow-wrap: anywhere; }
 .st-rem-status.err { color: var(--rose); }
+.st-rem-note { color: var(--fg-4); font-size: var(--d-text-xs); }
 .st-rem-warn { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line-bright); color: var(--fg-2); font-size: var(--d-text-xs); }
 .st-rem-dev { display: flex; align-items: center; gap: 12px; }
 .st-rem-sub { color: var(--fg-4); font-size: var(--d-text-xs); font-family: var(--font-mono); }

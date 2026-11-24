@@ -1,7 +1,7 @@
 # Test suite — reusable, so CI and the release pipeline run the same gate.
 # Called by ci.yml (every push/PR) and release.yml (before any build).
 #
-#   rust  →  cargo test --locked on Windows, Linux and macOS
+#   rust  →  cargo test --locked --workspace on Windows, Linux and macOS
 #   js    →  every JS regression script (`npm test`, see package.json)
 #
 # `cargo test` compiles the crate and its tests, so it subsumes the
@@ -54,7 +54,7 @@ jobs:
         working-directory: src-tauri
         env:
           OMP_REQUIRE_CHROMIUM: "1"
-        run: cargo test --locked
+        run: cargo test --locked --workspace
 
   js:
     name: JS regression scripts

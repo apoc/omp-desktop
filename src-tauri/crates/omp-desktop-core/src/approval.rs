@@ -75,10 +75,11 @@ struct PersistedRule {
 }
 
 /// Extract the tool name from an `extension_ui_request` frame **iff** it is
-/// shaped exactly like omp's tool-approval prompt. Returns `None` for any
-/// other shape — including a generic `select` prompt with different
-/// options, or a title that merely starts similarly — so a rule can only
-/// ever answer this one specific prompt.
+/// shaped exactly like omp's tool-approval prompt.
+///
+/// Returns `None` for any other shape — including a generic `select` prompt
+/// with different options, or a title that merely starts similarly — so a
+/// rule can only ever answer this one specific prompt.
 pub fn approval_tool_name(frame: &serde_json::Value) -> Option<&str> {
     if frame.get("type").and_then(serde_json::Value::as_str) != Some("extension_ui_request") {
         return None;
@@ -111,9 +112,11 @@ pub fn approval_request_id(frame: &serde_json::Value) -> Option<&str> {
 
 /// The detail lines after the first line of an `approval_tool_name`-matched
 /// frame's title (origin/reason, command, path, content preview), or `None`
-/// when the title has none. Borrowed verbatim: a CRLF-framed title keeps its
-/// `\r`s here, and the frontend (`OMP_APPROVAL.autoApprovalRow`) drops them,
-/// as it does for a prompt the human answers.
+/// when the title has none.
+///
+/// Borrowed verbatim: a CRLF-framed title keeps its `\r`s here, and the
+/// frontend (`OMP_APPROVAL.autoApprovalRow`) drops them, as it does for a
+/// prompt the human answers.
 pub fn approval_details(frame: &serde_json::Value) -> Option<&str> {
     let title = frame.get("title").and_then(serde_json::Value::as_str)?;
     let (_, details) = title.split_once('\n')?;
@@ -229,6 +232,7 @@ impl RuleBook {
     /// stored, e.g. `<app_config_dir>/approval-rules`. Created lazily on
     /// first write; safe to pass a path that doesn't exist yet. It must be
     /// private to the user: every rules file in it is standing consent.
+    #[must_use]
     pub fn new(config_root: PathBuf) -> Self {
         Self::with_root(Some(config_root))
     }
@@ -237,6 +241,7 @@ impl RuleBook {
     /// memory for the app run. For when the app config dir can't be
     /// resolved — a shared fallback such as the temp dir would let another
     /// local account plant rules files there that approve tools for us.
+    #[must_use]
     pub fn in_memory() -> Self {
         Self::with_root(None)
     }
@@ -418,6 +423,11 @@ impl RuleBook {
     /// `RuleScope::Project` (an error is returned without it); ignored for
     /// `RuleScope::Session`. Re-granting an already-granted tool is a no-op
     /// success, not an error.
+    ///
+    /// # Errors
+    /// `tool` is not a valid tool name; `RuleScope::Project` without a
+    /// `project_root`; or the project's rules file could not be read, locked
+    /// or written.
     pub fn grant(
         &self,
         session_id: &str,
@@ -455,6 +465,10 @@ impl RuleBook {
     }
 
     /// Revoke a previously granted rule. No-op (not an error) if it wasn't granted.
+    ///
+    /// # Errors
+    /// `RuleScope::Project` without a `project_root`, or the project's rules
+    /// file could not be read, locked or written.
     pub fn revoke(
         &self,
         session_id: &str,
