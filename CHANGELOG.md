@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Ompy, a background agent that wakes on a schedule, triages mail and other work, and leaves approvals, decisions and results in an inbox. Settings → Persona starts it at login on macOS, Linux and Windows and sets an adjustable daily token limit; the pinned Ompy entry shows its state, next wake-up, today's token bar and Pause/Resume, and the rail's Inbox card answers its requests and shows queued wake-ups. While the app runs, new approvals and decisions also reach paired phones as push notifications.
 
+### Fixed
+
+- Secret input prompts (omp `input` with `secret: true`) show a password field in the desktop chat and on the phone, and the answer no longer stays readable in the transcript, the message state or the phone view; it still reaches omp. Before, the credential sanitizer also replaced the `secret` flag itself, so such prompts were never masked.
+
 ## [0.15.2] - 2026-11-23
 
 ### Changed
