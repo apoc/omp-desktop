@@ -203,3 +203,45 @@ test("a status matching the later command result clears the pending intent inste
   tree = render();
   assert.equal(text(tree).includes("Ompy did not start"), false);
 });
+
+test("a completion after the status confirmed and then contradicted the intent does not resurrect it", async () => {
+  let statusListener;
+  let finishEnable;
+  const bridge = {
+    onPersona: async (_name, listener) => { statusListener = listener; return () => {}; },
+    personaStatus: async () => ({ state: "running", settings: {} }),
+    personaEnable: () => new Promise(resolve => { finishEnable = resolve; }),
+  };
+  const h = component("src/design/settings/rows-persona.jsx", {
+    SettingsRow: "settings-row",
+    SettingsToggle: "settings-toggle",
+  });
+  const row = { label: "Run Ompy", desc: "" };
+  const render = () => h.render(() => h.window.OMP_SETTINGS_ROWS.personaEnable({ row, ctx: { bridge }, query: "" }));
+  render();
+  await flush();
+  let tree = render();
+  assert.equal(find(tree, node => node.type === "settings-toggle").props.value, true);
+  // The service stops, so the row shows a stopped service.
+  statusListener(null);
+  tree = render();
+  assert.equal(find(tree, node => node.type === "settings-toggle").props.value, false);
+  // Enable starts; while the command is in flight the service reports
+  // running and then stops again.
+  find(tree, node => node.type === "settings-toggle").props.onChange(true);
+  statusListener({ state: "running", settings: {} });
+  tree = render();
+  statusListener(null);
+  tree = render();
+  // The late completion must not flip the toggle back on for a service the
+  // status already confirmed and then contradicted.
+  finishEnable({ ok: true });
+  await flush();
+  tree = render();
+  assert.equal(find(tree, node => node.type === "settings-toggle").props.value, false,
+    "the completion resurrected an intent the status had already settled");
+  assert.equal(h.timers.size, 0, "no stale start-failure timer");
+  for (const timer of [...h.timers.values()]) timer.fn();
+  tree = render();
+  assert.equal(text(tree).includes("Ompy did not start"), false);
+});

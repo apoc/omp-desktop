@@ -153,7 +153,10 @@ function _PR_Enable({ row, ctx, query }) {
   const Toggle = window.SettingsToggle;
   const { status, error, setError } = _PR_usePersona(ctx.bridge);
   // Enable answers before the service's status does; the toggle keeps the
-  // user's intent until a status either confirms or contradicts it.
+  // user's intent until a status either confirms or contradicts it. The
+  // intent is recorded when the command STARTS: a status that arrives while
+  // it runs must be able to match (and clear) it, and a later opposite
+  // status must not be overridden by a completion that lands afterwards.
   const [pending, setPending] = React.useState(null);
   const [startFailed, setStartFailed] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
@@ -162,34 +165,42 @@ function _PR_Enable({ row, ctx, query }) {
   const [control, setControl] = React.useState(null);
   React.useEffect(() => {
     // Clear the intent as soon as a status matches it, whether the status
-    // arrived before or after the command resolved: a later opposite status
+    // arrived before or after the command started: a later opposite status
     // must not resurrect an intent the service already confirmed.
     setPending(value => (value === null || !!status === value ? null : value));
     if (status) setStartFailed(false);
   }, [status, pending]);
   const waiting = pending !== null && !!status !== pending ? pending : null;
   React.useEffect(() => {
-    if (waiting !== true) return undefined;
+    // Only start the "did not start" clock once the command settled: while
+    // it is in flight its own result may still bring the status.
+    if (waiting !== true || busy) return undefined;
     const timer = setTimeout(() => {
       setPending(null);
       setStartFailed(true);
     }, 10_000);
     return () => clearTimeout(timer);
-  }, [waiting]);
+  }, [waiting, busy]);
   const toggle = enable => {
     if (busy) return;
     setBusy(true);
     setError(null);
     setControl(null);
     setStartFailed(false);
+    // Recorded before the command starts, so the service's status — which
+    // may arrive first — is the confirmation this intent waits for.
+    // Completion only reports failure and never reinstalls the intent.
+    setPending(enable);
     Promise.resolve(enable ? ctx.bridge.personaEnable() : ctx.bridge.personaDisable())
       .then(result => {
         if (result?.ok === false) {
+          setPending(null);
           setControl(window.OMP_PERSONA.errorView({ kind: "control", message: result.error || "" }));
-          return;
         }
-        setPending(enable);
-      }, err => setControl(window.OMP_PERSONA.errorView({ kind: "control", message: err?.message ?? String(err) })))
+      }, err => {
+        setPending(null);
+        setControl(window.OMP_PERSONA.errorView({ kind: "control", message: err?.message ?? String(err) }));
+      })
       .finally(() => setBusy(false));
   };
   return (
