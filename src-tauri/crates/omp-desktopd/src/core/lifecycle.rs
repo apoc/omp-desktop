@@ -3,11 +3,13 @@
 
 use super::{Core, CoreMsg};
 use crate::budget::{BudgetEvent, Usage};
-use crate::scheduler::{Event, Now, WakeReason};
+use crate::scheduler::{Event, Now, Scheduled, WakeReason};
 use crate::session::{Session, SessionEvent};
 use crate::wake;
 use omp_desktop_core::persona_protocol::{ItemKind, ItemState, ServerMsg};
 use serde_json::value::RawValue;
+use std::io::Read;
+use std::path::Path;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,10 +20,64 @@ pub(super) const RESTART_MIN: Duration = Duration::from_secs(1);
 const RESTART_MAX: Duration = Duration::from_secs(300);
 /// Uptime after which a restart counts as a fresh start and resets the backoff.
 const RESTART_RESET: Duration = Duration::from_secs(60);
+/// Most bytes read from the instructions file in one wake.
+const INSTRUCTIONS_MAX_BYTES: usize = 64 * 1024;
+/// Appended in place of the rest of a longer instructions file.
+const INSTRUCTIONS_TRUNCATED: &str = "\n\n[ompy] instructions truncated at 64 KiB";
 
 const NOTICE_EXPIRED: &str = "Ompy stopped unexpectedly; open approvals expired";
 const NOTICE_WARNED: &str = "80 % of today's token limit used";
 const NOTICE_EXHAUSTED: &str = "Daily token limit reached; Ompy pauses until midnight";
+const NOTICE_INSTRUCTIONS: &str =
+    "Ompy restarted to apply edited instructions; open approvals expired";
+const NOTICE_RPC_REUSED: &str =
+    "omp reused the id of a request that was still waiting; the older request expired";
+
+/// Read the persona's instructions, bounded to [`INSTRUCTIONS_MAX_BYTES`].
+///
+/// Only a regular file is read, so a FIFO or device node cannot block the core
+/// thread, and a longer file is cut with a marker instead of being loaded
+/// whole. The error text is meant for the user's inbox.
+fn read_instructions(path: &Path) -> Result<String, String> {
+    let unreadable =
+        |error: &std::io::Error| format!("Could not read Ompy's instructions: {error}");
+    let not_a_file = || {
+        format!(
+            "Ompy's instructions {} are not a regular file",
+            path.display()
+        )
+    };
+    let metadata = std::fs::metadata(path).map_err(|error| unreadable(&error))?;
+    if !metadata.is_file() {
+        return Err(not_a_file());
+    }
+    let file = std::fs::File::open(path).map_err(|error| unreadable(&error))?;
+    // Re-check the opened handle: the path may have changed between the
+    // metadata call and the open.
+    if !file
+        .metadata()
+        .map_err(|error| unreadable(&error))?
+        .is_file()
+    {
+        return Err(not_a_file());
+    }
+    let cap = u64::try_from(INSTRUCTIONS_MAX_BYTES).unwrap_or(u64::MAX);
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(metadata.len())
+            .unwrap_or(INSTRUCTIONS_MAX_BYTES)
+            .min(INSTRUCTIONS_MAX_BYTES),
+    );
+    file.take(cap.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| unreadable(&error))?;
+    let truncated = bytes.len() > INSTRUCTIONS_MAX_BYTES;
+    bytes.truncate(INSTRUCTIONS_MAX_BYTES);
+    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+    if truncated {
+        text.push_str(INSTRUCTIONS_TRUNCATED);
+    }
+    Ok(text)
+}
 
 /// The delay before the next spawn attempt. `uptime` is how long the session
 /// that just ended actually ran; a spawn failure passes `None`, so a missing
@@ -61,6 +117,9 @@ impl Core {
         ) {
             Ok(session) => {
                 self.session = Some(session);
+                // omp reads the same file as its appended system prompt; keep
+                // what it was spawned with so an edit can be detected.
+                self.instructions_at_spawn = read_instructions(&self.launch.instructions).ok();
                 self.last_spawn = std::time::Instant::now();
                 self.spawn_error = None;
                 self.started = true;
@@ -116,16 +175,24 @@ impl Core {
 
     /// The scheduler's periodic timer: fire the wake-up that came due.
     pub(super) fn on_tick(&mut self, now: &Now) {
-        if let Some(reason) = self.scheduler.handle(Event::Tick, now) {
-            if matches!(reason, WakeReason::Scheduled { .. }) {
-                self.persist_schedule();
-            }
-            self.wake(&reason, now);
+        let Some(reason) = self.scheduler.handle(Event::Tick, now) else {
+            return;
+        };
+        let delivered = self.wake(&reason, now);
+        // A scheduled wake leaves the queue when it fires. Only a delivered one
+        // is gone for good, so the removal is persisted after omp accepted the
+        // prompt instead of before.
+        if delivered && matches!(reason, WakeReason::Scheduled { .. }) {
+            self.persist_schedule(now.utc_ms);
         }
     }
 
     /// Send one wake-up prompt and publish the resulting busy state.
-    pub(super) fn wake(&mut self, reason: &WakeReason, now: &Now) {
+    ///
+    /// Returns whether omp accepted the prompt. A scheduled wake that could not
+    /// be delivered goes back into the queue, so the next turn still runs it
+    /// instead of losing it to a stdin failure.
+    pub(super) fn wake(&mut self, reason: &WakeReason, now: &Now) -> bool {
         let decisions: Vec<String> = self
             .inbox
             .items()
@@ -134,20 +201,90 @@ impl Core {
             .map(|item| item.title.clone())
             .collect();
         let tokens_left = self.budget.limit.saturating_sub(self.budget.used);
-        let instructions =
-            std::fs::read_to_string(&self.launch.instructions).unwrap_or_else(|error| {
-                eprintln!("[omp-desktopd] could not read instructions for wake-up: {error}");
-                String::new()
+        self.reload_instructions(now);
+        let message = wake::prompt(reason, now.local, tokens_left, &decisions);
+        if self.send_prompt(&message, now) {
+            self.broadcast_status();
+            return true;
+        }
+        self.scheduler.handle(Event::Busy(false), now);
+        if let WakeReason::Scheduled { id, at_ms, note } = reason {
+            self.scheduler.restore(Scheduled {
+                id: id.clone(),
+                at_ms: *at_ms,
+                note: note.clone(),
             });
-        let message = wake::prompt(reason, now.local, tokens_left, &decisions, &instructions);
-        if !self.send_prompt(&message, now) {
-            self.scheduler.handle(Event::Busy(false), now);
         }
         self.broadcast_status();
+        false
+    }
+
+    /// Restart the session when the instructions file changed since it was
+    /// spawned, so an edit really becomes the system prompt of the next turn.
+    ///
+    /// Instructions are a system prompt and never part of the wake message: a
+    /// wake also carries untrusted schedule notes and decision titles, and an
+    /// edit delivered as user text could not revoke text from the old prompt.
+    fn reload_instructions(&mut self, now: &Now) {
+        match read_instructions(&self.launch.instructions) {
+            Ok(current) => {
+                self.instructions_error = None;
+                if self.instructions_at_spawn.as_deref() != Some(current.as_str()) {
+                    self.restart_session(now);
+                }
+            }
+            Err(error) => {
+                // A wake must not be consumed silently with no instructions;
+                // one notice per distinct error keeps the inbox readable.
+                if self.instructions_error.as_deref() != Some(error.as_str()) {
+                    self.instructions_error = Some(error.clone());
+                    self.notice(&error, now);
+                }
+            }
+        }
+    }
+
+    /// Replace the running session so an edited instructions file becomes the
+    /// new system prompt. Requests bound to the old process expire with it, as
+    /// they do when omp stops for any other reason.
+    fn restart_session(&mut self, now: &Now) {
+        if let Some(mut session) = self.session.take() {
+            session.kill();
+        }
+        if self.inbox.expire_all_bound() > 0 {
+            self.inbox.add(
+                ItemKind::Notice,
+                NOTICE_INSTRUCTIONS.into(),
+                None,
+                Vec::new(),
+                false,
+                None,
+                now.utc_ms,
+            );
+        }
+        self.scheduler.handle(Event::Busy(false), now);
+        self.inbox_changed(now);
+        self.start_session(now);
     }
 
     pub(super) fn on_session(&mut self, gen: u64, ev: SessionEvent, now: &Now) {
         if gen != self.gen {
+            return;
+        }
+        // The event that retired the session can be followed by more events of
+        // the same generation that were already queued. A request from a
+        // process that no longer exists becomes an inbox item nothing can
+        // answer and blocks every later wake; a turn event would leave the
+        // scheduler busy forever after the process is gone.
+        if self.session.is_none()
+            && matches!(
+                &ev,
+                SessionEvent::UiRequest { .. }
+                    | SessionEvent::UiCancel { .. }
+                    | SessionEvent::TurnStarted
+                    | SessionEvent::TurnEnded
+            )
+        {
             return;
         }
         match ev {
@@ -171,7 +308,7 @@ impl Core {
                 ask_questions,
                 secret,
             } => {
-                self.inbox.add_ui_request(
+                let (_, superseded) = self.inbox.add_ui_request(
                     kind,
                     title,
                     body,
@@ -182,6 +319,17 @@ impl Core {
                     secret,
                     now.utc_ms,
                 );
+                if superseded {
+                    self.inbox.add(
+                        ItemKind::Notice,
+                        NOTICE_RPC_REUSED.into(),
+                        None,
+                        Vec::new(),
+                        false,
+                        None,
+                        now.utc_ms,
+                    );
+                }
                 self.scheduler.handle(Event::Blocked(true), now);
                 self.inbox_changed(now);
             }
@@ -220,7 +368,7 @@ impl Core {
 
     fn on_usage(&mut self, usage: &Usage, now: &Now) {
         let event = self.budget.add(usage, now.local.date());
-        self.persist_budget();
+        self.persist_budget(now.utc_ms);
         match event {
             Some(BudgetEvent::Warned) => self.notice(NOTICE_WARNED, now),
             Some(BudgetEvent::Exhausted) => {
@@ -269,7 +417,7 @@ impl Core {
         if self.budget.roll(today) == Some(BudgetEvent::Reset) {
             self.scheduler.handle(Event::BudgetExhausted(false), now);
         }
-        self.persist_budget();
+        self.persist_budget(now.utc_ms);
         self.broadcast_status();
     }
 }
@@ -305,5 +453,29 @@ mod tests {
             ),
             RESTART_MAX
         );
+    }
+
+    #[test]
+    fn instructions_are_read_bounded_and_only_from_a_regular_file() {
+        let dir = omp_desktop_core::test_support::tempdir("omp-desktopd", "instructions");
+        let path = dir.join("instructions.md");
+        std::fs::write(&path, vec![b'a'; INSTRUCTIONS_MAX_BYTES + 1024]).unwrap();
+        let text = read_instructions(&path).unwrap();
+        assert_eq!(
+            text.len(),
+            INSTRUCTIONS_MAX_BYTES + INSTRUCTIONS_TRUNCATED.len(),
+            "a long file is cut at the cap with a marker"
+        );
+        assert!(text.ends_with(INSTRUCTIONS_TRUNCATED));
+
+        std::fs::write(&path, b"short").unwrap();
+        assert_eq!(read_instructions(&path).unwrap(), "short");
+
+        // A directory (or any non-file) is refused instead of being read.
+        let directory = dir.join("directory");
+        std::fs::create_dir(&directory).unwrap();
+        assert!(read_instructions(&directory).is_err());
+        assert!(read_instructions(&dir.join("missing")).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

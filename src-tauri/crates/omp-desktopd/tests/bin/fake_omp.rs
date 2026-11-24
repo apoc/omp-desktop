@@ -34,7 +34,37 @@ fn main() {
                     r#"{"type":"message_end","message":{"role":"assistant","usage":{"input":100,"output":50,"cacheRead":999,"cacheWrite":10}}}"#,
                 );
                 let prompt = v["message"].as_str().unwrap_or_default();
-                if prompt.contains("secret") {
+                if prompt.contains("autoapprove") {
+                    // Close the read end of our stdin first, so the service's
+                    // answer to a rule-covered approval fails with EPIPE and
+                    // cannot sit in a pipe buffer. `park` keeps the process
+                    // alive so the reader thread can still report the failure.
+                    #[cfg(unix)]
+                    {
+                        use std::os::fd::FromRawFd;
+                        // Dropping the handle closes file descriptor 0.
+                        drop(unsafe { std::fs::File::from_raw_fd(0) });
+                    }
+                    say(
+                        r#"{"type":"extension_ui_request","id":"ap1","method":"select","title":"Allow tool: bash\nCommand: ls","options":["Approve","Deny"]}"#,
+                    );
+                    std::thread::park();
+                } else if prompt.contains("close-stdin") {
+                    // Make every later write to this process fail, then end the
+                    // turn so the service can still try a wake.
+                    #[cfg(unix)]
+                    {
+                        use std::os::fd::FromRawFd;
+                        // Dropping the handle closes file descriptor 0.
+                        drop(unsafe { std::fs::File::from_raw_fd(0) });
+                    }
+                    say(r#"{"type":"agent_end","yielded":true}"#);
+                    std::thread::park();
+                } else if prompt.contains("secret-same-id") {
+                    say(
+                        r#"{"type":"extension_ui_request","id":"ap1","method":"input","title":"Password","secret":true}"#,
+                    );
+                } else if prompt.contains("secret") {
                     say(
                         r#"{"type":"extension_ui_request","id":"s1","method":"input","title":"Password","secret":true}"#,
                     );

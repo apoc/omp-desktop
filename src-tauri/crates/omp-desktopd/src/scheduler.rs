@@ -47,6 +47,8 @@ pub enum WakeReason {
     Scheduled {
         /// Identifier of the wake that fired.
         id: String,
+        /// When it was due, so a failed delivery can restore it unchanged.
+        at_ms: i64,
         /// Its note, passed on to the persona.
         note: String,
     },
@@ -205,6 +207,7 @@ impl Scheduler {
             self.busy = true;
             return Some(WakeReason::Scheduled {
                 id: due.id,
+                at_ms: due.at_ms,
                 note: due.note,
             });
         }
@@ -259,12 +262,17 @@ impl Scheduler {
         Ok(id)
     }
 
-    /// Drop the wake with `id`; returns whether it was queued.
-    #[must_use]
-    pub fn cancel(&mut self, id: &str) -> bool {
-        let before = self.scheduled.len();
-        self.scheduled.retain(|s| s.id != id);
-        before != self.scheduled.len()
+    /// Remove the wake with `id`; `None` when it was not queued.
+    pub fn take(&mut self, id: &str) -> Option<Scheduled> {
+        let pos = self.scheduled.iter().position(|s| s.id == id)?;
+        Some(self.scheduled.remove(pos))
+    }
+
+    /// Put a wake taken by `take` or `take_due` back in time order, e.g. when
+    /// its prompt could not be delivered.
+    pub fn restore(&mut self, wake: Scheduled) {
+        let pos = self.scheduled.partition_point(|s| s.at_ms <= wake.at_ms);
+        self.scheduled.insert(pos, wake);
     }
 
     /// The queued wakes, oldest first.
@@ -366,6 +374,7 @@ mod tests {
             s.handle(Event::Tick, &at(16, 22, 0)),
             Some(WakeReason::Scheduled {
                 id,
+                at_ms: at(16, 22, 0).utc_ms,
                 note: "check".into()
             })
         );
@@ -387,6 +396,7 @@ mod tests {
             s.handle(Event::Tick, &wake),
             Some(WakeReason::Scheduled {
                 id: a,
+                at_ms: at(17, 8, 0).utc_ms,
                 note: "a".into()
             })
         );
@@ -395,6 +405,7 @@ mod tests {
             s.handle(Event::Tick, &wake),
             Some(WakeReason::Scheduled {
                 id: b,
+                at_ms: at(17, 9, 0).utc_ms,
                 note: "b".into()
             })
         );
@@ -570,7 +581,7 @@ mod tests {
         let mut s = Scheduler::new(&PersonaSettings::default(), restored, &now);
         let id = s.add(at_ms, "new".into(), &now).unwrap();
         assert_eq!(id, format!("w-{at_ms}-5"));
-        assert!(s.cancel(&id));
+        assert!(s.take(&id).is_some());
         assert_eq!(s.scheduled().len(), 3, "restored wakes survive");
     }
 }

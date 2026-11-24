@@ -3,6 +3,7 @@
 
 use super::Core;
 use crate::budget::BudgetState;
+use crate::inbox::RpcAnswer;
 use crate::scheduler::{Event, Now, ScheduleError};
 use crate::server::{ConnId, Inbound};
 use chrono::NaiveTime;
@@ -12,6 +13,10 @@ use omp_desktop_core::persona_protocol::{
 use serde_json::value::RawValue;
 use serde_json::{json, Value};
 use std::sync::Arc;
+
+/// Notice when one omp request id was claimed by several open items.
+const NOTICE_AMBIGUOUS_RPC: &str =
+    "An answer matched more than one open request, so nothing was stored and the requests expired";
 
 impl Core {
     pub(super) fn on_inbound(&mut self, inbound: Inbound, now: &Now) {
@@ -73,7 +78,7 @@ impl Core {
                 });
                 self.reply_ok(conn, req, Some(data));
             }
-            ClientMsg::CancelWake { id } => self.on_cancel(conn, req, &id),
+            ClientMsg::CancelWake { id } => self.on_cancel(conn, req, &id, now),
             ClientMsg::Notify {
                 kind,
                 title,
@@ -132,9 +137,19 @@ impl Core {
             };
         if self.send_frame(&frame.to_string(), now) {
             if let Some((id, answer)) = inbox_answer {
-                if self.inbox.resolve_by_rpc(&id, answer).is_some() {
-                    self.scheduler.handle(Event::Blocked(self.blocked()), now);
-                    self.inbox_changed(now);
+                match self.inbox.resolve_by_rpc(&id, answer) {
+                    RpcAnswer::Settled(_) => {
+                        self.scheduler.handle(Event::Blocked(self.blocked()), now);
+                        self.inbox_changed(now);
+                    }
+                    RpcAnswer::Ambiguous => {
+                        // Two open items claimed the id, so no answer may be
+                        // attributed and nothing was stored; tell the user
+                        // instead of leaving the duplicates silently gone.
+                        self.notice(NOTICE_AMBIGUOUS_RPC, now);
+                        self.scheduler.handle(Event::Blocked(self.blocked()), now);
+                    }
+                    RpcAnswer::Unbound => {}
                 }
             }
             self.reply_ok(conn, req, None);
@@ -154,10 +169,14 @@ impl Core {
             self.reply_err(conn, req, error);
             return;
         }
-        self.settings = settings;
-        self.writes.settings = true;
-        self.writes.budget = true;
-        self.persist_settings();
+        let previous = std::mem::replace(&mut self.settings, settings);
+        if !self.persist_settings(now.utc_ms) {
+            // A settings file that could not be quarantined keeps its bytes;
+            // the change is refused instead of answering as if it were saved.
+            self.settings = previous;
+            self.reply_err(conn, req, "settings could not be saved");
+            return;
+        }
         self.scheduler
             .handle(Event::Settings(self.settings.clone()), now);
         self.budget.set_limit(self.settings.daily_token_limit);
@@ -165,7 +184,7 @@ impl Core {
             Event::BudgetExhausted(self.budget.state() == BudgetState::Exhausted),
             now,
         );
-        self.persist_budget();
+        self.persist_budget(now.utc_ms);
         self.broadcast_status();
         self.reply_ok(conn, req, None);
     }
@@ -307,8 +326,13 @@ impl Core {
         };
         match self.scheduler.add(at, note, now) {
             Ok(id) => {
-                self.writes.schedule = true;
-                self.persist_schedule();
+                if !self.persist_schedule(now.utc_ms) {
+                    // The queue stays in memory only, so the wake is taken
+                    // back rather than promised for after a restart.
+                    self.scheduler.take(&id);
+                    self.reply_err(conn, req, "schedule could not be saved");
+                    return;
+                }
                 self.broadcast_status();
                 self.reply_ok(conn, req, Some(json!({ "id": id })));
             }
@@ -316,15 +340,19 @@ impl Core {
         }
     }
 
-    fn on_cancel(&mut self, conn: ConnId, req: Option<u64>, id: &str) {
-        if self.scheduler.cancel(id) {
-            self.writes.schedule = true;
-            self.persist_schedule();
-            self.broadcast_status();
-            self.reply_ok(conn, req, None);
-        } else {
+    fn on_cancel(&mut self, conn: ConnId, req: Option<u64>, id: &str, now: &Now) {
+        let Some(wake) = self.scheduler.take(id) else {
             self.reply_err(conn, req, "no scheduled wake with that id");
+            return;
+        };
+        if !self.persist_schedule(now.utc_ms) {
+            // Cancelling only in memory would come back after a restart.
+            self.scheduler.restore(wake);
+            self.reply_err(conn, req, "schedule could not be saved");
+            return;
         }
+        self.broadcast_status();
+        self.reply_ok(conn, req, None);
     }
 
     #[allow(clippy::too_many_arguments)] // One parameter per `ClientMsg::Notify` field plus `now`.

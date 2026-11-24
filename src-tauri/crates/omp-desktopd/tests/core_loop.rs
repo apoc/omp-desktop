@@ -59,6 +59,10 @@ fn start_with(
     ensure_private_dir(&paths.persona).unwrap();
     let log = root.join("sent.log");
     let instructions = root.join("i.md");
+    // The service creates the instructions file from the embedded default
+    // before it spawns omp; the harness mirrors that so a wake does not report
+    // a missing file.
+    std::fs::write(&instructions, "").unwrap();
     let launch = Launch {
         program: omp_desktopd::session::ProgramSource::Fixed(program),
         home: root.clone(),
@@ -230,7 +234,10 @@ fn wait_log(h: &Harness, needle: &str) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    panic!("fake omp never got {needle}");
+    panic!(
+        "fake omp never got {needle:?}; it saw: {:?}",
+        std::fs::read_to_string(&h.log).unwrap_or_default()
+    );
 }
 
 fn inbox_items(h: &Harness) -> Vec<InboxItem> {
@@ -255,10 +262,16 @@ fn wait_until(h: &Harness, done: impl Fn(&[InboxItem]) -> bool) -> Vec<InboxItem
 #[test]
 fn wake_now_sends_prompt_and_approval_lands_in_inbox() {
     let h = start("wake", ClientKind::App);
-    std::fs::write(&h.instructions, "first instructions").unwrap();
+    std::fs::write(&h.instructions, "instructions-marker-alpha").unwrap();
     send(&h, 1, ClientMsg::WakeNow);
-    wait_log(&h, "first instructions");
+    wait_log(&h, "[ompy wake] trigger: manual");
     assert!(matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }));
+    assert!(
+        !std::fs::read_to_string(&h.log)
+            .unwrap_or_default()
+            .contains("instructions-marker-alpha"),
+        "instructions are the system prompt, never part of the wake message"
+    );
     let first_approval = wait_until(&h, |items| {
         items
             .iter()
@@ -270,22 +283,7 @@ fn wake_now_sends_prompt_and_approval_lands_in_inbox() {
     .id;
     answer(&h, 3, &first_approval, "Deny");
     assert!(matches!(reply(&h, 3), ServerMsg::Reply { ok: true, .. }));
-
-    std::fs::write(&h.instructions, "edited instructions").unwrap();
-    send(&h, 2, ClientMsg::WakeNow);
-    assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: true, .. }));
-    wait_log(&h, "edited instructions");
-    for _ in 0..100 {
-        let items = inbox_items(&h);
-        if items
-            .iter()
-            .any(|i| i.kind == ItemKind::Approval && i.state == ItemState::Open)
-        {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    panic!("no approval item");
+    wait_log(&h, r#""value":"Deny""#);
 }
 
 #[test]
@@ -364,30 +362,25 @@ fn answering_approval_writes_response_and_unblocks() {
 fn offline_answers_fail_and_leave_the_item_open() {
     let missing = std::env::temp_dir().join(format!("ompy-offline-answer-{}", std::process::id()));
     let h = start_with("offline-answer", ClientKind::App, missing, |_| {});
-    let gen = current_generation(&h);
-    h.tx.send(CoreMsg::Session {
-        gen,
-        ev: SessionEvent::UiRequest {
-            id: "offline1".into(),
-            kind: ItemKind::Decision,
+    // A decision has no omp request behind it: answering it sends a prompt,
+    // which has nowhere to go while the session is down.
+    send(
+        &h,
+        1,
+        ClientMsg::Notify {
+            kind: NotifyKind::Decision,
             title: "Wait for Ompy?".into(),
             body: None,
-            options: vec!["Yes".into(), "No".into()],
-            method: "select".into(),
-            ask_questions: None,
-            secret: false,
+            options: Some(vec!["Yes".into(), "No".into()]),
+            urgent: false,
         },
-    })
-    .unwrap();
-    let id = wait_until(&h, |items| {
-        items.iter().any(|item| {
-            item.rpc_request_id.as_deref() == Some("offline1") && item.state == ItemState::Open
-        })
-    })
-    .into_iter()
-    .find(|item| item.rpc_request_id.as_deref() == Some("offline1"))
-    .unwrap()
-    .id;
+    );
+    let id = match reply(&h, 1) {
+        ServerMsg::Reply {
+            data: Some(data), ..
+        } => data["id"].as_str().unwrap().to_owned(),
+        other => panic!("{other:?}"),
+    };
 
     answer(&h, 2, &id, "Yes");
     assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: false, .. }));
@@ -440,6 +433,47 @@ fn answer(h: &Harness, req: u64, id: &str, answer: &str) {
             answer: Some(answer.into()),
         },
     );
+}
+
+/// How many wake prompts the fake omp has received so far.
+fn wake_count(h: &Harness) -> usize {
+    std::fs::read_to_string(&h.log)
+        .unwrap_or_default()
+        .matches("[ompy wake] trigger:")
+        .count()
+}
+
+/// Ask for a wake until omp has received `want` wake prompts. A wake asked
+/// while the previous turn is still open is held by the scheduler, so the
+/// request is simply repeated.
+fn wake_until(h: &Harness, want: usize) {
+    for req in 700..760 {
+        if wake_count(h) >= want {
+            return;
+        }
+        send(h, req, ClientMsg::WakeNow);
+        let _ = reply(h, req);
+        for _ in 0..40 {
+            if wake_count(h) >= want {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    panic!("omp received {} wakes, wanted {want}", wake_count(h));
+}
+
+/// Answer every open approval with `Deny` so the next wake is not held.
+fn deny_open_approvals(h: &Harness) {
+    let mut req = 800;
+    for item in inbox_items(h)
+        .into_iter()
+        .filter(|item| item.kind == ItemKind::Approval && item.state == ItemState::Open)
+    {
+        answer(h, req, &item.id, "Deny");
+        let _ = reply(h, req);
+        req += 1;
+    }
 }
 
 #[test]
@@ -1155,7 +1189,7 @@ fn scheduled_wake_survives_inbox_resolve_while_down() {
     h.tx.send(CoreMsg::Tick).unwrap();
     std::fs::copy(env!("CARGO_BIN_EXE_fake-omp"), late_omp).unwrap();
     h.tx.send(CoreMsg::Restart).unwrap();
-    wait_log(&h, "[ompy wake] trigger: scheduled: resolve-down-wake");
+    wait_log(&h, "schedule note: <data>resolve-down-wake</data>");
 }
 
 #[test]
@@ -1222,5 +1256,417 @@ fn scheduled_wake_due_while_down_survives_restart() {
     wait_down(&h);
     h.clock.store(t0_ms() + 61_000, Ordering::SeqCst);
     h.tx.send(CoreMsg::Tick).unwrap();
-    wait_log(&h, "[ompy wake] trigger: scheduled: down-wake");
+    wait_log(&h, "schedule note: <data>down-wake</data>");
+}
+
+#[test]
+fn a_request_queued_behind_stdin_failure_does_not_block_wakes() {
+    let h = start("retired-request", ClientKind::App);
+    send(&h, 1, ClientMsg::WakeNow);
+    wait_log(&h, "[ompy wake] trigger: manual");
+    let gen = current_generation(&h);
+
+    // `StdinFailed` retires the session; a request from that same generation
+    // can still be queued behind it.
+    h.tx.send(CoreMsg::Session {
+        gen,
+        ev: SessionEvent::StdinFailed {
+            reason: "test stdin timeout".into(),
+        },
+    })
+    .unwrap();
+    h.tx.send(CoreMsg::Session {
+        gen,
+        ev: SessionEvent::UiRequest {
+            id: "orphan1".into(),
+            kind: ItemKind::Decision,
+            title: "Orphan?".into(),
+            body: None,
+            options: vec!["Yes".into()],
+            method: "select".into(),
+            ask_questions: None,
+            secret: false,
+        },
+    })
+    .unwrap();
+    h.tx.send(CoreMsg::Session {
+        gen,
+        ev: SessionEvent::TurnStarted,
+    })
+    .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(Instant::now() < deadline, "session did not restart");
+        if current_generation(&h) > gen {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let items = inbox_items(&h);
+    assert!(
+        !items
+            .iter()
+            .any(|item| item.rpc_request_id.as_deref() == Some("orphan1")),
+        "a request from the retired process must not reach the inbox"
+    );
+    assert!(
+        items
+            .iter()
+            .all(|item| !(item.state == ItemState::Open && item.rpc_request_id.is_some())),
+        "no open request may keep the scheduler blocked after the restart: {items:?}"
+    );
+    // Nothing blocks the restarted session, so a wake still reaches omp.
+    std::fs::write(&h.log, "").unwrap();
+    wake_until(&h, 1);
+}
+
+#[test]
+fn a_reused_secret_request_id_cannot_settle_an_older_item() {
+    let h = start("secret-reuse", ClientKind::App);
+    let older = open_request(&h, "generic", "ap1");
+    assert!(!older.secret);
+
+    // omp reuses the id of the still-open approval for a secret input request.
+    send(
+        &h,
+        1,
+        ClientMsg::Rpc {
+            frame: serde_json::json!({"type": "prompt", "message": "secret-same-id"}),
+        },
+    );
+    let items = wait_until(&h, |items| {
+        items
+            .iter()
+            .any(|item| item.id == older.id && item.state == ItemState::Expired)
+            && items
+                .iter()
+                .filter(|item| {
+                    item.rpc_request_id.as_deref() == Some("ap1") && item.state == ItemState::Open
+                })
+                .count()
+                == 1
+    });
+    let newer = items
+        .iter()
+        .find(|item| item.rpc_request_id.as_deref() == Some("ap1") && item.state == ItemState::Open)
+        .unwrap()
+        .clone();
+    assert!(newer.secret, "the secret request must be the open one");
+    assert!(
+        items
+            .iter()
+            .any(|item| item.kind == ItemKind::Notice
+                && item.title.contains("older request expired")),
+        "the user is told that the older request was replaced"
+    );
+
+    // The app relays the answer for that id, as it does for a live request.
+    send(
+        &h,
+        2,
+        ClientMsg::Rpc {
+            frame: serde_json::json!({
+                "type": "extension_ui_response",
+                "id": "ap1",
+                "value": "hunter2",
+            }),
+        },
+    );
+    assert!(matches!(
+        reply_asserting_no_secret(&h, 2),
+        ServerMsg::Reply { ok: true, .. }
+    ));
+    assert_no_later_secret_broadcast(&h);
+    let items = inbox_items(&h);
+    assert!(
+        items
+            .iter()
+            .any(|item| item.id == newer.id && item.state == ItemState::Answered),
+        "the secret item is the one that settled"
+    );
+    assert!(
+        items.iter().all(|item| item.answer.is_none()),
+        "the plaintext answer must never be stored"
+    );
+    assert!(!std::fs::read_to_string(&h.paths.inbox)
+        .unwrap()
+        .contains("hunter2"));
+    let _ = h.tx.send(CoreMsg::Shutdown);
+}
+
+#[test]
+fn a_non_file_instructions_path_surfaces_a_notice_and_keeps_the_wake() {
+    let h = start("instructions-dir", ClientKind::App);
+    std::fs::remove_file(&h.instructions).unwrap();
+    // A directory at the instructions path must never be read as a file.
+    std::fs::create_dir(&h.instructions).unwrap();
+    let before = current_generation(&h);
+
+    send(&h, 1, ClientMsg::WakeNow);
+    assert!(matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }));
+    wait_log(&h, "[ompy wake] trigger: manual");
+    wait_until(&h, |items| {
+        items
+            .iter()
+            .any(|item| item.title.contains("not a regular file"))
+    });
+    assert_eq!(
+        current_generation(&h),
+        before,
+        "a broken instructions file cannot become a system prompt, so it must not force a restart"
+    );
+
+    // The next delivered wake reports the same problem once, not per wake.
+    deny_open_approvals(&h);
+    wake_until(&h, 2);
+    let notices = inbox_items(&h)
+        .into_iter()
+        .filter(|item| item.title.contains("not a regular file"))
+        .count();
+    assert_eq!(notices, 1, "one notice per distinct error");
+    let _ = h.tx.send(CoreMsg::Shutdown);
+}
+
+#[test]
+fn edited_instructions_restart_the_session_before_the_wake() {
+    let h = start("instructions-restart", ClientKind::App);
+    std::fs::write(&h.instructions, "instructions-marker-alpha").unwrap();
+    // The first wake may itself restart the session: the edit can land after
+    // the spawn read. Either way the session runs with "alpha" afterwards.
+    wake_until(&h, 1);
+    deny_open_approvals(&h);
+    let settled = current_generation(&h);
+
+    std::fs::write(&h.instructions, "instructions-marker-beta").unwrap();
+    wake_until(&h, 2);
+    assert!(
+        current_generation(&h) > settled,
+        "an edited instructions file must replace the session before the wake"
+    );
+    let log = std::fs::read_to_string(&h.log).unwrap_or_default();
+    assert!(
+        !log.contains("instructions-marker-alpha") && !log.contains("instructions-marker-beta"),
+        "instructions are never inlined in a wake prompt"
+    );
+    let _ = h.tx.send(CoreMsg::Shutdown);
+}
+
+#[test]
+fn protected_state_files_are_not_replaced_by_a_settings_change() {
+    let h = start_with(
+        "protected-settings",
+        ClientKind::App,
+        PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
+        |paths| {
+            std::fs::write(&paths.settings, b"{not json").unwrap();
+            std::fs::write(&paths.budget, b"{not json").unwrap();
+            // Directories squatting on both quarantine names make the moves
+            // fail while the directory holding the files stays writable.
+            std::fs::create_dir(
+                paths
+                    .settings
+                    .with_file_name(format!("settings.json.bad-{}", t0_ms())),
+            )
+            .unwrap();
+            std::fs::create_dir(
+                paths
+                    .budget
+                    .with_file_name(format!("budget.json.bad-{}", t0_ms())),
+            )
+            .unwrap();
+        },
+    );
+    let items = inbox_items(&h);
+    for what in ["Settings file was unreadable", "Budget file"] {
+        assert!(
+            items
+                .iter()
+                .any(|item| item.title.contains(what) && item.title.contains("could not")),
+            "{what} must be reported as protected: {items:?}"
+        );
+    }
+
+    let settings = PersonaSettings {
+        interval_min: 45,
+        ..PersonaSettings::default()
+    };
+    send(&h, 1, ClientMsg::SetSettings { settings });
+    assert!(
+        matches!(reply(&h, 1), ServerMsg::Reply { ok: false, .. }),
+        "a change that cannot be saved is refused"
+    );
+    assert_eq!(
+        std::fs::read(&h.paths.settings).unwrap(),
+        b"{not json",
+        "the only copy of the settings file must survive"
+    );
+    assert_eq!(
+        std::fs::read(&h.paths.budget).unwrap(),
+        b"{not json",
+        "the only copy of the budget file must survive"
+    );
+    send(&h, 2, ClientMsg::Status);
+    match reply(&h, 2) {
+        ServerMsg::Reply {
+            data: Some(data), ..
+        } => assert_eq!(
+            data["settings"]["intervalMin"],
+            serde_json::json!(PersonaSettings::default().interval_min),
+            "the refused change is not applied in memory either"
+        ),
+        other => panic!("{other:?}"),
+    }
+    let _ = h.tx.send(CoreMsg::Shutdown);
+}
+
+#[test]
+fn a_protected_budget_is_not_replaced_by_a_saved_settings_change() {
+    let h = start_with(
+        "protected-budget",
+        ClientKind::App,
+        PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
+        |paths| {
+            std::fs::write(&paths.budget, b"{not json").unwrap();
+            std::fs::create_dir(
+                paths
+                    .budget
+                    .with_file_name(format!("budget.json.bad-{}", t0_ms())),
+            )
+            .unwrap();
+        },
+    );
+    let settings = PersonaSettings {
+        interval_min: 45,
+        ..PersonaSettings::default()
+    };
+    send(&h, 1, ClientMsg::SetSettings { settings });
+    assert!(
+        matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }),
+        "the settings file itself is writable"
+    );
+    assert_eq!(
+        std::fs::read(&h.paths.budget).unwrap(),
+        b"{not json",
+        "a settings change must not overwrite a protected budget file"
+    );
+    let _ = h.tx.send(CoreMsg::Shutdown);
+}
+
+#[test]
+fn a_protected_schedule_is_not_replaced_by_a_new_wake() {
+    let h = start_with(
+        "protected-schedule",
+        ClientKind::Extension,
+        PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
+        |paths| {
+            std::fs::write(&paths.schedule, b"{not json").unwrap();
+            std::fs::create_dir(
+                paths
+                    .schedule
+                    .with_file_name(format!("schedule.json.bad-{}", t0_ms())),
+            )
+            .unwrap();
+        },
+    );
+    let items = inbox_items(&h);
+    assert!(items
+        .iter()
+        .any(|item| item.title.contains("Schedule file was unreadable")
+            && item.title.contains("could not")));
+
+    send(
+        &h,
+        1,
+        ClientMsg::ScheduleWake {
+            at_ms: Some(t0_ms() + 60_000),
+            in_ms: None,
+            note: "protected".into(),
+        },
+    );
+    assert!(
+        matches!(reply(&h, 1), ServerMsg::Reply { ok: false, .. }),
+        "a wake that cannot be persisted is refused"
+    );
+    assert_eq!(
+        std::fs::read(&h.paths.schedule).unwrap(),
+        b"{not json",
+        "the only copy of the schedule file must survive"
+    );
+    send(&h, 2, ClientMsg::ListSchedule);
+    match reply(&h, 2) {
+        ServerMsg::Reply {
+            data: Some(data), ..
+        } => assert_eq!(
+            data["scheduled"].as_array().unwrap().len(),
+            0,
+            "the refused wake is not queued in memory either"
+        ),
+        other => panic!("{other:?}"),
+    }
+    let _ = h.tx.send(CoreMsg::Shutdown);
+}
+
+#[test]
+fn a_reset_schedule_file_is_reported_to_the_user() {
+    let h = start_with(
+        "schedule-reset",
+        ClientKind::App,
+        PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
+        |paths| std::fs::write(&paths.schedule, b"{not json").unwrap(),
+    );
+    // The quarantine succeeds, so writes are allowed again; the reset itself
+    // must still reach the user.
+    let bad = h
+        .paths
+        .schedule
+        .with_file_name(format!("schedule.json.bad-{}", t0_ms()));
+    assert!(bad.exists(), "the corrupt file is moved aside");
+    let items = inbox_items(&h);
+    assert!(
+        items.iter().any(|item| item.kind == ItemKind::Notice
+            && item.title.contains("Schedule file was unreadable")),
+        "a reset schedule must not disappear silently: {items:?}"
+    );
+    let _ = h.tx.send(CoreMsg::Shutdown);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_scheduled_wake_is_kept_when_the_session_cannot_take_it() {
+    let h = start("wake-undelivered", ClientKind::App);
+    // This turn closes the fake's stdin, so the next write fails fast.
+    send(
+        &h,
+        1,
+        ClientMsg::Rpc {
+            frame: serde_json::json!({"type": "prompt", "message": "close-stdin"}),
+        },
+    );
+    wait_log(&h, "close-stdin");
+    send(
+        &h,
+        2,
+        ClientMsg::ScheduleWake {
+            at_ms: Some(t0_ms() + 60_000),
+            in_ms: None,
+            note: "keep-me".into(),
+        },
+    );
+    assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: true, .. }));
+
+    h.clock.store(t0_ms() + 61_000, Ordering::SeqCst);
+    h.tx.send(CoreMsg::Tick).unwrap();
+    // The wake is only removed from the schedule file once omp took it; a
+    // failed delivery must leave it queued for the next session.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        std::fs::read_to_string(&h.paths.schedule)
+            .unwrap_or_default()
+            .contains("keep-me"),
+        "a wake whose prompt was not delivered must stay pending"
+    );
+    wait_down(&h);
+    wait_log(&h, "schedule note: <data>keep-me</data>");
+    let _ = h.tx.send(CoreMsg::Shutdown);
 }

@@ -27,9 +27,24 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use lifecycle::RESTART_MIN;
-use store::{load_budget, read_json, Writes};
+use store::{load_budget, read_json, Load, Writes};
 
 const NOTICE_STARTUP_EXPIRED: &str = "Open approvals from the previous run expired";
+
+/// The user notice for a state file that had to be reset while loading.
+///
+/// Telling the user is not optional: the quarantine path used to report the
+/// file as writable without a notice, so a reset schedule or settings file
+/// disappeared silently.
+fn reset_notice(what: &str, state: &str, load: Load) -> String {
+    if load == Load::Protected {
+        format!(
+            "{what} and could not be moved aside; {state} for this run and nothing will be saved"
+        )
+    } else {
+        format!("{what}; {state}")
+    }
+}
 
 /// One event the server or the session host hands to the core thread.
 pub enum CoreMsg {
@@ -126,6 +141,12 @@ pub struct Core {
     spawn_error: Option<String>,
     started: bool,
     gen: u64,
+    /// The instructions content the running session's system prompt was
+    /// spawned with; `None` until the file could be read.
+    instructions_at_spawn: Option<String>,
+    /// The last instructions read error, so one broken file produces one
+    /// notice instead of one per wake.
+    instructions_error: Option<String>,
     next_seq: Arc<std::sync::atomic::AtomicU64>,
     backoff: Duration,
     last_spawn: Instant,
@@ -144,12 +165,12 @@ impl Core {
                 paths.persona.display()
             );
         }
-        let (settings, settings_ok) =
+        let (settings, settings_load) =
             read_json::<PersonaSettings>(&paths.settings, "settings", now.utc_ms);
-        let (wakes, wakes_ok) =
+        let (wakes, wakes_load) =
             read_json::<Vec<Scheduled>>(&paths.schedule, "schedule", now.utc_ms);
         let (mut inbox, inbox_notice) = Inbox::load(paths.inbox.clone(), now.utc_ms);
-        let (mut budget, budget_notice, budget_writable) =
+        let (mut budget, budget_notice, budget_load) =
             load_budget(&paths.budget, &now, settings.daily_token_limit);
         budget.roll(now.local.date());
         budget.set_limit(settings.daily_token_limit);
@@ -157,11 +178,19 @@ impl Core {
         if let Some(notice) = inbox_notice {
             notices.push(notice);
         }
-        if !settings_ok {
-            notices.push("Settings file was unreadable; using defaults".into());
+        if settings_load.reset() {
+            notices.push(reset_notice(
+                "Settings file was unreadable",
+                "defaults are in use",
+                settings_load,
+            ));
         }
-        if !wakes_ok {
-            notices.push("Schedule file was unreadable; using an empty schedule".into());
+        if wakes_load.reset() {
+            notices.push(reset_notice(
+                "Schedule file was unreadable",
+                "the schedule is empty",
+                wakes_load,
+            ));
         }
         if let Some(notice) = budget_notice {
             notices.push(notice);
@@ -195,14 +224,16 @@ impl Core {
             session: None,
             conns: HashMap::new(),
             writes: Writes {
-                settings: settings_ok,
-                schedule: wakes_ok,
-                budget: budget_writable,
+                settings: settings_load.access(),
+                schedule: wakes_load.access(),
+                budget: budget_load.access(),
             },
             paused: false,
             spawn_error: None,
             started: false,
             gen: u64::try_from(now.utc_ms).unwrap_or(0),
+            instructions_at_spawn: None,
+            instructions_error: None,
             next_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             backoff: RESTART_MIN,
             last_spawn: Instant::now(),
@@ -211,7 +242,7 @@ impl Core {
             paths,
         };
         core.persist_inbox(now.utc_ms);
-        core.persist_budget();
+        core.persist_budget(now.utc_ms);
         core
     }
 

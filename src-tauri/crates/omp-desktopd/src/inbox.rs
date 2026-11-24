@@ -32,6 +32,18 @@ struct File {
     items: Vec<InboxItem>,
 }
 
+/// The verdict of [`Inbox::resolve_by_rpc`] for one omp request id.
+#[derive(Debug)]
+pub enum RpcAnswer {
+    /// The single open item bound to the id was answered or dismissed.
+    Settled(InboxItem),
+    /// More than one open item claimed the id, so no answer could be
+    /// attributed: every one of them was expired and nothing was stored.
+    Ambiguous,
+    /// No open item is bound to the id.
+    Unbound,
+}
+
 /// The persona's inbox, either in memory or backed by `inbox.json`.
 pub struct Inbox {
     /// Items in insertion (and therefore creation) order.
@@ -132,9 +144,14 @@ impl Inbox {
             false,
             now_ms,
         )
+        .0
     }
 
     /// Add an item bound to an omp UI request, retaining its response shape.
+    ///
+    /// Returns the new item's id and whether an open item that already claimed
+    /// the same request id was expired: two open items may never share one
+    /// request id, because answering it would be ambiguous.
     #[allow(clippy::too_many_arguments)] // One parameter per UI request field.
     pub fn add_ui_request(
         &mut self,
@@ -147,7 +164,7 @@ impl Inbox {
         ask_questions: Option<Vec<AskQuestionRef>>,
         secret: bool,
         now_ms: i64,
-    ) -> String {
+    ) -> (String, bool) {
         self.push(
             kind,
             title,
@@ -162,6 +179,13 @@ impl Inbox {
         )
     }
 
+    /// Append one item and return its id plus whether an open item with the
+    /// same omp request id was expired first.
+    ///
+    /// A new request that reuses an open request id makes the older one
+    /// unreachable (omp only waits for its newest request under that id), and
+    /// leaving both open would let an answer to a secret request settle the
+    /// other item and store the plaintext.
     #[allow(clippy::too_many_arguments)] // One parameter per `InboxItem` field.
     fn push(
         &mut self,
@@ -175,7 +199,10 @@ impl Inbox {
         ask_questions: Option<Vec<AskQuestionRef>>,
         secret: bool,
         now_ms: i64,
-    ) -> String {
+    ) -> (String, bool) {
+        let superseded = rpc_request_id
+            .as_deref()
+            .is_some_and(|rpc_id| self.expire_rpc(rpc_id));
         self.counter += 1;
         let id = format!("i-{now_ms}-{}", self.counter);
         self.items.push(InboxItem {
@@ -193,7 +220,7 @@ impl Inbox {
             ask_questions,
             secret,
         });
-        id
+        (id, superseded)
     }
 
     /// Borrow an open item while its answer is validated.
@@ -227,24 +254,56 @@ impl Inbox {
     }
 
     /// Answer or dismiss the open item bound to `rpc_id`.
-    pub fn resolve_by_rpc(&mut self, rpc_id: &str, answer: Option<String>) -> Option<InboxItem> {
-        let item = self.items.iter_mut().find(|item| {
-            item.rpc_request_id.as_deref() == Some(rpc_id) && item.state == ItemState::Open
-        })?;
-        Some(Self::settle(item, answer))
+    ///
+    /// An id claimed by more than one open item (written by an older version or
+    /// edited by hand) settles nothing: the answer cannot be attributed, so all
+    /// duplicates expire and no answer is stored. A secret item never stores
+    /// its answer, whichever item matched.
+    pub fn resolve_by_rpc(&mut self, rpc_id: &str, answer: Option<String>) -> RpcAnswer {
+        let open = self
+            .items
+            .iter()
+            .filter(|item| {
+                item.rpc_request_id.as_deref() == Some(rpc_id) && item.state == ItemState::Open
+            })
+            .count();
+        match open {
+            0 => RpcAnswer::Unbound,
+            1 => {
+                let item = self
+                    .items
+                    .iter_mut()
+                    .find(|item| {
+                        item.rpc_request_id.as_deref() == Some(rpc_id)
+                            && item.state == ItemState::Open
+                    })
+                    .expect("exactly one open item claims the id");
+                RpcAnswer::Settled(Self::settle(item, answer))
+            }
+            _ => {
+                self.expire_rpc(rpc_id);
+                RpcAnswer::Ambiguous
+            }
+        }
     }
 
-    /// Expire the open item bound to `rpc_id` (its request ended without an
+    /// Expire every open item bound to `rpc_id` (its request ended without an
     /// answer); returns whether one was found.
     #[must_use]
     pub fn expire_by_rpc(&mut self, rpc_id: &str) -> bool {
-        let Some(item) = self.items.iter_mut().find(|item| {
-            item.rpc_request_id.as_deref() == Some(rpc_id) && item.state == ItemState::Open
-        }) else {
-            return false;
-        };
-        item.state = ItemState::Expired;
-        true
+        self.expire_rpc(rpc_id)
+    }
+
+    /// Expire every open item bound to `rpc_id`; whether one was found.
+    fn expire_rpc(&mut self, rpc_id: &str) -> bool {
+        let mut expired = false;
+        for item in &mut self.items {
+            if item.rpc_request_id.as_deref() == Some(rpc_id) && item.state == ItemState::Open {
+                item.state = ItemState::Expired;
+                expired = true;
+            }
+        }
+        expired
     }
 
     /// Expire every open item bound to an omp request, e.g. when the session
@@ -338,10 +397,10 @@ mod tests {
             0,
         );
         assert!(ib.has_open_bound());
-        assert_eq!(
-            ib.resolve_by_rpc("r1", Some("Approve".into())).unwrap().id,
-            id
-        );
+        match ib.resolve_by_rpc("r1", Some("Approve".into())) {
+            RpcAnswer::Settled(item) => assert_eq!(item.id, id),
+            other => panic!("{other:?}"),
+        }
         assert!(!ib.has_open_bound());
         assert!(ib.resolve(&id, None).is_none(), "already answered");
         ib.add(
@@ -355,6 +414,120 @@ mod tests {
         );
         assert_eq!(ib.expire_all_bound(), 1);
         assert_eq!(ib.items().last().unwrap().state, ItemState::Expired);
+    }
+
+    #[test]
+    fn a_reused_request_id_expires_the_older_open_item() {
+        let mut ib = Inbox::in_memory();
+        let (older, superseded) = ib.add_ui_request(
+            ItemKind::Approval,
+            "Allow tool: bash".into(),
+            None,
+            vec!["Approve".into()],
+            "r1".into(),
+            "select".into(),
+            None,
+            false,
+            0,
+        );
+        assert!(!superseded);
+        let (newer, superseded) = ib.add_ui_request(
+            ItemKind::Decision,
+            "Password".into(),
+            None,
+            vec![],
+            "r1".into(),
+            "input".into(),
+            None,
+            true,
+            1,
+        );
+        assert!(superseded, "the older request is replaced, not duplicated");
+        assert_eq!(ib.open_count(), 1, "one request id, one open item");
+        assert_eq!(
+            ib.items()
+                .iter()
+                .find(|item| item.id == older)
+                .unwrap()
+                .state,
+            ItemState::Expired
+        );
+        let open = ib
+            .items()
+            .iter()
+            .filter(|item| item.state == ItemState::Open)
+            .collect::<Vec<_>>();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, newer);
+    }
+
+    #[test]
+    fn an_ambiguous_request_id_settles_nothing() {
+        // A file written by an older version can still hold two open items
+        // with one request id. Answering it must neither pick one nor store
+        // the answer on the non-secret item.
+        let dir = tempdir("omp-desktopd", "inbox-ambiguous");
+        let path = dir.join("inbox.json");
+        let file = serde_json::json!({
+            "version": 1,
+            "counter": 2,
+            "items": [
+                {
+                    "id": "i-old", "kind": "approval", "createdAt": 0,
+                    "title": "Allow tool: bash", "body": null,
+                    "state": "open", "answer": null,
+                    "rpcRequestId": "r1", "requestMethod": "select", "secret": false
+                },
+                {
+                    "id": "i-new", "kind": "decision", "createdAt": 1,
+                    "title": "Password", "body": null,
+                    "state": "open", "answer": null,
+                    "rpcRequestId": "r1", "requestMethod": "input", "secret": true
+                }
+            ]
+        });
+        std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+        let (mut ib, notice) = Inbox::load(path, 2);
+        assert!(notice.is_none());
+
+        assert!(matches!(
+            ib.resolve_by_rpc("r1", Some("hunter2".into())),
+            RpcAnswer::Ambiguous
+        ));
+        assert_eq!(ib.open_count(), 0, "both duplicates expire unanswered");
+        assert!(
+            ib.items().iter().all(|item| item.answer.is_none()),
+            "an ambiguous answer is never stored"
+        );
+        assert!(matches!(
+            ib.resolve_by_rpc("r1", Some("hunter2".into())),
+            RpcAnswer::Unbound
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_secret_item_never_stores_its_answer() {
+        let mut ib = Inbox::in_memory();
+        let (id, _) = ib.add_ui_request(
+            ItemKind::Decision,
+            "Password".into(),
+            None,
+            vec![],
+            "s1".into(),
+            "input".into(),
+            None,
+            true,
+            0,
+        );
+        match ib.resolve_by_rpc("s1", Some("hunter2".into())) {
+            RpcAnswer::Settled(item) => {
+                assert_eq!(item.id, id);
+                assert_eq!(item.state, ItemState::Answered);
+                assert!(item.answer.is_none());
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

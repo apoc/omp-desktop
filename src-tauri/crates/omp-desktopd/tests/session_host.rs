@@ -197,3 +197,45 @@ fn crash_reports_exit() {
         SessionEvent::Exited { .. }
     ));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_failed_auto_approval_write_stops_the_frame() {
+    let (l, _log) = launch("autoapprove-failed");
+    let rules = Arc::new(RuleBook::in_memory());
+    rules
+        .grant("ompy", Some(&l.home), "bash", RuleScope::Session)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let s = Session::spawn(&l, rules, Arc::new(AtomicU64::new(0)), tx).unwrap();
+    // The fake closes the read end of its stdin before it asks for the
+    // approval, so the rule's answer cannot be written.
+    s.send(r#"{"type":"prompt","message":"autoapprove"}"#)
+        .unwrap();
+
+    let mut failed = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(SessionEvent::UiRequest { id, .. }) => {
+                panic!("request {id} arrived although its answer could not be written")
+            }
+            Ok(SessionEvent::StdinFailed { .. }) => {
+                failed = true;
+                break;
+            }
+            Ok(_) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    assert!(failed, "the failed write must be reported");
+    // Whatever is queued behind the failure belongs to the retired session and
+    // must not become an inbox request.
+    while let Ok(ev) = rx.recv_timeout(Duration::from_millis(300)) {
+        assert!(
+            !matches!(ev, SessionEvent::UiRequest { .. }),
+            "request after StdinFailed: {ev:?}"
+        );
+    }
+}

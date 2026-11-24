@@ -521,6 +521,12 @@ impl Session {
                                     });
                                     return;
                                 }
+                                // The failed write already emitted
+                                // `StdinFailed`, which retires this session in
+                                // the core. Continuing would emit a request
+                                // from a process that is about to be killed,
+                                // and no live session could ever answer it.
+                                return;
                             }
                         }
                     }
