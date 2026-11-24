@@ -42,6 +42,7 @@ class FakeWebLinks {
 
 const copied = [];
 let clipboardText = "";
+let isMac = true;
 const win = {
   Terminal: FakeTerminal,
   FitAddon: { FitAddon: FakeFit },
@@ -51,7 +52,7 @@ const win = {
   OMP_TERMINAL: {
     clipboardAction: (e) => (e.key === "C" ? "copy" : e.key === "V" ? "paste" : null),
   },
-  OMP_KEYMAP: { guestShouldBypass: (e) => e.key === "bypass" },
+  OMP_KEYMAP: { guestShouldBypass: (e) => e.key === "bypass", detectMac: () => isMac },
 };
 // eslint-disable-next-line no-new-func
 new Function("window", readFileSync(join(root, "src/app/terminal-xterm.js"), "utf8"))(win);
@@ -117,16 +118,30 @@ check("createXterm loads web links with the terminal's activation handler", () =
   assert.deepEqual(opened, [[event, url]]);
 });
 
+/** Cells for a text string, one per code point. */
+function textCells(text, extra = {}) {
+  return Array.from(text, (chars) => ({ chars, width: 1, ...extra }));
+}
+
 /** Run the real vendored provider against fixed-width wrapped buffer lines. */
 function realProvider(lines, options, activate, term) {
   const bufferLines = lines.map((entry, index) => {
     const text = typeof entry === "string" ? entry : entry.text;
+    const cells = typeof entry === "string" || !entry.cells ? textCells(text) : entry.cells;
     const isWrapped = typeof entry === "string" ? index > 0 : entry.isWrapped;
     return {
-      length: text.length,
+      length: cells.length,
       isWrapped,
       translateToString: () => text,
-      getCell(x, cell) { cell.chars = text[x] ?? ""; cell.width = 1; },
+      getCell(x, cell) {
+        const source = cells[x] ?? { chars: "", width: 0 };
+        cell.chars = source.chars ?? "";
+        cell.width = source.width ?? 0;
+        cell.invisible = Boolean(source.invisible);
+        cell.isInvisible = () => cell.invisible;
+        cell.getChars = () => cell.chars;
+        cell.getWidth = () => cell.width;
+      },
     };
   });
   let provider;
@@ -134,7 +149,12 @@ function realProvider(lines, options, activate, term) {
     buffer: { active: {
       length: lines.length,
       getLine: (index) => bufferLines[index],
-      getNullCell: () => ({ chars: "", width: 0, getChars() { return this.chars; }, getWidth() { return this.width; } }),
+      getNullCell: () => ({
+        chars: "", width: 0, invisible: false,
+        getChars() { return this.chars; },
+        getWidth() { return this.width; },
+        isInvisible() { return this.invisible; },
+      }),
     } },
     registerLinkProvider(p) { provider = p; return { dispose() {} }; },
   };
@@ -205,6 +225,181 @@ check("a bracketed IPv6 match never drops a following URL authority", () => {
   assert.equal(links.length, 1);
   assert.equal(links[0].text, "http://[2001:db8::1]");
   assert.equal(new URL(candidate).host, "example.test");
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, []);
+});
+
+check("a match spanning concealed cells never activates", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://evil.test/path";
+  const cells = [
+    ...textCells("https://"),
+    ...textCells("evil.test", { invisible: true }),
+    ...textCells("/path"),
+  ];
+  const provide = realProvider([{ text: url, cells, isWrapped: false }], options, handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, url);
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, []);
+});
+
+check("concealed cells outside the match do not block it", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://example.test/visible";
+  const cells = [
+    ...textCells(url),
+    { chars: " ", width: 1 },
+    ...textCells("secret", { invisible: true }),
+  ];
+  const provide = realProvider([{ text: `${url} secret`, cells, isWrapped: false }], options, handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, [url]);
+});
+
+check("a URL the addon stops at after a legal character opens its full token", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://example.test/files/Notes(1).pdf";
+  const provide = realProvider([url], options, handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, "https://example.test/files/Notes");
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, [url]);
+});
+
+check("a URL found inside a larger token never activates its prefix", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://example.test/path";
+  const line = `see${url}`;
+  const provide = realProvider([line], options, handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, url);
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, []);
+});
+
+check("links after wide and combining characters activate at their cell offsets", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const wide = "https://example.test/wide";
+  const wideLine = {
+    text: `界 ${wide}`,
+    isWrapped: false,
+    cells: [
+      { chars: "界", width: 2 },
+      { chars: "", width: 0 },
+      { chars: " ", width: 1 },
+      ...textCells(wide),
+    ],
+  };
+  const combining = "https://example.test/accent";
+  const combiningLine = {
+    text: `e\u0301 ${combining}`,
+    isWrapped: false,
+    cells: [
+      { chars: "e\u0301", width: 1 },
+      { chars: " ", width: 1 },
+      ...textCells(combining),
+    ],
+  };
+  for (const [line, url] of [[wideLine, wide], [combiningLine, combining]]) {
+    const links = realProvider([line], options, handler, term)();
+    assert.equal(links.length, 1, url);
+    links[0].hover({}, links[0].text, links[0].range);
+    links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  }
+  assert.deepEqual(opened, [wide, combining]);
+});
+
+check("prose brackets stay out of the target, IPv6 host brackets stay in", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const cases = [
+    ["[https://example.test/build]", "https://example.test/build"],
+    ["(https://example.test/build)", "https://example.test/build"],
+    ["[http://[::1]]", "http://[::1]"],
+  ];
+  for (const [line, target] of cases) {
+    const links = realProvider([line], options, handler, term)();
+    assert.equal(links.length, 1, line);
+    links[0].hover({}, links[0].text, links[0].range);
+    links[0].activate({ button: 0, metaKey: true }, links[0].text);
+    assert.equal(opened.at(-1), target, line);
+  }
+  assert.deepEqual(opened, cases.map(([, target]) => target));
+});
+
+check("link activation checks the gesture before reading the buffer", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://example.test/";
+  let reads = 0;
+  Object.defineProperty(term, "buffer", {
+    configurable: true,
+    get() {
+      reads++;
+      return { active: {
+        length: 0,
+        getLine: () => undefined,
+        getNullCell: () => ({
+          chars: "", width: 0, invisible: false,
+          getChars() { return this.chars; },
+          getWidth() { return this.width; },
+          isInvisible() { return this.invisible; },
+        }),
+      } };
+    },
+  });
+  options.hover({}, url, { start: { x: 1, y: 1 }, end: { x: url.length, y: 1 } });
+  handler({ button: 0 }, url);
+  handler({ button: 0, metaKey: false }, url);
+  handler({ button: 1, metaKey: true }, url);
+  assert.equal(reads, 0, "no buffer scan without the link gesture");
+  handler({ button: 0, metaKey: true }, url);
+  assert.ok(reads > 0, "the link gesture reads the buffer");
+  const macReads = reads;
+  isMac = false;
+  try {
+    handler({ button: 0, metaKey: true }, url);
+    assert.equal(reads, macReads, "meta is not the link modifier off macOS");
+    handler({ button: 0, ctrlKey: true }, url);
+    assert.ok(reads > macReads, "ctrl is the link modifier off macOS");
+  } finally {
+    isMac = true;
+  }
+  assert.deepEqual(opened, []);
+});
+
+check("a logical line beyond the scan cap never activates", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = `https://example.test/${"a".repeat(2100)}`;
+  const provide = realProvider([url], options, handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, url, "the addon matches the long line; the scan cap refuses it");
   links[0].hover({}, links[0].text, links[0].range);
   links[0].activate({ button: 0, metaKey: true }, links[0].text);
   assert.deepEqual(opened, []);

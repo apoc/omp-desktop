@@ -97,40 +97,135 @@
   const WEB_LINK_OPTIONS = {
     urlRegex: /(https?|HTTPS?):[/]{2}(?:\[[\da-fA-F:.]+\](?::\d+)?(?:[/?#](?:[^\s"'!*(){}|\\\^<>`]*[^\s"':,.!?{}|\\\^~\[\]`()<>])?)?|[^\s"'!*(){}|\\\^<>`]*[^\s"':,.!?{}|\\\^~\[\]`()<>])/,
   };
-  // Unlike the addon's IPv6 alternative, this also accepts a final `]` so
-  // the candidate can be compared with the addon's match.
-  const WEB_LINK_CANDIDATE = /^(?:https?|HTTPS?):[/]{2}[^\s"'!*(){}|\\\^<>`]*[^\s"':,.!?{}|\\\^~`()<>]/;
+  // A logical line longer than this is not scanned: the addon itself stops
+  // at 2,048 characters, and a URL that long is not worth opening from a
+  // terminal. Bounds the cell walk when a click activates a link.
+  const MAX_LINK_LINE = 2048;
+  const MAX_LINK_ROWS = 64;
+  const LINK_BREAK = /[\s"'`<>]/;
+  const TOKEN_OPENERS = "([{";
+  const TOKEN_TRAILING = /[.,;:!?'"]/;
+  const TOKEN_PAIRS = { ")": "(", "]": "[", "}": "{" };
 
-  /** The logical (wrapped) line around `y`, and `x`'s offset in it (both
-   *  buffer coordinates: y 0-based, x 1-based). */
+  /**
+   * The visible text of the logical (wrapped) line around buffer row `y`
+   * (0-based), and cell column `x`'s (1-based) UTF-16 offset in it. Cells are
+   * read one by one, so a wide character contributes its own string length
+   * and a following continuation cell contributes nothing; a combining
+   * character stays part of its base cell. Concealed cells (SGR 8) become
+   * spaces: their text is not on screen and may not become part of a URL.
+   * Null for a line beyond the scan cap or an `x` that is not on it.
+   */
   function logicalLineAt(buffer, y, x) {
     let first = y;
     while (first > 0 && buffer.getLine(first)?.isWrapped) first--;
+    if (first < 0 || y - first > MAX_LINK_ROWS) return null;
+    const cell = buffer.getNullCell();
     let text = "";
     let offset = -1;
-    for (let row = first; row < buffer.length; row++) {
+    for (let row = first; row < buffer.length && row - first <= MAX_LINK_ROWS; row++) {
       const line = buffer.getLine(row);
       if (!line) return null;
-      if (row === y) offset = text.length + x - 1;
-      text += line.translateToString(true);
+      for (let col = 0; col < line.length; col++) {
+        if (row === y && col === x - 1) offset = text.length;
+        line.getCell(col, cell);
+        const chars = cell.getChars();
+        if (cell.isInvisible?.()) {
+          if (chars.length || cell.getWidth()) text += " ".repeat(Math.max(1, chars.length));
+        } else {
+          text += chars;
+        }
+        if (text.length > MAX_LINK_LINE) return null;
+      }
       if (!buffer.getLine(row + 1)?.isWrapped) break;
     }
     return offset < 0 ? null : { text, offset };
   }
 
-  /** The hovered match must be the whole URL at its offset in the logical
-   *  line, and parse to that candidate's host. */
-  function completeWebLink(buffer, hovered, url) {
-    if (!hovered || hovered.text !== url || !hovered.range) return false;
-    const line = logicalLineAt(buffer, hovered.range.start.y - 1, hovered.range.start.x);
-    if (!line || line.text.slice(line.offset, line.offset + url.length) !== url) return false;
-    const candidate = line.text.slice(line.offset).match(WEB_LINK_CANDIDATE)?.[0];
-    if (candidate !== url) return false;
-    try {
-      return new URL(candidate).host === new URL(url).host;
-    } catch {
-      return false;
+  /** True when any cell holding the matched text (from cell `start`,
+   *  1-based, for `text.length` characters) is concealed with SGR 8. The
+   *  addon's range end is not used: at a line boundary it points at the next
+   *  row's first cell, while the length is exact. */
+  function matchHidesCells(buffer, start, text) {
+    const firstRow = start.y - 1;
+    if (firstRow < 0) return true;
+    const cell = buffer.getNullCell();
+    let remaining = text.length;
+    for (let row = firstRow; remaining > 0 && row - firstRow <= MAX_LINK_ROWS; row++) {
+      const line = buffer.getLine(row);
+      if (!line) return true;
+      for (let col = row === firstRow ? start.x - 1 : 0; col < line.length && remaining > 0; col++) {
+        line.getCell(col, cell);
+        if (cell.isInvisible?.()) return true;
+        if (cell.getWidth()) remaining -= cell.getChars().length || 1;
+      }
     }
+    return remaining > 0;
+  }
+
+  /**
+   * The whitespace/quote-delimited token around the addon's match at
+   * `offset`, without enclosing prose brackets or trailing punctuation.
+   * Brackets only come off when they are unmatched, so an IPv6 host keeps
+   * its `[`/`]`, and balanced parentheses inside a path stay. Null when the
+   * token starts before the match (the addon found a URL inside a larger
+   * token), which would make the target ambiguous.
+   */
+  function linkTokenAt(text, offset, matchLength) {
+    let start = offset;
+    while (start > 0 && !LINK_BREAK.test(text[start - 1])) start--;
+    let end = offset + matchLength;
+    while (end < text.length && !LINK_BREAK.test(text[end])) end++;
+    while (start < offset && TOKEN_OPENERS.includes(text[start])) start++;
+    for (;;) {
+      while (end > start && TOKEN_TRAILING.test(text[end - 1])) end--;
+      const close = text[end - 1];
+      const open = TOKEN_PAIRS[close];
+      if (!open) break;
+      let opens = 0;
+      let closes = 0;
+      for (let i = start; i < end; i++) {
+        if (text[i] === open) opens++;
+        else if (text[i] === close) closes++;
+      }
+      if (closes <= opens) break;
+      end--;
+    }
+    return start === offset && end > offset ? text.slice(start, end) : null;
+  }
+
+  /**
+   * The URL to open for the addon's hovered `url`: the whole token at the
+   * hovered cell range, read from the visible cells. Null when the match is
+   * not exactly there, spans a concealed cell, or the full token is not an
+   * http(s) URL with the same host as the matched text (a bracketed IPv6
+   * match followed by `@other-host` must not open the other host).
+   */
+  function completeWebLink(buffer, hovered, url) {
+    const range = hovered && hovered.range;
+    if (!hovered || hovered.text !== url || !range) return null;
+    const line = logicalLineAt(buffer, range.start.y - 1, range.start.x);
+    if (!line) return null;
+    if (line.text.slice(line.offset, line.offset + url.length) !== url) return null;
+    if (matchHidesCells(buffer, range.start, url)) return null;
+    const token = linkTokenAt(line.text, line.offset, url.length);
+    if (!token || !/^https?:\/\//i.test(token)) return null;
+    try {
+      const matched = new URL(url);
+      const target = new URL(token);
+      if (!/^https?:$/.test(matched.protocol) || !/^https?:$/.test(target.protocol)) return null;
+      if (!target.host || matched.host !== target.host) return null;
+      return token;
+    } catch {
+      return null;
+    }
+  }
+
+  /** A primary click with the platform's link modifier (Cmd on macOS, Ctrl
+   *  elsewhere); checked before the buffer is read. */
+  function linkGesture(event) {
+    if (event.button !== 0) return false;
+    return window.OMP_KEYMAP.detectMac() ? Boolean(event.metaKey) : Boolean(event.ctrlKey);
   }
 
   /**
@@ -165,7 +260,9 @@
       hover(_event, text, range) { hovered = { text, range }; },
     };
     term.loadAddon(new window.WebLinksAddon.WebLinksAddon((event, url) => {
-      if (completeWebLink(term.buffer.active, hovered, url)) onLink(event, url);
+      if (!linkGesture(event)) return;
+      const target = completeWebLink(term.buffer.active, hovered, url);
+      if (target) onLink(event, target);
     }, linkOptions));
     let restartEnter = false;
     term.attachCustomKeyEventHandler((e) => {

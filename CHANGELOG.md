@@ -12,7 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Terminal link clicks only open complete URLs from the visible tab: a long URL truncated at xterm's wrapped-line scan boundary, a bracketed IPv6 URL followed by a hidden authority suffix, or a stale click from an inactive tab's terminal no longer navigates anywhere.
+- Terminal link clicks only open complete URLs from the visible tab: a long URL truncated at xterm's wrapped-line scan boundary, a match inside a larger token, a bracketed IPv6 URL followed by an authority suffix, or a stale click from an inactive tab's terminal no longer navigates anywhere.
+- Terminal link targets are read from the visible cells of the logical wrapped line: concealed (SGR 8) host text never becomes part of a URL, a URL the addon stops at after `(` opens in full, prose brackets stay out of the target, links after wide or combining characters activate, and the modifier is checked before any buffer scan.
 
 ## [0.15.2] - 2026-11-23
 
