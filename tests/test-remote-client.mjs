@@ -307,6 +307,20 @@ await check("streaming views preserve live question input nodes and answer their
   await b.message({ t: "view", view: { ...inner, asks: [] } });
   assert.ok(!b.nodes().some(n => n.tagName === "input"));
 });
+await check("secret phone answers use a password input and leave only a mask after submit", async () => {
+  const b = browser(); await b.connect();
+  const inner = { ...view(false).view, asks: [{ id: "secret", kind: "input", title: "Password", secret: true }] };
+  await b.message({ t: "view", view: inner });
+  const input = b.nodes().find(n => n.tagName === "input");
+  assert.equal(input.type, "password");
+  input.value = "phone-plaintext"; await input.emit("input");
+  await b.button("Answer").emit("click");
+  assert.equal(b.frames.at(-1).value, "phone-plaintext", "the answer still reaches the desktop action");
+  assert.equal(input.value, "••••••••");
+  assert.equal(b.app.textContent.includes("phone-plaintext"), false, "the transcript kept the secret");
+  await b.message({ t: "view", view: { ...inner, asks: [] } });
+  assert.equal(JSON.stringify(inner).includes("phone-plaintext"), false, "the published phone payload contains an answer");
+});
 await check("composer sends prompt, steers with a draft while busy, stops with an empty one", async () => {
   const b = browser(); await b.connect(); await b.message(view());
   const draft = b.nodes().find(n => n.tagName === "textarea");

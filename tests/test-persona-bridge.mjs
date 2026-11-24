@@ -270,6 +270,29 @@ await check("relayed frames reach the transcript and an ask answer goes back thr
   assert.equal(h.commands.length, 0, "the answer did not go through persona_send");
 });
 
+await check("a secret answer reaches omp but only a masked placeholder stays in message state", async () => {
+  const h = bridgeHarness();
+  await flush();
+  await h.bridge.activateSession("ompy");
+  await flush();
+  h.personaLine(500, {
+    type: "extension_ui_request",
+    id: "secret-1",
+    method: "input",
+    title: "Password",
+    secret: true,
+  });
+  const bubble = h.snapshot().messages.find((message) => message.id === "secret-1");
+  assert.equal(bubble.secret, true, "the input lost its password semantics");
+  await h.bridge.answerAsk("secret-1", "plaintext-password");
+  await flush();
+  const answer = h.sent.find((frame) => frame.type === "extension_ui_response" && frame.id === "secret-1");
+  assert.equal(answer.value, "plaintext-password", "omp must still receive the answer");
+  const state = JSON.stringify(h.snapshot().messages);
+  assert.equal(state.includes("plaintext-password"), false, "message state retained the secret");
+  assert.equal(h.snapshot().messages.find((message) => message.id === "secret-1").answer, "••••••••");
+});
+
 await check("a new service generation resets the cursor, re-attaches from 0 and re-sends the opening fetch", async () => {
   const h = bridgeHarness();
   await flush();

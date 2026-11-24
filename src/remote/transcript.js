@@ -145,11 +145,18 @@
         const wrap = node("div", undefined, "ask-other");
         const input = node(controls.multiline ? "textarea" : "input");
         input.className = controls.multiline ? "ask-editor-textarea selectable" : "ask-other-input";
+        if (ask.secret) input.type = "password";
         input.setAttribute("aria-label", ask.title || "Answer");
         input.value = askDrafts.get(key) ?? ask.value ?? "";
         input.addEventListener("input", () => askDrafts.set(key, input.value));
         wrap.append(input);
-        const submit = button(controls.multiline ? "Submit" : "Answer", () => onAnswer(ask.id, input.value));
+        const submit = button(controls.multiline ? "Submit" : "Answer", () => {
+          onAnswer(ask.id, input.value);
+          if (ask.secret) {
+            input.value = "••••••••";
+            askDrafts.set(key, input.value);
+          }
+        });
         submit.className = "ask-submit";
         if (controls.multiline) {
           const cancel = button("Cancel", () => onAnswer(ask.id, null));

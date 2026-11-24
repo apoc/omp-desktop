@@ -32,8 +32,11 @@ pub struct LineEvent<'a> {
     pub text: &'a str,
 }
 
-/// Recursively replace the value of any object key matching [`REDACTED_KEYS`]
-/// with [`REDACTED_PLACEHOLDER`]. A key matches when its normalized form
+/// Recursively replace credential values under object keys matching
+/// [`REDACTED_KEYS`] with [`REDACTED_PLACEHOLDER`]. The exact boolean `secret`
+/// flag of an omp input request survives: it controls password-style UI and
+/// is not itself a secret. Every non-boolean value under that key is still
+/// redacted. A key otherwise matches when its normalized form
 /// *ends with* one of [`REDACTED_KEYS`] — not just when it equals one —
 /// so compound spellings like `x-api-key`/`OPENAI_API_KEY` (normalizing to
 /// `xapikey`/`openaiapikey`, both ending in `apikey`) are caught, without a
@@ -52,7 +55,8 @@ fn sanitize_frame(value: &mut serde_json::Value) -> bool {
     match value {
         serde_json::Value::Object(map) => {
             for (key, val) in map.iter_mut() {
-                if is_credential_key(key) {
+                let secret_flag = key.eq_ignore_ascii_case("secret") && val.is_boolean();
+                if is_credential_key(key) && !secret_flag {
                     *val = serde_json::Value::String(REDACTED_PLACEHOLDER.to_string());
                     redacted = true;
                 } else {
@@ -579,6 +583,22 @@ mod tests {
         );
         // Non-sensitive sibling fields survive untouched.
         assert_eq!(parsed["data"]["model"]["name"], "gpt-5");
+    }
+
+    #[test]
+    fn sanitize_preserves_boolean_secret_flag_and_redacts_secret_values() {
+        let raw = json!({
+            "type": "extension_ui_request",
+            "method": "input",
+            "secret": true,
+            "client_secret": "do-not-leak"
+        })
+        .to_string();
+        let (out, parsed) = sanitize_line(raw.as_bytes());
+        let parsed = parsed.expect("valid JSON parses");
+        assert_eq!(parsed["secret"], true);
+        assert_eq!(parsed["client_secret"], REDACTED_PLACEHOLDER);
+        assert!(!out.contains("do-not-leak"));
     }
 
     #[test]

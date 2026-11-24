@@ -2552,6 +2552,7 @@
       if (ev.method === "input") {
         state.messages = [...state.messages, _askMessage("input", ev, {
           placeholder: ev.placeholder ?? "Enter value…",
+          secret: ev.secret === true,
         })];
         notify();
         return;
@@ -4329,7 +4330,9 @@
      *                        input/editor prompt.
      */
     answerAsk(id, value) {
-      return _resolveAsk(id, { answered: true, answer: value }, { value });
+      const secret = state.messages.some(message => message.kind === "ask" && message.id === id
+        && message.method === "input" && message.secret === true && !message.answered && !message.cancelled);
+      return _resolveAsk(id, { answered: true, answer: secret ? "••••••••" : value }, { value });
     },
 
     /**
