@@ -317,6 +317,9 @@ struct Connection {
     reader: JoinHandle<()>,
 }
 
+// Four independent flags, each toggled by its own message or connection event
+// (relay mute window, outage error dedupe, deliberate stop, shutdown latch).
+#[allow(clippy::struct_excessive_bools)]
 struct Worker {
     paths: Option<Paths>,
     emitter: Arc<dyn Emitter>,
@@ -944,7 +947,9 @@ fn has_open_ask(items: &[InboxItem]) -> bool {
 mod tests {
     use super::{next_backoff, Client, Emitter};
     use crate::test_support::{eventually, TempDir};
-    use interprocess::local_socket::{prelude::*, ListenerNonblockingMode, ListenerOptions};
+    use interprocess::local_socket::{
+        prelude::*, ListenerNonblockingMode, ListenerOptions, Stream,
+    };
     use interprocess::TryClone;
     use omp_desktop_core::persona_paths::{ensure_private_dir, socket_name, Paths};
     use omp_desktop_core::persona_protocol::{
@@ -1104,6 +1109,75 @@ mod tests {
         #[cfg(not(windows))]
         let _ = tag;
         paths
+    }
+
+    /// The relayed turn frame the detach tests key their ordering on.
+    const AGENT_START: &str = r#"{"type":"agent_start"}"#;
+
+    fn raw_frame(json: &str) -> Box<serde_json::value::RawValue> {
+        serde_json::value::RawValue::from_string(json.to_owned()).unwrap()
+    }
+
+    /// Position of the `n`-th recorded event called `name`.
+    fn nth_event(events: &[(String, Value)], name: &str, n: usize) -> Option<usize> {
+        events
+            .iter()
+            .enumerate()
+            .filter(|(_, (event, _))| event == name)
+            .map(|(index, _)| index)
+            .nth(n)
+    }
+
+    /// A client against a fake service that has already greeted it: status,
+    /// empty inbox and one relayed `agent_start`, reported as `busy`. `script`
+    /// speaks for the service from there; the returned `TempDir` must stay
+    /// alive for the test's duration.
+    fn relay_client(
+        name: &str,
+        script: impl FnOnce(&mut Stream) + Send + 'static,
+    ) -> (TempDir, Arc<Recorder>, Client, std::thread::JoinHandle<()>) {
+        let temp = TempDir::new("pc", name);
+        let paths = test_paths(&temp, name);
+        ensure_private_dir(&paths.persona).unwrap();
+        let listener = ListenerOptions::new()
+            .name(socket_name(&paths).unwrap())
+            .create_sync()
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let _hello = read_client(stream.try_clone().unwrap());
+            write_msg(&mut stream, &ServerMsg::Hello { protocol: 1 }).unwrap();
+            write_msg(
+                &mut stream,
+                &ServerMsg::Status {
+                    status: daytime_status(),
+                },
+            )
+            .unwrap();
+            write_msg(&mut stream, &ServerMsg::Inbox { items: vec![] }).unwrap();
+            write_msg(
+                &mut stream,
+                &ServerMsg::Rpc {
+                    seq: 1,
+                    frame: raw_frame(AGENT_START),
+                },
+            )
+            .unwrap();
+            script(&mut stream);
+        });
+        let events = Arc::new(Recorder::default());
+        let client = Client::start(paths, events.clone());
+        let busy = eventually(Duration::from_secs(3), || {
+            events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(name, payload)| name == "activity" && payload["busy"] == true)
+                .then_some(())
+        });
+        assert!(busy.is_some(), "the relayed turn never reported busy");
+        (temp, events, client, server)
     }
 
     #[test]
@@ -1404,34 +1478,7 @@ mod tests {
     /// be the old send-time clear.
     #[test]
     fn client_keeps_busy_until_the_detach_reply_arrives() {
-        let temp = TempDir::new("pc", "det-ack");
-        let paths = test_paths(&temp, "det-ack");
-        ensure_private_dir(&paths.persona).unwrap();
-        let listener = ListenerOptions::new()
-            .name(socket_name(&paths).unwrap())
-            .create_sync()
-            .unwrap();
-        let server = std::thread::spawn(move || {
-            let mut stream = listener.accept().unwrap();
-            let _hello = read_client(stream.try_clone().unwrap());
-            write_msg(&mut stream, &ServerMsg::Hello { protocol: 1 }).unwrap();
-            write_msg(
-                &mut stream,
-                &ServerMsg::Status {
-                    status: daytime_status(),
-                },
-            )
-            .unwrap();
-            write_msg(&mut stream, &ServerMsg::Inbox { items: vec![] }).unwrap();
-            let frame = |value: Value| serde_json::value::RawValue::from_string(value.to_string());
-            write_msg(
-                &mut stream,
-                &ServerMsg::Rpc {
-                    seq: 1,
-                    frame: frame(serde_json::json!({"type":"agent_start"})).unwrap(),
-                },
-            )
-            .unwrap();
+        let (_temp, events, client, server) = relay_client("det-ack", |stream| {
             let request = read_client(stream.try_clone().unwrap());
             assert!(
                 matches!(&request.body, ClientMsg::Detach),
@@ -1439,7 +1486,7 @@ mod tests {
             );
             // The detach is in flight: still busy, no reset yet.
             write_msg(
-                &mut stream,
+                stream,
                 &ServerMsg::Status {
                     status: daytime_status(),
                 },
@@ -1447,7 +1494,7 @@ mod tests {
             .unwrap();
             std::thread::sleep(Duration::from_millis(100));
             write_msg(
-                &mut stream,
+                stream,
                 &ServerMsg::Reply {
                     req: request.req.expect("detach carries a req"),
                     ok: true,
@@ -1458,18 +1505,6 @@ mod tests {
             .unwrap();
             std::thread::sleep(Duration::from_millis(300));
         });
-        let events = Arc::new(Recorder::default());
-        let client = Client::start(paths, events.clone());
-        let busy = eventually(Duration::from_secs(3), || {
-            events
-                .0
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(name, payload)| name == "activity" && payload["busy"] == true)
-                .then_some(())
-        });
-        assert!(busy.is_some(), "the relayed turn never reported busy");
         client
             .handle()
             .request(ClientMsg::Detach)
@@ -1479,13 +1514,8 @@ mod tests {
             let reset = events
                 .iter()
                 .position(|(name, payload)| name == "activity" && payload["busy"] == false)?;
-            let statuses: Vec<usize> = events
-                .iter()
-                .enumerate()
-                .filter(|(_, (name, _))| name == "status")
-                .map(|(index, _)| index)
-                .collect();
-            let marker = *statuses.get(1)?;
+            let marker = nth_event(&events, "status", 1)?;
+            drop(events);
             (reset > marker).then_some(())
         });
         assert!(
@@ -1503,34 +1533,7 @@ mod tests {
     /// `agent_start` from re-setting `busy` and from reaching the webview.
     #[test]
     fn client_drops_relay_frames_after_the_detach_request() {
-        let temp = TempDir::new("pc", "det-stale");
-        let paths = test_paths(&temp, "det-stale");
-        ensure_private_dir(&paths.persona).unwrap();
-        let listener = ListenerOptions::new()
-            .name(socket_name(&paths).unwrap())
-            .create_sync()
-            .unwrap();
-        let server = std::thread::spawn(move || {
-            let mut stream = listener.accept().unwrap();
-            let _hello = read_client(stream.try_clone().unwrap());
-            write_msg(&mut stream, &ServerMsg::Hello { protocol: 1 }).unwrap();
-            write_msg(
-                &mut stream,
-                &ServerMsg::Status {
-                    status: daytime_status(),
-                },
-            )
-            .unwrap();
-            write_msg(&mut stream, &ServerMsg::Inbox { items: vec![] }).unwrap();
-            let frame = |value: Value| serde_json::value::RawValue::from_string(value.to_string());
-            write_msg(
-                &mut stream,
-                &ServerMsg::Rpc {
-                    seq: 1,
-                    frame: frame(serde_json::json!({"type":"agent_start"})).unwrap(),
-                },
-            )
-            .unwrap();
+        let (_temp, events, client, server) = relay_client("det-stale", |stream| {
             let request = read_client(stream.try_clone().unwrap());
             assert!(
                 matches!(&request.body, ClientMsg::Detach),
@@ -1539,15 +1542,15 @@ mod tests {
             // Relay frames the service had already queued when the detach
             // arrived, before its acknowledgement.
             write_msg(
-                &mut stream,
+                stream,
                 &ServerMsg::Rpc {
                     seq: 2,
-                    frame: frame(serde_json::json!({"type":"agent_start"})).unwrap(),
+                    frame: raw_frame(AGENT_START),
                 },
             )
             .unwrap();
             write_msg(
-                &mut stream,
+                stream,
                 &ServerMsg::Reply {
                     req: request.req.expect("detach carries a req"),
                     ok: true,
@@ -1558,16 +1561,16 @@ mod tests {
             .unwrap();
             // A straggler after the reply must not revive the relay either.
             write_msg(
-                &mut stream,
+                stream,
                 &ServerMsg::Rpc {
                     seq: 3,
-                    frame: frame(serde_json::json!({"type":"agent_start"})).unwrap(),
+                    frame: raw_frame(AGENT_START),
                 },
             )
             .unwrap();
             // Marker for "the reply was processed".
             write_msg(
-                &mut stream,
+                stream,
                 &ServerMsg::Status {
                     status: daytime_status(),
                 },
@@ -1575,18 +1578,6 @@ mod tests {
             .unwrap();
             std::thread::sleep(Duration::from_millis(300));
         });
-        let events = Arc::new(Recorder::default());
-        let client = Client::start(paths, events.clone());
-        let busy = eventually(Duration::from_secs(3), || {
-            events
-                .0
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(name, payload)| name == "activity" && payload["busy"] == true)
-                .then_some(())
-        });
-        assert!(busy.is_some(), "the relayed turn never reported busy");
         client
             .handle()
             .request(ClientMsg::Detach)
@@ -1596,12 +1587,8 @@ mod tests {
             let reset = events
                 .iter()
                 .position(|(name, payload)| name == "activity" && payload["busy"] == false)?;
-            let marker = events
-                .iter()
-                .enumerate()
-                .filter(|(_, (name, _))| name == "status")
-                .map(|(index, _)| index)
-                .nth(1)?;
+            let marker = nth_event(&events, "status", 1)?;
+            drop(events);
             (reset < marker).then_some(())
         });
         assert!(
@@ -1621,6 +1608,7 @@ mod tests {
                 .filter(|(name, _)| name == "activity")
                 .map(|(_, payload)| payload["busy"].as_bool().unwrap())
                 .collect();
+            drop(events);
             (lines, activity)
         };
         assert_eq!(
@@ -1644,41 +1632,14 @@ mod tests {
     /// not swallow the next session's frames.
     #[test]
     fn client_resumes_relay_frames_after_attach() {
-        let temp = TempDir::new("pc", "det-reattach");
-        let paths = test_paths(&temp, "det-reattach");
-        ensure_private_dir(&paths.persona).unwrap();
-        let listener = ListenerOptions::new()
-            .name(socket_name(&paths).unwrap())
-            .create_sync()
-            .unwrap();
-        let server = std::thread::spawn(move || {
-            let mut stream = listener.accept().unwrap();
-            let _hello = read_client(stream.try_clone().unwrap());
-            write_msg(&mut stream, &ServerMsg::Hello { protocol: 1 }).unwrap();
-            write_msg(
-                &mut stream,
-                &ServerMsg::Status {
-                    status: daytime_status(),
-                },
-            )
-            .unwrap();
-            write_msg(&mut stream, &ServerMsg::Inbox { items: vec![] }).unwrap();
-            let frame = |value: Value| serde_json::value::RawValue::from_string(value.to_string());
-            write_msg(
-                &mut stream,
-                &ServerMsg::Rpc {
-                    seq: 1,
-                    frame: frame(serde_json::json!({"type":"agent_start"})).unwrap(),
-                },
-            )
-            .unwrap();
+        let (_temp, events, client, server) = relay_client("det-reattach", |stream| {
             let detach = read_client(stream.try_clone().unwrap());
             assert!(
                 matches!(&detach.body, ClientMsg::Detach),
                 "expected the detach request"
             );
             write_msg(
-                &mut stream,
+                stream,
                 &ServerMsg::Reply {
                     req: detach.req.expect("detach carries a req"),
                     ok: true,
@@ -1693,7 +1654,7 @@ mod tests {
                 "expected the attach request"
             );
             write_msg(
-                &mut stream,
+                stream,
                 &ServerMsg::Reply {
                     req: attach.req.expect("attach carries a req"),
                     ok: true,
@@ -1703,27 +1664,15 @@ mod tests {
             )
             .unwrap();
             write_msg(
-                &mut stream,
+                stream,
                 &ServerMsg::Rpc {
                     seq: 2,
-                    frame: frame(serde_json::json!({"type":"agent_start"})).unwrap(),
+                    frame: raw_frame(AGENT_START),
                 },
             )
             .unwrap();
             std::thread::sleep(Duration::from_millis(300));
         });
-        let events = Arc::new(Recorder::default());
-        let client = Client::start(paths, events.clone());
-        let busy = eventually(Duration::from_secs(3), || {
-            events
-                .0
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(name, payload)| name == "activity" && payload["busy"] == true)
-                .then_some(())
-        });
-        assert!(busy.is_some(), "the relayed turn never reported busy");
         client
             .handle()
             .request(ClientMsg::Detach)

@@ -583,29 +583,23 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_fifo_at_the_instructions_path_never_blocks_the_read() {
-        use std::process::Command;
+        use std::os::unix::ffi::OsStrExt;
         use std::sync::mpsc;
 
         let dir = omp_desktop_core::test_support::tempdir("omp-desktopd", "instructions-fifo");
         let path = dir.join("fifo");
-        let made = Command::new("mkfifo")
-            .arg(&path)
-            .status()
-            .is_ok_and(|status| status.success());
-        if !made {
-            // No `mkfifo` on this system; the regular-file checks still apply.
-            std::fs::remove_dir_all(&dir).unwrap();
-            return;
-        }
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `c_path` is a valid NUL-terminated path in a directory we own.
+        let made = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+        assert_eq!(made, 0, "could not create the FIFO at {}", path.display());
         let (tx, rx) = mpsc::channel();
-        let worker_path = path.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(read_instructions(&worker_path));
+            let _ = tx.send(read_instructions(&path));
         });
-        match rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(result) => assert!(result.is_err(), "a FIFO is not a regular file"),
-            Err(_) => panic!("reading a FIFO must never block the core thread"),
-        }
+        let result = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("reading a FIFO must never block the core thread");
+        assert!(result.is_err(), "a FIFO is not a regular file");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

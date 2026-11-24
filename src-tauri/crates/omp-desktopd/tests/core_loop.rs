@@ -1747,14 +1747,14 @@ fn omp_gets_a_bounded_snapshot_instead_of_the_user_file() {
         "content past the cap is never omp's system prompt"
     );
 
-    let log = std::fs::read_to_string(&h.log).unwrap_or_default();
+    let spawn_log = std::fs::read_to_string(&h.log).unwrap_or_default();
     assert!(
-        log.contains(&snapshot.display().to_string()),
-        "omp is spawned with the snapshot path: {log}"
+        spawn_log.contains(&snapshot.display().to_string()),
+        "omp is spawned with the snapshot path: {spawn_log}"
     );
     assert!(
-        !log.contains(&h.instructions.display().to_string()),
-        "omp must never be pointed at the user's unbounded file: {log}"
+        !spawn_log.contains(&h.instructions.display().to_string()),
+        "omp must never be pointed at the user's unbounded file: {spawn_log}"
     );
 
     // A change past the cap is not a change omp could see, so it neither
