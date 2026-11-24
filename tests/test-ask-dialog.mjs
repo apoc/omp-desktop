@@ -369,6 +369,11 @@ check("collapsedSummary: cancellation and omp-side timeout keep their status wor
     { answer: null, answerCount: null, status: "closed by omp", prompt: "Continue?", negative: true });
 });
 
+check("collapsedSummary: a superseded request says so instead of reading as cancelled", () => {
+  assert.deepEqual(A.collapsedSummary({ title: "Authorization code", answered: false, cancelled: true, superseded: true }),
+    { answer: null, answerCount: null, status: "superseded", prompt: "Authorization code", negative: true });
+});
+
 // ── selectRows: the rows of a `select` request ──────────────────────────
 const row = (label, mark, role, checked, picked = false) => ({ label, mark, role, checked, picked });
 const radios = (...labels) => labels.map(l => row(l, "radio", "radio", false));

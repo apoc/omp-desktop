@@ -896,6 +896,7 @@ window.OMP_I18N.add("zh", {
   "Stop": "停止",
   "closed by omp": "由 omp 关闭",
   "cancelled": "已取消",
+  "superseded": "已被新请求取代",
   "Outside the project: no preview": "项目之外：无法预览",
   "install & restart": "安装并重启",
   "also bound to “": "也绑定到“",

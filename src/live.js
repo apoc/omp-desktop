@@ -573,7 +573,11 @@
   // own queue entry and the survivor still answers on the wire; a tab
   // switch mid-buffer keeps the ask in the originating session).
   function _queueAskBubble(msg) {
+    // A reused id replaces the earlier request; close what is still open
+    // under it before the replacement surfaces (see _supersedeAsk).
+    const superseded = _supersedeAsk(msg.id);
     pendingAskBubbles.push(msg);
+    if (superseded) notify();
     if (pendingAskFlushTimer === null) {
       pendingAskFlushTimer = setTimeout(() => {
         pendingAskFlushTimer = null;
@@ -597,6 +601,41 @@
       clearTimeout(pendingAskFlushTimer);
       pendingAskFlushTimer = null;
     }
+  }
+
+  // omp may send a replacement request under an id it already used. The
+  // earlier bubble then has no request behind it: answering it would send
+  // the id's response for the NEW request, and `_settleAsk` patches every
+  // match. Close it as superseded instead — `cancelled` keeps it out of
+  // runStateOf's `waiting-user` and disables its controls — and drop a copy
+  // still waiting in the buffer, which `_flushAskBubbles` would otherwise
+  // surface as a second answerable bubble. Returns whether anything changed.
+  function _supersedeAsk(id) {
+    if (id === undefined || id === null) return false;
+    let changed = false;
+    if (pendingAskBubbles.some(m => m.id === id)) {
+      pendingAskBubbles = pendingAskBubbles.filter(m => m.id !== id);
+      if (pendingAskBubbles.length === 0) _disarmAskFlush();
+      changed = true;
+    }
+    let closed = false;
+    const next = state.messages.map(m => {
+      if (m.kind === "ask" && m.id === id && !m.answered && !m.cancelled) {
+        closed = true;
+        return { ...m, cancelled: true, superseded: true };
+      }
+      return m;
+    });
+    if (closed) state.messages = next;
+    return changed || closed;
+  }
+
+  // Push an ask bubble with no tool card to order it against, after closing
+  // the earlier bubble a reused request id replaces. Publishes.
+  function _appendAsk(msg) {
+    _supersedeAsk(msg.id);
+    state.messages = [...state.messages, msg];
+    notify();
   }
 
   // Settle a pending ask bubble: apply `patch` to the first unanswered,
@@ -2550,11 +2589,10 @@
       // Wire shape: request carries {title, placeholder}, response is
       // {value: <text>} or {cancelled: true}.
       if (ev.method === "input") {
-        state.messages = [...state.messages, _askMessage("input", ev, {
+        _appendAsk(_askMessage("input", ev, {
           placeholder: ev.placeholder ?? "Enter value…",
           secret: ev.secret === true,
-        })];
-        notify();
+        }));
         return;
       }
       // Agent asks the user to pick one option: every tool-approval prompt
@@ -2594,10 +2632,9 @@
       // request carries {title, message}, response is {confirmed: bool}
       // (not {value} — see OMP_BRIDGE.answerConfirm).
       if (ev.method === "confirm") {
-        state.messages = [...state.messages, _askMessage("confirm", ev, {
+        _appendAsk(_askMessage("confirm", ev, {
           message: ev.message ?? "",
-        })];
-        notify();
+        }));
         return;
       }
       // Multi-line text editor dialog. Pushed directly — see the `input`
@@ -2605,10 +2642,9 @@
       // omp binary: request carries {title, prefill}, response is
       // {value: <text>} (same shape as select/input) or {cancelled: true}.
       if (ev.method === "editor") {
-        state.messages = [...state.messages, _askMessage("editor", ev, {
+        _appendAsk(_askMessage("editor", ev, {
           prefill: ev.prefill ?? "",
-        })];
-        notify();
+        }));
         return;
       }
       // Agent cancelled a pending UI request (e.g. turn aborted while waiting for input).

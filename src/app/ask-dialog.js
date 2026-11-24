@@ -162,7 +162,8 @@
     const source = nonBlank(msg.title) ?? nonBlank(msg.message) ?? msg.questions?.[0]?.question ?? "";
     const prompt = String(source).trimStart().split(/\r?\n/, 1)[0].trim();
     if (msg.cancelled) {
-      return { answer: null, answerCount: null, status: msg.closedByOmp ? "closed by omp" : "cancelled", prompt, negative: true };
+      const status = msg.superseded ? "superseded" : msg.closedByOmp ? "closed by omp" : "cancelled";
+      return { answer: null, answerCount: null, status, prompt, negative: true };
     }
 
     let answer = nonBlank(msg.answer);

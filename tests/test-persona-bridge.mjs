@@ -208,6 +208,10 @@ function bridgeHarness({ generation = 1 } = {}) {
   const personaLine = (seq, frame) =>
     listeners.get("persona://line/ompy")?.({ payload: { seq, text: JSON.stringify(frame) } });
   emitPersona = personaLine;
+  // A spawned project tab's stdout, same envelope shape minus the journal
+  // cursor (handleLine dispatches unnumbered envelopes).
+  const sessionLine = (id, frame) =>
+    listeners.get(`agent://line/${id}`)?.({ payload: { text: JSON.stringify(frame) } });
   const personaStatus = (next) => {
     // A new generation: stop answering the opening commands, so the reset
     // cursor stays at 0 and a low sequence number proves it.
@@ -223,6 +227,7 @@ function bridgeHarness({ generation = 1 } = {}) {
     layouts,
     personaLine,
     personaStatus,
+    sessionLine,
     snapshot: () => snapshot,
     count: (command) => invocations.filter((call) => call.command === command).length,
     attachCalls: () =>
@@ -363,6 +368,67 @@ await check("Ompy is not a tab: close is refused, the layout omits it and _sendT
     false,
     "_sendToAll sent a command to Ompy",
   );
+});
+
+await check("a replacement request reusing an id closes the earlier Ompy bubble so only the new one answers", async () => {
+  const h = bridgeHarness();
+  await flush();
+  await h.bridge.activateSession("ompy");
+  await flush();
+  h.personaLine(500, { type: "extension_ui_request", id: "reuse-1", method: "input", title: "Authorization code", placeholder: "first" });
+  assert.equal(h.snapshot().messages.filter((message) => message.id === "reuse-1").length, 1);
+  h.personaLine(501, { type: "extension_ui_request", id: "reuse-1", method: "input", title: "Authorization code", placeholder: "second" });
+  const bubbles = h.snapshot().messages.filter((message) => message.id === "reuse-1");
+  assert.equal(bubbles.length, 2, "the replacement arrived as its own bubble");
+  assert.equal(bubbles[0].cancelled, true, "the earlier bubble is closed");
+  assert.equal(bubbles[0].superseded, true, "the earlier bubble says why it closed");
+  assert.equal(bubbles[1].cancelled, false, "the replacement stays answerable");
+  assert.equal(bubbles[1].placeholder, "second");
+  const sentBefore = h.sent.length;
+  await h.bridge.answerAsk("reuse-1", "123456");
+  await flush();
+  const answers = h.sent.slice(sentBefore).filter((frame) => frame.type === "extension_ui_response");
+  assert.deepEqual(answers.map((frame) => frame.value), ["123456"], "exactly one answer went to omp");
+  const settled = h.snapshot().messages.filter((message) => message.id === "reuse-1");
+  assert.equal(settled[0].answer, null, "the superseded bubble kept no answer");
+  assert.equal(settled[1].answer, "123456");
+});
+
+await check("a re-sent select under the same id replaces the buffered prompt instead of shadowing it", async () => {
+  const h = bridgeHarness();
+  await flush();
+  await h.bridge.activateSession("ompy");
+  await flush();
+  h.personaLine(500, { type: "extension_ui_request", id: "sel-1", method: "select", title: "Allow tool: bash", options: ["Approve", "Deny"] });
+  h.personaLine(501, { type: "extension_ui_request", id: "sel-1", method: "select", title: "Allow tool: read", options: ["Approve", "Deny"] });
+  assert.equal(h.snapshot().messages.filter((message) => message.id === "sel-1").length, 0, "both are buffered");
+  h.personaLine(502, { type: "tool_execution_start", toolCallId: "call-1", toolName: "bash", args: {} });
+  const bubbles = h.snapshot().messages.filter((message) => message.id === "sel-1");
+  assert.equal(bubbles.length, 1, "the replaced buffered prompt never surfaced");
+  assert.equal(bubbles[0].title, "Allow tool: read");
+  assert.equal(bubbles[0].cancelled, false);
+});
+
+await check("a project tab closes the earlier ask when a request id is reused", async () => {
+  const h = bridgeHarness();
+  await flush();
+  const id = await h.bridge.openSession("/project");
+  await h.bridge.activateSession(id);
+  await flush();
+  h.sessionLine(id, { type: "extension_ui_request", id: "tab-1", method: "confirm", title: "Overwrite file?", message: "first" });
+  assert.equal(h.snapshot().messages.filter((message) => message.kind === "ask" && message.id === "tab-1").length, 1);
+  h.sessionLine(id, { type: "extension_ui_request", id: "tab-1", method: "confirm", title: "Overwrite file?", message: "second" });
+  const bubbles = h.snapshot().messages.filter((message) => message.kind === "ask" && message.id === "tab-1");
+  assert.equal(bubbles.length, 2, "the replacement arrived as its own bubble");
+  assert.deepEqual(bubbles.map((message) => !!message.cancelled), [true, false]);
+  assert.equal(bubbles[0].superseded, true);
+  const before = h.commands.length;
+  await h.bridge.answerConfirm("tab-1", true);
+  await flush();
+  const replies = h.commands.slice(before).filter((command) => command.type === "extension_ui_response");
+  assert.deepEqual(replies.map((command) => [command.id, command.confirmed]), [["tab-1", true]]);
+  const settled = h.snapshot().messages.filter((message) => message.kind === "ask" && message.id === "tab-1");
+  assert.deepEqual(settled.map((message) => !!message.answered), [false, true]);
 });
 
 console.log(`test-persona-bridge: ${passed} checks passed`);
