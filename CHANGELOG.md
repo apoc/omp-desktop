@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Terminal URLs are underlined on hover and open with Cmd+click on macOS or Ctrl+click on Windows/Linux. Localhost links can open in the tab's browser panel; other links use the system browser, as do local links with Shift held.
 
+### Fixed
+
+- Terminal link clicks only open complete URLs from the visible tab: a long URL truncated at xterm's wrapped-line scan boundary, a bracketed IPv6 URL followed by a hidden authority suffix, or a stale click from an inactive tab's terminal no longer navigates anywhere.
+
 ## [0.15.2] - 2026-11-23
 
 ### Changed

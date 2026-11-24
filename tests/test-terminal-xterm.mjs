@@ -109,26 +109,36 @@ check("createXterm loads web links with the terminal's activation handler", () =
   const links = term.addons.find((addon) => addon instanceof FakeWebLinks);
   assert.ok(links, "web-links addon loaded");
   const event = { button: 0, metaKey: true };
-  links.handler(event, "https://example.com/");
-  assert.deepEqual(opened, [[event, "https://example.com/"]]);
+  const url = "https://example.com/";
+  const provide = realProvider([url], links.options, links.handler, term);
+  const link = provide()[0];
+  link.hover(event, link.text, link.range);
+  link.activate(event, url);
+  assert.deepEqual(opened, [[event, url]]);
 });
 
 /** Run the real vendored provider against fixed-width wrapped buffer lines. */
-function realProvider(lines, options, activate) {
-  const bufferLines = lines.map((text, index) => ({
-    length: text.length,
-    isWrapped: index > 0,
-    translateToString: () => text,
-    getCell(x, cell) { cell.chars = text[x] ?? ""; cell.width = 1; },
-  }));
+function realProvider(lines, options, activate, term) {
+  const bufferLines = lines.map((entry, index) => {
+    const text = typeof entry === "string" ? entry : entry.text;
+    const isWrapped = typeof entry === "string" ? index > 0 : entry.isWrapped;
+    return {
+      length: text.length,
+      isWrapped,
+      translateToString: () => text,
+      getCell(x, cell) { cell.chars = text[x] ?? ""; cell.width = 1; },
+    };
+  });
   let provider;
   const terminal = {
     buffer: { active: {
+      length: lines.length,
       getLine: (index) => bufferLines[index],
       getNullCell: () => ({ chars: "", width: 0, getChars() { return this.chars; }, getWidth() { return this.width; } }),
     } },
     registerLinkProvider(p) { provider = p; return { dispose() {} }; },
   };
+  if (term) term.buffer = terminal.buffer;
   new RealWebLinksAddon(activate, options).activate(terminal);
   return (y = 1) => {
     let links;
@@ -141,25 +151,63 @@ check("a URL truncated by the real addon's wrapped-line scan never activates", (
   const opened = [];
   const { term } = make({ onLink: (event, url) => opened.push(url) });
   const addon = term.addons.find((candidate) => candidate instanceof FakeWebLinks);
-  const url = `http://localhost:3000/${"a".repeat(3500)}`;
+  const prefix = "https://example.test/path";
+  const url = `${prefix}${".".repeat(2300)}tail`;
+  assert.equal(url.length, 2329);
   const lines = url.match(/.{1,100}/g);
-  const provide = realProvider(lines, addon.options, addon.handler);
+  const provide = realProvider(lines, addon.options, addon.handler, term);
   const links = provide();
   assert.equal(links.length, 1);
-  assert.ok(links[0].text.length < url.length, "fixture exceeds the addon's 2048-character forward scan");
+  assert.equal(links[0].text, prefix, "the addon strips dots at its 2048-character scan boundary");
+  links[0].hover({}, links[0].text, links[0].range);
   links[0].activate({ button: 0, metaKey: true }, links[0].text);
   assert.deepEqual(opened, []);
 });
 
-check("the real addon matches bracketed IPv6 URLs", () => {
-  const { term } = make();
-  const { options } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+check("duplicate complete URLs activate at the hovered occurrence", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://example.test/same";
+  const provide = realProvider([
+    { text: url, isWrapped: false },
+    { text: url, isWrapped: false },
+  ], options, handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, [url]);
+});
+
+check("the real addon matches and activates complete bracketed IPv6 URLs", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
   for (const url of ["http://[::1]", "http://[::1]/", "https://[2001:db8::1]:8443/path?q=1"]) {
-    const provide = realProvider([url], options, () => {});
+    const provide = realProvider([url], options, handler, term);
     const links = provide();
     assert.equal(links.length, 1, url);
     assert.equal(links[0].text, url);
+    links[0].hover({}, links[0].text, links[0].range);
+    links[0].activate({ button: 0, metaKey: true }, links[0].text);
   }
+  assert.deepEqual(opened, ["http://[::1]", "http://[::1]/", "https://[2001:db8::1]:8443/path?q=1"]);
+});
+
+check("a bracketed IPv6 match never drops a following URL authority", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const candidate = "http://[2001:db8::1]@example.test/page";
+  const provide = realProvider([candidate], options, handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, "http://[2001:db8::1]");
+  assert.equal(new URL(candidate).host, "example.test");
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, []);
 });
 
 check("createXterm: scrollback from the terminalScrollback tweak", () => {

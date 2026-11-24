@@ -91,13 +91,47 @@
   }
 
   // The addon scans at most 2048 characters forwards and backwards through
-  // wrapped lines. A match that reaches that limit may be only a URL prefix;
-  // never navigate to it. Its stock expression also rejects a final `]`, so
-  // the first alternative covers bracketed IPv6 (with optional port/path).
-  const WEB_LINK_SCAN_LIMIT = 2048;
+  // wrapped lines and may return only a prefix. Its stock expression also
+  // rejects a final `]`, so the first alternative covers bracketed IPv6
+  // (with optional port/path).
   const WEB_LINK_OPTIONS = {
     urlRegex: /(https?|HTTPS?):[/]{2}(?:\[[\da-fA-F:.]+\](?::\d+)?(?:[/?#](?:[^\s"'!*(){}|\\\^<>`]*[^\s"':,.!?{}|\\\^~\[\]`()<>])?)?|[^\s"'!*(){}|\\\^<>`]*[^\s"':,.!?{}|\\\^~\[\]`()<>])/,
   };
+  // Unlike the addon's IPv6 alternative, this also accepts a final `]` so
+  // the candidate can be compared with the addon's match.
+  const WEB_LINK_CANDIDATE = /^(?:https?|HTTPS?):[/]{2}[^\s"'!*(){}|\\\^<>`]*[^\s"':,.!?{}|\\\^~`()<>]/;
+
+  /** The logical (wrapped) line around `y`, and `x`'s offset in it (both
+   *  buffer coordinates: y 0-based, x 1-based). */
+  function logicalLineAt(buffer, y, x) {
+    let first = y;
+    while (first > 0 && buffer.getLine(first)?.isWrapped) first--;
+    let text = "";
+    let offset = -1;
+    for (let row = first; row < buffer.length; row++) {
+      const line = buffer.getLine(row);
+      if (!line) return null;
+      if (row === y) offset = text.length + x - 1;
+      text += line.translateToString(true);
+      if (!buffer.getLine(row + 1)?.isWrapped) break;
+    }
+    return offset < 0 ? null : { text, offset };
+  }
+
+  /** The hovered match must be the whole URL at its offset in the logical
+   *  line, and parse to that candidate's host. */
+  function completeWebLink(buffer, hovered, url) {
+    if (!hovered || hovered.text !== url || !hovered.range) return false;
+    const line = logicalLineAt(buffer, hovered.range.start.y - 1, hovered.range.start.x);
+    if (!line || line.text.slice(line.offset, line.offset + url.length) !== url) return false;
+    const candidate = line.text.slice(line.offset).match(WEB_LINK_CANDIDATE)?.[0];
+    if (candidate !== url) return false;
+    try {
+      return new URL(candidate).host === new URL(url).host;
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * A new xterm and its fit addon. `tryRestart()` is asked on an Enter
@@ -125,9 +159,14 @@
     term.parser.registerOscHandler(8, () => true);
     const fit = new window.FitAddon.FitAddon();
     term.loadAddon(fit);
+    let hovered = null;
+    const linkOptions = {
+      ...WEB_LINK_OPTIONS,
+      hover(_event, text, range) { hovered = { text, range }; },
+    };
     term.loadAddon(new window.WebLinksAddon.WebLinksAddon((event, url) => {
-      if (url.length < WEB_LINK_SCAN_LIMIT) onLink(event, url);
-    }, WEB_LINK_OPTIONS));
+      if (completeWebLink(term.buffer.active, hovered, url)) onLink(event, url);
+    }, linkOptions));
     let restartEnter = false;
     term.attachCustomKeyEventHandler((e) => {
       if (e.key === "Enter" && restartEnter) {

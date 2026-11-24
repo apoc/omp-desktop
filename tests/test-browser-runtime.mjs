@@ -458,16 +458,18 @@ test("hook: a stale open completion cannot release the newer tab's queued resize
   assert.deepEqual(closed, ["old", "new"]);
 });
 
-test("hook: a retained terminal opener still targets its originating tab", async () => {
+test("hook: a retained terminal opener ignores clicks from an inactive tab", async () => {
   const { React, render, unmount } = fakeReact();
   const window = { OMP_BROWSER_SCREEN: { createScreen: () => ({ frame() {}, destroy() {}, size: () => ({ width: 1, height: 1, dpr: 1 }) }) } };
   loadHelpers(window);
   const useBrowser = runInNewContext(source("src/app/use-browser.jsx") + "\nuseBrowser", { window, React });
   const navigated = [];
+  const external = [];
   const bridge = {
     browserOpenPanel: () => Promise.resolve(),
     browserNavigate: (...args) => navigated.push(args),
     browserClosePanel() {},
+    openExternalUrl: (url) => { external.push(url); return Promise.resolve({ ok: true }); },
   };
   const openBy = {};
   const show = (sid) => render(() => useBrowser({
@@ -479,7 +481,10 @@ test("hook: a retained terminal opener still targets its originating tab", async
   const retained = ui.openLink;
   ui = show("b");
   retained("a", "http://localhost:3000/from-a", false);
-  assert.deepEqual(navigated, [["a", "http://localhost:3000/from-a"]]);
+  retained("a", "https://example.test/from-a", true);
+  await flush();
+  assert.deepEqual(navigated, []);
+  assert.deepEqual(external, []);
   assert.equal(openBy.b, undefined, "the active tab's panel is not opened");
 
   openBy.a = true;
@@ -488,7 +493,7 @@ test("hook: a retained terminal opener still targets its originating tab", async
   ui.viewRef.current = {};
   ui.sinkRef.current = {};
   await flush();
-  assert.deepEqual(navigated, [["a", "http://localhost:3000/from-a"]]);
+  assert.deepEqual(navigated, []);
   unmount();
 });
 

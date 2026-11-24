@@ -199,6 +199,8 @@ function useBrowser({ bridge, activeSessionId, sessionIds, open: shown, setOpen,
   const localLinks = (tweaks?.browserLocalhostInPanel ?? true) && Boolean(sid);
   const openLink = React.useRef(null);
   openLink.current = (targetSid, url, external) => {
+    // A terminal can retain a callback after its tab loses visibility.
+    if (targetSid !== sid) return;
     if (!external) return openUrl(url, targetSid);
     Promise.resolve(bridge?.openExternalUrl(url)).then(
       (res) => { if (res && !res.ok) console.error("[browser] open failed:", res.error); },
