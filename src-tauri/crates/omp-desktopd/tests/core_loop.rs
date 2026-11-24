@@ -1381,7 +1381,9 @@ fn a_reused_secret_request_id_cannot_settle_an_older_item() {
         "the user is told that the older request was replaced"
     );
 
-    // The app relays the answer for that id, as it does for a live request.
+    // The app relays an answer that carries only the request id, as it does
+    // for a live request. The id now names two instances, so the answer could
+    // come from the superseded password field and must not be forwarded.
     send(
         &h,
         2,
@@ -1395,9 +1397,39 @@ fn a_reused_secret_request_id_cannot_settle_an_older_item() {
     );
     assert!(matches!(
         reply_asserting_no_secret(&h, 2),
+        ServerMsg::Reply { ok: false, .. }
+    ));
+    assert_no_later_secret_broadcast(&h);
+    assert!(
+        !std::fs::read_to_string(&h.log)
+            .unwrap_or_default()
+            .contains("hunter2"),
+        "an answer for a reused id must not reach omp"
+    );
+    let items = inbox_items(&h);
+    assert!(
+        items
+            .iter()
+            .any(|item| item.id == newer.id && item.state == ItemState::Open),
+        "the refused answer settles nothing"
+    );
+    assert!(items.iter().all(|item| item.answer.is_none()));
+    assert!(items
+        .iter()
+        .any(|item| item.kind == ItemKind::Notice && item.title.contains("reused request")));
+
+    // The item's own id still answers exactly the instance it belongs to.
+    answer(&h, 3, &newer.id, "hunter2");
+    assert!(matches!(
+        reply_asserting_no_secret(&h, 3),
         ServerMsg::Reply { ok: true, .. }
     ));
     assert_no_later_secret_broadcast(&h);
+    wait_log(&h, r#""value":"hunter2""#);
+    assert!(std::fs::read_to_string(&h.log)
+        .unwrap()
+        .lines()
+        .any(|line| line.contains(r#""id":"ap1""#) && line.contains(r#""value":"hunter2""#)));
     let items = inbox_items(&h);
     assert!(
         items
@@ -1688,5 +1720,125 @@ fn a_scheduled_wake_is_kept_when_the_session_cannot_take_it() {
     );
     wait_down(&h);
     wait_log(&h, "schedule note: <data>keep-me</data>");
+    let _ = h.tx.send(CoreMsg::Shutdown);
+}
+
+#[test]
+fn omp_gets_a_bounded_snapshot_instead_of_the_user_file() {
+    let h = start("instructions-snapshot", ClientKind::App);
+    let cap = 64 * 1024;
+    let mut long = "a".repeat(70 * 1024);
+    long.push_str("tail-after-the-cap");
+    std::fs::write(&h.instructions, &long).unwrap();
+
+    wake_until(&h, 1);
+    deny_wake_approval(&h);
+
+    let snapshot = h.paths.persona.join("instructions.snapshot.md");
+    let saved = std::fs::read_to_string(&snapshot).expect("the snapshot exists");
+    let marker = "\n\n[ompy] instructions truncated at 64 KiB";
+    assert_eq!(
+        saved.len(),
+        cap + marker.len(),
+        "omp's prompt is the bounded snapshot"
+    );
+    assert!(
+        !saved.contains("tail-after-the-cap"),
+        "content past the cap is never omp's system prompt"
+    );
+
+    let log = std::fs::read_to_string(&h.log).unwrap_or_default();
+    assert!(
+        log.contains(&snapshot.display().to_string()),
+        "omp is spawned with the snapshot path: {log}"
+    );
+    assert!(
+        !log.contains(&h.instructions.display().to_string()),
+        "omp must never be pointed at the user's unbounded file: {log}"
+    );
+
+    // A change past the cap is not a change omp could see, so it neither
+    // restarts the session nor alters the prompt the detection compares.
+    let generation = current_generation(&h);
+    let mut edited = "a".repeat(70 * 1024);
+    edited.push_str("another-tail-after-the-cap");
+    std::fs::write(&h.instructions, edited).unwrap();
+    wake_until(&h, 2);
+    assert_eq!(
+        current_generation(&h),
+        generation,
+        "bytes after the cap cannot be observed by omp, so they must not restart it"
+    );
+    assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), saved);
+    let _ = h.tx.send(CoreMsg::Shutdown);
+}
+
+#[test]
+fn an_instruction_restart_keeps_the_busy_reservation() {
+    let h = start("restart-busy", ClientKind::App);
+    std::fs::write(&h.instructions, "instructions-marker-alpha").unwrap();
+    wake_until(&h, 1);
+    deny_wake_approval(&h);
+
+    // Two wakes are due at the same instant. The first one restarts the
+    // session because the instructions were edited, and its approval is held
+    // back by the fake omp; the second must still wait for that approval.
+    for (req, note) in [(1, "slow-request"), (2, "second-wake")] {
+        send(
+            &h,
+            req,
+            ClientMsg::ScheduleWake {
+                at_ms: Some(t0_ms() + 60_000),
+                in_ms: None,
+                note: note.into(),
+            },
+        );
+        assert!(
+            matches!(reply(&h, req), ServerMsg::Reply { ok: true, .. }),
+            "the wake must be scheduled"
+        );
+    }
+
+    std::fs::write(&h.instructions, "instructions-marker-beta").unwrap();
+    h.clock.store(t0_ms() + 61_000, Ordering::SeqCst);
+    h.tx.send(CoreMsg::Tick).unwrap();
+    wait_log(&h, "schedule note: <data>slow-request</data>");
+
+    // A second tick while the restarted session has a turn open but has not
+    // asked its approval yet. The fake holds the request back for a second, so
+    // a cleared reservation would deliver this wake into that window.
+    std::thread::sleep(Duration::from_millis(200));
+    h.tx.send(CoreMsg::Tick).unwrap();
+
+    // The approval only shows up after the fake's delay; once it does, the
+    // fake has also read (and logged) anything queued on its stdin.
+    wait_until(&h, |items| {
+        items
+            .iter()
+            .any(|item| item.kind == ItemKind::Approval && item.state == ItemState::Open)
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    let log = std::fs::read_to_string(&h.log).unwrap_or_default();
+    assert!(
+        !log.contains("second-wake"),
+        "a second due wake must wait for the first approval: {log}"
+    );
+    deny_wake_approval(&h);
+    for _ in 0..100 {
+        if std::fs::read_to_string(&h.log)
+            .unwrap_or_default()
+            .contains("second-wake")
+        {
+            break;
+        }
+        h.tx.send(CoreMsg::Tick).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        std::fs::read_to_string(&h.log)
+            .unwrap_or_default()
+            .contains("second-wake"),
+        "the queued wake must run after the approval, not vanish"
+    );
     let _ = h.tx.send(CoreMsg::Shutdown);
 }

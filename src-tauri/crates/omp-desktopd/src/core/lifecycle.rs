@@ -4,12 +4,13 @@
 use super::{Core, CoreMsg};
 use crate::budget::{BudgetEvent, Usage};
 use crate::scheduler::{Event, Now, Scheduled, WakeReason};
-use crate::session::{Session, SessionEvent};
+use crate::session::{Launch, Session, SessionEvent};
 use crate::wake;
+use omp_desktop_core::json_store::write_atomic;
 use omp_desktop_core::persona_protocol::{ItemKind, ItemState, ServerMsg};
 use serde_json::value::RawValue;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,6 +25,12 @@ const RESTART_RESET: Duration = Duration::from_secs(60);
 const INSTRUCTIONS_MAX_BYTES: usize = 64 * 1024;
 /// Appended in place of the rest of a longer instructions file.
 const INSTRUCTIONS_TRUNCATED: &str = "\n\n[ompy] instructions truncated at 64 KiB";
+/// Name of the bounded snapshot omp is spawned with, next to the state files.
+const SNAPSHOT_NAME: &str = "instructions.snapshot.md";
+/// Stands in for instructions that could not be read before the first spawn,
+/// so omp always gets a bounded file instead of the user's path.
+const SNAPSHOT_UNAVAILABLE: &str =
+    "[ompy] Ompy's instructions could not be read, so none are active for this session";
 
 const NOTICE_EXPIRED: &str = "Ompy stopped unexpectedly; open approvals expired";
 const NOTICE_WARNED: &str = "80 % of today's token limit used";
@@ -37,7 +44,10 @@ const NOTICE_RPC_REUSED: &str =
 ///
 /// Only a regular file is read, so a FIFO or device node cannot block the core
 /// thread, and a longer file is cut with a marker instead of being loaded
-/// whole. The error text is meant for the user's inbox.
+/// whole. The regular-file check runs on the opened handle, not on the path, so
+/// swapping the file for a FIFO between check and open cannot slip through; on
+/// unix the open itself is non-blocking. The error text is meant for the user's
+/// inbox.
 fn read_instructions(path: &Path) -> Result<String, String> {
     let unreadable =
         |error: &std::io::Error| format!("Could not read Ompy's instructions: {error}");
@@ -47,18 +57,9 @@ fn read_instructions(path: &Path) -> Result<String, String> {
             path.display()
         )
     };
-    let metadata = std::fs::metadata(path).map_err(|error| unreadable(&error))?;
+    let file = open_instructions(path).map_err(|error| unreadable(&error))?;
+    let metadata = file.metadata().map_err(|error| unreadable(&error))?;
     if !metadata.is_file() {
-        return Err(not_a_file());
-    }
-    let file = std::fs::File::open(path).map_err(|error| unreadable(&error))?;
-    // Re-check the opened handle: the path may have changed between the
-    // metadata call and the open.
-    if !file
-        .metadata()
-        .map_err(|error| unreadable(&error))?
-        .is_file()
-    {
         return Err(not_a_file());
     }
     let cap = u64::try_from(INSTRUCTIONS_MAX_BYTES).unwrap_or(u64::MAX);
@@ -79,6 +80,37 @@ fn read_instructions(path: &Path) -> Result<String, String> {
     Ok(text)
 }
 
+/// Open the instructions for reading without blocking on a special file.
+///
+/// A path that was a regular file when inspected can be swapped for a FIFO
+/// before the open; a blocking open on a FIFO with no writer would freeze the
+/// core thread forever. The handle is validated as a regular file by the caller
+/// before anything is read, and regular-file reads ignore the flag.
+#[cfg(unix)]
+fn open_instructions(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+}
+
+/// On Windows the handle itself is checked before anything is read; there is
+/// no blocking open on a FIFO with no writer to guard against.
+#[cfg(not(unix))]
+fn open_instructions(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
+/// Write the bounded instructions text as omp's appended system prompt.
+///
+/// The snapshot lives in the private persona directory and is replaced
+/// atomically, so omp never reads a half-written or unbounded prompt.
+fn write_snapshot(path: &Path, text: &str) -> Result<(), String> {
+    write_atomic(path, text.as_bytes())
+        .map_err(|error| format!("Could not save Ompy's instructions snapshot: {error}"))
+}
+
 /// The delay before the next spawn attempt. `uptime` is how long the session
 /// that just ended actually ran; a spawn failure passes `None`, so a missing
 /// omp only ever backs off further instead of collapsing to one second.
@@ -92,11 +124,77 @@ fn restart_delay_for(backoff: Duration, uptime: Option<Duration>) -> Duration {
 }
 
 impl Core {
+    /// The bounded snapshot file omp is spawned with, next to the state files.
+    ///
+    /// The persona directory is created owner-only, so the copy of the user's
+    /// instructions is not readable by other users.
+    fn snapshot_path(&self) -> PathBuf {
+        self.paths.persona.join(SNAPSHOT_NAME)
+    }
+
+    /// Bring the snapshot omp reads up to date with the user's instructions.
+    ///
+    /// The bounded text is written to the private snapshot and recorded as
+    /// [`Core::instructions_at_spawn`], so change detection and omp's system
+    /// prompt always see the same bytes: a change past 64 KiB can never look
+    /// like a change, and omp never reads the user's unbounded file itself.
+    /// Returns whether omp has a snapshot to read.
+    ///
+    /// A read error keeps the last good snapshot in place and leaves a notice;
+    /// only a first start without any readable file gets a placeholder, so omp
+    /// is never handed the user's path or a missing file.
+    fn refresh_snapshot(&mut self, now: &Now) -> bool {
+        let path = self.snapshot_path();
+        let text = match read_instructions(&self.launch.instructions) {
+            Ok(text) => text,
+            Err(error) => {
+                self.report_instructions_error(&error, now);
+                if path.is_file() {
+                    return true;
+                }
+                let placeholder = SNAPSHOT_UNAVAILABLE.to_owned();
+                if let Err(error) = write_snapshot(&path, &placeholder) {
+                    self.report_instructions_error(&error, now);
+                }
+                return path.is_file();
+            }
+        };
+        if path.is_file() && self.instructions_at_spawn.as_deref() == Some(text.as_str()) {
+            self.instructions_error = None;
+            return true;
+        }
+        if let Err(error) = write_snapshot(&path, &text) {
+            self.report_instructions_error(&error, now);
+            return path.is_file();
+        }
+        self.instructions_at_spawn = Some(text);
+        self.instructions_error = None;
+        true
+    }
+
+    /// Tell the user about an instructions problem once per distinct message.
+    fn report_instructions_error(&mut self, error: &str, now: &Now) {
+        if self.instructions_error.as_deref() == Some(error) {
+            return;
+        }
+        self.instructions_error = Some(error.to_owned());
+        self.notice(error, now);
+    }
+
     /// Spawn omp for the next generation and forward its events to this loop.
     pub(super) fn start_session(&mut self, now: &Now) {
         let Some(tx) = self.tx.clone() else {
             return;
         };
+        if !self.refresh_snapshot(now) {
+            // Without a snapshot omp would be started with a path that does
+            // not exist; report it like a spawn failure instead.
+            self.session_failed(
+                "Ompy's instructions snapshot could not be written".into(),
+                now,
+            );
+            return;
+        }
         self.gen += 1;
         let gen = self.gen;
         let (events_tx, events_rx) = mpsc::channel();
@@ -109,17 +207,20 @@ impl Core {
                     }
                 }
             });
+        // omp reads the bounded snapshot, never the user's file, so content
+        // past the cap cannot reach its system prompt unbounded.
+        let launch = Launch {
+            instructions: self.snapshot_path(),
+            ..self.launch.clone()
+        };
         match Session::spawn(
-            &self.launch,
+            &launch,
             Arc::clone(&self.rules),
             Arc::clone(&self.next_seq),
             events_tx,
         ) {
             Ok(session) => {
                 self.session = Some(session);
-                // omp reads the same file as its appended system prompt; keep
-                // what it was spawned with so an edit can be detected.
-                self.instructions_at_spawn = read_instructions(&self.launch.instructions).ok();
                 self.last_spawn = std::time::Instant::now();
                 self.spawn_error = None;
                 self.started = true;
@@ -127,29 +228,34 @@ impl Core {
                 self.broadcast_status();
             }
             Err(error) => {
-                let message = format!("Ompy's omp process did not start: {error}");
-                eprintln!("[omp-desktopd] {message}");
-                self.session = None;
-                let first_failure = self.spawn_error.is_none();
-                self.spawn_error = Some(message.clone());
-                self.started = true;
-                self.scheduler.handle(Event::Blocked(true), now);
-                if first_failure {
-                    self.inbox.add(
-                        ItemKind::Notice,
-                        message,
-                        None,
-                        Vec::new(),
-                        true,
-                        None,
-                        now.utc_ms,
-                    );
-                    self.inbox_changed(now);
-                }
-                let delay = self.restart_delay(None);
-                self.schedule_restart(delay);
+                self.session_failed(format!("Ompy's omp process did not start: {error}"), now);
             }
         }
+    }
+
+    /// Report a start that produced no session: status error, one notice per
+    /// outage, then a backed-off retry.
+    fn session_failed(&mut self, message: String, now: &Now) {
+        eprintln!("[omp-desktopd] {message}");
+        self.session = None;
+        let first_failure = self.spawn_error.is_none();
+        self.spawn_error = Some(message.clone());
+        self.started = true;
+        self.scheduler.handle(Event::Blocked(true), now);
+        if first_failure {
+            self.inbox.add(
+                ItemKind::Notice,
+                message,
+                None,
+                Vec::new(),
+                true,
+                None,
+                now.utc_ms,
+            );
+            self.inbox_changed(now);
+        }
+        let delay = self.restart_delay(None);
+        self.schedule_restart(delay);
     }
 
     /// Grow the restart backoff: 1 s doubling to 5 min, reset only when the
@@ -225,28 +331,40 @@ impl Core {
     /// Instructions are a system prompt and never part of the wake message: a
     /// wake also carries untrusted schedule notes and decision titles, and an
     /// edit delivered as user text could not revoke text from the old prompt.
+    ///
+    /// The new snapshot is written before the old session is replaced: only an
+    /// installed copy may become the next prompt, and a failed write keeps the
+    /// running session with its good snapshot and leaves a notice.
     fn reload_instructions(&mut self, now: &Now) {
-        match read_instructions(&self.launch.instructions) {
-            Ok(current) => {
-                self.instructions_error = None;
-                if self.instructions_at_spawn.as_deref() != Some(current.as_str()) {
-                    self.restart_session(now);
-                }
-            }
+        let current = match read_instructions(&self.launch.instructions) {
+            Ok(current) => current,
             Err(error) => {
                 // A wake must not be consumed silently with no instructions;
                 // one notice per distinct error keeps the inbox readable.
-                if self.instructions_error.as_deref() != Some(error.as_str()) {
-                    self.instructions_error = Some(error.clone());
-                    self.notice(&error, now);
-                }
+                self.report_instructions_error(&error, now);
+                return;
             }
+        };
+        if self.instructions_at_spawn.as_deref() == Some(current.as_str()) {
+            self.instructions_error = None;
+            return;
         }
+        if let Err(error) = write_snapshot(&self.snapshot_path(), &current) {
+            self.report_instructions_error(&error, now);
+            return;
+        }
+        self.instructions_at_spawn = Some(current);
+        self.instructions_error = None;
+        self.restart_session(now);
     }
 
     /// Replace the running session so an edited instructions file becomes the
     /// new system prompt. Requests bound to the old process expire with it, as
     /// they do when omp stops for any other reason.
+    ///
+    /// The scheduler's busy reservation is kept: the wake that triggered this
+    /// restart already holds the scheduler, and the approval the new session
+    /// asks for must arrive before a second due wake may start another turn.
     fn restart_session(&mut self, now: &Now) {
         if let Some(mut session) = self.session.take() {
             session.kill();
@@ -262,7 +380,6 @@ impl Core {
                 now.utc_ms,
             );
         }
-        self.scheduler.handle(Event::Busy(false), now);
         self.inbox_changed(now);
         self.start_session(now);
     }
@@ -347,7 +464,15 @@ impl Core {
     }
 
     /// Forward one live frame to every attached connection.
-    fn relay_frame(&mut self, seq: u64, raw: &str) {
+    ///
+    /// Only the running session's frames are relayed: its stdout can deliver a
+    /// few more lines after the exit event that retired it, and those must not
+    /// reach clients as if the retired process were still live. Usage from
+    /// those events is still accounted for separately.
+    pub(super) fn relay_frame(&mut self, seq: u64, raw: &str) {
+        if self.session.is_none() {
+            return;
+        }
         let Ok(frame) = RawValue::from_string(raw.to_owned()) else {
             return;
         };
@@ -453,6 +578,35 @@ mod tests {
             ),
             RESTART_MAX
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_at_the_instructions_path_never_blocks_the_read() {
+        use std::process::Command;
+        use std::sync::mpsc;
+
+        let dir = omp_desktop_core::test_support::tempdir("omp-desktopd", "instructions-fifo");
+        let path = dir.join("fifo");
+        let made = Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .is_ok_and(|status| status.success());
+        if !made {
+            // No `mkfifo` on this system; the regular-file checks still apply.
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let worker_path = path.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_instructions(&worker_path));
+        });
+        match rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(result) => assert!(result.is_err(), "a FIFO is not a regular file"),
+            Err(_) => panic!("reading a FIFO must never block the core thread"),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

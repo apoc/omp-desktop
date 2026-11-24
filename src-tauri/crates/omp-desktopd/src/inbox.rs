@@ -11,6 +11,8 @@ use std::path::PathBuf;
 const KEEP_MS: i64 = 14 * 24 * 60 * 60 * 1000;
 /// Most items kept in total, open ones always included.
 const KEEP_MAX: usize = 200;
+/// Most reused omp request ids remembered; the oldest is forgotten first.
+const REUSED_MAX: usize = 256;
 /// Format version written by [`Inbox::save`].
 const FILE_VERSION: u32 = 1;
 /// Notice returned by [`Inbox::load`] when it had to reset a broken file.
@@ -37,6 +39,9 @@ struct File {
 pub enum RpcAnswer {
     /// The single open item bound to the id was answered or dismissed.
     Settled(Box<InboxItem>),
+    /// The id was reused by a later request, so an answer carrying only that id
+    /// cannot be attributed to one request instance. Nothing was stored.
+    Reused,
     /// More than one open item claimed the id, so no answer could be
     /// attributed: every one of them was expired and nothing was stored.
     Ambiguous,
@@ -52,6 +57,13 @@ pub struct Inbox {
     counter: u64,
     /// Where to save; `None` for [`Inbox::in_memory`].
     path: Option<PathBuf>,
+    /// omp request ids that more than one request instance claimed since the
+    /// service started, oldest first and bounded by [`REUSED_MAX`].
+    ///
+    /// A late answer carrying only such an id could belong to either instance
+    /// (a password field that was replaced by a plain prompt, for example), so
+    /// it is refused instead of settling one of them.
+    reused: Vec<String>,
 }
 
 impl Inbox {
@@ -62,6 +74,7 @@ impl Inbox {
             items: Vec::new(),
             counter: 0,
             path: None,
+            reused: Vec::new(),
         }
     }
 
@@ -88,6 +101,7 @@ impl Inbox {
                     items: file.items,
                     counter: file.counter,
                     path: Some(path),
+                    reused: Vec::new(),
                 },
                 None,
             ),
@@ -117,6 +131,7 @@ impl Inbox {
             items: Vec::new(),
             counter: 0,
             path: Some(path),
+            reused: Vec::new(),
         }
     }
 
@@ -185,7 +200,8 @@ impl Inbox {
     /// A new request that reuses an open request id makes the older one
     /// unreachable (omp only waits for its newest request under that id), and
     /// leaving both open would let an answer to a secret request settle the
-    /// other item and store the plaintext.
+    /// other item and store the plaintext. Any reuse is also remembered, so a
+    /// later answer that names only the request id can be refused.
     #[allow(clippy::too_many_arguments)] // One parameter per `InboxItem` field.
     fn push(
         &mut self,
@@ -200,9 +216,16 @@ impl Inbox {
         secret: bool,
         now_ms: i64,
     ) -> (String, bool) {
-        let superseded = rpc_request_id
-            .as_deref()
-            .is_some_and(|rpc_id| self.expire_rpc(rpc_id));
+        let superseded = rpc_request_id.as_deref().is_some_and(|rpc_id| {
+            if self
+                .items
+                .iter()
+                .any(|item| item.rpc_request_id.as_deref() == Some(rpc_id))
+            {
+                self.remember_reused(rpc_id);
+            }
+            self.expire_rpc(rpc_id)
+        });
         self.counter += 1;
         let id = format!("i-{now_ms}-{}", self.counter);
         self.items.push(InboxItem {
@@ -253,13 +276,36 @@ impl Inbox {
         Some(Self::settle(item, answer))
     }
 
+    /// Remember that `rpc_id` was claimed by more than one request instance.
+    fn remember_reused(&mut self, rpc_id: &str) {
+        if self.reused.iter().any(|id| id == rpc_id) {
+            return;
+        }
+        if self.reused.len() >= REUSED_MAX {
+            self.reused.remove(0);
+        }
+        self.reused.push(rpc_id.to_owned());
+    }
+
+    /// Whether more than one request instance claimed `rpc_id`, so an answer
+    /// that names only the id cannot be attributed to one of them.
+    #[must_use]
+    pub fn is_reused(&self, rpc_id: &str) -> bool {
+        self.reused.iter().any(|id| id == rpc_id)
+    }
+
     /// Answer or dismiss the open item bound to `rpc_id`.
     ///
-    /// An id claimed by more than one open item (written by an older version or
-    /// edited by hand) settles nothing: the answer cannot be attributed, so all
-    /// duplicates expire and no answer is stored. A secret item never stores
+    /// A reused id settles nothing: the answer could belong to any of the
+    /// instances that claimed it, so refusing it keeps a superseded secret
+    /// field's plaintext from being stored on its replacement. An id claimed by
+    /// more than one open item (written by an older version or edited by hand)
+    /// expires all duplicates for the same reason. A secret item never stores
     /// its answer, whichever item matched.
     pub fn resolve_by_rpc(&mut self, rpc_id: &str, answer: Option<String>) -> RpcAnswer {
+        if self.is_reused(rpc_id) {
+            return RpcAnswer::Reused;
+        }
         let mut claimants = self.items.iter().enumerate().filter(|(_, item)| {
             item.rpc_request_id.as_deref() == Some(rpc_id) && item.state == ItemState::Open
         });
@@ -448,6 +494,90 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].id, newer);
+    }
+
+    #[test]
+    fn a_delayed_answer_for_a_reused_id_is_never_stored() {
+        // The password field asks first and a plain prompt replaces it under
+        // the same request id. A delayed answer from the password field then
+        // carries only the id, so it could belong to either instance.
+        let mut ib = Inbox::in_memory();
+        ib.add_ui_request(
+            ItemKind::Decision,
+            "Password".into(),
+            None,
+            vec![],
+            "r1".into(),
+            "input".into(),
+            None,
+            true,
+            0,
+        );
+        let (replacement, _) = ib.add_ui_request(
+            ItemKind::Approval,
+            "Allow tool: bash".into(),
+            None,
+            vec!["Approve".into()],
+            "r1".into(),
+            "select".into(),
+            None,
+            false,
+            1,
+        );
+
+        assert!(matches!(
+            ib.resolve_by_rpc("r1", Some("hunter2".into())),
+            RpcAnswer::Reused
+        ));
+        let open = ib.open(&replacement).expect("the replacement stays open");
+        assert!(open.answer.is_none());
+        assert!(
+            ib.items()
+                .iter()
+                .all(|item| item.answer.as_deref() != Some("hunter2")),
+            "a superseded secret answer is never stored"
+        );
+
+        // The replacement can still be answered through its own item id.
+        assert!(ib.resolve(&replacement, Some("Approve".into())).is_some());
+    }
+
+    #[test]
+    fn an_id_reused_after_its_item_settled_is_ambiguous_too() {
+        // A duplicate answer can arrive after the first instance was answered:
+        // the id is still reused, so the answer must not settle the second one.
+        let mut ib = Inbox::in_memory();
+        let (first, _) = ib.add_ui_request(
+            ItemKind::Decision,
+            "Password".into(),
+            None,
+            vec![],
+            "r1".into(),
+            "input".into(),
+            None,
+            true,
+            0,
+        );
+        assert!(ib.resolve(&first, None).is_some());
+        let (second, _) = ib.add_ui_request(
+            ItemKind::Approval,
+            "Allow tool: bash".into(),
+            None,
+            vec!["Approve".into()],
+            "r1".into(),
+            "select".into(),
+            None,
+            false,
+            1,
+        );
+
+        assert!(ib.is_reused("r1"));
+        assert!(matches!(
+            ib.resolve_by_rpc("r1", Some("hunter2".into())),
+            RpcAnswer::Reused
+        ));
+        assert!(ib.open(&second).is_some(), "nothing was settled");
+        assert!(ib.items().iter().all(|item| item.answer.is_none()));
     }
 
     #[test]

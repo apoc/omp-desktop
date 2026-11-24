@@ -17,6 +17,9 @@ use std::sync::Arc;
 /// Notice when one omp request id was claimed by several open items.
 const NOTICE_AMBIGUOUS_RPC: &str =
     "An answer matched more than one open request, so nothing was stored and the requests expired";
+/// Notice when an id-only answer names a reused request id.
+const NOTICE_REUSED_RPC_ANSWER: &str =
+    "An answer carried the id of a reused request, so it was ignored; answer the open inbox item instead";
 
 impl Core {
     pub(super) fn on_inbound(&mut self, inbound: Inbound, now: &Now) {
@@ -135,12 +138,32 @@ impl Core {
             } else {
                 None
             };
+        if let Some((id, _)) = &inbox_answer {
+            if self.inbox.is_reused(id) {
+                // Two request instances claimed this id, so an answer carrying
+                // only the id could belong to either one (a superseded password
+                // field, for example). It is refused before it reaches omp or
+                // any inbox item; the app answers the item by its own id.
+                self.notice(NOTICE_REUSED_RPC_ANSWER, now);
+                self.reply_err(
+                    conn,
+                    req,
+                    "that request id was reused, so the answer cannot be attributed; answer the inbox item instead",
+                );
+                return;
+            }
+        }
         if self.send_frame(&frame.to_string(), now) {
             if let Some((id, answer)) = inbox_answer {
                 match self.inbox.resolve_by_rpc(&id, answer) {
                     RpcAnswer::Settled(_) => {
                         self.scheduler.handle(Event::Blocked(self.blocked()), now);
                         self.inbox_changed(now);
+                    }
+                    RpcAnswer::Reused => {
+                        // Checked above; nothing may be stored for such an id.
+                        self.notice(NOTICE_REUSED_RPC_ANSWER, now);
+                        self.scheduler.handle(Event::Blocked(self.blocked()), now);
                     }
                     RpcAnswer::Ambiguous => {
                         // Two open items claimed the id, so no answer may be

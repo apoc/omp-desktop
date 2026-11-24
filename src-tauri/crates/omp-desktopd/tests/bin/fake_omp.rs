@@ -7,6 +7,18 @@ use std::io::{BufRead, Write};
 
 fn main() {
     let log = std::env::var("FAKE_OMP_LOG").ok();
+    if let Some(p) = &log {
+        // Record how the service spawned us, so a test can prove which prompt
+        // file omp really reads (and which one it does not).
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let line = serde_json::json!({"type": "fake-omp-start", "args": args}).to_string();
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .unwrap();
+        writeln!(file, "{line}").unwrap();
+    }
     let mut out = std::io::stdout();
     let mut say = |s: &str| {
         writeln!(out, "{s}").unwrap();
@@ -34,7 +46,15 @@ fn main() {
                     r#"{"type":"message_end","message":{"role":"assistant","usage":{"input":100,"output":50,"cacheRead":999,"cacheWrite":10}}}"#,
                 );
                 let prompt = v["message"].as_str().unwrap_or_default();
-                if prompt.contains("autoapprove") {
+                if prompt.contains("slow-request") {
+                    // Hold the request back, so a test can act while the
+                    // service has a turn open but has not been told about the
+                    // approval yet.
+                    std::thread::sleep(std::time::Duration::from_millis(1_000));
+                    say(
+                        r#"{"type":"extension_ui_request","id":"ap1","method":"select","title":"Allow tool: bash\nCommand: ls","options":["Approve","Deny"]}"#,
+                    );
+                } else if prompt.contains("autoapprove") {
                     // Close the read end of our stdin first, so the service's
                     // answer to a rule-covered approval fails with EPIPE and
                     // cannot sit in a pipe buffer. `park` keeps the process

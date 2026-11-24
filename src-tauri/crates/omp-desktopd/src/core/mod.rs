@@ -615,6 +615,44 @@ mod tests {
     }
 
     #[test]
+    fn frames_from_a_retired_session_are_not_relayed() {
+        let root = std::env::temp_dir().join(format!("ompy-core-retired-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::under(&root);
+        ensure_private_dir(&paths.persona).unwrap();
+        let start = now(16, 9, 0);
+        let launch = Launch {
+            program: ProgramSource::Fixed("unused".into()),
+            home: root.clone(),
+            sessions: paths.sessions.clone(),
+            extension: root.join("e.mjs"),
+            instructions: root.join("i.md"),
+            socket_env: "x".into(),
+            env: Vec::new(),
+        };
+        let mut core = Core::new(paths, launch, Box::new(move || start));
+        let (out_tx, out_rx) = std::sync::mpsc::channel();
+        core.conns.insert(
+            7,
+            Conn {
+                out: Outbound::new(out_tx, 4_096),
+                attached: true,
+                last_seq: 0,
+                client: ClientKind::App,
+            },
+        );
+        // `Core::new` leaves no session: it stands for the process that has
+        // been retired, whose stdout can still deliver queued lines.
+        assert!(core.session.is_none());
+        core.relay_frame(1, r#"{"type":"agent_end","yielded":true}"#);
+        assert!(
+            out_rx.try_recv().is_err(),
+            "a frame from a retired session must not reach an attached client"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn exhausted_budget_sleeps_until_local_midnight() {
         let t = now(16, 23, 30);
         let midnight = now(17, 0, 0).utc_ms;

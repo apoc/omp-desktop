@@ -55,6 +55,16 @@ pub(super) struct Writes {
     pub(super) budget: WriteAccess,
 }
 
+/// How a protected file is preserved before it may be written again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Recovery {
+    /// Rename the unreadable file aside; it is then gone from its own name.
+    MoveAside,
+    /// Copy the bytes aside and keep the original in place, so the canonical
+    /// file exists at every moment even when the following write fails.
+    CopyFirst,
+}
+
 impl Core {
     /// Prune expired settled items, then persist the inbox.
     pub(super) fn persist_inbox(&mut self, now_ms: i64) {
@@ -72,6 +82,7 @@ impl Core {
             &self.settings,
             "settings",
             now_ms,
+            Recovery::MoveAside,
         )
     }
 
@@ -83,10 +94,15 @@ impl Core {
             self.scheduler.scheduled(),
             "schedule",
             now_ms,
+            Recovery::MoveAside,
         )
     }
 
     /// Persist today's budget; `false` when a protected file refused the write.
+    ///
+    /// Unlike the other state files, a protected budget is recovered by copying
+    /// its bytes aside first: the canonical `budget.json` must exist at every
+    /// moment, or a restart would grant a fresh daily allowance.
     pub(super) fn persist_budget(&mut self, now_ms: i64) -> bool {
         write_state(
             &mut self.writes.budget,
@@ -94,6 +110,7 @@ impl Core {
             &self.budget,
             "budget",
             now_ms,
+            Recovery::CopyFirst,
         )
     }
 }
@@ -127,21 +144,28 @@ pub(super) fn read_json<T: DeserializeOwned + Default>(
 /// Write `value` to `path`, unless `access` is [`WriteAccess::Protected`].
 ///
 /// A protected file is quarantined again first, so protection lifts as soon as
-/// the unreadable original can be moved aside instead of being replaced.
-/// Returns whether the value reached the disk.
+/// the unreadable original can be preserved instead of being replaced. The
+/// budget uses [`Recovery::CopyFirst`], because a rename leaves a window in
+/// which `budget.json` is missing and a failed write would end with no counter
+/// at all. Returns whether the value reached the disk.
 fn write_state<T: Serialize + ?Sized>(
     access: &mut WriteAccess,
     path: &Path,
     value: &T,
     what: &str,
     now_ms: i64,
+    recovery: Recovery,
 ) -> bool {
     if *access == WriteAccess::Protected {
-        if !move_aside(path, now_ms) {
+        let preserved = match recovery {
+            Recovery::MoveAside => move_aside(path, now_ms),
+            Recovery::CopyFirst => copy_aside(path, now_ms),
+        };
+        if !preserved {
             eprintln!("[omp-desktopd] not saving {what}: the unreadable file is still in place");
             return false;
         }
-        eprintln!("[omp-desktopd] unreadable {what} file moved aside; writing is enabled again");
+        eprintln!("[omp-desktopd] unreadable {what} file preserved; writing is enabled again");
         *access = WriteAccess::Allowed;
     }
     write_json(path, value, what)
@@ -289,7 +313,8 @@ mod tests {
             &path,
             &PersonaSettings::default(),
             "settings",
-            1_234
+            1_234,
+            Recovery::MoveAside
         ));
         assert!(serde_json::from_slice::<PersonaSettings>(&std::fs::read(&path).unwrap()).is_ok());
         assert_eq!(std::fs::read(&aside).unwrap(), b"not json");
@@ -313,7 +338,8 @@ mod tests {
             &path,
             &Vec::<crate::scheduler::Scheduled>::new(),
             "schedule",
-            1_234
+            1_234,
+            Recovery::MoveAside
         ));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[]");
         assert_eq!(std::fs::read(&aside).unwrap(), b"not json");
@@ -340,7 +366,8 @@ mod tests {
             &path,
             &PersonaSettings::default(),
             "settings",
-            1_234
+            1_234,
+            Recovery::MoveAside
         ));
         assert_eq!(
             std::fs::read(&path).unwrap(),
@@ -355,7 +382,8 @@ mod tests {
             &path,
             &PersonaSettings::default(),
             "settings",
-            1_234
+            1_234,
+            Recovery::MoveAside
         ));
         assert_eq!(access, WriteAccess::Allowed);
         assert!(serde_json::from_slice::<PersonaSettings>(&std::fs::read(&path).unwrap()).is_ok());
@@ -382,6 +410,52 @@ mod tests {
         assert_eq!(
             written.used, 500_000,
             "the exhausted counter is durable before the corrupt file could be gone"
+        );
+    }
+
+    /// A value whose serialisation fails, so the write after the copy can be
+    /// made to fail.
+    struct Unserializable;
+
+    impl Serialize for Unserializable {
+        fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("test failure"))
+        }
+    }
+
+    #[test]
+    fn a_failed_budget_write_keeps_the_canonical_file() {
+        let temp = TempDir::new("desktopd-store", "budget-copy-first");
+        let path = temp.path().join("budget.json");
+        std::fs::write(&path, b"not json").unwrap();
+
+        // The budget recovers by copying its bytes aside, so the canonical
+        // file still exists when the write then fails. A rename would leave
+        // no budget.json at all, and a restart would hand out a fresh daily
+        // allowance.
+        let mut access = WriteAccess::Protected;
+        assert!(!write_state(
+            &mut access,
+            &path,
+            &Unserializable,
+            "budget",
+            1_234,
+            Recovery::CopyFirst
+        ));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"not json",
+            "the canonical budget file must exist even after a failed write"
+        );
+        assert_eq!(
+            access,
+            WriteAccess::Allowed,
+            "the preserved copy lifts the write protection"
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("budget.json.bad-1234")).unwrap(),
+            b"not json",
+            "the preserved bytes stay available"
         );
     }
 
