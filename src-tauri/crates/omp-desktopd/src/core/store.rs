@@ -200,12 +200,17 @@ mod tests {
         let path = temp.path().join("schedule.json");
         std::fs::write(&path, b"not json").unwrap();
 
-        let (_schedule, writable) = read_json::<Vec<crate::scheduler::Scheduled>>(&path, "schedule", 1_234);
+        let (_schedule, writable) =
+            read_json::<Vec<crate::scheduler::Scheduled>>(&path, "schedule", 1_234);
         assert!(writable);
         let aside = temp.path().join("schedule.json.bad-1234");
         assert_eq!(std::fs::read(&aside).unwrap(), b"not json");
 
-        write_json(&path, &Vec::<crate::scheduler::Scheduled>::new(), "schedule");
+        write_json(
+            &path,
+            &Vec::<crate::scheduler::Scheduled>::new(),
+            "schedule",
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[]");
         assert_eq!(std::fs::read(&aside).unwrap(), b"not json");
     }

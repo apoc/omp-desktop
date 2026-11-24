@@ -134,12 +134,11 @@ impl Core {
             .map(|item| item.title.clone())
             .collect();
         let tokens_left = self.budget.limit.saturating_sub(self.budget.used);
-        let instructions = std::fs::read_to_string(&self.launch.instructions).unwrap_or_else(|error| {
-            eprintln!(
-                "[omp-desktopd] could not read instructions for wake-up: {error}"
-            );
-            String::new()
-        });
+        let instructions =
+            std::fs::read_to_string(&self.launch.instructions).unwrap_or_else(|error| {
+                eprintln!("[omp-desktopd] could not read instructions for wake-up: {error}");
+                String::new()
+            });
         let message = wake::prompt(reason, now.local, tokens_left, &decisions, &instructions);
         if !self.send_prompt(&message, now) {
             self.scheduler.handle(Event::Busy(false), now);

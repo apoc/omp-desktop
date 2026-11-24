@@ -233,7 +233,11 @@ impl StdinWriter {
                     }
                 }
             })?;
-        Ok(Self { tx, timeout, events })
+        Ok(Self {
+            tx,
+            timeout,
+            events,
+        })
     }
 
     fn send(&self, frame_json: &str) -> io::Result<()> {
@@ -241,10 +245,9 @@ impl StdinWriter {
         let (done, ack) = std::sync::mpsc::sync_channel(0);
         if let Err(error) = self.tx.try_send(WriteRequest { line, done }) {
             let error = match error {
-                TrySendError::Full(_) => io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "omp stdin queue is full",
-                ),
+                TrySendError::Full(_) => {
+                    io::Error::new(io::ErrorKind::WouldBlock, "omp stdin queue is full")
+                }
                 TrySendError::Disconnected(_) => {
                     io::Error::new(io::ErrorKind::BrokenPipe, "omp stdin writer stopped")
                 }
@@ -495,8 +498,7 @@ impl Session {
         };
         let stdout = child.stdout.take().expect("piped stdout");
         let replay: Replay = Arc::new(Mutex::new(ReplayRing::new(REPLAY_MAX, REPLAY_MAX_BYTES)));
-        let (read_stdin, read_replay, home) =
-            (stdin.clone(), Arc::clone(&replay), l.home.clone());
+        let (read_stdin, read_replay, home) = (stdin.clone(), Arc::clone(&replay), l.home.clone());
         let reader = std::thread::Builder::new()
             .name("ompy-stdout".into())
             .spawn(move || {

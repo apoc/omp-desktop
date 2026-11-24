@@ -158,8 +158,13 @@ fn stuck_omp_write_times_out_and_kill_does_not_join_the_writer() {
     let (mut l, _log) = launch("stuck");
     l.env.push(("FAKE_OMP_STALL".into(), "1".into()));
     let (tx, _rx) = mpsc::channel();
-    let mut s = Session::spawn(&l, Arc::new(RuleBook::in_memory()), Arc::new(AtomicU64::new(0)), tx)
-        .unwrap();
+    let mut s = Session::spawn(
+        &l,
+        Arc::new(RuleBook::in_memory()),
+        Arc::new(AtomicU64::new(0)),
+        tx,
+    )
+    .unwrap();
     std::thread::sleep(Duration::from_millis(100));
 
     let huge = "x".repeat(2 * 1024 * 1024);

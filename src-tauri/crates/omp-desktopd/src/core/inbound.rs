@@ -116,21 +116,20 @@ impl Core {
     }
 
     fn on_rpc(&mut self, conn: ConnId, req: Option<u64>, frame: &Value, now: &Now) {
-        let inbox_answer = if frame.get("type").and_then(Value::as_str)
-            == Some("extension_ui_response")
-        {
-            frame.get("id").and_then(Value::as_str).map(|id| {
-                let cancelled = frame.get("cancelled").and_then(Value::as_bool) == Some(true);
-                let answer = if cancelled {
-                    None
-                } else {
-                    Some(ui_answer(frame))
-                };
-                (id.to_owned(), answer)
-            })
-        } else {
-            None
-        };
+        let inbox_answer =
+            if frame.get("type").and_then(Value::as_str) == Some("extension_ui_response") {
+                frame.get("id").and_then(Value::as_str).map(|id| {
+                    let cancelled = frame.get("cancelled").and_then(Value::as_bool) == Some(true);
+                    let answer = if cancelled {
+                        None
+                    } else {
+                        Some(ui_answer(frame))
+                    };
+                    (id.to_owned(), answer)
+                })
+            } else {
+                None
+            };
         if self.send_frame(&frame.to_string(), now) {
             if let Some((id, answer)) = inbox_answer {
                 if self.inbox.resolve_by_rpc(&id, answer).is_some() {
@@ -205,7 +204,11 @@ impl Core {
             }
         } else if let Some(rpc) = item.rpc_request_id.clone() {
             if !self.dismiss(&rpc, now) {
-                self.reply_err(conn, req, "Ompy is not running; dismissal was not delivered");
+                self.reply_err(
+                    conn,
+                    req,
+                    "Ompy is not running; dismissal was not delivered",
+                );
                 return;
             }
         }
