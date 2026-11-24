@@ -37,6 +37,9 @@ pub(super) struct State {
     pub sent_tabs: Value,
     /// The VAPID public key phones subscribe with, while push is on.
     pub push_key: Option<String>,
+    /// The Ompy tab's own state: the persona relay is not in the agent tracker.
+    pub persona_busy: bool,
+    pub persona_has_ask: bool,
     pub watched: Vec<String>,
     pub connected: Vec<String>,
     pub pending: HashMap<String, Pending>,
@@ -55,10 +58,15 @@ impl State {
             .tabs
             .iter()
             .map(|tab| {
-                let (busy, asks) = live.get(&tab.id).copied().unwrap_or((false, 0));
+                let (busy, has_ask) = if tab.id == "ompy" {
+                    (self.persona_busy, self.persona_has_ask)
+                } else {
+                    let (busy, asks) = live.get(&tab.id).copied().unwrap_or((false, 0));
+                    (busy, asks > 0)
+                };
                 json!({
                     "id": tab.id, "title": tab.title, "project": tab.project,
-                    "busy": busy, "hasAsk": asks > 0,
+                    "busy": busy, "hasAsk": has_ask,
                 })
             })
             .collect();

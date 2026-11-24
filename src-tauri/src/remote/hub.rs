@@ -144,6 +144,19 @@ impl Hub {
         self.with_state(State::sync_tabs);
     }
 
+    /// Set the Ompy chip's state. The persona relay never reaches the agent
+    /// tracker, so its tab is merged from these fields instead. The push key
+    /// and push transitions stay untouched.
+    pub fn set_persona_activity(&self, busy: bool, has_ask: bool) {
+        self.with_state(|state| {
+            if (busy, has_ask) != (state.persona_busy, state.persona_has_ask) {
+                state.persona_busy = busy;
+                state.persona_has_ask = has_ask;
+                state.sync_tabs();
+            }
+        });
+    }
+
     fn finish_push_change(&self, result: Result<(), String>) -> Result<(), String> {
         if result.is_ok() {
             self.emit.connections(&self.connected_devices());

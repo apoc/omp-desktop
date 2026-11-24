@@ -232,6 +232,39 @@ fn unauthenticated_socket_gets_4401_and_no_tabs() {
 }
 
 #[test]
+fn persona_activity_sets_only_the_ompy_chip() {
+    let s = test_server("ws-persona-chip");
+    s.hub.publish(payload(&["t1", "ompy"]));
+    let token = s.pair_device();
+    let mut ws = s.ws_connect();
+    ws.send_text(&format!(r#"{{"t":"auth","token":"{token}"}}"#));
+    assert_eq!(ws.read_json()["t"], "hello");
+    let initial = ws.read_json();
+    assert_eq!(initial["t"], "tabs");
+    assert_eq!(initial["tabs"][1]["busy"], false);
+    assert_eq!(initial["tabs"][1]["hasAsk"], false);
+
+    s.hub.set_persona_activity(true, true);
+    let tabs = ws.read_json_where(|m| m["t"] == "tabs");
+    let ompy = &tabs["tabs"][1];
+    assert_eq!(
+        (
+            ompy["id"].as_str(),
+            ompy["busy"].as_bool(),
+            ompy["hasAsk"].as_bool()
+        ),
+        (Some("ompy"), Some(true), Some(true))
+    );
+    assert_eq!(tabs["tabs"][0]["busy"], false, "another tab changed");
+    assert_eq!(tabs["tabs"][0]["hasAsk"], false, "another tab changed");
+
+    s.hub.set_persona_activity(false, false);
+    let tabs = ws.read_json_where(|m| m["t"] == "tabs");
+    assert_eq!(tabs["tabs"][1]["busy"], false);
+    assert_eq!(tabs["tabs"][1]["hasAsk"], false);
+}
+
+#[test]
 fn action_round_trip_and_timeout() {
     let s = test_server("ws-action");
     let mut ws = s.authed_socket();
