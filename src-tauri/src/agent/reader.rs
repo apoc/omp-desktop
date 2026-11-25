@@ -99,11 +99,12 @@ fn sanitize_members(value: &mut serde_json::Value, allow_secret_flag: bool) {
 /// keys, returning the sanitized text alongside the parsed (and now
 /// redacted) frame — the caller reuses the parse to check for an
 /// approval-prompt match rather than parsing the line a second time. A
-/// line that fails to parse as JSON is forwarded unchanged (never silently
-/// dropped — that failure mode belongs to the truncation path, not this
-/// one) with `None` in place of the parsed frame, since a non-JSON line
-/// cannot carry a *named* credential field — or an approval prompt — for
-/// us to find in the first place.
+/// line that fails to parse as JSON is replaced with a bounded diagnostic
+/// frame containing only its byte count. Forwarding the original bytes is not
+/// safe: JavaScript accepts some JSON numbers that `serde_json` rejects, and
+/// any uninspectable text could carry data the redaction walk never saw.
+/// The diagnostic parses as `Some`, so both the journal and live emission use
+/// the same fail-closed frame.
 ///
 /// Shared with the persona client (`persona::client`): a relayed
 /// `persona://line/ompy` frame is an omp frame and passes the same
@@ -120,7 +121,19 @@ fn sanitize_members(value: &mut serde_json::Value, allow_secret_flag: bool) {
 /// (frames are capped at [`MAX_LINE_BYTES`], and deltas are small).
 pub fn sanitize_line(raw: &[u8]) -> (String, Option<serde_json::Value>) {
     serde_json::from_slice::<serde_json::Value>(raw).map_or_else(
-        |_| (String::from_utf8_lossy(raw).into_owned(), None),
+        |_| {
+            let diagnostic = serde_json::json!({
+                "type": "desktop_unparsed_line",
+                "bytes": raw.len(),
+            });
+            (
+                format!(
+                    r#"{{"type":"desktop_unparsed_line","bytes":{}}}"#,
+                    raw.len()
+                ),
+                Some(diagnostic),
+            )
+        },
         |mut value| {
             sanitize_frame(&mut value);
             // Serializing a `Value` cannot fail; the placeholder fallback
@@ -589,6 +602,23 @@ mod tests {
     use serde_json::{json, Value};
 
     #[test]
+    fn sanitize_replaces_lines_serde_cannot_parse() {
+        let raw = br#"{"type":"message","value":1e400}"#;
+        let (out, parsed) = sanitize_line(raw);
+        assert_eq!(
+            out,
+            format!(
+                r#"{{"type":"desktop_unparsed_line","bytes":{}}}"#,
+                raw.len()
+            )
+        );
+        assert_eq!(
+            parsed.expect("diagnostic frame is valid JSON"),
+            json!({"type": "desktop_unparsed_line", "bytes": raw.len()})
+        );
+    }
+
+    #[test]
     fn sanitize_redacts_nested_credential_keys() {
         let raw = json!({
             "type": "response",
@@ -857,11 +887,14 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_falls_back_to_raw_text_on_invalid_json() {
+    fn sanitize_replaces_invalid_json_with_a_bounded_diagnostic() {
         let raw = b"not json at all";
         let (out, parsed) = sanitize_line(raw);
-        assert_eq!(out, "not json at all");
-        assert!(parsed.is_none());
+        assert_eq!(out, r#"{"type":"desktop_unparsed_line","bytes":15}"#);
+        assert_eq!(
+            parsed,
+            Some(json!({"type": "desktop_unparsed_line", "bytes": 15}))
+        );
     }
 
     /// Drives the CR/LF-strip → sanitize pipeline (exactly as the stdout
@@ -898,6 +931,22 @@ mod tests {
             }
 
             let (text, parsed) = sanitize_line(&buf);
+            if case.get("expect_json").and_then(serde_json::Value::as_bool) == Some(false) {
+                let expected = format!(
+                    r#"{{"type":"desktop_unparsed_line","bytes":{}}}"#,
+                    buf.len()
+                );
+                assert_eq!(text, expected, "case '{name}'");
+                assert_eq!(
+                    parsed,
+                    Some(serde_json::json!({
+                        "type": "desktop_unparsed_line",
+                        "bytes": buf.len(),
+                    })),
+                    "case '{name}'"
+                );
+                continue;
+            }
             if let Some(expected) = case.get("expect_text").and_then(serde_json::Value::as_str) {
                 assert_eq!(text, expected, "case '{name}'");
             }

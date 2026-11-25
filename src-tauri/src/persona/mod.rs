@@ -142,10 +142,76 @@ pub async fn persona_send(json: String, persona: State<'_, Persona>) -> Result<(
 #[tauri::command]
 pub async fn persona_resolve(
     id: String,
-    answer: Option<String>,
+    answer: Option<serde_json::Value>,
     persona: State<'_, Persona>,
 ) -> Result<(), String> {
+    let answer = normalize_answer(answer)?;
     request(&persona, ClientMsg::InboxResolve { id, answer }).await
+}
+
+/// Convert the Ompy chat's answer shapes to the daemon's string protocol.
+/// Select/input/editor values pass through; confirms use the daemon's option
+/// labels. Ask dialogs become one display string per question, JSON-encoded
+/// when there is more than one question, matching `Core::respond`.
+fn normalize_answer(answer: Option<serde_json::Value>) -> Result<Option<String>, String> {
+    let Some(answer) = answer else {
+        return Ok(None);
+    };
+    match answer {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(answer) => Ok(Some(answer)),
+        serde_json::Value::Bool(confirmed) => {
+            Ok(Some(if confirmed { "Confirm" } else { "Deny" }.into()))
+        }
+        serde_json::Value::Array(answers) => {
+            let answers = answers
+                .iter()
+                .map(normalize_ask_answer)
+                .collect::<Result<Vec<_>, _>>()?;
+            if answers.len() == 1 {
+                Ok(answers.into_iter().next())
+            } else {
+                serde_json::to_string(&answers)
+                    .map(Some)
+                    .map_err(|error| format!("cannot encode ask answers: {error}"))
+            }
+        }
+        _ => Err("persona answer must be a string, boolean, ask-answer array, or null".into()),
+    }
+}
+
+fn normalize_ask_answer(answer: &serde_json::Value) -> Result<String, String> {
+    let serde_json::Value::Object(answer) = answer else {
+        return Err("each ask answer must be an object".into());
+    };
+    let selected = answer
+        .get("selectedOptions")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "ask answer selectedOptions must be an array".to_owned())?;
+    let mut parts = Vec::with_capacity(selected.len() + 1);
+    for option in selected {
+        parts.push(
+            option
+                .as_str()
+                .ok_or_else(|| "ask answer options must be strings".to_owned())?,
+        );
+    }
+    let custom = match answer.get("customInput") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(custom)) => {
+            let custom = custom.trim();
+            (!custom.is_empty()).then_some(custom)
+        }
+        Some(_) => return Err("ask answer customInput must be a string".into()),
+    };
+    let mut combined = parts.join(", ");
+    if let Some(custom) = custom {
+        if !combined.is_empty() {
+            combined.push_str(", ");
+        }
+        combined.push_str(custom);
+    }
+    Ok(combined)
 }
 
 #[tauri::command]
@@ -201,8 +267,45 @@ pub async fn persona_disable(persona: State<'_, Persona>) -> Result<(), String> 
 
 #[cfg(test)]
 mod tests {
-    use super::{open_instructions_at, validate_send};
+    use super::{normalize_answer, open_instructions_at, validate_send};
     use crate::test_support::TempDir;
+    use serde_json::json;
+
+    #[test]
+    fn resolve_normalizes_every_chat_answer_shape() {
+        assert_eq!(normalize_answer(None).unwrap(), None);
+        assert_eq!(
+            normalize_answer(Some(json!("chosen value"))).unwrap(),
+            Some("chosen value".into())
+        );
+        assert_eq!(
+            normalize_answer(Some(json!(true))).unwrap(),
+            Some("Confirm".into())
+        );
+        assert_eq!(
+            normalize_answer(Some(json!(false))).unwrap(),
+            Some("Deny".into())
+        );
+        assert_eq!(
+            normalize_answer(Some(json!([{"id":"q1","selectedOptions":["One"]}]))).unwrap(),
+            Some("One".into())
+        );
+        assert_eq!(
+            normalize_answer(Some(json!([
+                {"id":"q1","selectedOptions":["One","Two"],"customInput":"other"},
+                {"id":"q2","selectedOptions":[],"customInput":"free text"}
+            ])))
+            .unwrap(),
+            Some(r#"["One, Two, other","free text"]"#.into())
+        );
+    }
+
+    #[test]
+    fn resolve_rejects_non_chat_answer_shapes() {
+        assert!(normalize_answer(Some(json!(42))).is_err());
+        assert!(normalize_answer(Some(json!({"value":"no"}))).is_err());
+        assert!(normalize_answer(Some(json!([42]))).is_err());
+    }
 
     #[test]
     fn missing_instructions_have_a_stable_error_code() {

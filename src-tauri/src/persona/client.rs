@@ -1698,6 +1698,41 @@ mod tests {
     }
 
     #[test]
+    fn client_replaces_unparseable_relay_frames() {
+        const UNPARSED: &str = r#"{"type":"message","value":1e400}"#;
+        let (_temp, events, client, server) = relay_client("det-unparsed", |stream| {
+            write_msg(
+                stream,
+                &ServerMsg::Rpc {
+                    seq: 2,
+                    frame: raw_frame(UNPARSED),
+                },
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        let observed = eventually(Duration::from_secs(3), || {
+            let events = events.0.lock().unwrap();
+            events
+                .iter()
+                .find(|(name, payload)| name == "line" && payload["seq"] == 2)
+                .map(|(_, payload)| payload["text"].as_str().unwrap().to_owned())
+        });
+        assert_eq!(
+            observed.as_deref(),
+            Some(
+                format!(
+                    r#"{{"type":"desktop_unparsed_line","bytes":{}}}"#,
+                    UNPARSED.len()
+                )
+                .as_str()
+            )
+        );
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
     fn client_pushes_each_new_open_item_once_per_run() {
         let temp = TempDir::new("persona-client", "push");
         let paths = test_paths(&temp, "push");
