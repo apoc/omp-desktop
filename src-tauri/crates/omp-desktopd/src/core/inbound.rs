@@ -139,7 +139,7 @@ impl Core {
                 None
             };
         if let Some((id, _)) = &inbox_answer {
-            if self.inbox.is_reused(id) {
+            if self.inbox.is_ambiguous(id) {
                 // Two request instances claimed this id, so an answer carrying
                 // only the id could belong to either one (a superseded password
                 // field, for example). It is refused before it reaches omp or

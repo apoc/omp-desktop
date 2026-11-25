@@ -4,15 +4,15 @@
 use omp_desktop_core::json_store::write_atomic;
 use omp_desktop_core::persona_protocol::{AskQuestionRef, InboxItem, ItemKind, ItemState};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
 
 /// How long a settled item stays in the inbox: 14 days.
 const KEEP_MS: i64 = 14 * 24 * 60 * 60 * 1000;
-/// Most items kept in total, open ones always included.
+/// Most items kept in total, open ones always included. Session request-id
+/// history uses the same retention bound, plus any items currently retained.
 const KEEP_MAX: usize = 200;
-/// Most reused omp request ids remembered; the oldest is forgotten first.
-const REUSED_MAX: usize = 256;
 /// Format version written by [`Inbox::save`].
 const FILE_VERSION: u32 = 1;
 /// Notice returned by [`Inbox::load`] when it had to reset a broken file.
@@ -57,24 +57,28 @@ pub struct Inbox {
     counter: u64,
     /// Where to save; `None` for [`Inbox::in_memory`].
     path: Option<PathBuf>,
-    /// omp request ids that more than one request instance claimed since the
-    /// service started, oldest first and bounded by [`REUSED_MAX`].
-    ///
-    /// A late answer carrying only such an id could belong to either instance
-    /// (a password field that was replaced by a plain prompt, for example), so
-    /// it is refused instead of settling one of them.
-    reused: Vec<String>,
+    /// Reused ids with an open request. An id-only answer stays ambiguous
+    /// until that request settles or expires; the entry then leaves this set.
+    ambiguous: HashSet<String>,
+    /// Request ids seen in this session, oldest first. Retained inbox items
+    /// are also checked directly, including items loaded from disk.
+    seen_rpc: Vec<String>,
+    /// Some request history was dropped. A later id with no surviving proof
+    /// of freshness is treated as reused instead of risking a wrong answer.
+    rpc_history_dropped: bool,
 }
 
 impl Inbox {
     /// An inbox that never touches the disk.
     #[must_use]
-    pub const fn in_memory() -> Self {
+    pub fn in_memory() -> Self {
         Self {
             items: Vec::new(),
             counter: 0,
             path: None,
-            reused: Vec::new(),
+            ambiguous: HashSet::new(),
+            seen_rpc: Vec::new(),
+            rpc_history_dropped: false,
         }
     }
 
@@ -96,15 +100,25 @@ impl Inbox {
             Err(_) => return Self::move_aside(path, now_ms),
         };
         match serde_json::from_slice::<File>(&bytes) {
-            Ok(file) => (
-                Self {
+            Ok(file) => {
+                let mut inbox = Self {
                     items: file.items,
                     counter: file.counter,
                     path: Some(path),
-                    reused: Vec::new(),
-                },
-                None,
-            ),
+                    ambiguous: HashSet::new(),
+                    seen_rpc: Vec::new(),
+                    rpc_history_dropped: false,
+                };
+                let retained_rpc: Vec<String> = inbox
+                    .items
+                    .iter()
+                    .filter_map(|item| item.rpc_request_id.clone())
+                    .collect();
+                for rpc_id in retained_rpc {
+                    inbox.remember_seen(&rpc_id);
+                }
+                (inbox, None)
+            }
             Err(_) => Self::move_aside(path, now_ms),
         }
     }
@@ -126,12 +140,14 @@ impl Inbox {
     }
 
     /// An empty inbox that saves to `path`.
-    const fn at(path: PathBuf) -> Self {
+    fn at(path: PathBuf) -> Self {
         Self {
             items: Vec::new(),
             counter: 0,
             path: Some(path),
-            reused: Vec::new(),
+            ambiguous: HashSet::new(),
+            seen_rpc: Vec::new(),
+            rpc_history_dropped: false,
         }
     }
 
@@ -217,14 +233,17 @@ impl Inbox {
         now_ms: i64,
     ) -> (String, bool) {
         let superseded = rpc_request_id.as_deref().is_some_and(|rpc_id| {
-            if self
+            let seen_before = self
                 .items
                 .iter()
                 .any(|item| item.rpc_request_id.as_deref() == Some(rpc_id))
-            {
-                self.remember_reused(rpc_id);
+                || self.seen_rpc.iter().any(|seen| seen == rpc_id);
+            let superseded = self.expire_rpc(rpc_id);
+            if seen_before || self.rpc_history_dropped {
+                self.ambiguous.insert(rpc_id.to_owned());
             }
-            self.expire_rpc(rpc_id)
+            self.remember_seen(rpc_id);
+            superseded
         });
         self.counter += 1;
         let id = format!("i-{now_ms}-{}", self.counter);
@@ -269,29 +288,44 @@ impl Inbox {
     /// Answer or dismiss the open item `id`; `None` when no such item is
     /// open (settled items are not resolved twice).
     pub fn resolve(&mut self, id: &str, answer: Option<String>) -> Option<InboxItem> {
-        let item = self
+        let index = self
             .items
-            .iter_mut()
-            .find(|item| item.id == id && item.state == ItemState::Open)?;
-        Some(Self::settle(item, answer))
+            .iter()
+            .position(|item| item.id == id && item.state == ItemState::Open)?;
+        let settled = Self::settle(&mut self.items[index], answer);
+        if let Some(rpc_id) = &self.items[index].rpc_request_id {
+            let still_open = self.items.iter().any(|item| {
+                item.state == ItemState::Open
+                    && item.rpc_request_id.as_deref() == Some(rpc_id.as_str())
+            });
+            if !still_open {
+                self.ambiguous.remove(rpc_id);
+            }
+        }
+        Some(settled)
     }
 
-    /// Remember that `rpc_id` was claimed by more than one request instance.
-    fn remember_reused(&mut self, rpc_id: &str) {
-        if self.reused.iter().any(|id| id == rpc_id) {
+    /// Remember an id for later reuse detection. The history follows inbox
+    /// retention: open items can raise the bound, while settled history is
+    /// capped at [`KEEP_MAX`]. Dropping an entry fails closed on an id whose
+    /// freshness can no longer be established.
+    fn remember_seen(&mut self, rpc_id: &str) {
+        if self.seen_rpc.iter().any(|seen| seen == rpc_id) {
             return;
         }
-        if self.reused.len() >= REUSED_MAX {
-            self.reused.remove(0);
+        let cap = KEEP_MAX.max(self.items.len());
+        if self.seen_rpc.len() >= cap {
+            self.seen_rpc.remove(0);
+            self.rpc_history_dropped = true;
         }
-        self.reused.push(rpc_id.to_owned());
+        self.seen_rpc.push(rpc_id.to_owned());
     }
 
-    /// Whether more than one request instance claimed `rpc_id`, so an answer
-    /// that names only the id cannot be attributed to one of them.
+    /// Whether an open request has a reused id, so an answer that names only
+    /// the id cannot be attributed to one request instance.
     #[must_use]
-    pub fn is_reused(&self, rpc_id: &str) -> bool {
-        self.reused.iter().any(|id| id == rpc_id)
+    pub fn is_ambiguous(&self, rpc_id: &str) -> bool {
+        self.ambiguous.contains(rpc_id)
     }
 
     /// Answer or dismiss the open item bound to `rpc_id`.
@@ -303,7 +337,7 @@ impl Inbox {
     /// expires all duplicates for the same reason. A secret item never stores
     /// its answer, whichever item matched.
     pub fn resolve_by_rpc(&mut self, rpc_id: &str, answer: Option<String>) -> RpcAnswer {
-        if self.is_reused(rpc_id) {
+        if self.is_ambiguous(rpc_id) {
             return RpcAnswer::Reused;
         }
         let mut claimants = self.items.iter().enumerate().filter(|(_, item)| {
@@ -338,6 +372,9 @@ impl Inbox {
                 expired = true;
             }
         }
+        if expired {
+            self.ambiguous.remove(rpc_id);
+        }
         expired
     }
 
@@ -351,11 +388,14 @@ impl Inbox {
                 expired += 1;
             }
         }
+        self.ambiguous.clear();
         expired
     }
 
     /// Drop settled items older than 14 days, then trim the oldest settled
     /// items until at most [`KEEP_MAX`] remain. Open items are never removed.
+    /// Request-id history is trimmed to the same shrunken bound; a trim marks
+    /// the history as dropped, so ids it no longer proves stay fail closed.
     pub fn prune(&mut self, now_ms: i64) {
         self.items
             .retain(|item| item.state == ItemState::Open || now_ms - item.created_at <= KEEP_MS);
@@ -368,6 +408,18 @@ impl Inbox {
                 true
             }
         });
+        let items = &self.items;
+        self.ambiguous.retain(|rpc_id| {
+            items.iter().any(|item| {
+                item.state == ItemState::Open
+                    && item.rpc_request_id.as_deref() == Some(rpc_id.as_str())
+            })
+        });
+        let cap = KEEP_MAX.max(self.items.len());
+        if self.seen_rpc.len() > cap {
+            self.seen_rpc.drain(..self.seen_rpc.len() - cap);
+            self.rpc_history_dropped = true;
+        }
     }
 
     /// How many items still wait for an answer.
@@ -540,6 +592,7 @@ mod tests {
 
         // The replacement can still be answered through its own item id.
         assert!(ib.resolve(&replacement, Some("Approve".into())).is_some());
+        assert!(!ib.is_ambiguous("r1"), "no request remains pending");
     }
 
     #[test]
@@ -571,12 +624,121 @@ mod tests {
             1,
         );
 
-        assert!(ib.is_reused("r1"));
+        assert!(ib.is_ambiguous("r1"));
         assert!(matches!(
             ib.resolve_by_rpc("r1", Some("hunter2".into())),
             RpcAnswer::Reused
         ));
         assert!(ib.open(&second).is_some(), "nothing was settled");
+        assert!(ib.items().iter().all(|item| item.answer.is_none()));
+    }
+
+    #[test]
+    fn a_pruned_settled_predecessor_still_makes_reuse_ambiguous() {
+        let mut ib = Inbox::in_memory();
+        let (first, _) = ib.add_ui_request(
+            ItemKind::Decision,
+            "Password".into(),
+            None,
+            vec![],
+            "r1".into(),
+            "input".into(),
+            None,
+            true,
+            0,
+        );
+        assert!(ib.resolve(&first, None).is_some());
+        for i in 0..KEEP_MAX {
+            let id = ib.add(
+                ItemKind::Result,
+                "unrelated".into(),
+                None,
+                vec![],
+                false,
+                None,
+                i64::try_from(i).unwrap() + 1,
+            );
+            assert!(ib.resolve(&id, None).is_some());
+        }
+        ib.prune(KEEP_MS + 1_000);
+        assert!(ib.items().is_empty(), "the predecessor was pruned");
+
+        let (second, _) = ib.add_ui_request(
+            ItemKind::Approval,
+            "Allow tool: bash".into(),
+            None,
+            vec!["Approve".into()],
+            "r1".into(),
+            "select".into(),
+            None,
+            false,
+            KEEP_MS + 2,
+        );
+        assert!(matches!(
+            ib.resolve_by_rpc("r1", Some("hunter2".into())),
+            RpcAnswer::Reused
+        ));
+        assert!(ib.open(&second).is_some(), "nothing was settled");
+        assert!(ib.items().iter().all(|item| item.answer.is_none()));
+    }
+
+    #[test]
+    fn dropped_request_history_fails_closed_on_a_later_reuse() {
+        let mut ib = Inbox::in_memory();
+        let (first, _) = ib.add_ui_request(
+            ItemKind::Decision,
+            "Password".into(),
+            None,
+            vec![],
+            "r1".into(),
+            "input".into(),
+            None,
+            true,
+            0,
+        );
+        assert!(ib.resolve(&first, None).is_some());
+        for i in 0..KEEP_MAX + 50 {
+            let rpc_id = format!("other-{i}");
+            let (id, _) = ib.add_ui_request(
+                ItemKind::Decision,
+                "unrelated".into(),
+                None,
+                vec![],
+                rpc_id,
+                "input".into(),
+                None,
+                false,
+                i64::try_from(i).unwrap() + 1,
+            );
+            assert!(ib.resolve(&id, None).is_some());
+        }
+        ib.prune(KEEP_MS + 1_000);
+        assert!(ib.items().is_empty(), "all request history was pruned");
+        assert!(
+            ib.seen_rpc.len() <= KEEP_MAX,
+            "request history follows the shrunken inbox allowance"
+        );
+        assert!(
+            ib.rpc_history_dropped,
+            "trimmed history stays fail closed for unproven ids"
+        );
+
+        let (second, _) = ib.add_ui_request(
+            ItemKind::Approval,
+            "Allow tool: bash".into(),
+            None,
+            vec!["Approve".into()],
+            "r1".into(),
+            "select".into(),
+            None,
+            false,
+            KEEP_MS + 2,
+        );
+        assert!(matches!(
+            ib.resolve_by_rpc("r1", Some("hunter2".into())),
+            RpcAnswer::Reused
+        ));
+        assert!(ib.open(&second).is_some());
         assert!(ib.items().iter().all(|item| item.answer.is_none()));
     }
 
