@@ -257,6 +257,9 @@ function bridgeHarness() {
   // Use the real context builder; the fake transport only supplies omp data.
   new Function("window", readFileSync(join(root, "src/app/live-context.js"), "utf8"))(w);
   new Function("window", readFileSync(join(root, "src/app/approval-mode.js"), "utf8"))(w);
+  // live.js asks the persona module which registry entries are project tabs
+  // (Ruling B-R6: Ompy is not one).
+  new Function("window", readFileSync(join(root, "src/app/persona.js"), "utf8"))(w);
   // The fake is attached after bridge initialization, so no boot restore or
   // real process is started. Only timers for other bridge commands are unref'd.
   const timeout = (fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; };

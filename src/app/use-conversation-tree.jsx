@@ -21,10 +21,10 @@ function useConversationTree({ bridge, open, sessionId, sessionFile, profileId, 
   const key = sessionFile ? `${sessionId}\0${sessionFile}` : "";
   const [result, setResult] = React.useState({ key: "", tree: null, error: null });
   const [loading, setLoading] = React.useState(false);
-  const [now, setNow] = React.useState(() => Date.now());
   const [nonce, setNonce] = React.useState(0);
 
   const refresh = React.useCallback(() => setNonce(n => n + 1), []);
+  const [now, setNow] = window.useNow(open, TREE_TICK_MS);
 
   // Run settled (streaming true → false, and still false TREE_SETTLE_MS
   // later): refetch. A tab switch in the same render fetches by itself.
@@ -36,13 +36,6 @@ function useConversationTree({ bridge, open, sessionId, sessionFile, profileId, 
     const timer = setTimeout(refresh, TREE_SETTLE_MS);
     return () => clearTimeout(timer);
   }, [open, streaming, key, refresh]);
-
-  React.useEffect(() => {
-    if (!open) return undefined;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), TREE_TICK_MS);
-    return () => clearInterval(timer);
-  }, [open]);
 
   React.useEffect(() => {
     if (!open || !bridge || !key) return undefined;

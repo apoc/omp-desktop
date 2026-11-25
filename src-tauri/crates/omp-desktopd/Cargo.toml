@@ -1,0 +1,44 @@
+[package]
+name = "omp-desktopd"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98"
+publish = false
+
+[dependencies]
+omp-desktop-core = { path = "../omp-desktop-core" }
+# Local quiet hours and the wall clock: the scheduler works on both the UTC
+# instant (deadlines) and the local time (quiet hours, DST jumps).
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std", "serde"] }
+serde = { version = "1", features = ["derive"] }
+# `raw_value`: the socket server relays omp frames without re-parsing them.
+serde_json = { version = "1", features = ["raw_value"] }
+# Local sockets: unix domain socket on unix, named pipe on Windows.
+interprocess = "2.4.8"
+# The same config directory Tauri's `app_config_dir()` resolves.
+dirs = "7"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# SID lookup, the pipe DACL, CREATE_NO_WINDOW and console detachment.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Console",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+# `test_support::tempdir` keeps the temp-dir tests free of collisions.
+omp-desktop-core = { path = "../omp-desktop-core", features = ["test-support"] }
+
+# The session-host test drives a fake `omp`. It lives under `tests/bin/` so
+# Cargo does not auto-discover it as an integration test.
+[[bin]]
+name = "fake-omp"
+path = "tests/bin/fake_omp.rs"
+test = false

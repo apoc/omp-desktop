@@ -4,19 +4,6 @@
 
 const { Icon: _SA_Icon, TOOL_META: _SA_TOOL_META, OMP_SUBAGENTS: _SA } = window;
 
-/** Re-render on an interval while `active` — drives live elapsed clocks
- *  without a timer per agent row when nothing is running. */
-function useSaNow(active, ms = 250) {
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
-    if (!active) return undefined;
-    setNow(Date.now());
-    const id = setInterval(() => setNow(Date.now()), ms);
-    return () => clearInterval(id);
-  }, [active, ms]);
-  return now;
-}
-
 /** omp tool name → TOOL_META entry (adapter.js owns the name mapping). */
 function saToolMeta(rawName) {
   const key = window.normalizeToolName ? window.normalizeToolName(rawName ?? "") : rawName;
@@ -86,6 +73,6 @@ function SaGlyph({ agent }) {
 }
 
 Object.assign(window, {
-  useSaNow, saToolMeta, saModelName, saHueStyle, saLeafName,
+  saToolMeta, saModelName, saHueStyle, saLeafName,
   SaDot, SaToolChip, SaElapsed, SaStatusChip, SaContextTube, SaGlyph,
 });

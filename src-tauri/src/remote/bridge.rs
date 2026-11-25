@@ -216,6 +216,22 @@ pub fn stop(app: &AppHandle) {
     }
 }
 
+/// Push one Ompy inbox item to the phones. No-op while remote access is not
+/// installed; the client filters quiet hours before handing items over.
+pub fn notify_persona(app: &AppHandle, title: &str, urgent: bool) {
+    if let Some(manager) = app.try_state::<Arc<RemoteManager>>() {
+        manager.notify_persona(title, urgent);
+    }
+}
+
+/// The Ompy relay's busy/open-question state for the phone's tab chip. No-op
+/// while remote access is not installed; pushing stays on its own path.
+pub fn sync_persona_activity(app: &AppHandle, busy: bool, has_ask: bool) {
+    if let Some(manager) = app.try_state::<Arc<RemoteManager>>() {
+        manager.hub().set_persona_activity(busy, has_ask);
+    }
+}
+
 /// A page load or navigation drops the webview's listeners: phones get 4503
 /// until the page announces itself again with `remote_ready(true)`.
 pub fn on_page_load(webview: &Webview, started: bool) {

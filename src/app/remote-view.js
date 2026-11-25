@@ -29,6 +29,7 @@
         ...(ask.markableCount !== undefined ? { markableCount: ask.markableCount } : {}),
       } : {}),
       ...(kind === "editor" && typeof (ask.prefill ?? ask.value) === "string" ? { value: ask.prefill ?? ask.value } : {}),
+      ...(kind === "input" && ask.secret === true ? { secret: true } : {}),
       ...(kind === "dialog" ? { questions: ask.questions ?? [] } : {}),
     };
   }
@@ -100,12 +101,14 @@
     return keys.length === Object.keys(b).length && keys.every(key => Object.hasOwn(b, key) && viewsEqual(a[key], b[key]));
   }
 
-  function answerCall(ask, value) {
+  function answerCall(ask, value, actionOrigin = null) {
     if (value === null) return { method: "cancelAsk", args: [ask.id] };
     const kind = ask.method ?? ask.kind;
     const method = kind === "confirm" ? "answerConfirm"
       : kind === "ask" || kind === "dialog" ? "answerAskDialog" : "answerAsk";
-    return { method, args: [ask.id, value] };
+    const secret = ask.secret === true || actionOrigin?.secret === true;
+    const origin = secret ? [{ remoteId: actionOrigin?.remoteId ?? ask.id, secret: true }] : [];
+    return { method, args: [ask.id, value, ...origin] };
   }
 
   const nonBlank = value => typeof value === "string" && value.trim() !== "";
@@ -224,7 +227,7 @@
             if (!ask) throw new Error("question no longer open");
             const invalid = invalidAnswer(ask, action.value);
             if (invalid) throw new Error(invalid);
-            const call = answerCall(ask, action.value);
+            const call = answerCall(ask, action.value, { remoteId: action.remoteId, secret: action.secret });
             await deliver(() => bridge[call.method](...call.args));
             break;
           }

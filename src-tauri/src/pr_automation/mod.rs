@@ -13,8 +13,8 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::State;
 
-use crate::child_path::child_path_dirs;
 use crate::terminal::TerminalManager;
+use omp_desktop_core::child_path::child_path_dirs;
 
 use feedback::{parse_feedback, select_pr};
 use git::{local_branch, LocalBranch};

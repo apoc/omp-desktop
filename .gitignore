@@ -1,6 +1,8 @@
 # ── Rust / Tauri ──────────────────────────────────────────────────────────────
 /src-tauri/target/
 /src-tauri/gen/
+# Staged by scripts/build-sidecar.mjs for Tauri's bundle.externalBin.
+/src-tauri/binaries/
 
 # ── Release frontend (scripts/build-frontend.mjs) ─────────────────────────────
 /dist/

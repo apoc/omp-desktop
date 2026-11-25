@@ -136,7 +136,7 @@ fn spawn<A: AsRef<OsStr>>(
         .stderr(Stdio::piped());
     // A bare program name is looked up on PATH; an empty or relative entry
     // would resolve it inside the untrusted project directory.
-    crate::child_path::apply_trusted_child_path(&mut cmd);
+    omp_desktop_core::child_path::apply_trusted_child_path(&mut cmd);
     // Also hides the console window on Windows.
     ProcessSupervisor::prepare(&mut cmd);
     // The OS error names the cause; `NotFound` also means a missing shebang

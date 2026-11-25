@@ -41,7 +41,7 @@
     status,
     scan: scanner.root,
     error,
-    onAnswer: (askId, value) => action("answer", { askId, value }),
+    onAnswer: (askId, value, origin) => action("answer", { askId, value, ...origin }),
     onError: message => { state = { ...state, error: message }; },
   });
   const composer = node("div", "", "remote-composer");

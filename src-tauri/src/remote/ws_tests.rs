@@ -232,6 +232,39 @@ fn unauthenticated_socket_gets_4401_and_no_tabs() {
 }
 
 #[test]
+fn persona_activity_sets_only_the_ompy_chip() {
+    let s = test_server("ws-persona-chip");
+    s.hub.publish(payload(&["t1", "ompy"]));
+    let token = s.pair_device();
+    let mut ws = s.ws_connect();
+    ws.send_text(&format!(r#"{{"t":"auth","token":"{token}"}}"#));
+    assert_eq!(ws.read_json()["t"], "hello");
+    let initial = ws.read_json();
+    assert_eq!(initial["t"], "tabs");
+    assert_eq!(initial["tabs"][1]["busy"], false);
+    assert_eq!(initial["tabs"][1]["hasAsk"], false);
+
+    s.hub.set_persona_activity(true, true);
+    let tabs = ws.read_json_where(|m| m["t"] == "tabs");
+    let ompy = &tabs["tabs"][1];
+    assert_eq!(
+        (
+            ompy["id"].as_str(),
+            ompy["busy"].as_bool(),
+            ompy["hasAsk"].as_bool()
+        ),
+        (Some("ompy"), Some(true), Some(true))
+    );
+    assert_eq!(tabs["tabs"][0]["busy"], false, "another tab changed");
+    assert_eq!(tabs["tabs"][0]["hasAsk"], false, "another tab changed");
+
+    s.hub.set_persona_activity(false, false);
+    let tabs = ws.read_json_where(|m| m["t"] == "tabs");
+    assert_eq!(tabs["tabs"][1]["busy"], false);
+    assert_eq!(tabs["tabs"][1]["hasAsk"], false);
+}
+
+#[test]
 fn action_round_trip_and_timeout() {
     let s = test_server("ws-action");
     let mut ws = s.authed_socket();
@@ -531,6 +564,8 @@ fn revoked_connection_gets_its_close_and_nothing_else() {
         kind: "abort".to_owned(),
         text: None,
         ask_id: None,
+        remote_id: None,
+        secret: false,
         value: None,
         dispatched_at: None,
     };
@@ -746,10 +781,12 @@ fn authenticated_ping_and_long_ask_id_work_without_spurious_timeout_or_truncatio
         .unwrap();
     let ask_id = "q".repeat(256);
     client.send_text(&format!(
-        r#"{{"t":"action","reqId":"r-256","tabId":"t1","kind":"answer","askId":"{ask_id}","value":"yes"}}"#
+        r#"{{"t":"action","reqId":"r-256","tabId":"t1","kind":"answer","askId":"{ask_id}","remoteId":"{ask_id}","secret":true,"value":"yes"}}"#
     ));
     let action = s.emit.next_action();
     assert_eq!(action.ask_id.as_deref(), Some(ask_id.as_str()));
+    assert_eq!(action.remote_id.as_deref(), Some(ask_id.as_str()));
+    assert!(action.secret);
     s.hub.action_result(&action.req_id, true, None);
     assert_eq!(client.read_json_where(|m| m["t"] == "ack")["ok"], true);
 

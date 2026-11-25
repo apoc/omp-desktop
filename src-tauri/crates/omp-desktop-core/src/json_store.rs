@@ -13,7 +13,7 @@
 //!   staleness recovery, for guarding the read-modify-write cycle around a
 //!   shared file.
 
-use crate::supervisor::pid_is_alive;
+use crate::proc_util::pid_is_alive;
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
@@ -135,6 +135,7 @@ pub fn read_strict<T: DeserializeOwned + Default>(path: &Path) -> Result<T, Stri
 /// Read `path` as JSON for disposable data (recent projects, open tabs):
 /// [`read_strict`], except that a failure also reads as `T::default()`
 /// after logging it — the next write replaces the bad file.
+#[must_use]
 pub fn read_or_default<T: DeserializeOwned + Default>(path: &Path) -> T {
     read_strict(path).unwrap_or_else(|e| {
         eprintln!(
@@ -146,11 +147,13 @@ pub fn read_or_default<T: DeserializeOwned + Default>(path: &Path) -> T {
 }
 
 /// Locked read-modify-write of the JSON file at `path`, under
-/// [`with_lock_str`] on `lock`: read it with [`read_strict`], let `modify`
-/// edit it, write it back atomically **only when `modify` reports a change**
-/// (a no-op must not rewrite the file, or create it on a fresh install),
-/// then hand the result to `commit` — still under the lock, so a caller's
-/// in-memory copy updated there follows the file's write order.
+/// [`with_lock_str`] on `lock`.
+///
+/// It is read with [`read_strict`], `modify` may edit it, it is written back
+/// atomically **only when `modify` reports a change** (a no-op must not
+/// rewrite the file, or create it on a fresh install), and the result is
+/// handed to `commit` — still under the lock, so a caller's in-memory copy
+/// updated there follows the file's write order.
 ///
 /// A file that exists but cannot be read is never overwritten: that would
 /// silently discard whatever the user had stored there.
@@ -182,10 +185,12 @@ where
 
 /// Remove leftover `<base_name>.*.tmp` files in `dir` — the residue of a
 /// process that crashed between creating a [`write_atomic`] temp file and
-/// renaming it over the destination. `write_atomic` calls this itself,
-/// scoped to its own directory/base name, before every write; it's also
-/// exposed publicly for callers who want to sweep a directory once at
-/// startup regardless of whether a write happens this run.
+/// renaming it over the destination.
+///
+/// `write_atomic` calls this itself, scoped to its own directory/base name,
+/// before every write; it's also exposed publicly for callers who want to
+/// sweep a directory once at startup regardless of whether a write happens
+/// this run.
 ///
 /// # Errors
 /// Returns an error if `dir` can't be read. Individual file removals inside
@@ -212,15 +217,18 @@ pub fn sweep_orphan_temp_files(dir: &Path, base_name: &str) -> io::Result<usize>
 // ── content hashing ─────────────────────────────────────────────────────────
 
 /// Hex-encoded SHA-256 of `bytes`, used as the content-addressed snapshot id.
+///
 /// SHA-256 (rather than a cheaper non-cryptographic hash) is deliberate:
 /// snapshot ids are meant to be tamper-evident, so [`SnapshotRing::restore`]
 /// and [`SnapshotRing::restore_latest`] can detect on-disk corruption by
 /// simply re-hashing and comparing to the filename.
+#[must_use]
 pub fn hex_sha256(bytes: &[u8]) -> String {
     hex_lower(&Sha256::digest(bytes))
 }
 
 /// Lowercase hex of `bytes` (a digest), two characters per byte.
+#[must_use]
 pub fn hex_lower(bytes: &[u8]) -> String {
     let mut hex = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -240,9 +248,10 @@ struct SnapshotEntry {
 }
 
 /// A small content-addressed history of a file's past contents, kept as
-/// `<dir>/<hex_sha256>.json`. After each new snapshot, entries beyond
-/// `retain` (oldest first, by file modified time) are pruned so the ring
-/// never grows without bound.
+/// `<dir>/<hex_sha256>.json`.
+///
+/// After each new snapshot, entries beyond `retain` (oldest first, by file
+/// modified time) are pruned so the ring never grows without bound.
 ///
 /// Ordering comes from each snapshot file's own mtime, so no metadata
 /// sidecar is written: a `<id>.meta.json` companion used to be, but
@@ -570,6 +579,7 @@ const STORE_LOCK_STALE_AFTER: Duration = Duration::from_secs(5);
 /// [`with_lock`] for callers whose read-modify-write reports `String`
 /// errors: `f`'s error is tunnelled through `io::Error` and flattened back
 /// to its message, so a store module never has to know about `io::Error`.
+///
 /// A live, non-stale contending lock — re-wrapped by [`with_lock`] as
 /// `ErrorKind::WouldBlock` so it can never be confused with an unrelated
 /// `ErrorKind::AlreadyExists` (e.g. `fs::create_dir_all` racing a

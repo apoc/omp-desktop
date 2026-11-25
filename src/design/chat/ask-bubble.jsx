@@ -30,6 +30,7 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
 
   const submit = (value) => {
     if (done) return;
+    if (method === "input" && msg.secret) setDraft("");
     onAnswer(msg.id, value);
   };
 
@@ -120,7 +121,8 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
         <div className="ask-other">
           <input
             className="ask-other-input"
-            type="text"
+            type={msg.secret ? "password" : "text"}
+            autoComplete="off"
             placeholder={msg.placeholder}
             value={done ? (msg.answer ?? "") : draft}
             disabled={done}
@@ -184,7 +186,7 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
           </section>
         </div>
 
-        {tool && !done && (
+        {tool && !done && msg.sessionId !== "ompy" && (
           <div className="ask-approval-rules">
             <button className="ask-opt ask-remember" onClick={() => grant("session")}>
               <_AskIcon name="clock" size={10} />
@@ -247,6 +249,9 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
           </div>
         )}
         <div id={detailsId} hidden={summary ? !expanded : undefined}>{body}</div>
+        {!done && msg.deliveryError && (
+          <div className="ask-delivery-error retry-error selectable" role="alert">{msg.deliveryError}</div>
+        )}
       </div>
     </div>
   );

@@ -116,13 +116,25 @@ test("buildView forwards a select's checkbox fields and leaves other kinds alone
     ask("plain", "select", { options: ["Approve", "Deny"] }),
     ask("conf", "confirm", fields),
     ask("inp", "input", fields),
+    ask("secret", "input", { secret: true }),
   ] }));
   assert.deepEqual(own(view.asks), [
     { id: "cb", kind: "select", title: "Continue?", message: "", options: ["A", "B", "C", "✔ Done selecting"], ...fields },
     { id: "plain", kind: "select", title: "Continue?", message: "", options: ["Approve", "Deny"] },
     { id: "conf", kind: "confirm", title: "Continue?", message: "" },
     { id: "inp", kind: "input", title: "Continue?", message: "" },
+    { id: "secret", kind: "input", title: "Continue?", message: "", secret: true },
   ]);
+});
+
+test("buildView never publishes an answered secret prompt or its value", () => {
+  const { api } = load();
+  const view = api.buildView(snapshot({ messages: [
+    ask("secret-answered", "input", { secret: true, answered: true, answer: "phone-secret-value" }),
+    ask("secret-open", "input", { secret: true }),
+  ] }));
+  assert.deepEqual(Array.from(view.asks, entry => entry.id), ["secret-open"]);
+  assert.equal(JSON.stringify(view).includes("phone-secret-value"), false);
 });
 
 test("buildView trims to last 100 messages and 2 000 tool characters without losing older open asks", () => {
@@ -499,6 +511,26 @@ test("phone answers are validated per ask kind before reaching omp", async () =>
     const card = (await runAnswer(api, item, value)).card;
     assert.equal(card.error, expected, `${card.kind} ${JSON.stringify(value)}`);
   }
+});
+
+test("phone answers carry the originating card's id and secret mask signal", async () => {
+  const { api } = load();
+  const result = await runAnswer(api, ask("old-secret", "input", { secret: true }), "canary");
+  assert.deepEqual(own(result.calls), [["old-secret", "canary", { remoteId: "old-secret", secret: true }]]);
+});
+
+test("a stale secret action keeps its origin mask after a non-secret replacement", async () => {
+  const { api } = load();
+  const calls = [], results = [];
+  const snap = snapshot({ messages: [ask("reused", "input", { secret: false })] });
+  const handle = api.makeActionHandler({
+    answerAsk: (...args) => calls.push(args),
+    remoteActionResult: (...args) => results.push(args),
+  }, () => snap, liveStatus);
+  await handle({ reqId: "r", deviceId: "d", tabId: "a", kind: "answer", askId: "reused",
+    remoteId: "reused", secret: true, value: "canary" });
+  assert.deepEqual(own(calls), [["reused", "canary", { remoteId: "reused", secret: true }]]);
+  assert.deepEqual(results, [["r", true]]);
 });
 
 async function runAnswer(api, item, value) {

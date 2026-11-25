@@ -16,6 +16,11 @@ pub struct Action {
     pub kind: String,
     pub text: Option<String>,
     pub ask_id: Option<String>,
+    /// The card's request id and password hint when the phone rendered it.
+    /// These are mask-only metadata; the desktop still resolves the open id.
+    pub remote_id: Option<String>,
+    #[serde(default)]
+    pub secret: bool,
     pub value: Option<Value>,
     #[serde(default)]
     pub dispatched_at: Option<u64>,

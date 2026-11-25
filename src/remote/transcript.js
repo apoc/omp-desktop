@@ -30,6 +30,8 @@
   }
 
   function createTranscript({ status, scan, error, onAnswer, onError }) {
+    const submitAnswer = (ask, value) => onAnswer(ask.id, value,
+      ask.secret === true ? { remoteId: ask.id, secret: true } : undefined);
     const transcript = node("section");
     transcript.setAttribute("aria-label", "Transcript");
     const asks = node("section");
@@ -136,7 +138,7 @@
       if (Array.isArray(controls)) {
         const opts = node("div", undefined, "ask-options");
         for (const option of controls) {
-          const b = button(option.label, () => onAnswer(ask.id, option.value));
+          const b = button(option.label, () => submitAnswer(ask, option.value));
           b.className = "ask-opt";
           opts.append(b);
         }
@@ -145,14 +147,33 @@
         const wrap = node("div", undefined, "ask-other");
         const input = node(controls.multiline ? "textarea" : "input");
         input.className = controls.multiline ? "ask-editor-textarea selectable" : "ask-other-input";
+        if (ask.secret) input.type = "password";
         input.setAttribute("aria-label", ask.title || "Answer");
-        input.value = askDrafts.get(key) ?? ask.value ?? "";
-        input.addEventListener("input", () => askDrafts.set(key, input.value));
+        // A secret never enters the draft map: the plaintext lives only in
+        // this field until submit, so a rebuild or a retry cannot replay it.
+        input.value = ask.secret ? "" : askDrafts.get(key) ?? ask.value ?? "";
+        if (!ask.secret) input.addEventListener("input", () => askDrafts.set(key, input.value));
         wrap.append(input);
-        const submit = button(controls.multiline ? "Submit" : "Answer", () => onAnswer(ask.id, input.value));
+        // The sent mask is shown next to the field, never as its value: an
+        // open question after a failed delivery asks for the credential again.
+        const mask = ask.secret ? node("span", "••••••••", "chip muted") : null;
+        if (mask) {
+          mask.hidden = true;
+          wrap.append(mask);
+          input.addEventListener("input", () => { mask.hidden = true; });
+        }
+        const submit = button(controls.multiline ? "Submit" : "Answer", () => {
+          if (ask.secret && input.value === "") return;
+          submitAnswer(ask, input.value);
+          if (ask.secret) {
+            input.value = "";
+            askDrafts.delete(key);
+            mask.hidden = false;
+          }
+        });
         submit.className = "ask-submit";
         if (controls.multiline) {
-          const cancel = button("Cancel", () => onAnswer(ask.id, null));
+          const cancel = button("Cancel", () => submitAnswer(ask, null));
           cancel.className = "ask-opt";
           const actions = node("div", undefined, "ask-editor-actions");
           actions.append(submit, cancel);
@@ -190,7 +211,7 @@
           btn.setAttribute("role", spec.role);
           btn.setAttribute("aria-checked", String(spec.checked));
         }
-        btn.addEventListener("click", () => onAnswer(ask.id, controls[i].value));
+        btn.addEventListener("click", () => submitAnswer(ask, controls[i].value));
         if (spec.mark) btn.append(node("span", "", `ask-mark ${spec.mark}`));
         const text = node("span", undefined, "ask-row-text");
         text.append(node("span", spec.label, "ask-row-label"));
@@ -278,7 +299,7 @@
           answers.push(custom ? { id: q.id, selectedOptions: draft[qi].picks, customInput: custom } : { id: q.id, selectedOptions: draft[qi].picks });
         }
         problem.textContent = "";
-        onAnswer(ask.id, answers);
+        submitAnswer(ask, answers);
       });
       answer.className = "ask-submit";
       wrap.append(problem, answer);

@@ -1,0 +1,961 @@
+//! Ompy's inbox: approvals, decisions, results and notices, persisted as
+//! `inbox.json` with an atomic write after every change.
+
+use omp_desktop_core::json_store::write_atomic;
+use omp_desktop_core::persona_protocol::{AskQuestionRef, InboxItem, ItemKind, ItemState};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::io;
+use std::path::PathBuf;
+
+/// How long a settled item stays in the inbox: 14 days.
+const KEEP_MS: i64 = 14 * 24 * 60 * 60 * 1000;
+/// Most items kept in total, open ones always included. Session request-id
+/// history uses the same retention bound, plus any items currently retained.
+const KEEP_MAX: usize = 200;
+/// Format version written by [`Inbox::save`].
+const FILE_VERSION: u32 = 1;
+/// Notice returned by [`Inbox::load`] when it had to reset a broken file.
+const RESET_NOTICE: &str = "Inbox file was unreadable and was reset";
+/// Notice returned by [`Inbox::load`] when the broken file could not even be
+/// moved aside, so the inbox stays in memory and nothing is persisted.
+const UNSAVED_NOTICE: &str =
+    "Inbox file could not be read or moved aside, so changes will not be saved until the service restarts";
+
+/// On-disk shape of `inbox.json`.
+#[derive(Serialize, Deserialize)]
+struct File {
+    /// Format version, for a future reader to branch on.
+    #[allow(dead_code)] // Written only; no reader branches on the version yet.
+    version: u32,
+    /// Last id counter, so ids stay unique across restarts.
+    counter: u64,
+    /// Items in insertion (and therefore creation) order.
+    items: Vec<InboxItem>,
+}
+
+/// The verdict of [`Inbox::resolve_by_rpc`] for one omp request id.
+#[derive(Debug)]
+pub enum RpcAnswer {
+    /// The single open item bound to the id was answered or dismissed.
+    Settled(Box<InboxItem>),
+    /// The id was reused by a later request, so an answer carrying only that id
+    /// cannot be attributed to one request instance. Nothing was stored.
+    Reused,
+    /// More than one open item claimed the id, so no answer could be
+    /// attributed: every one of them was expired and nothing was stored.
+    Ambiguous,
+    /// No open item is bound to the id.
+    Unbound,
+}
+
+/// The persona's inbox, either in memory or backed by `inbox.json`.
+pub struct Inbox {
+    /// Items in insertion (and therefore creation) order.
+    items: Vec<InboxItem>,
+    /// Monotonic suffix for ids, persisted with the items.
+    counter: u64,
+    /// Where to save; `None` for [`Inbox::in_memory`].
+    path: Option<PathBuf>,
+    /// Reused ids with an open request. An id-only answer stays ambiguous
+    /// until that request settles or expires; the entry then leaves this set.
+    ambiguous: HashSet<String>,
+    /// Request ids seen in this session, oldest first. Retained inbox items
+    /// are also checked directly, including items loaded from disk.
+    seen_rpc: Vec<String>,
+    /// Some request history was dropped. A later id with no surviving proof
+    /// of freshness is treated as reused instead of risking a wrong answer.
+    rpc_history_dropped: bool,
+}
+
+impl Inbox {
+    /// An inbox that never touches the disk.
+    #[must_use]
+    pub fn in_memory() -> Self {
+        Self {
+            items: Vec::new(),
+            counter: 0,
+            path: None,
+            ambiguous: HashSet::new(),
+            seen_rpc: Vec::new(),
+            rpc_history_dropped: false,
+        }
+    }
+
+    /// Load `path`, or start empty when it does not exist.
+    ///
+    /// A file that exists but cannot be read or parsed is never overwritten:
+    /// it is renamed to `<file_name>.bad-<now_ms>` in the same directory and
+    /// replaced by an empty inbox, and the second return value carries the
+    /// notice for the user. When even that rename fails, the empty inbox is
+    /// memory-only (so [`Self::save`] becomes a no-op) and the notice says
+    /// so.
+    #[must_use]
+    pub fn load(path: PathBuf, now_ms: i64) -> (Self, Option<String>) {
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return (Self::at(path), None);
+            }
+            Err(_) => return Self::move_aside(path, now_ms),
+        };
+        match serde_json::from_slice::<File>(&bytes) {
+            Ok(file) => {
+                let mut inbox = Self {
+                    items: file.items,
+                    counter: file.counter,
+                    path: Some(path),
+                    ambiguous: HashSet::new(),
+                    seen_rpc: Vec::new(),
+                    rpc_history_dropped: false,
+                };
+                let retained_rpc: Vec<String> = inbox
+                    .items
+                    .iter()
+                    .filter_map(|item| item.rpc_request_id.clone())
+                    .collect();
+                for rpc_id in retained_rpc {
+                    inbox.remember_seen(&rpc_id);
+                }
+                (inbox, None)
+            }
+            Err(_) => Self::move_aside(path, now_ms),
+        }
+    }
+
+    /// Rename the unreadable `path` to `<file_name>.bad-<now_ms>`,
+    /// so the next save starts from a clean state without destroying
+    /// whatever the user had stored there. If the rename fails, fall back to
+    /// a memory-only inbox that never writes.
+    fn move_aside(path: PathBuf, now_ms: i64) -> (Self, Option<String>) {
+        let Some(file_name) = path.file_name() else {
+            return (Self::in_memory(), Some(UNSAVED_NOTICE.into()));
+        };
+        let mut bad_name = file_name.to_os_string();
+        bad_name.push(format!(".bad-{now_ms}"));
+        if std::fs::rename(&path, path.with_file_name(bad_name)).is_ok() {
+            return (Self::at(path), Some(RESET_NOTICE.into()));
+        }
+        (Self::in_memory(), Some(UNSAVED_NOTICE.into()))
+    }
+
+    /// An empty inbox that saves to `path`.
+    fn at(path: PathBuf) -> Self {
+        Self {
+            items: Vec::new(),
+            counter: 0,
+            path: Some(path),
+            ambiguous: HashSet::new(),
+            seen_rpc: Vec::new(),
+            rpc_history_dropped: false,
+        }
+    }
+
+    /// Add an open item and return its id.
+    #[allow(clippy::too_many_arguments)] // One parameter per `InboxItem` field.
+    pub fn add(
+        &mut self,
+        kind: ItemKind,
+        title: String,
+        body: Option<String>,
+        options: Vec<String>,
+        urgent: bool,
+        rpc_request_id: Option<String>,
+        now_ms: i64,
+    ) -> String {
+        self.push(
+            kind,
+            title,
+            body,
+            options,
+            urgent,
+            rpc_request_id,
+            None,
+            None,
+            false,
+            now_ms,
+        )
+        .0
+    }
+
+    /// Add an item bound to an omp UI request, retaining its response shape.
+    ///
+    /// Returns the new item's id and whether an open item that already claimed
+    /// the same request id was expired: two open items may never share one
+    /// request id, because answering it would be ambiguous.
+    #[allow(clippy::too_many_arguments)] // One parameter per UI request field.
+    pub fn add_ui_request(
+        &mut self,
+        kind: ItemKind,
+        title: String,
+        body: Option<String>,
+        options: Vec<String>,
+        rpc_request_id: String,
+        request_method: String,
+        ask_questions: Option<Vec<AskQuestionRef>>,
+        secret: bool,
+        now_ms: i64,
+    ) -> (String, bool) {
+        self.push(
+            kind,
+            title,
+            body,
+            options,
+            false,
+            Some(rpc_request_id),
+            Some(request_method),
+            ask_questions,
+            secret,
+            now_ms,
+        )
+    }
+
+    /// Append one item and return its id plus whether an open item with the
+    /// same omp request id was expired first.
+    ///
+    /// A new request that reuses an open request id makes the older one
+    /// unreachable (omp only waits for its newest request under that id), and
+    /// leaving both open would let an answer to a secret request settle the
+    /// other item and store the plaintext. Any reuse is also remembered, so a
+    /// later answer that names only the request id can be refused.
+    #[allow(clippy::too_many_arguments)] // One parameter per `InboxItem` field.
+    fn push(
+        &mut self,
+        kind: ItemKind,
+        title: String,
+        body: Option<String>,
+        options: Vec<String>,
+        urgent: bool,
+        rpc_request_id: Option<String>,
+        request_method: Option<String>,
+        ask_questions: Option<Vec<AskQuestionRef>>,
+        secret: bool,
+        now_ms: i64,
+    ) -> (String, bool) {
+        let superseded = rpc_request_id.as_deref().is_some_and(|rpc_id| {
+            let seen_before = self
+                .items
+                .iter()
+                .any(|item| item.rpc_request_id.as_deref() == Some(rpc_id))
+                || self.seen_rpc.iter().any(|seen| seen == rpc_id);
+            let superseded = self.expire_rpc(rpc_id);
+            if seen_before || self.rpc_history_dropped {
+                self.ambiguous.insert(rpc_id.to_owned());
+            }
+            self.remember_seen(rpc_id);
+            superseded
+        });
+        self.counter += 1;
+        let id = format!("i-{now_ms}-{}", self.counter);
+        self.items.push(InboxItem {
+            id: id.clone(),
+            kind,
+            created_at: now_ms,
+            title,
+            body,
+            options,
+            urgent,
+            state: ItemState::Open,
+            answer: None,
+            rpc_request_id,
+            request_method,
+            ask_questions,
+            secret,
+        });
+        (id, superseded)
+    }
+
+    /// Borrow an open item while its answer is validated.
+    #[must_use]
+    pub fn open(&self, id: &str) -> Option<&InboxItem> {
+        self.items
+            .iter()
+            .find(|item| item.id == id && item.state == ItemState::Open)
+    }
+
+    /// Mark `item` answered or dismissed, depending on `answer`, and return
+    /// the copy as it now stands.
+    fn settle(item: &mut InboxItem, answer: Option<String>) -> InboxItem {
+        item.state = if answer.is_some() {
+            ItemState::Answered
+        } else {
+            ItemState::Dismissed
+        };
+        item.answer = if item.secret { None } else { answer };
+        item.clone()
+    }
+
+    /// Answer or dismiss the open item `id`; `None` when no such item is
+    /// open (settled items are not resolved twice).
+    pub fn resolve(&mut self, id: &str, answer: Option<String>) -> Option<InboxItem> {
+        let index = self
+            .items
+            .iter()
+            .position(|item| item.id == id && item.state == ItemState::Open)?;
+        let settled = Self::settle(&mut self.items[index], answer);
+        if let Some(rpc_id) = &self.items[index].rpc_request_id {
+            let still_open = self.items.iter().any(|item| {
+                item.state == ItemState::Open
+                    && item.rpc_request_id.as_deref() == Some(rpc_id.as_str())
+            });
+            if !still_open {
+                self.ambiguous.remove(rpc_id);
+            }
+        }
+        Some(settled)
+    }
+
+    /// Remember an id for later reuse detection. The history follows inbox
+    /// retention: open items can raise the bound, while settled history is
+    /// capped at [`KEEP_MAX`]. Dropping an entry fails closed on an id whose
+    /// freshness can no longer be established.
+    fn remember_seen(&mut self, rpc_id: &str) {
+        if self.seen_rpc.iter().any(|seen| seen == rpc_id) {
+            return;
+        }
+        let cap = KEEP_MAX.max(self.items.len());
+        if self.seen_rpc.len() >= cap {
+            self.seen_rpc.remove(0);
+            self.rpc_history_dropped = true;
+        }
+        self.seen_rpc.push(rpc_id.to_owned());
+    }
+
+    /// Whether an open request has a reused id, so an answer that names only
+    /// the id cannot be attributed to one request instance.
+    #[must_use]
+    pub fn is_ambiguous(&self, rpc_id: &str) -> bool {
+        self.ambiguous.contains(rpc_id)
+    }
+
+    /// Answer or dismiss the open item bound to `rpc_id`.
+    ///
+    /// A reused id settles nothing: the answer could belong to any of the
+    /// instances that claimed it, so refusing it keeps a superseded secret
+    /// field's plaintext from being stored on its replacement. An id claimed by
+    /// more than one open item (written by an older version or edited by hand)
+    /// expires all duplicates for the same reason. A secret item never stores
+    /// its answer, whichever item matched.
+    pub fn resolve_by_rpc(&mut self, rpc_id: &str, answer: Option<String>) -> RpcAnswer {
+        if self.is_ambiguous(rpc_id) {
+            return RpcAnswer::Reused;
+        }
+        let mut claimants = self.items.iter().enumerate().filter(|(_, item)| {
+            item.rpc_request_id.as_deref() == Some(rpc_id) && item.state == ItemState::Open
+        });
+        let (first, second) = (claimants.next().map(|(i, _)| i), claimants.next().is_some());
+        match (first, second) {
+            (None, _) => RpcAnswer::Unbound,
+            (Some(index), false) => {
+                RpcAnswer::Settled(Box::new(Self::settle(&mut self.items[index], answer)))
+            }
+            (Some(_), true) => {
+                self.expire_rpc(rpc_id);
+                RpcAnswer::Ambiguous
+            }
+        }
+    }
+
+    /// Expire every open item bound to `rpc_id` (its request ended without an
+    /// answer); returns whether one was found.
+    #[must_use]
+    pub fn expire_by_rpc(&mut self, rpc_id: &str) -> bool {
+        self.expire_rpc(rpc_id)
+    }
+
+    /// Expire every open item bound to `rpc_id`; whether one was found.
+    fn expire_rpc(&mut self, rpc_id: &str) -> bool {
+        let mut expired = false;
+        for item in &mut self.items {
+            if item.rpc_request_id.as_deref() == Some(rpc_id) && item.state == ItemState::Open {
+                item.state = ItemState::Expired;
+                expired = true;
+            }
+        }
+        if expired {
+            self.ambiguous.remove(rpc_id);
+        }
+        expired
+    }
+
+    /// Expire every open item bound to an omp request, e.g. when the session
+    /// restarts. Returns how many were expired.
+    pub fn expire_all_bound(&mut self) -> usize {
+        let mut expired = 0;
+        for item in &mut self.items {
+            if item.state == ItemState::Open && item.rpc_request_id.is_some() {
+                item.state = ItemState::Expired;
+                expired += 1;
+            }
+        }
+        self.ambiguous.clear();
+        expired
+    }
+
+    /// Drop settled items older than 14 days, then trim the oldest settled
+    /// items until at most [`KEEP_MAX`] remain. Open items are never removed.
+    /// Request-id history is trimmed to the same shrunken bound; a trim marks
+    /// the history as dropped, so ids it no longer proves stay fail closed.
+    pub fn prune(&mut self, now_ms: i64) {
+        self.items
+            .retain(|item| item.state == ItemState::Open || now_ms - item.created_at <= KEEP_MS);
+        let mut excess = self.items.len().saturating_sub(KEEP_MAX);
+        self.items.retain(|item| {
+            if excess > 0 && item.state != ItemState::Open {
+                excess -= 1;
+                false
+            } else {
+                true
+            }
+        });
+        let items = &self.items;
+        self.ambiguous.retain(|rpc_id| {
+            items.iter().any(|item| {
+                item.state == ItemState::Open
+                    && item.rpc_request_id.as_deref() == Some(rpc_id.as_str())
+            })
+        });
+        let cap = KEEP_MAX.max(self.items.len());
+        if self.seen_rpc.len() > cap {
+            self.seen_rpc.drain(..self.seen_rpc.len() - cap);
+            self.rpc_history_dropped = true;
+        }
+    }
+
+    /// How many items still wait for an answer.
+    #[must_use]
+    pub fn open_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|item| item.state == ItemState::Open)
+            .count()
+    }
+
+    /// Whether any open item belongs to an omp request; the scheduler holds
+    /// turns while that is the case.
+    #[must_use]
+    pub fn has_open_bound(&self) -> bool {
+        self.items
+            .iter()
+            .any(|item| item.state == ItemState::Open && item.rpc_request_id.is_some())
+    }
+
+    /// The items, oldest first.
+    #[must_use]
+    pub fn items(&self) -> &[InboxItem] {
+        &self.items
+    }
+
+    /// Persist the inbox; a no-op for [`Inbox::in_memory`].
+    ///
+    /// # Errors
+    /// The JSON serialisation or [`write_atomic`] failure.
+    pub fn save(&self) -> io::Result<()> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        let file = File {
+            version: FILE_VERSION,
+            counter: self.counter,
+            items: self.items.clone(),
+        };
+        let bytes = serde_json::to_vec_pretty(&file).map_err(io::Error::other)?;
+        write_atomic(path, &bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omp_desktop_core::test_support::tempdir;
+
+    const DAY: i64 = 24 * 60 * 60 * 1000;
+
+    #[test]
+    fn approval_bound_to_rpc_resolves_and_expires() {
+        let mut ib = Inbox::in_memory();
+        let id = ib.add(
+            ItemKind::Approval,
+            "Allow tool: bash".into(),
+            None,
+            vec!["Approve".into(), "Deny".into()],
+            false,
+            Some("r1".into()),
+            0,
+        );
+        assert!(ib.has_open_bound());
+        match ib.resolve_by_rpc("r1", Some("Approve".into())) {
+            RpcAnswer::Settled(item) => assert_eq!(item.id, id),
+            other => panic!("{other:?}"),
+        }
+        assert!(!ib.has_open_bound());
+        assert!(ib.resolve(&id, None).is_none(), "already answered");
+        ib.add(
+            ItemKind::Approval,
+            "x".into(),
+            None,
+            vec![],
+            false,
+            Some("r2".into()),
+            0,
+        );
+        assert_eq!(ib.expire_all_bound(), 1);
+        assert_eq!(ib.items().last().unwrap().state, ItemState::Expired);
+    }
+
+    #[test]
+    fn a_reused_request_id_expires_the_older_open_item() {
+        let mut ib = Inbox::in_memory();
+        let (older, superseded) = ib.add_ui_request(
+            ItemKind::Approval,
+            "Allow tool: bash".into(),
+            None,
+            vec!["Approve".into()],
+            "r1".into(),
+            "select".into(),
+            None,
+            false,
+            0,
+        );
+        assert!(!superseded);
+        let (newer, superseded) = ib.add_ui_request(
+            ItemKind::Decision,
+            "Password".into(),
+            None,
+            vec![],
+            "r1".into(),
+            "input".into(),
+            None,
+            true,
+            1,
+        );
+        assert!(superseded, "the older request is replaced, not duplicated");
+        assert_eq!(ib.open_count(), 1, "one request id, one open item");
+        assert_eq!(
+            ib.items()
+                .iter()
+                .find(|item| item.id == older)
+                .unwrap()
+                .state,
+            ItemState::Expired
+        );
+        let open = ib
+            .items()
+            .iter()
+            .filter(|item| item.state == ItemState::Open)
+            .collect::<Vec<_>>();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, newer);
+    }
+
+    #[test]
+    fn a_delayed_answer_for_a_reused_id_is_never_stored() {
+        // The password field asks first and a plain prompt replaces it under
+        // the same request id. A delayed answer from the password field then
+        // carries only the id, so it could belong to either instance.
+        let mut ib = Inbox::in_memory();
+        ib.add_ui_request(
+            ItemKind::Decision,
+            "Password".into(),
+            None,
+            vec![],
+            "r1".into(),
+            "input".into(),
+            None,
+            true,
+            0,
+        );
+        let (replacement, _) = ib.add_ui_request(
+            ItemKind::Approval,
+            "Allow tool: bash".into(),
+            None,
+            vec!["Approve".into()],
+            "r1".into(),
+            "select".into(),
+            None,
+            false,
+            1,
+        );
+
+        assert!(matches!(
+            ib.resolve_by_rpc("r1", Some("hunter2".into())),
+            RpcAnswer::Reused
+        ));
+        let open = ib.open(&replacement).expect("the replacement stays open");
+        assert!(open.answer.is_none());
+        assert!(
+            ib.items()
+                .iter()
+                .all(|item| item.answer.as_deref() != Some("hunter2")),
+            "a superseded secret answer is never stored"
+        );
+
+        // The replacement can still be answered through its own item id.
+        assert!(ib.resolve(&replacement, Some("Approve".into())).is_some());
+        assert!(!ib.is_ambiguous("r1"), "no request remains pending");
+    }
+
+    #[test]
+    fn an_id_reused_after_its_item_settled_is_ambiguous_too() {
+        // A duplicate answer can arrive after the first instance was answered:
+        // the id is still reused, so the answer must not settle the second one.
+        let mut ib = Inbox::in_memory();
+        let (first, _) = ib.add_ui_request(
+            ItemKind::Decision,
+            "Password".into(),
+            None,
+            vec![],
+            "r1".into(),
+            "input".into(),
+            None,
+            true,
+            0,
+        );
+        assert!(ib.resolve(&first, None).is_some());
+        let (second, _) = ib.add_ui_request(
+            ItemKind::Approval,
+            "Allow tool: bash".into(),
+            None,
+            vec!["Approve".into()],
+            "r1".into(),
+            "select".into(),
+            None,
+            false,
+            1,
+        );
+
+        assert!(ib.is_ambiguous("r1"));
+        assert!(matches!(
+            ib.resolve_by_rpc("r1", Some("hunter2".into())),
+            RpcAnswer::Reused
+        ));
+        assert!(ib.open(&second).is_some(), "nothing was settled");
+        assert!(ib.items().iter().all(|item| item.answer.is_none()));
+    }
+
+    #[test]
+    fn a_pruned_settled_predecessor_still_makes_reuse_ambiguous() {
+        let mut ib = Inbox::in_memory();
+        let (first, _) = ib.add_ui_request(
+            ItemKind::Decision,
+            "Password".into(),
+            None,
+            vec![],
+            "r1".into(),
+            "input".into(),
+            None,
+            true,
+            0,
+        );
+        assert!(ib.resolve(&first, None).is_some());
+        for i in 0..KEEP_MAX {
+            let id = ib.add(
+                ItemKind::Result,
+                "unrelated".into(),
+                None,
+                vec![],
+                false,
+                None,
+                i64::try_from(i).unwrap() + 1,
+            );
+            assert!(ib.resolve(&id, None).is_some());
+        }
+        ib.prune(KEEP_MS + 1_000);
+        assert!(ib.items().is_empty(), "the predecessor was pruned");
+
+        let (second, _) = ib.add_ui_request(
+            ItemKind::Approval,
+            "Allow tool: bash".into(),
+            None,
+            vec!["Approve".into()],
+            "r1".into(),
+            "select".into(),
+            None,
+            false,
+            KEEP_MS + 2,
+        );
+        assert!(matches!(
+            ib.resolve_by_rpc("r1", Some("hunter2".into())),
+            RpcAnswer::Reused
+        ));
+        assert!(ib.open(&second).is_some(), "nothing was settled");
+        assert!(ib.items().iter().all(|item| item.answer.is_none()));
+    }
+
+    #[test]
+    fn dropped_request_history_fails_closed_on_a_later_reuse() {
+        let mut ib = Inbox::in_memory();
+        let (first, _) = ib.add_ui_request(
+            ItemKind::Decision,
+            "Password".into(),
+            None,
+            vec![],
+            "r1".into(),
+            "input".into(),
+            None,
+            true,
+            0,
+        );
+        assert!(ib.resolve(&first, None).is_some());
+        for i in 0..KEEP_MAX + 50 {
+            let rpc_id = format!("other-{i}");
+            let (id, _) = ib.add_ui_request(
+                ItemKind::Decision,
+                "unrelated".into(),
+                None,
+                vec![],
+                rpc_id,
+                "input".into(),
+                None,
+                false,
+                i64::try_from(i).unwrap() + 1,
+            );
+            assert!(ib.resolve(&id, None).is_some());
+        }
+        ib.prune(KEEP_MS + 1_000);
+        assert!(ib.items().is_empty(), "all request history was pruned");
+        assert!(
+            ib.seen_rpc.len() <= KEEP_MAX,
+            "request history follows the shrunken inbox allowance"
+        );
+        assert!(
+            ib.rpc_history_dropped,
+            "trimmed history stays fail closed for unproven ids"
+        );
+
+        let (second, _) = ib.add_ui_request(
+            ItemKind::Approval,
+            "Allow tool: bash".into(),
+            None,
+            vec!["Approve".into()],
+            "r1".into(),
+            "select".into(),
+            None,
+            false,
+            KEEP_MS + 2,
+        );
+        assert!(matches!(
+            ib.resolve_by_rpc("r1", Some("hunter2".into())),
+            RpcAnswer::Reused
+        ));
+        assert!(ib.open(&second).is_some());
+        assert!(ib.items().iter().all(|item| item.answer.is_none()));
+    }
+
+    #[test]
+    fn an_ambiguous_request_id_settles_nothing() {
+        // A file written by an older version can still hold two open items
+        // with one request id. Answering it must neither pick one nor store
+        // the answer on the non-secret item.
+        let dir = tempdir("omp-desktopd", "inbox-ambiguous");
+        let path = dir.join("inbox.json");
+        let file = serde_json::json!({
+            "version": 1,
+            "counter": 2,
+            "items": [
+                {
+                    "id": "i-old", "kind": "approval", "createdAt": 0,
+                    "title": "Allow tool: bash", "body": null,
+                    "state": "open", "answer": null,
+                    "rpcRequestId": "r1", "requestMethod": "select", "secret": false
+                },
+                {
+                    "id": "i-new", "kind": "decision", "createdAt": 1,
+                    "title": "Password", "body": null,
+                    "state": "open", "answer": null,
+                    "rpcRequestId": "r1", "requestMethod": "input", "secret": true
+                }
+            ]
+        });
+        std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+        let (mut ib, notice) = Inbox::load(path, 2);
+        assert!(notice.is_none());
+
+        assert!(matches!(
+            ib.resolve_by_rpc("r1", Some("hunter2".into())),
+            RpcAnswer::Ambiguous
+        ));
+        assert_eq!(ib.open_count(), 0, "both duplicates expire unanswered");
+        assert!(
+            ib.items().iter().all(|item| item.answer.is_none()),
+            "an ambiguous answer is never stored"
+        );
+        assert!(matches!(
+            ib.resolve_by_rpc("r1", Some("hunter2".into())),
+            RpcAnswer::Unbound
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_secret_item_never_stores_its_answer() {
+        let mut ib = Inbox::in_memory();
+        let (id, _) = ib.add_ui_request(
+            ItemKind::Decision,
+            "Password".into(),
+            None,
+            vec![],
+            "s1".into(),
+            "input".into(),
+            None,
+            true,
+            0,
+        );
+        match ib.resolve_by_rpc("s1", Some("hunter2".into())) {
+            RpcAnswer::Settled(item) => {
+                assert_eq!(item.id, id);
+                assert_eq!(item.state, ItemState::Answered);
+                assert!(item.answer.is_none());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn prune_keeps_open_and_caps_history() {
+        let mut ib = Inbox::in_memory();
+        let open = ib.add(
+            ItemKind::Decision,
+            "keep".into(),
+            None,
+            vec![],
+            false,
+            None,
+            0,
+        );
+        for i in 0..250 {
+            let id = ib.add(
+                ItemKind::Result,
+                format!("r{i}"),
+                None,
+                vec![],
+                false,
+                None,
+                i,
+            );
+            ib.resolve(&id, None);
+        }
+        ib.prune(15 * DAY);
+        assert!(ib.items().iter().any(|i| i.id == open));
+        assert_eq!(ib.items().len(), 1, "results older than 14 days are gone");
+        let mut recent = Vec::new();
+        for i in 0..250 {
+            let id = ib.add(
+                ItemKind::Result,
+                format!("n{i}"),
+                None,
+                vec![],
+                false,
+                None,
+                15 * DAY + i,
+            );
+            ib.resolve(&id, None);
+            recent.push(id);
+        }
+        ib.prune(15 * DAY + 300);
+        assert_eq!(ib.items().len(), 200);
+        assert!(ib.items().iter().any(|item| item.id == open));
+        assert!(
+            !ib.items().iter().any(|item| item.id == recent[0]),
+            "the oldest settled item is dropped"
+        );
+        assert!(
+            ib.items().iter().any(|item| item.id == recent[249]),
+            "the newest settled item is kept"
+        );
+    }
+
+    #[test]
+    fn corrupt_file_is_moved_aside() {
+        let dir = tempdir("omp-desktopd", "inbox-corrupt");
+        let path = dir.join("inbox.json");
+        std::fs::write(&path, b"{not json").unwrap();
+        let (ib, notice) = Inbox::load(path, 42);
+        assert!(notice.is_some());
+        assert_eq!(ib.items().len(), 0);
+        assert!(dir.join("inbox.json.bad-42").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_file_is_moved_aside() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir("omp-desktopd", "inbox-unreadable");
+        let path = dir.join("inbox.json");
+        std::fs::write(&path, b"{\"version\":1,\"counter\":0,\"items\":[]}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&path).is_ok() {
+            // Privileged: file modes do not block the read, so there is no
+            // unreadable file to recover from.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+        let (ib, notice) = Inbox::load(path, 42);
+        assert!(notice.is_some(), "the user is told about the reset");
+        assert_eq!(ib.items().len(), 0);
+        let bad = dir.join("inbox.json.bad-42");
+        assert!(bad.exists(), "unreadable file is renamed, not overwritten");
+        std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_move_aside_never_overwrites() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir("omp-desktopd", "inbox-immovable");
+        let path = dir.join("inbox.json");
+        let original = b"{not json";
+        std::fs::write(&path, original).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let probe = dir.join(".probe");
+        if std::fs::write(&probe, b"").is_ok() {
+            // Privileged: a read-only directory does not block the rename.
+            let _ = std::fs::remove_file(&probe);
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+        let (mut ib, notice) = Inbox::load(path.clone(), 42);
+        assert!(
+            notice.unwrap().contains("will not be saved"),
+            "the notice says nothing can be persisted"
+        );
+        assert_eq!(ib.items().len(), 0);
+        ib.add(ItemKind::Notice, "x".into(), None, vec![], false, None, 1);
+        ib.save().unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "save never replaces the unreadable file"
+        );
+        assert!(!dir.join("inbox.json.bad-42").exists());
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_and_load_round_trip() {
+        let dir = tempdir("omp-desktopd", "inbox-round-trip");
+        let path = dir.join("inbox.json");
+        let (mut ib, _) = Inbox::load(path.clone(), 0);
+        ib.add(
+            ItemKind::Notice,
+            "hello".into(),
+            None,
+            vec![],
+            false,
+            None,
+            1,
+        );
+        ib.save().unwrap();
+        let (again, notice) = Inbox::load(path, 2);
+        assert!(notice.is_none());
+        assert_eq!(again.items()[0].title, "hello");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

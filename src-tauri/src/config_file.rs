@@ -12,7 +12,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::json_store;
+use omp_desktop_core::json_store;
 
 pub enum ConfigFile {
     /// The file and `path.with_extension("lock")`, computed once at

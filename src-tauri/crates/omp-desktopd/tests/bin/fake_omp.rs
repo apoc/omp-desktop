@@ -1,0 +1,141 @@
+//! A fake `omp` for the session-host integration test: answers a handful of
+//! scripted frames and logs everything it receives (when `FAKE_OMP_LOG` is
+//! set) so the test can assert what the service sent.
+
+use omp_desktop_core::persona_protocol::MAX_LINE_BYTES;
+use std::io::{BufRead, Write};
+
+fn main() {
+    let log = std::env::var("FAKE_OMP_LOG").ok();
+    if let Some(p) = &log {
+        log_start(p);
+    }
+    say(r#"{"type":"ready","protocolVersion":1}"#);
+    if std::env::var_os("FAKE_OMP_STALL").is_some() {
+        std::thread::park();
+    }
+    for line in std::io::stdin().lock().lines() {
+        let line = line.unwrap();
+        if let Some(p) = &log {
+            log_line(p, &line);
+        }
+        answer(&line);
+    }
+}
+
+/// One stdout frame, flushed so the service never waits on a full buffer.
+fn say(s: &str) {
+    let mut out = std::io::stdout();
+    writeln!(out, "{s}").unwrap();
+    out.flush().unwrap();
+}
+
+/// Record how the service spawned us, so a test can prove which prompt file
+/// omp really reads (and which one it does not).
+fn log_start(path: &str) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let line = serde_json::json!({"type": "fake-omp-start", "args": args}).to_string();
+    log_line(path, &line);
+}
+
+fn log_line(path: &str, line: &str) {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap();
+    writeln!(file, "{line}").unwrap();
+}
+
+/// Answer one input line; frames without a scripted answer are ignored.
+fn answer(line: &str) {
+    let v: serde_json::Value = serde_json::from_str(line).unwrap_or_default();
+    match v["type"].as_str() {
+        Some("prompt") => {
+            say(r#"{"type":"agent_start"}"#);
+            say(
+                r#"{"type":"message_end","message":{"role":"assistant","usage":{"input":100,"output":50,"cacheRead":999,"cacheWrite":10}}}"#,
+            );
+            let prompt = v["message"].as_str().unwrap_or_default();
+            if prompt.contains("slow-request") {
+                // Hold the request back, so a test can act while the
+                // service has a turn open but has not been told about the
+                // approval yet.
+                std::thread::sleep(std::time::Duration::from_millis(1_000));
+                say(
+                    r#"{"type":"extension_ui_request","id":"ap1","method":"select","title":"Allow tool: bash\nCommand: ls","options":["Approve","Deny"]}"#,
+                );
+            } else if prompt.contains("autoapprove") {
+                // Close the read end of our stdin first, so the service's
+                // answer to a rule-covered approval fails with EPIPE and
+                // cannot sit in a pipe buffer. `park` keeps the process
+                // alive so the reader thread can still report the failure.
+                #[cfg(unix)]
+                {
+                    use std::os::fd::FromRawFd;
+                    // Dropping the handle closes file descriptor 0.
+                    drop(unsafe { std::fs::File::from_raw_fd(0) });
+                }
+                say(
+                    r#"{"type":"extension_ui_request","id":"ap1","method":"select","title":"Allow tool: bash\nCommand: ls","options":["Approve","Deny"]}"#,
+                );
+                std::thread::park();
+            } else if prompt.contains("close-stdin") {
+                // Make every later write to this process fail, then end the
+                // turn so the service can still try a wake.
+                #[cfg(unix)]
+                {
+                    use std::os::fd::FromRawFd;
+                    // Dropping the handle closes file descriptor 0.
+                    drop(unsafe { std::fs::File::from_raw_fd(0) });
+                }
+                say(r#"{"type":"agent_end","yielded":true}"#);
+                std::thread::park();
+            } else if prompt.contains("secret-same-id") {
+                say(
+                    r#"{"type":"extension_ui_request","id":"ap1","method":"input","title":"Password","secret":true}"#,
+                );
+            } else if prompt.contains("secret") {
+                say(
+                    r#"{"type":"extension_ui_request","id":"s1","method":"input","title":"Password","secret":true}"#,
+                );
+            } else if prompt.contains("multi-ask") {
+                say(
+                    r#"{"type":"extension_ui_request","id":"multi1","method":"ask","questions":[{"id":"q1","question":"First question?","options":[{"label":"Yes"},{"label":"No"}]},{"id":"q2","question":"Second question?","options":[{"label":"Red"},{"label":"Blue"}]}]}"#,
+                );
+            } else if prompt.contains("ask") {
+                say(
+                    r#"{"type":"extension_ui_request","id":"ask1","method":"ask","questions":[{"id":"q1","question":"Deploy now?","header":"Deployment","options":[{"label":"Yes","description":"Deploy it"},{"label":"No"}],"multi":false}]}"#,
+                );
+            } else if prompt.contains("confirm") {
+                say(
+                    r#"{"type":"extension_ui_request","id":"confirm1","method":"confirm","title":"Continue?","message":"Really continue?"}"#,
+                );
+            } else if prompt.contains("select") {
+                say(
+                    r#"{"type":"extension_ui_request","id":"sel1","method":"select","title":"Pick one","options":["Confirm","Deny"]}"#,
+                );
+            } else {
+                say(
+                    r#"{"type":"extension_ui_request","id":"ap1","method":"select","title":"Allow tool: bash\nCommand: ls","options":["Approve","Deny"]}"#,
+                );
+            }
+        }
+        Some("longline") => {
+            // A line past the service's cap whose cut falls inside a
+            // two-byte character, followed by a frame that must survive.
+            let prefix = r#"{"type":"noise","pad":""#;
+            let offset = MAX_LINE_BYTES - prefix.len();
+            let ascii = if offset % 2 == 0 { 1 } else { 2 };
+            let mut pad = "x".repeat(ascii);
+            pad.push_str(&"é".repeat((offset - ascii) / 2 + 1));
+            say(&format!("{prefix}{pad}\"}}"));
+            say(r#"{"type":"agent_start"}"#);
+        }
+        Some("extension_ui_response") if v["id"] == "ap1" => {
+            say(r#"{"type":"agent_end","yielded":true}"#);
+        }
+        Some("crash") => std::process::exit(3),
+        _ => {}
+    }
+}

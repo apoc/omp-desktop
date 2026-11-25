@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use super::inner::BridgeInner;
 use super::{write_command, AgentBridge};
-use crate::approval::{self, RuleBook, RuleScope};
+use omp_desktop_core::approval::{self, RuleBook, RuleScope};
 
 /// Open prompts kept per process. A turn with parallel gated tool calls
 /// raises one prompt per call before any is answered; this is far beyond

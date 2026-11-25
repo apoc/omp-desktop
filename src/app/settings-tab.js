@@ -34,7 +34,9 @@
     const slots = state.open ? ids.length + 1 : ids.length;
     if (slots === 0) return { settingsActive: false, sessionId: activeSessionId ?? null };
     const found = ids.indexOf(activeSessionId);
-    const cur = state.open && state.active ? ids.length : Math.max(found, 0);
+    const cur = state.open && state.active
+      ? ids.length
+      : found >= 0 ? found : dir < 0 ? ids.length : -1;
     const next = (((cur + (dir < 0 ? -1 : 1)) % slots) + slots) % slots;
     if (next === ids.length) return { settingsActive: true, sessionId: activeSessionId ?? null };
     return { settingsActive: false, sessionId: ids[next] };
