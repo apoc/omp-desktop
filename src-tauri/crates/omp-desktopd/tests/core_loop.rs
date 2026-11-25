@@ -463,6 +463,50 @@ fn answer(h: &Harness, req: u64, id: &str, answer: &str) {
     );
 }
 
+/// Every `--append-system-prompt` path a fake omp was spawned with.
+///
+/// The fake logs its argv as JSON, so a Windows path appears with escaped
+/// separators (`C:\\Users\\...`) and a raw substring search for
+/// `Path::display` only matches on unix. Parsing the start line and comparing
+/// `Path`s tests what omp actually received on every platform.
+fn spawned_prompt_paths(log: &Path) -> Vec<PathBuf> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|value| value["type"] == "fake-omp-start")
+        .flat_map(|value| value["args"].as_array().cloned().unwrap_or_default())
+        .filter_map(|arg| {
+            arg.as_str()
+                .and_then(|arg| arg.strip_prefix("--append-system-prompt="))
+                .map(PathBuf::from)
+        })
+        .collect()
+}
+
+#[test]
+fn a_windows_spawn_log_yields_the_prompt_path() {
+    let dir = omp_desktop_core::test_support::TempDir::new("omp-desktopd", "spawn-log");
+    let log = dir.path().join("sent.log");
+    let prompt =
+        r"C:\Users\RUNNER~1\AppData\Local\Temp\ompy-core-x\persona\instructions.snapshot.md";
+    let line = serde_json::json!({
+        "type": "fake-omp-start",
+        "args": ["--mode", "rpc-ui", format!("--append-system-prompt={prompt}")],
+    })
+    .to_string();
+    std::fs::write(&log, format!("{line}\n")).unwrap();
+
+    // The escaped log cannot be searched for the path as a plain substring;
+    // that is exactly what made the assertion fail on the Windows runner.
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        !text.contains(prompt),
+        "a JSON log escapes the separators, so a raw search misses the path"
+    );
+    assert_eq!(spawned_prompt_paths(&log), vec![PathBuf::from(prompt)]);
+}
+
 /// How many wake prompts the fake omp has received so far.
 fn wake_count(h: &Harness) -> usize {
     std::fs::read_to_string(&h.log)
@@ -1475,6 +1519,50 @@ fn a_reused_secret_request_id_cannot_settle_an_older_item() {
     let _ = h.tx.send(CoreMsg::Shutdown);
 }
 
+/// Whether `item` reports that the instructions path could not be used.
+///
+/// Unix opens a directory and then rejects it as a non-regular handle, while
+/// Windows refuses the open itself (`Access is denied`); both are read errors,
+/// so both notice texts mean the same thing here.
+fn is_instructions_refusal(item: &InboxItem) -> bool {
+    item.kind == ItemKind::Notice
+        && (item.title.contains("not a regular file")
+            || item.title.contains("Could not read Ompy's instructions"))
+}
+
+#[test]
+fn an_instructions_refusal_matches_the_notice_of_either_platform() {
+    let notice = |title: &str| InboxItem {
+        id: "n1".into(),
+        kind: ItemKind::Notice,
+        created_at: 0,
+        title: title.into(),
+        body: None,
+        options: Vec::new(),
+        urgent: false,
+        state: ItemState::Open,
+        answer: None,
+        rpc_request_id: None,
+        request_method: None,
+        ask_questions: None,
+        secret: false,
+    };
+    assert!(is_instructions_refusal(&notice(
+        "Ompy's instructions C:\\x\\i.md are not a regular file"
+    )));
+    assert!(is_instructions_refusal(&notice(
+        "Could not read Ompy's instructions: Access is denied. (os error 5)"
+    )));
+    assert!(!is_instructions_refusal(&notice(
+        "Ompy's instructions snapshot could not be written"
+    )));
+    let approval = InboxItem {
+        kind: ItemKind::Approval,
+        ..notice("Ompy's instructions are not a regular file")
+    };
+    assert!(!is_instructions_refusal(&approval));
+}
+
 #[test]
 fn a_non_file_instructions_path_surfaces_a_notice_and_keeps_the_wake() {
     let h = start("instructions-dir", ClientKind::App);
@@ -1486,11 +1574,7 @@ fn a_non_file_instructions_path_surfaces_a_notice_and_keeps_the_wake() {
     send(&h, 1, ClientMsg::WakeNow);
     assert!(matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }));
     wait_log(&h, "[ompy wake] trigger: manual");
-    wait_until(&h, |items| {
-        items
-            .iter()
-            .any(|item| item.title.contains("not a regular file"))
-    });
+    wait_until(&h, |items| items.iter().any(is_instructions_refusal));
     assert_eq!(
         current_generation(&h),
         before,
@@ -1502,7 +1586,7 @@ fn a_non_file_instructions_path_surfaces_a_notice_and_keeps_the_wake() {
     wake_until(&h, 2);
     let notices = inbox_items(&h)
         .into_iter()
-        .filter(|item| item.title.contains("not a regular file"))
+        .filter(is_instructions_refusal)
         .count();
     assert_eq!(notices, 1, "one notice per distinct error");
     let _ = h.tx.send(CoreMsg::Shutdown);
@@ -1795,14 +1879,18 @@ fn omp_gets_a_bounded_snapshot_instead_of_the_user_file() {
         "content past the cap is never omp's system prompt"
     );
 
-    let spawn_log = std::fs::read_to_string(&h.log).unwrap_or_default();
+    let prompts = spawned_prompt_paths(&h.log);
     assert!(
-        spawn_log.contains(&snapshot.display().to_string()),
-        "omp is spawned with the snapshot path: {spawn_log}"
+        !prompts.is_empty(),
+        "the fake omp logged no spawn arguments"
     );
     assert!(
-        !spawn_log.contains(&h.instructions.display().to_string()),
-        "omp must never be pointed at the user's unbounded file: {spawn_log}"
+        prompts.iter().all(|prompt| prompt == &snapshot),
+        "omp is spawned with the snapshot path: {prompts:?}"
+    );
+    assert!(
+        prompts.iter().all(|prompt| prompt != &h.instructions),
+        "omp must never be pointed at the user's unbounded file: {prompts:?}"
     );
 
     // A change past the cap is not a change omp could see, so it neither
