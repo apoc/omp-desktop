@@ -393,7 +393,7 @@ impl Core {
     pub fn run(mut self, rx: Receiver<CoreMsg>, tx: Sender<CoreMsg>) {
         self.tx = Some(tx);
         let now = (self.clock)();
-        self.start_session(&now);
+        self.start_session(&now, None);
         loop {
             let now = (self.clock)();
             let msg = match self.deadline(&now) {
@@ -419,7 +419,7 @@ impl Core {
                     return;
                 }
                 CoreMsg::Tick => self.on_tick(&now),
-                CoreMsg::Restart => self.start_session(&now),
+                CoreMsg::Restart => self.start_session(&now, None),
                 CoreMsg::Connected { conn, out, client } => {
                     self.conns.insert(
                         conn,

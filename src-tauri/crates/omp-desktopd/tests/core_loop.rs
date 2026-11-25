@@ -1505,6 +1505,46 @@ fn edited_instructions_restart_the_session_before_the_wake() {
 }
 
 #[test]
+fn an_instruction_restart_uses_the_snapshot_read_at_detection() {
+    let h = start("instructions-restart-race", ClientKind::App);
+    std::fs::write(&h.instructions, "instructions-marker-alpha").unwrap();
+    wake_until(&h, 1);
+    deny_wake_approval(&h);
+
+    std::fs::write(&h.instructions, "instructions-marker-beta").unwrap();
+    let snapshot = h.paths.persona.join("instructions.snapshot.md");
+    let watched = snapshot.clone();
+    let source = h.instructions.clone();
+    let (edited_tx, edited_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for _ in 0..10_000 {
+            if std::fs::read_to_string(&watched)
+                .is_ok_and(|text| text == "instructions-marker-beta")
+            {
+                std::fs::write(&source, "instructions-marker-gamma").unwrap();
+                edited_tx.send(()).unwrap();
+                return;
+            }
+            std::thread::yield_now();
+        }
+        panic!("the detection snapshot was never installed");
+    });
+    send(&h, 2, ClientMsg::WakeNow);
+    edited_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the source edit lands between detection and spawn");
+    assert!(matches!(reply(&h, 2), ServerMsg::Reply { ok: true, .. }));
+    wait_log(&h, "[ompy wake] trigger: manual");
+    assert_eq!(
+        std::fs::read_to_string(snapshot).unwrap(),
+        "instructions-marker-beta",
+        "a later source edit belongs to the next wake, not this restart"
+    );
+    deny_wake_approval(&h);
+    let _ = h.tx.send(CoreMsg::Shutdown);
+}
+
+#[test]
 fn protected_state_files_are_not_replaced_by_a_settings_change() {
     let h = start_with(
         "protected-settings",

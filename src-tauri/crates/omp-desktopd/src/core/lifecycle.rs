@@ -182,11 +182,22 @@ impl Core {
     }
 
     /// Spawn omp for the next generation and forward its events to this loop.
-    pub(super) fn start_session(&mut self, now: &Now) {
+    ///
+    /// `detected` is the text already read and installed by instruction-change
+    /// detection. It is used as this spawn's snapshot without rereading the
+    /// source; ordinary starts pass `None` and refresh it here.
+    pub(super) fn start_session(&mut self, now: &Now, detected: Option<String>) {
         let Some(tx) = self.tx.clone() else {
             return;
         };
-        if !self.refresh_snapshot(now) {
+        let snapshot_ready = match detected {
+            Some(text) => {
+                self.instructions_at_spawn = Some(text);
+                self.snapshot_path().is_file()
+            }
+            None => self.refresh_snapshot(now),
+        };
+        if !snapshot_ready {
             // Without a snapshot omp would be started with a path that does
             // not exist; report it like a spawn failure instead.
             self.session_failed(
@@ -353,19 +364,19 @@ impl Core {
             self.report_instructions_error(&error, now);
             return;
         }
-        self.instructions_at_spawn = Some(current);
         self.instructions_error = None;
-        self.restart_session(now);
+        self.restart_session(now, current);
     }
 
     /// Replace the running session so an edited instructions file becomes the
     /// new system prompt. Requests bound to the old process expire with it, as
-    /// they do when omp stops for any other reason.
+    /// they do when omp stops for any other reason. `detected` is exactly the
+    /// snapshot installed above; a later source edit waits for the next wake.
     ///
     /// The scheduler's busy reservation is kept: the wake that triggered this
     /// restart already holds the scheduler, and the approval the new session
     /// asks for must arrive before a second due wake may start another turn.
-    fn restart_session(&mut self, now: &Now) {
+    fn restart_session(&mut self, now: &Now, detected: String) {
         if let Some(mut session) = self.session.take() {
             session.kill();
         }
@@ -381,7 +392,7 @@ impl Core {
             );
         }
         self.inbox_changed(now);
-        self.start_session(now);
+        self.start_session(now, Some(detected));
     }
 
     pub(super) fn on_session(&mut self, gen: u64, ev: SessionEvent, now: &Now) {
