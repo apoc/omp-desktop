@@ -77,8 +77,7 @@ fn sanitize_members(value: &mut serde_json::Value, allow_secret_flag: bool) {
     match value {
         serde_json::Value::Object(map) => {
             for (key, val) in map.iter_mut() {
-                let secret_flag =
-                    allow_secret_flag && key.eq_ignore_ascii_case("secret") && val.is_boolean();
+                let secret_flag = allow_secret_flag && key == "secret" && val.is_boolean();
                 if is_credential_key(key) && !secret_flag {
                     *val = serde_json::Value::String(REDACTED_PLACEHOLDER.to_string());
                 } else {
@@ -267,6 +266,19 @@ fn should_emit(alive: &AtomicBool) -> bool {
     alive.load(Ordering::Acquire)
 }
 
+/// Only omp's own parsed JSON objects prove startup. `sanitize_line` also
+/// returns a parsed value for its synthetic malformed-input diagnostic; that
+/// diagnostic must not suppress the child's stderr startup failure.
+fn record_real_frame(saw_frame: &mut bool, frame: Option<&serde_json::Value>) {
+    if frame.is_some_and(|frame| {
+        frame.is_object()
+            && frame.get("type").and_then(serde_json::Value::as_str)
+                != Some("desktop_unparsed_line")
+    }) {
+        *saw_frame = true;
+    }
+}
+
 /// Mirror frames from live processes only; auto-approved requests never open
 /// a human dialog. No webview listener is needed for a background tab.
 fn record_tracker_frame(
@@ -372,14 +384,14 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
                         continue;
                     }
                     let (sanitized, parsed) = sanitize_line(&buf);
-                    // A successfully parsed frame — not a stray blank line
-                    // and not a terminal escape sequence flushed with no
-                    // trailing newline — is what proves omp got far enough
-                    // to talk in-protocol, matching the "ready frame"
-                    // definition above. Gating on the raw byte count
-                    // instead would let either of those silently disable
-                    // the stderr fallback this flag exists to gate.
-                    saw_frame |= parsed.is_some();
+                    // A real parsed frame — not a synthetic malformed-line
+                    // diagnostic, a stray blank line or a terminal escape
+                    // sequence flushed with no trailing newline — is what
+                    // proves omp got far enough to talk in-protocol,
+                    // matching the "ready frame" definition above. Gating on
+                    // the raw byte count instead would let the non-frames
+                    // silently disable the stderr fallback this flag gates.
+                    record_real_frame(&mut saw_frame, parsed.as_ref());
                     let frame_type = parsed
                         .as_ref()
                         .and_then(|frame| frame.get("type"))
@@ -704,6 +716,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sanitize_redacts_case_variant_sibling_secret_flags() {
+        for key in ["SECRET", "Secret", "sEcReT"] {
+            let raw = json!({
+                "type": "extension_ui_request",
+                "method": "input",
+                "secret": true,
+                key: true
+            })
+            .to_string();
+            let (out, parsed) = sanitize_line(raw.as_bytes());
+            let parsed = parsed.expect("valid JSON parses");
+            assert_eq!(parsed["secret"], true);
+            assert_eq!(parsed[key], REDACTED_PLACEHOLDER, "key {key} escaped");
+            assert!(!out.contains(&format!("\"{key}\":true")));
+        }
+    }
+
     /// A boolean `secret` is only a UI flag on the input request itself; on
     /// every other frame it is just another value under a credential key.
     #[test]
@@ -884,6 +914,18 @@ mod tests {
         assert_eq!(reparsed["type"], "turn_start");
         assert_eq!(reparsed["toolName"], "bash");
         assert_eq!(parsed.unwrap()["toolName"], "bash");
+    }
+
+    #[test]
+    fn malformed_startup_output_does_not_count_as_a_real_frame() {
+        let mut saw_frame = false;
+        let (_diagnostic, parsed) = sanitize_line(b"not json; omp will exit now");
+        record_real_frame(&mut saw_frame, parsed.as_ref());
+        assert!(!saw_frame, "the synthetic diagnostic hid the stderr reason");
+
+        let (_frame, parsed) = sanitize_line(br#"{"type":"ready"}"#);
+        record_real_frame(&mut saw_frame, parsed.as_ref());
+        assert!(saw_frame, "a real protocol frame proves omp started");
     }
 
     #[test]
