@@ -513,6 +513,26 @@ test("phone answers are validated per ask kind before reaching omp", async () =>
   }
 });
 
+test("phone answers carry the originating card's id and secret mask signal", async () => {
+  const { api } = load();
+  const result = await runAnswer(api, ask("old-secret", "input", { secret: true }), "canary");
+  assert.deepEqual(own(result.calls), [["old-secret", "canary", { remoteId: "old-secret", secret: true }]]);
+});
+
+test("a stale secret action keeps its origin mask after a non-secret replacement", async () => {
+  const { api } = load();
+  const calls = [], results = [];
+  const snap = snapshot({ messages: [ask("reused", "input", { secret: false })] });
+  const handle = api.makeActionHandler({
+    answerAsk: (...args) => calls.push(args),
+    remoteActionResult: (...args) => results.push(args),
+  }, () => snap, liveStatus);
+  await handle({ reqId: "r", deviceId: "d", tabId: "a", kind: "answer", askId: "reused",
+    remoteId: "reused", secret: true, value: "canary" });
+  assert.deepEqual(own(calls), [["reused", "canary", { remoteId: "reused", secret: true }]]);
+  assert.deepEqual(results, [["r", true]]);
+});
+
 async function runAnswer(api, item, value) {
   const calls = [], results = [];
   const snap = snapshot({ messages: [item] });

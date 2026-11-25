@@ -105,6 +105,22 @@ test("secret desktop inputs are password fields and settled answers render only 
   assert.equal(text(tree).includes("desktop-plaintext"), false);
 });
 
+test("an open ask shows its delivery error without exposing an answer", () => {
+  const h = component("src/design/chat/ask-bubble.jsx", {
+    AskDialog: () => null,
+    OMP_ASK_DIALOG: { selectRows: () => ({ group: "group", rows: [] }), collapsedSummary: () => null },
+    OMP_APPROVAL: { approvalInfo: () => null },
+  });
+  const msg = { kind: "ask", id: "secret", sessionId: "ompy", method: "input", secret: true,
+    title: "Password", answered: false, cancelled: false, answer: null, options: [],
+    deliveryError: "request id was reused; answer the inbox item instead" };
+  const tree = h.render(() => h.window.AskBubble({ msg }));
+  const error = find(tree, node => node.props?.role === "alert");
+  assert.ok(error, "the delivery error is not rendered");
+  assert.ok(text(error).includes("answer the inbox item instead"));
+  assert.equal(find(tree, node => node.type === "input").props.disabled, false);
+});
+
 test("Ompy tool prompts offer no remember grants while project tabs keep them", () => {
   const h = component("src/design/chat/ask-bubble.jsx", {
     AskDialog: () => null,

@@ -249,6 +249,9 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
           </div>
         )}
         <div id={detailsId} hidden={summary ? !expanded : undefined}>{body}</div>
+        {!done && msg.deliveryError && (
+          <div className="ask-delivery-error retry-error selectable" role="alert">{msg.deliveryError}</div>
+        )}
       </div>
     </div>
   );

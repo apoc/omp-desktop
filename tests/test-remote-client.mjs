@@ -48,10 +48,10 @@ await check("reduce stores the theme sent from the desktop", () => {
   assert.deepEqual(state.theme, theme);
 });
 await check("actionFor builds answer, prompt and abort frames with unique request ids", () => {
-  const answer = C.actionFor("answer", { tabId: "t", askId: "q", value: true });
+  const answer = C.actionFor("answer", { tabId: "t", askId: "q", value: true, remoteId: "q", secret: true });
   assert.equal(typeof answer.reqId, "string");
   const { reqId, ...frame } = answer;
-  assert.deepEqual(frame, { t: "action", tabId: "t", kind: "answer", askId: "q", value: true });
+  assert.deepEqual(frame, { t: "action", tabId: "t", kind: "answer", askId: "q", value: true, remoteId: "q", secret: true });
   const prompt = C.actionFor("prompt", { tabId: "t", text: "Hi" });
   assert.equal(prompt.text, "Hi");
   assert.notEqual(prompt.reqId, reqId);

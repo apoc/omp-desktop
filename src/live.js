@@ -669,12 +669,50 @@
     });
   }
 
-  // Resolve a pending ask bubble: settle it, then send `payload` back to
-  // omp — only if it was still open, so a re-answer sends nothing.
-  // Proven with an eval-kernel cell (7/7 cases: patch applied, array
-  // replaced, {value}/{confirmed}/{cancelled} payload shapes preserved
-  // per caller, and re-answer + unknown-id both send nothing).
+  // Resolve a pending ask bubble. Project tabs settle immediately after the
+  // local guard, as before. Ompy's raw id-only answer is different: the daemon
+  // can refuse a reused id, so its bubble stays open and unanswered until the
+  // persona_send reply succeeds. The captured object identity pins the reply
+  // to this local bubble instance, never to a later request reusing its id.
+  const pendingPersonaAnswers = new WeakMap();
+  function _settleAskInstance(target, patch) {
+    let settled = false;
+    state.messages = state.messages.map(m => {
+      if (m === target && !m.answered && !m.cancelled) {
+        settled = true;
+        return { ...m, ...patch, deliveryError: null };
+      }
+      return m;
+    });
+    if (settled) notify();
+    return settled;
+  }
+
   function _resolveAsk(id, patch, payload) {
+    if (activeSessionId === PERSONA_SESSION_ID) {
+      const target = state.messages.find(m => m.kind === "ask" && m.id === id && !m.answered && !m.cancelled);
+      if (!target) return Promise.resolve(false);
+      const pending = pendingPersonaAnswers.get(target);
+      if (pending) return pending;
+      const delivery = _invokeSend({ type: "extension_ui_response", id, ...payload }).then(() => {
+        pendingPersonaAnswers.delete(target);
+        _settleAskInstance(target, patch);
+        return true;
+      }, error => {
+        pendingPersonaAnswers.delete(target);
+        const message = String(error?.message ?? error);
+        let failed = false;
+        state.messages = state.messages.map(m => {
+          if (m !== target || m.answered || m.cancelled) return m;
+          failed = true;
+          return { ...m, deliveryError: message };
+        });
+        if (failed) notify();
+        return { ok: false, error: message };
+      });
+      pendingPersonaAnswers.set(target, delivery);
+      return delivery;
+    }
     if (!_settleAsk(id, patch)) return Promise.resolve(false);
     return _send({ type: "extension_ui_response", id, ...payload });
   }
@@ -4365,8 +4403,8 @@
      * @param {string} value  The chosen option text, or the typed text of an
      *                        input/editor prompt.
      */
-    answerAsk(id, value) {
-      const secret = state.messages.some(message => message.kind === "ask" && message.id === id
+    answerAsk(id, value, origin = null) {
+      const secret = origin?.secret === true || state.messages.some(message => message.kind === "ask" && message.id === id
         && message.method === "input" && message.secret === true && !message.answered && !message.cancelled);
       return _resolveAsk(id, { answered: true, answer: secret ? "••••••••" : value }, { value });
     },

@@ -30,6 +30,8 @@
   }
 
   function createTranscript({ status, scan, error, onAnswer, onError }) {
+    const submitAnswer = (ask, value) => onAnswer(ask.id, value,
+      ask.secret === true ? { remoteId: ask.id, secret: true } : undefined);
     const transcript = node("section");
     transcript.setAttribute("aria-label", "Transcript");
     const asks = node("section");
@@ -136,7 +138,7 @@
       if (Array.isArray(controls)) {
         const opts = node("div", undefined, "ask-options");
         for (const option of controls) {
-          const b = button(option.label, () => onAnswer(ask.id, option.value));
+          const b = button(option.label, () => submitAnswer(ask, option.value));
           b.className = "ask-opt";
           opts.append(b);
         }
@@ -162,7 +164,7 @@
         }
         const submit = button(controls.multiline ? "Submit" : "Answer", () => {
           if (ask.secret && input.value === "") return;
-          onAnswer(ask.id, input.value);
+          submitAnswer(ask, input.value);
           if (ask.secret) {
             input.value = "";
             askDrafts.delete(key);
@@ -171,7 +173,7 @@
         });
         submit.className = "ask-submit";
         if (controls.multiline) {
-          const cancel = button("Cancel", () => onAnswer(ask.id, null));
+          const cancel = button("Cancel", () => submitAnswer(ask, null));
           cancel.className = "ask-opt";
           const actions = node("div", undefined, "ask-editor-actions");
           actions.append(submit, cancel);
@@ -209,7 +211,7 @@
           btn.setAttribute("role", spec.role);
           btn.setAttribute("aria-checked", String(spec.checked));
         }
-        btn.addEventListener("click", () => onAnswer(ask.id, controls[i].value));
+        btn.addEventListener("click", () => submitAnswer(ask, controls[i].value));
         if (spec.mark) btn.append(node("span", "", `ask-mark ${spec.mark}`));
         const text = node("span", undefined, "ask-row-text");
         text.append(node("span", spec.label, "ask-row-label"));
@@ -297,7 +299,7 @@
           answers.push(custom ? { id: q.id, selectedOptions: draft[qi].picks, customInput: custom } : { id: q.id, selectedOptions: draft[qi].picks });
         }
         problem.textContent = "";
-        onAnswer(ask.id, answers);
+        submitAnswer(ask, answers);
       });
       answer.className = "ask-submit";
       wrap.append(problem, answer);

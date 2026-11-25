@@ -53,6 +53,7 @@ function bridgeHarness({ generation = 1 } = {}) {
   let emitPersona = () => {};
   let autoReply = true;
   let replySeq = 100;
+  const answerWaits = new Map();
 
   const w = {
     OMP_LIVE_VOICE: null,
@@ -130,6 +131,9 @@ function bridgeHarness({ generation = 1 } = {}) {
         if (command === "persona_send") {
           const frame = JSON.parse(args.json);
           sent.push(frame);
+          if (frame.type === "extension_ui_response" && answerWaits.has(frame.id)) {
+            return answerWaits.get(frame.id).promise;
+          }
           // Answer the two awaited opening commands, so the rest of the
           // fetch batch follows instead of waiting for a timeout.
           if (autoReply && frame.id && ["negotiate_protocol", "set_ask_dialog"].includes(frame.type)) {
@@ -233,6 +237,13 @@ function bridgeHarness({ generation = 1 } = {}) {
     attachCalls: () =>
       invocations.filter((call) => call.command === "persona_attach").map((call) => call.args),
     closeCalls: () => invocations.filter((call) => call.command === "close_tab"),
+    deferAnswer(id) {
+      let resolve, reject;
+      const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+      answerWaits.set(id, { promise, resolve, reject });
+    },
+    resolveAnswer(id) { answerWaits.get(id).resolve(null); },
+    rejectAnswer(id, error) { answerWaits.get(id).reject(new Error(error)); },
   };
 }
 
@@ -296,6 +307,75 @@ await check("a secret answer reaches omp but only a masked placeholder stays in 
   const state = JSON.stringify(h.snapshot().messages);
   assert.equal(state.includes("plaintext-password"), false, "message state retained the secret");
   assert.equal(h.snapshot().messages.find((message) => message.id === "secret-1").answer, "••••••••");
+});
+
+await check("a stale secret phone answer never enters state when its id was replaced and refused", async () => {
+  const h = bridgeHarness();
+  const canary = "stale-secret-canary-7f3c";
+  await flush();
+  await h.bridge.activateSession("ompy");
+  await flush();
+  h.personaLine(500, {
+    type: "extension_ui_request", id: "reused-secret", method: "input",
+    title: "Old password", secret: true,
+  });
+  const origin = { remoteId: "reused-secret", secret: true };
+  h.personaLine(501, {
+    type: "extension_ui_request", id: "reused-secret", method: "input",
+    title: "Public replacement", secret: false,
+  });
+  h.deferAnswer("reused-secret");
+  const delivery = h.bridge.answerAsk("reused-secret", canary, origin);
+  await flush();
+  assert.equal(JSON.stringify(h.snapshot()).includes(canary), false, "plaintext leaked before the daemon reply");
+  let current = h.snapshot().messages.findLast(message => message.id === "reused-secret");
+  assert.equal(current.answered, false);
+  assert.equal(current.answer, null);
+
+  h.rejectAnswer("reused-secret", "request id was reused; answer the inbox item instead");
+  const result = await delivery;
+  await flush();
+  assert.deepEqual(result, { ok: false, error: "request id was reused; answer the inbox item instead" });
+  assert.equal(JSON.stringify(h.snapshot()).includes(canary), false, "plaintext leaked after refusal");
+  current = h.snapshot().messages.findLast(message => message.id === "reused-secret");
+  assert.equal(current.answered, false, "a refused answer closed the bubble");
+  assert.equal(current.cancelled, false, "a refused answer cancelled the bubble");
+  assert.equal(current.answer, null, "a refused answer was stored");
+  assert.equal(current.deliveryError, "request id was reused; answer the inbox item instead");
+});
+
+await check("a fresh Ompy id publishes its answer only after persona_send succeeds", async () => {
+  const h = bridgeHarness();
+  await flush();
+  await h.bridge.activateSession("ompy");
+  await flush();
+  h.personaLine(500, { type: "extension_ui_request", id: "fresh-answer", method: "input", title: "Code" });
+  h.deferAnswer("fresh-answer");
+  const delivery = h.bridge.answerAsk("fresh-answer", "123456");
+  await flush();
+  let bubble = h.snapshot().messages.find(message => message.id === "fresh-answer");
+  assert.equal(bubble.answered, false);
+  assert.equal(bubble.answer, null);
+  h.resolveAnswer("fresh-answer");
+  assert.equal(await delivery, true);
+  await flush();
+  bubble = h.snapshot().messages.find(message => message.id === "fresh-answer");
+  assert.equal(bubble.answered, true);
+  assert.equal(bubble.answer, "123456");
+});
+
+await check("the originating secret hint masks state even when the current input is non-secret", async () => {
+  const h = bridgeHarness();
+  await flush();
+  await h.bridge.activateSession("ompy");
+  await flush();
+  h.personaLine(500, { type: "extension_ui_request", id: "mask-origin", method: "input", title: "Replacement", secret: false });
+  await h.bridge.answerAsk("mask-origin", "mask-canary", { remoteId: "mask-origin", secret: true });
+  await flush();
+  const bubble = h.snapshot().messages.find(message => message.id === "mask-origin");
+  assert.equal(bubble.answered, true);
+  assert.equal(bubble.answer, "••••••••");
+  assert.equal(JSON.stringify(h.snapshot()).includes("mask-canary"), false);
 });
 
 await check("a new service generation resets the cursor, re-attaches from 0 and re-sends the opening fetch", async () => {

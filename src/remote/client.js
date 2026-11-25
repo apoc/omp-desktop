@@ -32,10 +32,13 @@
     return { t: "select", reqId: nextReqId(), tabId };
   }
 
-  function actionFor(kind, { tabId, text, askId, value }) {
+  function actionFor(kind, { tabId, text, askId, value, remoteId, secret }) {
     const action = { t: "action", reqId: nextReqId(), tabId, kind };
     if (kind === "prompt" || kind === "steer") action.text = text;
-    if (kind === "answer") Object.assign(action, { askId, value });
+    if (kind === "answer") {
+      Object.assign(action, { askId, value });
+      if (secret === true) Object.assign(action, { remoteId, secret: true });
+    }
     return action;
   }
 

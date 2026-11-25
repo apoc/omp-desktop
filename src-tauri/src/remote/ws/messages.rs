@@ -69,6 +69,15 @@ fn build_action(session: &Authed, message: &Value, kind: &str) -> Option<Action>
     if message.get("askId").is_some_and(|raw| !raw.is_null()) && ask_id.is_none() {
         return None;
     }
+    let remote_id = text_field(message, "remoteId").filter(|id| id.len() <= MAX_ASK_ID_LEN);
+    if message.get("remoteId").is_some_and(|raw| !raw.is_null()) && remote_id.is_none() {
+        return None;
+    }
+    let secret = match message.get("secret") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(secret)) => *secret,
+        _ => return None,
+    };
     let value = message.get("value").cloned(); // owned for the webview event
     if value
         .as_ref()
@@ -83,6 +92,8 @@ fn build_action(session: &Authed, message: &Value, kind: &str) -> Option<Action>
         kind: kind.to_owned(),
         text,
         ask_id,
+        remote_id,
+        secret,
         value,
         dispatched_at: None,
     })

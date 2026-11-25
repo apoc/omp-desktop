@@ -564,6 +564,8 @@ fn revoked_connection_gets_its_close_and_nothing_else() {
         kind: "abort".to_owned(),
         text: None,
         ask_id: None,
+        remote_id: None,
+        secret: false,
         value: None,
         dispatched_at: None,
     };
@@ -779,10 +781,12 @@ fn authenticated_ping_and_long_ask_id_work_without_spurious_timeout_or_truncatio
         .unwrap();
     let ask_id = "q".repeat(256);
     client.send_text(&format!(
-        r#"{{"t":"action","reqId":"r-256","tabId":"t1","kind":"answer","askId":"{ask_id}","value":"yes"}}"#
+        r#"{{"t":"action","reqId":"r-256","tabId":"t1","kind":"answer","askId":"{ask_id}","remoteId":"{ask_id}","secret":true,"value":"yes"}}"#
     ));
     let action = s.emit.next_action();
     assert_eq!(action.ask_id.as_deref(), Some(ask_id.as_str()));
+    assert_eq!(action.remote_id.as_deref(), Some(ask_id.as_str()));
+    assert!(action.secret);
     s.hub.action_result(&action.req_id, true, None);
     assert_eq!(client.read_json_where(|m| m["t"] == "ack")["ok"], true);
 
