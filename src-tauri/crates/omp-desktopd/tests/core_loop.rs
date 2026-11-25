@@ -14,7 +14,7 @@ use omp_desktopd::server::{
     Inbound, InboundBudget, Outbound, MAX_INBOUND_BYTES, MAX_OUTBOUND_BYTES,
 };
 use omp_desktopd::session::{Launch, SessionEvent};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
@@ -36,6 +36,34 @@ const fn t0_ms() -> i64 {
         .unwrap()
         .and_utc()
         .timestamp_millis()
+}
+
+/// How many quarantine names the store tries before it reports the file as
+/// protected: `.bad-<ms>` plus the `-N` collision suffixes (`ASIDE_ATTEMPTS`
+/// in `core::store`). A raise there makes these setups block too few names and
+/// the three protection tests fail loudly instead of passing falsely.
+const QUARANTINE_NAMES: u32 = 100;
+
+/// Squat every name the store may quarantine `path` under, so both the
+/// non-clobbering move and the copy find no free name and fail.
+///
+/// Directories are used because `create_new`/`hard_link` refuse an existing
+/// destination on every platform, while the persona directory itself stays
+/// writable for the rest of the harness.
+fn block_quarantine_names(path: &Path) {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("state file has a unicode file name");
+    for collision in 0..QUARANTINE_NAMES {
+        let suffix = if collision == 0 {
+            String::new()
+        } else {
+            format!("-{collision}")
+        };
+        let candidate = path.with_file_name(format!("{name}.bad-{}{suffix}", t0_ms()));
+        std::fs::create_dir(&candidate).unwrap();
+    }
 }
 
 fn start(tag: &str, client: ClientKind) -> Harness {
@@ -1553,20 +1581,10 @@ fn protected_state_files_are_not_replaced_by_a_settings_change() {
         |paths| {
             std::fs::write(&paths.settings, b"{not json").unwrap();
             std::fs::write(&paths.budget, b"{not json").unwrap();
-            // Directories squatting on both quarantine names make the moves
+            // Directories squatting on every quarantine name make the moves
             // fail while the directory holding the files stays writable.
-            std::fs::create_dir(
-                paths
-                    .settings
-                    .with_file_name(format!("settings.json.bad-{}", t0_ms())),
-            )
-            .unwrap();
-            std::fs::create_dir(
-                paths
-                    .budget
-                    .with_file_name(format!("budget.json.bad-{}", t0_ms())),
-            )
-            .unwrap();
+            block_quarantine_names(&paths.settings);
+            block_quarantine_names(&paths.budget);
         },
     );
     let items = inbox_items(&h);
@@ -1620,12 +1638,7 @@ fn a_protected_budget_is_not_replaced_by_a_saved_settings_change() {
         PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
         |paths| {
             std::fs::write(&paths.budget, b"{not json").unwrap();
-            std::fs::create_dir(
-                paths
-                    .budget
-                    .with_file_name(format!("budget.json.bad-{}", t0_ms())),
-            )
-            .unwrap();
+            block_quarantine_names(&paths.budget);
         },
     );
     let settings = PersonaSettings {
@@ -1653,12 +1666,7 @@ fn a_protected_schedule_is_not_replaced_by_a_new_wake() {
         PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
         |paths| {
             std::fs::write(&paths.schedule, b"{not json").unwrap();
-            std::fs::create_dir(
-                paths
-                    .schedule
-                    .with_file_name(format!("schedule.json.bad-{}", t0_ms())),
-            )
-            .unwrap();
+            block_quarantine_names(&paths.schedule);
         },
     );
     let items = inbox_items(&h);
