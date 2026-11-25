@@ -246,31 +246,85 @@ fn reset_budget(
     (budget, Some(notice.into()), Load::Reset)
 }
 
-/// Copy `path` to `<file_name>.bad-<now_ms>`.
+/// Copy `path` to a fresh `<file_name>.bad-<now_ms>[-N]`.
 ///
 /// Unlike [`move_aside`], the original stays in place, so a file whose bytes
 /// must be preserved can be replaced afterwards without a window in which
 /// neither copy exists.
 fn copy_aside(path: &Path, now_ms: i64) -> bool {
-    let Some(target) = aside_path(path, now_ms) else {
+    let Ok(mut source) = std::fs::File::open(path) else {
         return false;
     };
-    std::fs::copy(path, target).is_ok()
+    let Some((target, mut destination)) = create_aside(path, now_ms) else {
+        return false;
+    };
+    if std::io::copy(&mut source, &mut destination).is_ok() {
+        true
+    } else {
+        drop(destination);
+        let _ = std::fs::remove_file(target);
+        false
+    }
 }
 
-/// Rename `path` to `<file_name>.bad-<now_ms>`.
+/// Rename `path` to a fresh `<file_name>.bad-<now_ms>[-N]`.
+///
+/// A hard link creates the destination atomically and refuses an existing
+/// one, unlike `rename`, which overwrites on Unix and fails on Windows. The
+/// source name is removed only after that link exists.
 fn move_aside(path: &Path, now_ms: i64) -> bool {
-    let Some(target) = aside_path(path, now_ms) else {
-        return false;
-    };
-    std::fs::rename(path, target).is_ok()
+    use std::io::ErrorKind;
+
+    for collision in 0..ASIDE_ATTEMPTS {
+        let Some(target) = aside_path(path, now_ms, collision) else {
+            return false;
+        };
+        match std::fs::hard_link(path, &target) {
+            Ok(()) => {
+                if std::fs::remove_file(path).is_ok() {
+                    return true;
+                }
+                let _ = std::fs::remove_file(target);
+                return false;
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
-/// `<file_name>.bad-<now_ms>` next to `path`.
-fn aside_path(path: &Path, now_ms: i64) -> Option<std::path::PathBuf> {
+const ASIDE_ATTEMPTS: u32 = 100;
+
+/// Reserve a destination with `create_new`, so equal-millisecond recoveries
+/// cannot overwrite an earlier quarantine. The reservation also keeps another
+/// recovery from claiming the name before a rename replaces our empty file.
+fn create_aside(path: &Path, now_ms: i64) -> Option<(std::path::PathBuf, std::fs::File)> {
+    use std::io::ErrorKind;
+
+    for collision in 0..ASIDE_ATTEMPTS {
+        let target = aside_path(path, now_ms, collision)?;
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+        {
+            Ok(file) => return Some((target, file)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// `<file_name>.bad-<now_ms>` next to `path`, with `-N` after a collision.
+fn aside_path(path: &Path, now_ms: i64, collision: u32) -> Option<std::path::PathBuf> {
     let file_name = path.file_name()?;
     let mut bad_name = file_name.to_os_string();
     bad_name.push(format!(".bad-{now_ms}"));
+    if collision > 0 {
+        bad_name.push(format!("-{collision}"));
+    }
     Some(path.with_file_name(bad_name))
 }
 
@@ -350,11 +404,13 @@ mod tests {
         let temp = TempDir::new("desktopd-store", "protected");
         let path = temp.path().join("settings.json");
         std::fs::write(&path, b"not json").unwrap();
-        // A directory squatting on the quarantine name makes the rename fail
+        // Directories squatting on every candidate name make the rename fail
         // while the directory holding the file stays writable, so only the
         // write protection keeps the original bytes alive.
         let aside = temp.path().join("settings.json.bad-1234");
-        std::fs::create_dir(&aside).unwrap();
+        for collision in 0..ASIDE_ATTEMPTS {
+            std::fs::create_dir(aside_path(&path, 1_234, collision).unwrap()).unwrap();
+        }
 
         let (_settings, load) = read_json::<PersonaSettings>(&path, "settings", 1_234);
         assert_eq!(load, Load::Protected);
@@ -376,7 +432,9 @@ mod tests {
         );
 
         // As soon as the quarantine succeeds, writes are allowed again.
-        std::fs::remove_dir(&aside).unwrap();
+        for collision in 0..ASIDE_ATTEMPTS {
+            std::fs::remove_dir(aside_path(&path, 1_234, collision).unwrap()).unwrap();
+        }
         assert!(write_state(
             &mut access,
             &path,
@@ -410,6 +468,36 @@ mod tests {
         assert_eq!(
             written.used, 500_000,
             "the exhausted counter is durable before the corrupt file could be gone"
+        );
+    }
+
+    #[test]
+    fn quarantine_timestamp_collisions_preserve_both_generations() {
+        let temp = TempDir::new("desktopd-store", "collision");
+        let path = temp.path().join("settings.json");
+        let aside = temp.path().join("settings.json.bad-1234");
+        std::fs::write(&aside, b"earlier corrupt generation").unwrap();
+        std::fs::write(&path, b"later corrupt generation").unwrap();
+
+        assert!(move_aside(&path, 1_234));
+        assert_eq!(
+            std::fs::read(&aside).unwrap(),
+            b"earlier corrupt generation"
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("settings.json.bad-1234-1")).unwrap(),
+            b"later corrupt generation"
+        );
+
+        std::fs::write(&path, b"third corrupt generation").unwrap();
+        assert!(copy_aside(&path, 1_234));
+        assert_eq!(
+            std::fs::read(&aside).unwrap(),
+            b"earlier corrupt generation"
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("settings.json.bad-1234-2")).unwrap(),
+            b"third corrupt generation"
         );
     }
 
@@ -464,8 +552,10 @@ mod tests {
         let temp = TempDir::new("desktopd-store", "budget-protected");
         let path = temp.path().join("budget.json");
         std::fs::write(&path, b"not json").unwrap();
-        // The copy target is a directory, so the bytes cannot be preserved.
-        std::fs::create_dir(temp.path().join("budget.json.bad-1234")).unwrap();
+        // Directories occupy every copy target, so the bytes cannot be preserved.
+        for collision in 0..ASIDE_ATTEMPTS {
+            std::fs::create_dir(aside_path(&path, 1_234, collision).unwrap()).unwrap();
+        }
 
         let (budget, notice, load) = load_budget(&path, &now(), 500_000);
         assert_eq!(budget.state(), BudgetState::Exhausted);
