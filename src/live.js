@@ -639,14 +639,15 @@
   }
 
   // Settle a pending ask bubble: apply `patch` to the first unanswered,
-  // uncancelled bubble with this id and publish. Returns whether one
-  // matched. The re-answer guard (a bubble already answered or cancelled is
-  // left alone) is the subtle part — it lives here once, for the user's
-  // answers (_resolveAsk) and omp's own `cancel` alike.
-  function _settleAsk(id, patch) {
+  // uncancelled ask bubble that `match` selects, and publish. Returns whether
+  // one matched. The re-answer guard (a bubble already answered or cancelled
+  // is left alone) is the subtle part — it lives here once, for the id-based
+  // path (_settleAsk: the user's answers and omp's own `cancel`) and Ompy's
+  // instance-pinned replies (_settleAskInstance) alike.
+  function _settleAskBubble(match, patch) {
     let settled = false;
     state.messages = state.messages.map(m => {
-      if (m.kind === "ask" && m.id === id && !m.answered && !m.cancelled) {
+      if (m.kind === "ask" && !m.answered && !m.cancelled && match(m)) {
         settled = true;
         return { ...m, ...patch };
       }
@@ -654,6 +655,12 @@
     });
     if (settled) notify();
     return settled;
+  }
+
+  // Settle by request id. A reused id means several bubbles can share it; the
+  // first still-answerable one wins.
+  function _settleAsk(id, patch) {
+    return _settleAskBubble(m => m.id === id, patch);
   }
 
   // Undo a local `_settleAsk` whose answer never reached omp: the bubble
@@ -676,16 +683,7 @@
   // to this local bubble instance, never to a later request reusing its id.
   const pendingPersonaAnswers = new WeakMap();
   function _settleAskInstance(target, patch) {
-    let settled = false;
-    state.messages = state.messages.map(m => {
-      if (m === target && !m.answered && !m.cancelled) {
-        settled = true;
-        return { ...m, ...patch, deliveryError: null };
-      }
-      return m;
-    });
-    if (settled) notify();
-    return settled;
+    return _settleAskBubble(m => m === target, { ...patch, deliveryError: null });
   }
 
   function _resolveAsk(id, patch, payload) {
