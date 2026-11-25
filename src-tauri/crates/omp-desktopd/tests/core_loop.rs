@@ -71,15 +71,17 @@ fn start(tag: &str, client: ClientKind) -> Harness {
         tag,
         client,
         PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
-        |_| {},
+        |_, _| {},
     )
 }
 
+/// `setup` runs before the core starts, so it can prepare state files and the
+/// instructions path without racing the first spawn read.
 fn start_with(
     tag: &str,
     client: ClientKind,
     program: PathBuf,
-    setup: impl FnOnce(&Paths),
+    setup: impl FnOnce(&Paths, &Path),
 ) -> Harness {
     let root = std::env::temp_dir().join(format!("ompy-core-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -101,7 +103,7 @@ fn start_with(
         env: vec![("FAKE_OMP_LOG".into(), log.display().to_string())],
     };
     let t0 = t0_ms();
-    setup(&paths);
+    setup(&paths, &instructions);
     let clock = Arc::new(AtomicI64::new(t0));
     let c2 = Arc::clone(&clock);
     let core = Core::new(
@@ -214,7 +216,7 @@ fn missing_omp_is_retried_and_starts_when_it_appears() {
     // A fixed path that does not exist yet: the spawn fails and the retry loop
     // keeps the service up.
     let target = dir.join("fake-omp");
-    let h = start_with("missing-omp", ClientKind::App, target.clone(), |_| {});
+    let h = start_with("missing-omp", ClientKind::App, target.clone(), |_, _| {});
 
     let mut seen_error = false;
     let mut notices = 0;
@@ -389,7 +391,7 @@ fn answering_approval_writes_response_and_unblocks() {
 #[test]
 fn offline_answers_fail_and_leave_the_item_open() {
     let missing = std::env::temp_dir().join(format!("ompy-offline-answer-{}", std::process::id()));
-    let h = start_with("offline-answer", ClientKind::App, missing, |_| {});
+    let h = start_with("offline-answer", ClientKind::App, missing, |_, _| {});
     // A decision has no omp request behind it: answering it sends a prompt,
     // which has nowhere to go while the session is down.
     send(
@@ -989,7 +991,7 @@ fn spawn_failure_is_noticed_once() {
         "spawn-fail",
         ClientKind::App,
         PathBuf::from("/nonexistent/omp-for-test"),
-        |_| {},
+        |_, _| {},
     );
     send(&h, 1, ClientMsg::Status);
     assert!(matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }));
@@ -1055,7 +1057,7 @@ fn exhausted_budget_on_start_holds_interval() {
         "budget-startup",
         ClientKind::App,
         PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
-        |paths| {
+        |paths, _| {
             std::fs::write(
                 &paths.budget,
                 br#"{"limit":2000000,"day":"2026-11-16","used":2000000}"#,
@@ -1158,7 +1160,7 @@ fn corrupt_budget_is_moved_aside_and_replaced() {
         "budget-corrupt",
         ClientKind::App,
         PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
-        |paths| std::fs::write(&paths.budget, b"{not json").unwrap(),
+        |paths, _| std::fs::write(&paths.budget, b"{not json").unwrap(),
     );
     let bad = h
         .paths
@@ -1194,7 +1196,7 @@ fn inbox_retention_caps_settled_items() {
         "retention",
         ClientKind::App,
         PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
-        |paths| {
+        |paths, _| {
             let mut items = vec![serde_json::json!({
                 "id": "open",
                 "kind": "decision",
@@ -1246,7 +1248,7 @@ fn inbox_retention_caps_settled_items() {
 fn scheduled_wake_survives_inbox_resolve_while_down() {
     let root = std::env::temp_dir().join(format!("ompy-core-resolve-down-{}", std::process::id()));
     let late_omp = root.join("late-omp");
-    let h = start_with("resolve-down", ClientKind::App, late_omp.clone(), |_| {});
+    let h = start_with("resolve-down", ClientKind::App, late_omp.clone(), |_, _| {});
     send(
         &h,
         1,
@@ -1290,7 +1292,7 @@ fn stale_exhausted_budget_rolls_on_start() {
         "budget-stale-day",
         ClientKind::App,
         PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
-        |paths| {
+        |paths, _| {
             std::fs::write(
                 &paths.budget,
                 br#"{"limit":2000000,"day":"2026-11-15","used":2000000}"#,
@@ -1565,30 +1567,51 @@ fn an_instructions_refusal_matches_the_notice_of_either_platform() {
 
 #[test]
 fn a_non_file_instructions_path_surfaces_a_notice_and_keeps_the_wake() {
-    let h = start("instructions-dir", ClientKind::App);
-    std::fs::remove_file(&h.instructions).unwrap();
     // A directory at the instructions path must never be read as a file.
-    std::fs::create_dir(&h.instructions).unwrap();
+    // It is installed before the core starts: swapping the file under the
+    // running loop races the spawn read, which can then find the removed path
+    // and report that missing file as a second, genuinely distinct error.
+    let h = start_with(
+        "instructions-dir",
+        ClientKind::App,
+        PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
+        |_, instructions| {
+            std::fs::remove_file(instructions).unwrap();
+            std::fs::create_dir(instructions).unwrap();
+        },
+    );
+    // The spawn read already hits the directory, so the notice exists before
+    // any wake and every later read sees the same condition.
+    let first = wait_until(&h, |items| items.iter().any(is_instructions_refusal));
+    assert_eq!(
+        first.into_iter().filter(is_instructions_refusal).count(),
+        1,
+        "the first read reports the directory once"
+    );
     let before = current_generation(&h);
 
     send(&h, 1, ClientMsg::WakeNow);
     assert!(matches!(reply(&h, 1), ServerMsg::Reply { ok: true, .. }));
     wait_log(&h, "[ompy wake] trigger: manual");
-    wait_until(&h, |items| items.iter().any(is_instructions_refusal));
     assert_eq!(
         current_generation(&h),
         before,
         "a broken instructions file cannot become a system prompt, so it must not force a restart"
     );
 
-    // The next delivered wake reports the same problem once, not per wake.
+    // Two more wakes hit the same unreadable path: one notice per distinct
+    // error, not one per wake.
     deny_wake_approval(&h);
     wake_until(&h, 2);
-    let notices = inbox_items(&h)
+    let notices: Vec<_> = inbox_items(&h)
         .into_iter()
         .filter(is_instructions_refusal)
-        .count();
-    assert_eq!(notices, 1, "one notice per distinct error");
+        .collect();
+    assert_eq!(
+        notices.len(),
+        1,
+        "repeated wakes with the same error add no notice: {notices:?}"
+    );
     let _ = h.tx.send(CoreMsg::Shutdown);
 }
 
@@ -1662,7 +1685,7 @@ fn protected_state_files_are_not_replaced_by_a_settings_change() {
         "protected-settings",
         ClientKind::App,
         PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
-        |paths| {
+        |paths, _| {
             std::fs::write(&paths.settings, b"{not json").unwrap();
             std::fs::write(&paths.budget, b"{not json").unwrap();
             // Directories squatting on every quarantine name make the moves
@@ -1720,7 +1743,7 @@ fn a_protected_budget_is_not_replaced_by_a_saved_settings_change() {
         "protected-budget",
         ClientKind::App,
         PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
-        |paths| {
+        |paths, _| {
             std::fs::write(&paths.budget, b"{not json").unwrap();
             block_quarantine_names(&paths.budget);
         },
@@ -1748,7 +1771,7 @@ fn a_protected_schedule_is_not_replaced_by_a_new_wake() {
         "protected-schedule",
         ClientKind::Extension,
         PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
-        |paths| {
+        |paths, _| {
             std::fs::write(&paths.schedule, b"{not json").unwrap();
             block_quarantine_names(&paths.schedule);
         },
@@ -1797,7 +1820,7 @@ fn a_reset_schedule_file_is_reported_to_the_user() {
         "schedule-reset",
         ClientKind::App,
         PathBuf::from(env!("CARGO_BIN_EXE_fake-omp")),
-        |paths| std::fs::write(&paths.schedule, b"{not json").unwrap(),
+        |paths, _| std::fs::write(&paths.schedule, b"{not json").unwrap(),
     );
     // The quarantine succeeds, so writes are allowed again; the reset itself
     // must still reach the user.
