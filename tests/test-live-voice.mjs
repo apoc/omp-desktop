@@ -242,6 +242,10 @@ check("voice controls start independently and retain stop and cancel actions", (
 // assertions concern snapshots and outcomes, not the bridge's internal maps.
 function bridgeHarness() {
   const listeners = new Map(), journal = new Map(), commands = [], waiters = [];
+  // A held unlisten: the listener stops dispatching at once but the teardown
+  // await stays pending until the test releases it — a tab switch sitting in
+  // its listener teardown, with `activeSessionId` still naming the tab left.
+  const teardownHolds = new Map(), teardownReleases = new Map();
   const formVersions = [];
   const atLeast192 = version => {
     const match = /^(?:\S*\/)?v?(\d+)\.(\d+)/.exec(String(version ?? ""));
@@ -347,7 +351,11 @@ function bridgeHarness() {
     } },
     event: { async listen(name, callback) {
       listeners.set(name, callback);
-      return () => { if (listeners.get(name) === callback) listeners.delete(name); };
+      return () => {
+        if (listeners.get(name) === callback) listeners.delete(name);
+        const hold = teardownHolds.get(name);
+        if (hold) { teardownHolds.delete(name); return hold; }
+      };
     } },
   };
   let snapshot;
@@ -363,6 +371,18 @@ function bridgeHarness() {
     failGrant: message => { grantError = message; },
     unsavedGrant: message => { grantUnsaved = message; },
     holdGrant: () => { holdGrant = true; },
+    holdTeardown: id => {
+      const name = `agent://line/${id}`;
+      let release;
+      const pending = new Promise(resolve => { release = resolve; });
+      teardownHolds.set(name, pending);
+      teardownReleases.set(name, release);
+    },
+    releaseTeardown: id => {
+      const name = `agent://line/${id}`;
+      teardownReleases.get(name)?.();
+      teardownReleases.delete(name);
+    },
     failPendingGrant: message => {
       holdGrant = false;
       pendingGrants.shift().reject(new Error(message));
@@ -1051,6 +1071,40 @@ await checkAsync("a rejected approve-and-remember after a tab switch reopens the
   assert.equal(Boolean(reopened.answered), false, "the originating tab's prompt is open again");
   assert.equal(Boolean(reopened.cancelled), false);
   assert.match(h.snapshot().messages.at(-1).blocks[0].text, /Approve and remember failed:\*\* prompt is not pending/);
+});
+
+await checkAsync("a grant rejected during the outgoing listener teardown survives switching back", async () => {
+  const h = bridgeHarness();
+  const { a, b } = await twoTabs(h);
+  h.emit(a, {
+    type: "extension_ui_request", id: "approve-during-teardown", method: "select",
+    title: "Allow tool: bash\nCommand: ls", options: ["Approve", "Deny"],
+  });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const prompt = h.snapshot().messages.find(message => message.kind === "ask" && message.id === "approve-during-teardown");
+  h.holdGrant();
+  h.holdTeardown(a);
+  const pending = h.bridge.approveAndRemember(prompt, "session");
+  const switching = h.bridge.activateSession(b);
+  // The rejection lands while the outgoing listeners' unlisten is still
+  // outstanding: `activeSessionId` is still `a`, so the reopened prompt and
+  // the note go into the live state that the switch snapshots afterwards.
+  h.failPendingGrant("prompt is not pending");
+  await pending;
+  assert.equal(h.snapshot().activeSessionId, a, "the switch is still in its listener teardown");
+  h.releaseTeardown(a);
+  await switching;
+  assert.equal(h.snapshot().activeSessionId, b);
+  assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /approve-during-teardown|open again/);
+  await h.bridge.activateSession(a);
+  const reopened = h.snapshot().messages.find(message => message.id === "approve-during-teardown");
+  assert.equal(Boolean(reopened?.answered), false, "the originating tab's prompt is open again");
+  assert.equal(Boolean(reopened?.cancelled), false);
+  assert.match(h.snapshot().messages.at(-1).blocks[0].text, /Approve and remember failed:\*\* prompt is not pending/);
+  // The reopened prompt is answerable again: the following Deny goes out.
+  assert.equal(await h.bridge.answerAsk("approve-during-teardown", "Deny"), true);
+  const reply = h.commands.find(command => command.type === "extension_ui_response" && command.id === "approve-during-teardown");
+  assert.equal(reply?.value, "Deny");
 });
 
 await checkAsync("an omp withdrawal during a pending grant stays closed without an open-again note", async () => {

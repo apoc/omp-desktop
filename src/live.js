@@ -1038,8 +1038,6 @@
     if (_switchIntent !== intent || !sessionRegistry.has(id)) return;
     const myGen = ++_switchGen;
 
-    // Snapshot current session so we can restore it when switching back
-    _saveCurrentSession();
     // The inspected agent belongs to the tab being left: drop that process
     // back to "progress" while activeSessionId still addresses it.
     if (subagentInspecting) {
@@ -1052,6 +1050,15 @@
     activeListeners = [];
     _chunkAcc = null; // drop any partial chunk run from the previous session
 
+    // Snapshot the outgoing session only now, after its listeners are gone.
+    // The unlisten above is an IPC round-trip, and an asynchronous outcome
+    // for this tab — an approve-and-remember rejection reopening a prompt —
+    // can land inside it, still against `activeSessionId`. Snapshotting
+    // before the teardown would cache the optimistic answer and drop the
+    // rejection's note; switching back would then restore the stale state.
+    // No await separates this save from the id change below, so nothing can
+    // land in between and be lost.
+    _saveCurrentSession();
     activeSessionId = id;
     _noTabProfileId = null;
     _syncRecentsProfile();
