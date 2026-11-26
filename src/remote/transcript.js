@@ -340,7 +340,7 @@
         for (const entry of section.blocks) block(entry, box);
         wrap.append(box);
       }
-      const timeout = window.OMP_HTML_FORM.timeoutLabel(ask.timeout);
+      const timeout = window.OMP_ASK_DIALOG.timeoutLabel(ask.timeout);
       const foot = node("div", undefined, "ask-dialog-foot");
       foot.append(node("span", timeout ? `omp submits the form's defaults after ${timeout}` : "", "ask-progress"));
       const cancel = button("Cancel", () => onAnswer(ask.id, null));
