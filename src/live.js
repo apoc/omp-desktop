@@ -18,6 +18,7 @@
   const PREFS = window.OMP_SESSION_PREFS;
   const QUEUE = window.OMP_QUEUE;
   const ASK = window.OMP_ASK_DIALOG;
+  const HTML_FORM = window.OMP_HTML_FORM;
   const APPROVAL = window.OMP_APPROVAL;
   const AMODE = window.OMP_APPROVAL_MODE;
   const TURN = window.OMP_TURN_STATUS;
@@ -519,11 +520,11 @@
   }
 
   // Buffer an ask bubble instead of pushing it straight into
-  // `state.messages`: omp's `select` (a tool approval) and its ask dialog
-  // request both reach stdout just BEFORE the `tool_execution_start` of the
-  // tool they belong to, so pushing on arrival puts the prompt above its own
-  // tool card. tool_execution_start flushes the queue, giving the
-  // [tool_card, ask_bubble] order.
+  // `state.messages`: omp's `select` (a tool approval), its ask dialog
+  // request and its HTML `form` request all reach stdout just BEFORE the
+  // `tool_execution_start` of the tool they belong to, so pushing on arrival
+  // puts the prompt above its own tool card. tool_execution_start flushes the
+  // queue, giving the [tool_card, ask_bubble] order.
   //
   // Two properties this has to keep, both learned from a wedged session:
   //   1. It is a QUEUE, not a single slot. A turn with parallel tool calls
@@ -2445,6 +2446,32 @@
         _queueAskBubble(_askMessage("ask", ev, { questions, timeout: ev.timeout ?? null, answers: null }));
         return;
       }
+      // omp 19.1+ sends the ask tool's whole HTML form as one request. Parse
+      // it into a model first: the HTML never enters the DOM. A form this
+      // shell cannot read is cancelled at once and leaves a visible note, so
+      // omp never waits on a card that could not be submitted.
+      if (ev.method === "form") {
+        const parsed = HTML_FORM.parse(ev.html);
+        if (!parsed.form) {
+          state.messages = [...state.messages, _askMessage("form", ev, {
+            title: "Unsupported form",
+            form: null,
+            formError: parsed.error ?? "The form could not be read.",
+            timeout: ev.timeout ?? null,
+            data: null,
+            cancelled: true,
+          })];
+          notify();
+          _send({ type: "extension_ui_response", id: ev.id, cancelled: true });
+          return;
+        }
+        _queueAskBubble(_askMessage("form", ev, {
+          form: parsed.form,
+          timeout: ev.timeout ?? null,
+          data: null,
+        }));
+        return;
+      }
       // Yes/No confirmation dialog. Pushed directly — see the `input`
       // comment above for why (no guaranteed tool_execution_start
       // pairing). Wire shape confirmed against the installed omp binary:
@@ -4189,6 +4216,18 @@
      */
     answerAskDialog(id, answers) {
       return _resolveAsk(id, { answered: true, answers }, { answers });
+    },
+
+    /**
+     * Answer omp's HTML form (`extension_ui_request` method=form, omp
+     * 19.1+). `data` is built by OMP_HTML_FORM.buildData; omp validates it
+     * strictly (parseFormDialogResponse), and the settled bubble keeps it
+     * for its summary. Same re-answer guard as `answerAsk`.
+     * @param {string} id
+     * @param {Object<string, string|number|string[]>} data
+     */
+    answerForm(id, data) {
+      return _resolveAsk(id, { answered: true, data }, { data });
     },
 
     /**

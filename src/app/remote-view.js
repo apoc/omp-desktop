@@ -19,7 +19,7 @@
     if (message.answered || message.cancelled || message.closedByOmp || ask.answered || ask.cancelled || ask.closedByOmp) return null;
     const method = ask.method ?? ask.kind;
     const kind = method === "ask" ? "dialog" : method;
-    if (!["select", "confirm", "input", "editor", "dialog"].includes(kind)) return null;
+    if (!["select", "confirm", "input", "editor", "dialog", "form"].includes(kind)) return null;
     return {
       id: ask.id ?? message.id, kind, title: ask.title ?? "", message: ask.message ?? "",
       ...(kind === "select" ? {
@@ -30,6 +30,11 @@
       } : {}),
       ...(kind === "editor" && typeof (ask.prefill ?? ask.value) === "string" ? { value: ask.prefill ?? ask.value } : {}),
       ...(kind === "dialog" ? { questions: ask.questions ?? [] } : {}),
+      ...(kind === "form" ? {
+        ...(ask.form ? { form: ask.form } : {}),
+        ...(Number.isFinite(ask.timeout) && ask.timeout > 0 ? { timeout: ask.timeout } : {}),
+        ...(typeof ask.formError === "string" ? { formError: ask.formError } : {}),
+      } : {}),
     };
   }
 
@@ -104,6 +109,7 @@
     if (value === null) return { method: "cancelAsk", args: [ask.id] };
     const kind = ask.method ?? ask.kind;
     const method = kind === "confirm" ? "answerConfirm"
+      : kind === "form" ? "answerForm"
       : kind === "ask" || kind === "dialog" ? "answerAskDialog" : "answerAsk";
     return { method, args: [ask.id, value] };
   }
@@ -141,6 +147,8 @@
       case "input": case "editor": return typeof value === "string" ? null : bad;
       case "dialog":
         return validDialogAnswers(ask.questions, value) ? null : bad;
+      case "form":
+        return ask.form && window.OMP_HTML_FORM?.validateData(ask.form, value) ? null : bad;
       default: return bad;
     }
   }

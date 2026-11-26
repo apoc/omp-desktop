@@ -132,6 +132,10 @@
         card.append(dialogControls(ask, key));
         return row;
       }
+      if (ask.kind === "form") {
+        card.append(formControls(ask, key));
+        return row;
+      }
       const controls = C.askControls(ask);
       if (Array.isArray(controls)) {
         const opts = node("div", undefined, "ask-options");
@@ -283,6 +287,166 @@
       answer.className = "ask-submit";
       wrap.append(problem, answer);
       return wrap;
+    }
+
+    // omp 19.1+'s HTML form, rendered from the model only (app/html-form.js).
+    // Values are built by the same builder as the desktop, so the reply phone
+    // sends has omp's exact shape: strings, arrays and numbers.
+    function formControls(ask, key) {
+      const wrap = node("div", undefined, "ask-dialog form-dialog");
+      const F = window.OMP_HTML_FORM;
+      const form = ask.form;
+      if (!form) {
+        wrap.append(node("div", ask.formError || "Unsupported form", "ask-sum-a none"));
+        const cancel = button("Cancel", () => onAnswer(ask.id, null));
+        cancel.className = "ask-opt";
+        wrap.append(cancel);
+        return wrap;
+      }
+      const draft = askDrafts.get(key) ?? F.emptyDraft(form);
+      askDrafts.set(key, draft);
+      // JSON does not preserve the parser's shared field references; the
+      // model's fields and blocks are in the same document order, so walk the
+      // fields by position.
+      let fieldCursor = 0;
+      const problem = node("p", "", "error");
+      const refresh = () => {
+        const errors = F.draftErrors(form, draft);
+        problem.textContent = Object.keys(errors).length ? "Fix the marked fields before sending." : "";
+      };
+      const block = (entry, container) => {
+        if (entry.kind === "text") container.append(node("div", entry.text, `form-context${entry.heading ? " form-heading" : ""}`));
+        else if (entry.kind === "pre") container.append(node("pre", entry.text, "form-pre selectable"));
+        else if (entry.kind === "image") container.append(node("div", entry.alt, "form-image-alt"));
+        else if (entry.kind === "list") {
+          const list = node(entry.ordered ? "ol" : "ul", undefined, "form-list");
+          for (const item of entry.items) list.append(node("li", item));
+          container.append(list);
+        } else if (entry.kind === "table") {
+          const table = node("table", undefined, "form-table");
+          const body = node("tbody");
+          for (const row of entry.rows) {
+            const tr = node("tr");
+            for (const cell of row) tr.append(node("td", cell));
+            body.append(tr);
+          }
+          table.append(body);
+          const holder = node("div", undefined, "form-table-wrap");
+          holder.append(table);
+          container.append(holder);
+        } else if (entry.kind === "field") {
+          container.append(formField(entry.field, fieldCursor++, form, draft, refresh));
+        }
+      };
+      for (const section of form.sections) {
+        const box = node("section", undefined, `form-section${section.fieldset ? " fieldset" : ""}`);
+        if (section.title) box.append(node("div", section.title, "form-legend"));
+        for (const entry of section.blocks) block(entry, box);
+        wrap.append(box);
+      }
+      const timeout = window.OMP_HTML_FORM.timeoutLabel(ask.timeout);
+      const foot = node("div", undefined, "ask-dialog-foot");
+      foot.append(node("span", timeout ? `omp submits the form's defaults after ${timeout}` : "", "ask-progress"));
+      const cancel = button("Cancel", () => onAnswer(ask.id, null));
+      cancel.className = "ask-opt";
+      const submit = button("Submit", () => {
+        const errors = form ? window.OMP_HTML_FORM.draftErrors(form, draft) : {};
+        if (Object.keys(errors).length) { refresh(); return; }
+        onAnswer(ask.id, window.OMP_HTML_FORM.buildData(form, draft));
+      });
+      submit.className = "ask-submit";
+      foot.append(node("span", "", "ask-foot-spacer"), cancel, submit);
+      wrap.append(problem, foot);
+      refresh();
+      return wrap;
+    }
+
+    function formField(field, index, form, draft, refresh) {
+      const F = window.OMP_HTML_FORM;
+      const section = node("section", undefined, "ask-q form-field");
+      const question = field.label || (field.options?.length === 1 ? field.options[0].label : "") || field.name.replace(/[_-]+/g, " ");
+      section.append(node("div", question, "ask-question form-field-label"));
+      const update = next => { draft.splice(0, draft.length, ...next); refresh(); };
+      if (field.kind === "choice" && field.select && !field.multi) {
+        const select = node("select", undefined, "ask-other-input form-select selectable");
+        const entry = draft[index];
+        if (!entry.picks.length) {
+          const empty = node("option", "Choose…");
+          empty.value = "-1";
+          select.append(empty);
+        }
+        field.options.forEach((option, oi) => {
+          const element = node("option", option.label);
+          element.value = String(oi);
+          element.disabled = option.disabled;
+          element.selected = entry.picks.includes(oi);
+          select.append(element);
+        });
+        select.addEventListener("change", () => {
+          const oi = Number(select.value);
+          if (oi >= 0) update(F.pick(draft, form, index, oi));
+        });
+        section.append(select);
+      } else if (field.kind === "choice") {
+        const rows = node("div", undefined, "ask-rows");
+        rows.setAttribute("role", field.multi ? "group" : "radiogroup");
+        rows.setAttribute("aria-label", question);
+        const rowNodes = [];
+        field.options.forEach((option, oi) => {
+          const row = node("div", undefined, "ask-row");
+          const pick = node("button");
+          pick.type = "button";
+          pick.className = "ask-row-btn";
+          pick.setAttribute("role", field.multi ? "checkbox" : "radio");
+          pick.disabled = option.disabled;
+          pick.addEventListener("click", () => {
+            if (option.disabled) return;
+            update(F.pick(draft, form, index, oi));
+            syncRows();
+          });
+          pick.append(node("span", "", `ask-mark ${field.multi ? "box" : "radio"}`));
+          pick.append(node("span", option.label, "ask-row-text"));
+          row.append(pick);
+          rows.append(row);
+          rowNodes.push(row);
+        });
+        const syncRows = () => rowNodes.forEach((row, oi) => {
+          const on = draft[index].picks.includes(oi);
+          row.classList.toggle("selected", on);
+          row.firstElementChild.setAttribute("aria-checked", String(on));
+        });
+        syncRows();
+        section.append(rows);
+        if (field.other) {
+          const wrap = node("div", undefined, "ask-other form-other");
+          const input = node("input");
+          input.className = "ask-other-input";
+          input.value = draft[index].other;
+          input.placeholder = "Other (type your own)";
+          input.addEventListener("input", () => {
+            update(F.setOther(draft, form, index, input.value));
+            syncRows();
+          });
+          wrap.append(input);
+          section.append(wrap);
+        }
+      } else if (field.multiline) {
+        const area = node("textarea", undefined, "ask-editor-textarea selectable");
+        area.value = draft[index];
+        area.rows = field.rows || 4;
+        area.placeholder = field.placeholder || "";
+        area.addEventListener("input", () => update(F.setText(draft, form, index, area.value)));
+        section.append(area);
+      } else {
+        const input = node("input", undefined, "ask-other-input selectable");
+        input.type = field.type || "text";
+        input.value = draft[index];
+        input.placeholder = field.placeholder || "";
+        input.required = field.required;
+        input.addEventListener("input", () => update(F.setText(draft, form, index, input.value)));
+        section.append(input);
+      }
+      return section;
     }
 
     function renderAsks(view) {

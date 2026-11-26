@@ -245,6 +245,18 @@ function bridgeHarness() {
   const w = {
     OMP_LIVE_VOICE: V,
     OMP_SLASH: { LOCAL_COMMANDS: [] },
+    OMP_ASK_DIALOG: { parseQuestions: () => null },
+    // The form parser itself is covered by tests/test-html-form.mjs. This
+    // harness only needs a model and an unreadable request.
+    OMP_HTML_FORM: {
+      parse: html => html === "empty"
+        ? { error: "The form is empty." }
+        : { form: {
+          sections: [{ title: "Setup", blocks: [], fieldset: true }],
+          fields: [{ kind: "text", name: "name", type: "text", multiline: false, label: "Name", value: "", placeholder: "", required: false, rows: 1 }],
+          hidden: [],
+        } },
+    },
     OMP_SUBAGENTS: { emptySubagents: () => ({}), subscriptionLevelFor: () => "progress", mergeSnapshots: () => ({}) },
     OMP_QUEUE: { EMPTY_QUEUE: {} }, OMP_GOAL: { UNKNOWN: {} }, OMP_EXT_WIDGETS: { EMPTY: {} },
     OMP_TRANSCRIPT: {}, OMP_PROMPT_HISTORY: { DEFAULT_LIMIT: 100 },
@@ -831,6 +843,47 @@ await checkAsync("a failed send-on-stop does not tag the Settings stop that foll
   h.reply(stop, true, { text: "words" });
   await settingsStop;
   assert.deepEqual(h.snapshot().dictationCompleted.map(item => [item.text, item.send]), [["words", false]]);
+});
+
+await checkAsync("a form request becomes a bubble and its answer is the data frame omp expects", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.emit(a, {
+    type: "extension_ui_request", id: "form1", method: "form", timeout: 30000,
+    html: "<form><input name=name></form>",
+  });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const bubble = h.snapshot().messages.find(message => message.kind === "ask" && message.id === "form1");
+  assert.equal(bubble?.method, "form");
+  assert.deepEqual(bubble?.form.fields.map(field => field.name), ["name"]);
+  assert.equal(bubble?.timeout, 30000);
+  await h.bridge.answerForm("form1", { name: "Ada" });
+  const reply = h.commands.find(command => command.type === "extension_ui_response" && command.id === "form1");
+  assert.deepEqual(reply?.data, { name: "Ada" });
+  const settled = h.snapshot().messages.find(message => message.id === "form1");
+  assert.deepEqual([settled.answered, settled.data], [true, { name: "Ada" }]);
+});
+
+await checkAsync("an unreadable form is cancelled at once and leaves a visible note", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.emit(a, { type: "extension_ui_request", id: "bad", method: "form", html: "empty" });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const bubble = h.snapshot().messages.find(message => message.kind === "ask" && message.id === "bad");
+  assert.equal(bubble?.cancelled, true);
+  assert.equal(bubble?.formError, "The form is empty.");
+  const reply = h.commands.find(command => command.type === "extension_ui_response" && command.id === "bad");
+  assert.equal(reply?.cancelled, true);
+});
+
+await checkAsync("a second form answer is not resent", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.emit(a, { type: "extension_ui_request", id: "form2", method: "form", html: "<form><input name=name></form>" });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(await h.bridge.answerForm("form2", { name: "one" }), true);
+  assert.equal(await h.bridge.answerForm("form2", { name: "two" }), false);
+  assert.equal(h.commands.filter(command => command.type === "extension_ui_response" && command.id === "form2").length, 1);
 });
 
 console.log(`test-live-voice: ${passed} checks passed`);

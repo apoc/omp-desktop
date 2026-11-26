@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Prompts from omp 19.1+ (the ask tool's HTML forms) are shown and answerable on the desktop and phone; before, the tab waited forever. The form is parsed into a safe model (no HTML reaches the page), keeps its sections, rows, inputs, textareas and hidden defaults, and can be cancelled. A form the shell cannot parse is cancelled immediately with a visible note.
+
 ## [0.15.2] - 2026-11-23
 
 ### Changed

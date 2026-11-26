@@ -1,0 +1,55 @@
+/* Ask-tool HTML forms (design/chat/form-dialog.jsx and the phone
+   transcript): sections, context, fields and alt-only pictures. */
+
+.form-section { padding: 12px 14px 14px; }
+.form-section + .form-section { border-top: 1px solid var(--line); }
+.form-section .ask-q { padding: 8px 0 0; }
+.form-section .ask-q + .ask-q { border-top: 0; }
+.form-legend {
+  color: var(--fg);
+  font-size: var(--d-text);
+  font-weight: 600;
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+.form-context {
+  color: var(--fg-2);
+  font-size: var(--d-text-sm);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin-bottom: 8px;
+}
+.form-heading { color: var(--fg); font-weight: 600; }
+.form-list { margin: 0 0 8px 1.2em; padding: 0; color: var(--fg-2); font-size: var(--d-text-sm); line-height: 1.5; }
+.form-pre {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  background: var(--bg-elevated);
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: var(--d-text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.form-table-wrap { max-width: 100%; overflow-x: auto; margin-bottom: 8px; }
+.form-table { border-collapse: collapse; font-size: var(--d-text-sm); color: var(--fg-2); }
+.form-table td { border: 1px solid var(--line); padding: 4px 8px; vertical-align: top; }
+.form-image-alt {
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border-left: 2px solid color-mix(in oklab, var(--amber) 55%, var(--line));
+  color: var(--fg-3);
+  font-size: var(--d-text-xs);
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
+.form-field-label { margin-bottom: 6px; }
+.form-select { max-width: 100%; }
+.form-other { margin-top: 6px; }
+.form-field .ask-other-input { width: 100%; box-sizing: border-box; }
+.form-error { color: var(--rose); font-size: var(--d-text-xs); margin-top: 5px; }
+.form-dialog .ask-dialog-foot { flex-wrap: wrap; }
+.form-dialog .ask-dialog-foot .chip { flex: none; }

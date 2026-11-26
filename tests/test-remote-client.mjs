@@ -58,12 +58,15 @@ await check("actionFor builds answer, prompt and abort frames with unique reques
   const abort = C.actionFor("abort", { tabId: "t" });
   assert.deepEqual(Object.keys(abort).sort(), ["kind", "reqId", "t", "tabId"]);
 });
-await check("askControls supports select, confirm, input and editor", () => {
+await check("askControls supports select, confirm, input, editor and form", () => {
   assert.deepEqual(C.askControls({ kind: "select", options: ["One", { label: "Two", value: "two" }] }),
     [{ label: "One", value: "One" }, { label: "Two", value: "two" }]);
   assert.deepEqual(C.askControls({ kind: "confirm" }), [{ label: "Confirm", value: true }, { label: "Deny", value: false }]);
   assert.deepEqual(C.askControls({ kind: "input" }), { input: true, multiline: false });
   assert.deepEqual(C.askControls({ kind: "editor" }), { input: true, multiline: true });
+  const form = { fields: [], sections: [], hidden: [] };
+  assert.deepEqual(C.askControls({ kind: "form", form, timeout: 5000 }), { form, timeout: 5000 });
+  assert.deepEqual(C.askControls({ kind: "form", formError: "empty" }), { form: null, error: "empty" });
 });
 await check("backoff starts at one second and caps at thirty seconds", () => {
   assert.equal(C.backoff(0), 1000);
@@ -200,6 +203,7 @@ function browser({ pair = false, token = "saved-token", standalone = true, pairS
   vm.runInContext(load("src/app/accent.js"), ctx);
   vm.runInContext(load("src/app/scroll-pin.js"), ctx);
   vm.runInContext(load("src/app/ask-dialog.js"), ctx);
+  vm.runInContext(load("src/app/html-form.js"), ctx);
   vm.runInContext(load("src/remote/client.js"), ctx);
   // Markdown safety itself uses the actual vendored libraries above.
   ctx.OMP_REMOTE_CLIENT.renderMarkdown = text => "SAFE:" + text;
@@ -478,6 +482,40 @@ await check("pick-any answers keep option order whatever order the buttons were 
   await b.button("R").emit("click"); await b.button("P").emit("click"); await b.button("Q").emit("click");
   await b.button("Answer").emit("click");
   assert.deepEqual(b.frames.at(-1).value, [{ id: "b", selectedOptions: ["P", "Q", "R"] }]);
+});
+await check("form asks render the parsed controls and send omp's data shape", async () => {
+  const b = browser(); await b.connect();
+  const db = { kind: "choice", name: "db", multi: false, select: false, other: true, label: "", required: true, options: [
+    { value: "pg", label: "Postgres", checked: true, disabled: false },
+    { value: "my", label: "MySQL", checked: false, disabled: false },
+    { value: "off", label: "Off", checked: false, disabled: true },
+  ] };
+  const name = { kind: "text", name: "name", type: "text", multiline: false, label: "Name", value: "", placeholder: "Your name", required: true, rows: 1 };
+  const form = {
+    sections: [{ title: "Setup", fieldset: true, blocks: [{ kind: "text", text: "Pick one", heading: false }, { kind: "field", field: db }, { kind: "field", field: name }, { kind: "image", alt: "Diagram" }] }],
+    fields: [db, name], hidden: [],
+  };
+  await b.message({ t: "view", view: { ...view().view, asks: [{ id: "f", kind: "form", title: "Setup", message: "", form, timeout: 30000 }] } });
+  assert.match(b.app.textContent, /Setup/);
+  assert.match(b.app.textContent, /Diagram/);
+  assert.match(b.app.textContent, /defaults after 30 s/);
+  assert.equal(b.button("Off").disabled, true);
+  await b.button("MySQL").emit("click");
+  const text = b.nodes().find(n => n.tagName === "input" && n.placeholder === "Your name");
+  text.value = "Ada"; await text.emit("input");
+  await b.button("Submit").emit("click");
+  assert.equal(b.frames.at(-1).kind, "answer");
+  assert.equal(b.frames.at(-1).askId, "f");
+  assert.deepEqual(b.frames.at(-1).value, { db: "my", name: "Ada" });
+});
+await check("an unsupported form shows its note and no submit button", async () => {
+  const b = browser(); await b.connect();
+  await b.message({ t: "view", view: { ...view().view, asks: [{ id: "bad", kind: "form", title: "Unsupported form", message: "", formError: "The form is empty." }] } });
+  assert.match(b.app.textContent, /The form is empty/);
+  assert.equal(b.button("Submit"), undefined);
+  const cancels = b.nodes().filter(n => n.tagName === "button" && n.textContent === "Cancel");
+  await cancels.at(-1).emit("click");
+  assert.equal(b.frames.at(-1).value, null);
 });
 // Rust's build_action drops a frame without a non-empty reqId, so every
 // select and action the phone builds must carry a unique one.

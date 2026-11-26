@@ -37,11 +37,16 @@ pub fn lookup(path: &str) -> Option<Asset> {
             "text/css; charset=utf-8",
             include_bytes!("../../../src/design/layout/ask.css"),
         ),
+        "/form.css" => (
+            "text/css; charset=utf-8",
+            include_bytes!("../../../src/design/layout/form.css"),
+        ),
         "/composer.css" => (
             "text/css; charset=utf-8",
             include_bytes!("../../../src/design/layout/composer.css"),
         ),
         "/accent.js" => (JS, include_bytes!("../../../src/app/accent.js")),
+        "/html-form.js" => (JS, include_bytes!("../../../src/app/html-form.js")),
         "/ask-dialog.js" => (JS, include_bytes!("../../../src/app/ask-dialog.js")),
         "/scroll-pin.js" => (JS, include_bytes!("../../../src/app/scroll-pin.js")),
         "/manifest.json" => (

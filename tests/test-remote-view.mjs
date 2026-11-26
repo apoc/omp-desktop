@@ -38,6 +38,7 @@ function load(time = clock()) {
   const path = new URL("../src/app/remote-view.js", import.meta.url);
   assert.ok(existsSync(path), "remote view module must exist");
   const window = {};
+  runInNewContext(readFileSync(new URL("../src/app/html-form.js", import.meta.url), "utf8"), { window });
   runInNewContext(readFileSync(path, "utf8"), { window, ...time });
   return { api: window.OMP_REMOTE_VIEW, window, time };
 }
@@ -137,13 +138,28 @@ test("buildView trims to last 100 messages and 2 000 tool characters without los
   assert.equal(api.buildView(snapshot({ messages }), { maxMessages: 2, maxToolChars: 3 }).messages.at(-1).tool.output, "xxx");
 });
 
-test("answerCall dispatches select / confirm / input / editor / dialog / cancel", () => {
+test("buildView forwards a parsed form and its timeout, never the raw HTML", () => {
+  const { api } = load();
+  const form = {
+    sections: [{ title: "Setup", blocks: [], fieldset: true }],
+    fields: [{ kind: "choice", name: "db", multi: false, select: false, other: true, label: "", options: [{ value: "pg", label: "Postgres", checked: true, disabled: false }], required: false }],
+    hidden: [],
+  };
+  const view = api.buildView(snapshot({ messages: [ask("f", "form", { title: "Setup", form, timeout: 30000 })] }));
+  assert.deepEqual(own(view.asks), [{ id: "f", kind: "form", title: "Setup", message: "", form, timeout: 30000 }]);
+  assert.doesNotMatch(JSON.stringify(view), /<form/i);
+  const broken = api.buildView(snapshot({ messages: [ask("bad", "form", { form: null, formError: "The form is empty." })] }));
+  assert.deepEqual(own(broken.asks), [{ id: "bad", kind: "form", title: "Continue?", message: "", formError: "The form is empty." }]);
+});
+
+test("answerCall dispatches select / confirm / input / editor / dialog / form / cancel", () => {
   const { api } = load();
   for (const [kind, value, method] of [
     ["select", "Approve", "answerAsk"], ["confirm", false, "answerConfirm"],
     ["input", "typed", "answerAsk"], ["editor", "line\nline", "answerAsk"],
     ["dialog", [{ id: "1", selectedOptions: ["yes"] }], "answerAskDialog"],
     ["ask", [{ id: "1", selectedOptions: [] }], "answerAskDialog"],
+    ["form", { db: "pg" }, "answerForm"],
   ]) {
     assert.deepEqual(own(api.answerCall({ id: "q", kind }, value)), { method, args: ["q", value] });
     assert.deepEqual(own(api.answerCall({ id: "q", kind }, null)), { method: "cancelAsk", args: ["q"] });
@@ -511,6 +527,42 @@ async function runAnswer(api, item, value) {
   await handle({ reqId: "r", deviceId: "d", tabId: "a", kind: "answer", askId: item.id, value });
   return { card: { kind: item.method, error: results[0][1] ? null : results[0][2] }, calls };
 }
+
+test("phone form answers are validated against the parsed model before reaching omp", async () => {
+  const { api } = load();
+  const form = {
+    sections: [{ title: "Setup", blocks: [], fieldset: true }],
+    fields: [
+      { kind: "choice", name: "db", multi: false, select: false, other: true, label: "", options: [
+        { value: "pg", label: "Postgres", checked: true, disabled: false },
+        { value: "off", label: "Off", checked: false, disabled: true },
+      ], required: true },
+      { kind: "choice", name: "tags", multi: true, select: false, other: true, label: "Tags", options: [
+        { value: "a", label: "A", checked: false, disabled: false },
+        { value: "b", label: "B", checked: false, disabled: false },
+      ], required: false },
+      { kind: "text", name: "count", type: "number", multiline: false, label: "Count", value: "", placeholder: "", required: false, rows: 1 },
+    ],
+    hidden: [],
+  };
+  const card = { kind: "form", id: "f", form };
+  for (const value of [null, {}, { db: "pg" }, { db: "custom" }, { db: "pg", tags: ["a", "b"] }, { db: "pg", count: 4 }])
+    assert.equal(api.invalidAnswer(card, value), null, JSON.stringify(value));
+  for (const value of ["x", [], { db: "off" }, { db: ["pg"] }, { db: "pg", tags: "a" }, { db: "pg", tags: ["z", "q"] }, { db: "pg", count: true }, { db: "pg", nope: "x" }])
+    assert.equal(api.invalidAnswer(card, value), "invalid answer", JSON.stringify(value));
+
+  const calls = [], results = [];
+  const snap = () => snapshot({ messages: [{ kind: "ask", id: "f", method: "form", title: "", form, answered: false, cancelled: false }] });
+  const handle = api.makeActionHandler({
+    answerForm: (...args) => calls.push(args), remoteActionResult: (...args) => results.push(args),
+  }, snap, liveStatus);
+  await handle({ reqId: "r", deviceId: "d", tabId: "a", kind: "answer", askId: "f", value: { db: "pg", tags: ["a"] } });
+  assert.deepEqual(calls, [["f", { db: "pg", tags: ["a"] }]]);
+  assert.deepEqual(results, [["r", true]]);
+  await handle({ reqId: "r2", deviceId: "d", tabId: "a", kind: "answer", askId: "f", value: { db: "off" } });
+  assert.deepEqual(calls, [["f", { db: "pg", tags: ["a"] }]]);
+  assert.deepEqual(results.at(-1), ["r2", false, "invalid answer"]);
+});
 
 test("blank prompt and steer text is refused", async () => {
   const { api } = load();

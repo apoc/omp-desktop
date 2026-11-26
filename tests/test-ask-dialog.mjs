@@ -12,6 +12,8 @@ import { dirname, join } from "node:path";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const win  = {};
 // eslint-disable-next-line no-new-func
+new Function("window", readFileSync(join(root, "src/app/html-form.js"), "utf8"))(win);
+// eslint-disable-next-line no-new-func
 new Function("window", readFileSync(join(root, "src/app/ask-dialog.js"), "utf8"))(win);
 const A = win.OMP_ASK_DIALOG;
 
@@ -367,6 +369,23 @@ check("collapsedSummary: cancellation and omp-side timeout keep their status wor
     { answer: null, answerCount: null, status: "cancelled", prompt: "Continue?", negative: true });
   assert.deepEqual(A.collapsedSummary({ title: "Continue?", answered: false, cancelled: true, closedByOmp: true }),
     { answer: null, answerCount: null, status: "closed by omp", prompt: "Continue?", negative: true });
+});
+
+check("collapsedSummary: a form uses its visible answer and section title, never hidden input", () => {
+  const form = {
+    sections: [{ title: "Setup", fieldset: true, blocks: [] }],
+    fields: [{ kind: "choice", name: "db", multi: false, select: false, other: true, label: "", required: false, options: [{ value: "pg", label: "Postgres", checked: true, disabled: false }] }],
+    hidden: [["token", "secret"]],
+  };
+  assert.deepEqual(A.collapsedSummary({ method: "form", answered: true, form, data: { token: "secret", db: "pg" } }), {
+    answer: "Postgres", answerCount: null, status: null, prompt: "Setup", negative: false,
+  });
+  assert.deepEqual(A.collapsedSummary({ method: "form", answered: true, form, data: { db: "pg", token: "secret" }, title: "Override" }), {
+    answer: "Postgres", answerCount: null, status: null, prompt: "Override", negative: false,
+  });
+  assert.deepEqual(A.collapsedSummary({ method: "form", cancelled: true, form: null, formError: "empty", title: "Unsupported form" }), {
+    answer: null, answerCount: null, status: "cancelled", prompt: "Unsupported form", negative: true,
+  });
 });
 
 // ── selectRows: the rows of a `select` request ──────────────────────────

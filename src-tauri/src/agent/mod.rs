@@ -699,6 +699,20 @@ mod tests {
     }
 
     #[test]
+    fn validate_command_type_preserves_a_form_data_object() {
+        let line = r#"{"type":"extension_ui_response","id":"form-1","data":{"db":"pg","tags":["a","b"],"count":4}}"#;
+        let command = validate_command_type(line).expect("form answer is allowed");
+        assert_eq!(
+            command,
+            serde_json::json!({
+                "type": "extension_ui_response",
+                "id": "form-1",
+                "data": { "db": "pg", "tags": ["a", "b"], "count": 4 },
+            })
+        );
+    }
+
+    #[test]
     fn validate_command_type_rejects_unknown_type() {
         let err =
             validate_command_type(r#"{"type":"switch_session","path":"/etc/passwd"}"#).unwrap_err();
