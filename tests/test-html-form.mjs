@@ -284,6 +284,16 @@ check("password forms are refused with a terminal-only note", () => {
   assert.doesNotMatch(JSON.stringify(parsed), /prefilled-secret/);
 });
 
+check("autocomplete password markers are refused on every input type", () => {
+  for (const autocomplete of ["current-password", "new-password", "off current-password", "section-login NEW-PASSWORD"]) {
+    const parsed = parse(`<form><input type=text name=pw autocomplete="${autocomplete}" value=prefilled-secret></form>`);
+    assert.equal(parsed.form, undefined, autocomplete);
+    assert.equal(parsed.error, "This form asks for a password; enter it in a terminal instead — omp would echo it in its output.");
+    assert.doesNotMatch(JSON.stringify(parsed), /prefilled-secret/);
+  }
+  assert.equal(parse(`<form><input name=user autocomplete=username value=Ada></form>`).error, undefined);
+});
+
 check("single-choice picks clear Other and missing checkbox values match omp's on default", () => {
   const { form } = parse(`<form><label><input type="radio" name="r" value="a">A</label><label><input type="radio" name="r" value="b">B</label><label><input type="checkbox" name="c" checked>C</label></form>`);
   let draft = H.setOther(H.emptyDraft(form), form, 0, "custom");
@@ -320,6 +330,13 @@ check("expanded display text is capped at 64 KiB, including the 2 KiB table fixt
   assert.match(parse(html.replace("</form>", `${"<p>context</p>".repeat(1600)}</form>`)).error, /could not be read/i);
   const hugeOptions = Array.from({ length: 700 }, (_, i) => `<option value="${i}">${"x".repeat(100)}</option>`).join("");
   assert.match(parse(`<form><select name="x">${hugeOptions}</select></form>`).error, /could not be read/i);
+});
+
+check("fallback field-name labels count toward the display budget", () => {
+  const name = "fallback_".repeat(30);
+  const html = `<form>${`<input name="${name}">`.repeat(300)}</form>`;
+  assert.ok(html.length < 256 * 1024);
+  assert.match(parse(html).error, /could not be read/i);
 });
 
 check("multiline options and table control labels follow omp's parse.ts oracle", () => {

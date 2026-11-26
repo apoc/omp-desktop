@@ -961,7 +961,25 @@ await checkAsync("omp withdrawal while an answer is pending stays withdrawn afte
   const bubble = h.snapshot().messages.find(message => message.id === "withdrawn");
   assert.equal(bubble.cancelled, true);
   assert.equal(bubble.closedByOmp, true);
-  assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /Answer could not be delivered/);
+  assert.equal(bubble.answered, undefined);
+  assert.equal(bubble.data, undefined);
+  assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /Answer could not be delivered|first/);
+});
+
+await checkAsync("a failed manual cancellation reopens and can be retried", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.emit(a, { type: "extension_ui_request", id: "cancel-retry", method: "form", html: "<form><input name=name></form>" });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  h.failResponses(true);
+  assert.equal(await h.bridge.cancelAsk("cancel-retry"), false);
+  let bubble = h.snapshot().messages.find(message => message.id === "cancel-retry");
+  assert.equal(Boolean(bubble.cancelled), false);
+  h.failResponses(false);
+  assert.equal(await h.bridge.cancelAsk("cancel-retry"), true);
+  bubble = h.snapshot().messages.find(message => message.id === "cancel-retry");
+  assert.equal(bubble.cancelled, true);
+  assert.equal(h.commands.filter(command => command.type === "extension_ui_response" && command.id === "cancel-retry").length, 2);
 });
 
 await checkAsync("an unsupported form cancellation reports delivery failure visibly", async () => {
@@ -970,8 +988,30 @@ await checkAsync("an unsupported form cancellation reports delivery failure visi
   h.failResponses(true);
   h.emit(a, { type: "extension_ui_request", id: "bad-delivery", method: "form", html: "empty" });
   await new Promise(resolve => setTimeout(resolve, 30));
-  const bubble = h.snapshot().messages.find(message => message.id === "bad-delivery");
+  let bubble = h.snapshot().messages.find(message => message.id === "bad-delivery");
   assert.match(bubble.formError, /could not be delivered/i);
+  assert.equal(Boolean(bubble.cancelled), false);
+  h.failResponses(false);
+  assert.equal(await h.bridge.cancelAsk("bad-delivery"), true);
+  bubble = h.snapshot().messages.find(message => message.id === "bad-delivery");
+  assert.equal(bubble.cancelled, true);
+  assert.equal(h.commands.filter(command => command.type === "extension_ui_response" && command.id === "bad-delivery").length, 2);
+});
+
+await checkAsync("omp withdrawal wins over a failed refusal cancellation", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.holdResponses();
+  h.emit(a, { type: "extension_ui_request", id: "bad-withdrawn", method: "form", html: "empty" });
+  await h.waitCommand("extension_ui_response");
+  h.emit(a, { type: "extension_ui_request", id: "cancel-bad-withdrawn", method: "cancel", targetId: "bad-withdrawn" });
+  h.failPendingResponse();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const bubble = h.snapshot().messages.find(message => message.id === "bad-withdrawn");
+  assert.equal(bubble.closedByOmp, true);
+  assert.equal(bubble.cancelled, true);
+  assert.doesNotMatch(bubble.formError, /could not be delivered/i);
+  assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /Answer could not be delivered/);
 });
 
 console.log(`test-live-voice: ${passed} checks passed`);

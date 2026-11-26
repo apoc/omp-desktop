@@ -465,7 +465,11 @@
       const root = document.body ?? document.documentElement ?? document;
       const elements = allElements(root);
       const formNode = elements.find(node => localName(node) === "form");
-      if (descendants(formNode ?? root, node => localName(node) === "input" && (attr(node, "type") ?? "text").toLowerCase() === "password").length > 0)
+      const passwordControl = node => localName(node) === "input" && (
+        (attr(node, "type") ?? "text").trim().toLowerCase() === "password"
+        || (attr(node, "autocomplete") ?? "").toLowerCase().split(/\s+/).some(token => token === "current-password" || token === "new-password")
+      );
+      if (descendants(formNode ?? root, passwordControl).length > 0)
         return { error: PASSWORD_REFUSAL };
       const builder = new Builder(formNode ?? root);
       const form = builder.build();

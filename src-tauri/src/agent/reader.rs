@@ -68,6 +68,144 @@ fn sanitize_frame(value: &mut serde_json::Value) -> bool {
     redacted
 }
 
+struct HtmlAttribute<'a> {
+    name: &'a str,
+    value: &'a str,
+    start: usize,
+    end: usize,
+}
+
+/// Read one attribute from an `<input>` tag, preserving byte spans so the
+/// caller can remove it without parsing or reconstructing the HTML. The
+/// scanner deliberately understands only the small HTML attribute grammar
+/// needed here; malformed tags are left untouched.
+fn next_html_attribute<'a>(tag: &'a str, cursor: &mut usize) -> Option<HtmlAttribute<'a>> {
+    let bytes = tag.as_bytes();
+    let start = *cursor;
+    while *cursor < bytes.len() && bytes[*cursor].is_ascii_whitespace() {
+        *cursor += 1;
+    }
+    if *cursor >= bytes.len() || matches!(bytes[*cursor], b'>' | b'/') {
+        return None;
+    }
+    let name_start = *cursor;
+    while *cursor < bytes.len()
+        && !bytes[*cursor].is_ascii_whitespace()
+        && !matches!(bytes[*cursor], b'=' | b'>' | b'/')
+    {
+        *cursor += 1;
+    }
+    let name_end = *cursor;
+    while *cursor < bytes.len() && bytes[*cursor].is_ascii_whitespace() {
+        *cursor += 1;
+    }
+    if *cursor >= bytes.len() || bytes[*cursor] != b'=' {
+        return Some(HtmlAttribute {
+            name: &tag[name_start..name_end],
+            value: "",
+            start,
+            end: *cursor,
+        });
+    }
+    *cursor += 1;
+    while *cursor < bytes.len() && bytes[*cursor].is_ascii_whitespace() {
+        *cursor += 1;
+    }
+    let (value_start, value_end) =
+        if *cursor < bytes.len() && matches!(bytes[*cursor], b'\'' | b'"') {
+            let quote = bytes[*cursor];
+            let value_start = *cursor + 1;
+            *cursor = value_start;
+            while *cursor < bytes.len() && bytes[*cursor] != quote {
+                *cursor += 1;
+            }
+            let value_end = *cursor;
+            if *cursor < bytes.len() {
+                *cursor += 1;
+            }
+            (value_start, value_end)
+        } else {
+            let value_start = *cursor;
+            while *cursor < bytes.len()
+                && !bytes[*cursor].is_ascii_whitespace()
+                && bytes[*cursor] != b'>'
+            {
+                *cursor += 1;
+            }
+            (value_start, *cursor)
+        };
+    Some(HtmlAttribute {
+        name: &tag[name_start..name_end],
+        value: &tag[value_start..value_end],
+        start,
+        end: *cursor,
+    })
+}
+
+/// Remove prefilled credentials from password-like `<input>` elements in an
+/// ask-form HTML string. Returns `None` when no value needs removal, keeping
+/// the ordinary frame path allocation-free. Each tag is scanned twice at
+/// most and the output is allocated only after the first sensitive value.
+fn strip_password_values(html: &str) -> Option<String> {
+    let bytes = html.as_bytes();
+    let mut cursor = 0;
+    let mut copied = 0;
+    let mut output: Option<String> = None;
+    while let Some(relative) = html[cursor..].find('<') {
+        let tag_start = cursor + relative;
+        let name_start = tag_start + 1;
+        let name_end = name_start + "input".len();
+        if html.get(name_start..name_end).is_none_or(|name| {
+            !name.eq_ignore_ascii_case("input")
+                || bytes
+                    .get(name_end)
+                    .is_some_and(|byte| !byte.is_ascii_whitespace() && !matches!(byte, b'>' | b'/'))
+        }) {
+            cursor = name_start;
+            continue;
+        }
+
+        let mut probe = 0;
+        let mut sensitive = false;
+        while let Some(attribute) = next_html_attribute(&html[name_end..], &mut probe) {
+            if attribute.name.eq_ignore_ascii_case("type")
+                && attribute.value.trim().eq_ignore_ascii_case("password")
+            {
+                sensitive = true;
+            }
+            if attribute.name.eq_ignore_ascii_case("autocomplete")
+                && attribute.value.split_ascii_whitespace().any(|token| {
+                    token.eq_ignore_ascii_case("current-password")
+                        || token.eq_ignore_ascii_case("new-password")
+                })
+            {
+                sensitive = true;
+            }
+        }
+        let tag_end = name_end + probe;
+        if sensitive {
+            let mut attributes = 0;
+            while let Some(attribute) = next_html_attribute(&html[name_end..], &mut attributes) {
+                if !attribute.name.eq_ignore_ascii_case("value") {
+                    continue;
+                }
+                let out = output.get_or_insert_with(|| String::with_capacity(html.len()));
+                out.push_str(&html[copied..name_end + attribute.start]);
+                copied = name_end + attribute.end;
+            }
+        }
+        cursor = if tag_end < bytes.len() {
+            tag_end + 1
+        } else {
+            bytes.len()
+        };
+    }
+    output.map(|mut out| {
+        out.push_str(&html[copied..]);
+        out
+    })
+}
+
 /// Sanitize one raw RPC line. Parses `raw` as JSON and redacts sensitive
 /// keys, returning the sanitized text alongside the parsed (and now
 /// redacted) frame — the caller reuses the parse to check for an
@@ -81,11 +219,27 @@ fn sanitize_line(raw: &[u8]) -> (String, Option<serde_json::Value>) {
     serde_json::from_slice::<serde_json::Value>(raw).map_or_else(
         |_| (String::from_utf8_lossy(raw).into_owned(), None),
         |mut value| {
+            let mut redacted = sanitize_frame(&mut value);
+            let is_form = value.get("type").and_then(serde_json::Value::as_str)
+                == Some("extension_ui_request")
+                && value.get("method").and_then(serde_json::Value::as_str) == Some("form");
+            let stripped_html = if is_form {
+                value
+                    .get("html")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(strip_password_values)
+            } else {
+                None
+            };
+            if let Some(html) = stripped_html {
+                value["html"] = serde_json::Value::String(html);
+                redacted = true;
+            }
             // Re-serializing costs a second full pass (escaping, number
             // formatting, map ordering) over the whole frame. Only pay it
             // when something was actually redacted; otherwise `raw` already
             // *is* the correct text.
-            let text = if sanitize_frame(&mut value) {
+            let text = if redacted {
                 serde_json::to_string(&value)
                     .unwrap_or_else(|_| String::from_utf8_lossy(raw).into_owned())
             } else {
@@ -661,6 +815,52 @@ mod tests {
         assert_eq!(reparsed["type"], "turn_start");
         assert_eq!(reparsed["toolName"], "bash");
         assert_eq!(parsed.unwrap()["toolName"], "bash");
+    }
+
+    #[test]
+    fn sanitize_form_strips_prefilled_passwords_before_journaling() {
+        let html = r#"<form><input name="a" TYPE = "PASSWORD" value = "double-canary"><input type='password' value='single-canary'><input type=password value=unquoted-canary><input type=text autocomplete="off current-password" value="auto-canary"><input type=text autocomplete=new-password value=auto-unquoted><input name=ok value=keep-me></form>"#;
+        let raw = json!({
+            "type": "extension_ui_request",
+            "id": "form-secret",
+            "method": "form",
+            "html": html,
+        })
+        .to_string();
+        let (out, parsed) = sanitize_line(raw.as_bytes());
+        let parsed = parsed.expect("valid JSON parses");
+        let mut journal = EventJournal::new(4, 1 << 20);
+        journal.push(Arc::from(out));
+        let replay = journal.since(0);
+        let journaled = replay.events[0].text.as_ref();
+        for canary in [
+            "double-canary",
+            "single-canary",
+            "unquoted-canary",
+            "auto-canary",
+            "auto-unquoted",
+        ] {
+            assert!(!journaled.contains(canary), "journal leaked {canary}");
+            assert!(!parsed["html"].as_str().unwrap().contains(canary));
+        }
+        assert!(journaled.contains(r"name=ok value=keep-me"));
+        assert!(!parsed["html"]
+            .as_str()
+            .unwrap()
+            .contains("current-password\" value"));
+    }
+
+    #[test]
+    fn sanitize_form_leaves_non_password_values_and_other_methods_untouched() {
+        let html = r"<form><input type=text value=keep-me><input autocomplete=off value=also-keep></form>";
+        let raw = json!({"type":"extension_ui_request", "method":"form", "html":html}).to_string();
+        let (out, parsed) = sanitize_line(raw.as_bytes());
+        assert_eq!(parsed.unwrap()["html"], html);
+        assert!(out.contains("keep-me"));
+
+        let raw = json!({"type":"extension_ui_request", "method":"select", "html":"<input type=password value=select-canary>"}).to_string();
+        let (out, _) = sanitize_line(raw.as_bytes());
+        assert!(out.contains("select-canary"));
     }
 
     #[test]

@@ -616,9 +616,10 @@
     if (changed && activeSessionId === sessionId) notify();
   }
 
-  // Reopen only a still-locally-settled bubble. omp's own withdrawal wins.
+  // Reopen only a locally settled bubble whose answer was not delivered.
+  // omp's own withdrawal wins and stays closed.
   function _reopenAsk(bubble) {
-    if (bubble.closedByOmp || bubble.cancelled) return bubble;
+    if (bubble.closedByOmp) return bubble;
     const { answered: _a, answer: _v, answers: _answers, data: _data, cancelled: _c, ...open } = bubble;
     return open;
   }
@@ -2489,9 +2490,9 @@
           _send({ type: "extension_ui_response", id: ev.id, cancelled: true }).then(delivered => {
             if (delivered) return;
             _patchSessionBubble(sessionId, bubble, message => ({
-              ...message,
+              ..._reopenAsk(message),
               formError: `${message.formError} Cancellation could not be delivered to omp.`,
-            }));
+            }), true);
           });
           return;
         }
@@ -2538,7 +2539,10 @@
         // omp settled it itself (turn stopped, or its ask timeout ran out).
         // This also wins over a local answer whose IPC hand-off is pending.
         const bubble = state.messages.find(message => message.kind === "ask" && message.id === ev.targetId && !message.closedByOmp);
-        if (bubble) _patchSessionBubble(activeSessionId, bubble, message => ({ ...message, cancelled: true, closedByOmp: true }));
+        if (bubble) _patchSessionBubble(activeSessionId, bubble, message => {
+          const { answered: _a, answer: _v, answers: _answers, data: _data, ...withdrawn } = message;
+          return { ...withdrawn, cancelled: true, closedByOmp: true };
+        });
         return;
       }
       // An extension's status line or text widget (#52): kept per tab, shown
