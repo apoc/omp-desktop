@@ -95,13 +95,27 @@ struct StartSessionArgs {
     profile: Option<String>,
 }
 
+/// What a successful `start_session` reports to the tab that asked.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartSessionInfo {
+    /// The mode omp was started with (`"always-ask" | "write" | "yolo"`).
+    approval_mode: String,
+    /// `major.minor.patch` read from this incarnation's own `omp --version`
+    /// at spawn time, or `null` when that command could not be run. The
+    /// frontend binds it to the tab: a form's `pattern` is only a hint on
+    /// 19.2.0+, while older omp checks it itself. Unknown fails closed.
+    omp_version: Option<String>,
+}
+
 /// Register the tab with the terminal, start an omp process for it, then
 /// tell the widget host (which computes the project's git context on its own
 /// thread). The terminal comes first so a failed omp spawn still leaves the
 /// tab a working shell; registering an existing tab (a profile switch or an
 /// approval-mode restart) keeps its shell. The approval mode is resolved here
-/// for the tab's folder, never sent by the frontend; `Ok` is the mode omp was
-/// started with (`"always-ask" | "write" | "yolo"`).
+/// for the tab's folder, never sent by the frontend; the version is the one
+/// the spawn check read from that exact process, so a per-tab form rule never
+/// sees another tab's omp.
 #[tauri::command]
 fn start_session(
     args: StartSessionArgs,
@@ -111,7 +125,7 @@ fn start_session(
     widget_host: State<'_, Arc<widgets::WidgetHost>>,
     terminal: State<'_, Arc<terminal::TerminalManager>>,
     app: tauri::AppHandle,
-) -> Result<String, String> {
+) -> Result<StartSessionInfo, String> {
     let profile = store.resolve(args.profile.as_deref())?;
     if let Some(r) = args.resume.as_deref() {
         saved_sessions::validate_resume(&app, r, profile)?;
@@ -137,7 +151,7 @@ fn start_session(
         .state::<browser::BrowserManager>()
         .allocate_if_available(&args.session_id)
         .map_err(|e| format!("browser: {e}"))?;
-    bridge.start_session(
+    let omp_version = bridge.start_session(
         // Owned by the bridge's map; the widget hook below still needs the id.
         args.session_id.clone(),
         agent::Launch {
@@ -151,7 +165,10 @@ fn start_session(
         Arc::clone(rule_book.inner()),
     )?;
     widget_host.session_started(&args.session_id, cwd_opt.map(Path::new));
-    Ok(mode.as_str().to_string())
+    Ok(StartSessionInfo {
+        approval_mode: mode.as_str().to_string(),
+        omp_version,
+    })
 }
 
 /// Run blocking `work` (file or process I/O, a long scan) off Tauri's IPC
@@ -341,14 +358,6 @@ fn stop_session(
 ) {
     bridge.stop_session(&session_id, &rule_book);
     widget_host.session_closed(&session_id);
-}
-
-/// The omp binary's version (`major.minor.patch`), or `null` when it cannot be
-/// read. The frontend's form rules read it: a form carrying a `pattern` is
-/// refused unless omp is 19.2.0+, because 19.1.x checks patterns itself.
-#[tauri::command]
-fn omp_version() -> Option<String> {
-    agent::spawn::omp_version()
 }
 
 /// End tabs for good: their omp processes (with their session grants),
@@ -1564,7 +1573,6 @@ pub fn run() {
             send_command,
             start_session,
             stop_session,
-            omp_version,
             terminal_open,
             terminal_status,
             terminal_replay,
@@ -1767,6 +1775,26 @@ mod tests {
         assert_eq!(args.cwd, "/home/dev/project");
         assert_eq!(args.resume, None);
         assert_eq!(args.profile.as_deref(), Some("work"));
+    }
+
+    /// The success payload `live.js::_spawnSession` reads: both fields are
+    /// camelCase on the wire and the version stays distinguishable from an
+    /// unknown one (`null`), which the frontend treats as fail-closed.
+    #[test]
+    fn start_session_info_serializes_the_per_tab_approval_mode_and_version() {
+        let info = crate::StartSessionInfo {
+            approval_mode: "write".to_string(),
+            omp_version: Some("19.2.1".to_string()),
+        };
+        let value = serde_json::to_value(info).expect("serialize");
+        assert_eq!(value["approvalMode"], "write");
+        assert_eq!(value["ompVersion"], "19.2.1");
+        let unknown = serde_json::to_value(crate::StartSessionInfo {
+            approval_mode: "yolo".to_string(),
+            omp_version: None,
+        })
+        .expect("serialize");
+        assert_eq!(unknown["ompVersion"], serde_json::Value::Null);
     }
 
     /// The contract `deny_unknown_fields` exists for (see the attribute's

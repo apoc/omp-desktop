@@ -242,6 +242,11 @@ check("voice controls start independently and retain stop and cancel actions", (
 // assertions concern snapshots and outcomes, not the bridge's internal maps.
 function bridgeHarness() {
   const listeners = new Map(), journal = new Map(), commands = [], waiters = [];
+  const formVersions = [];
+  const atLeast192 = version => {
+    const match = /^(?:\S*\/)?v?(\d+)\.(\d+)/.exec(String(version ?? ""));
+    return Boolean(match) && (Number(match[1]) > 19 || (Number(match[1]) === 19 && Number(match[2]) >= 2));
+  };
   const w = {
     OMP_LIVE_VOICE: V,
     OMP_SLASH: { LOCAL_COMMANDS: [] },
@@ -249,15 +254,17 @@ function bridgeHarness() {
     // The form parser itself is covered by tests/test-html-form.mjs. This
     // harness only needs a model and an unreadable request.
     OMP_HTML_FORM: {
-      parse: html => html === "empty"
-        ? { error: "The form is empty." }
-        : html.includes("password")
-          ? { error: "This form asks for a password; enter it in a terminal instead — omp would echo it in its output." }
-          : { form: {
+      parse: (html, _documentImpl, ompVersion) => {
+        formVersions.push(ompVersion);
+        if (html === "empty") return { error: "The form is empty." };
+        if (html.includes("password")) return { error: "This form asks for a password; enter it in a terminal instead — omp would echo it in its output." };
+        if (html.includes("pattern") && !atLeast192(ompVersion)) return { error: "This form's `pattern` needs omp 19.2 or newer." };
+        return { form: {
             sections: [{ title: "Setup", blocks: [], fieldset: true }],
             fields: [{ kind: "text", name: "name", type: "text", multiline: false, label: "Name", value: "", placeholder: "", required: false, rows: 1 }],
             hidden: html.includes("hidden") ? [["token", "desktop-default"]] : [],
-          } },
+        } };
+      },
       withHiddenDefaults: (form, data) => ({ ...data, ...Object.fromEntries(form.hidden) }),
       answerError: () => null,
     },
@@ -296,7 +303,10 @@ function bridgeHarness() {
   let releaseStart = null, holdStart = false, holdHistory = false, failResponses = false, holdResponses = false, approvalMode = "write";
   let grantError = null;
   let grantUnsaved = null;
+  let holdGrant = false;
+  const startVersions = [];
   const pendingResponses = [];
+  const pendingGrants = [];
   const histories = new Map();
   const invocations = [];
   w.__TAURI__ = {
@@ -309,8 +319,11 @@ function bridgeHarness() {
         approvalMode = args.mode;
         return Promise.resolve({ default: approvalMode, projects: {} });
       }
-      if (command === "start_session") return Promise.resolve(approvalMode);
+      if (command === "start_session") {
+        return Promise.resolve({ approvalMode, ompVersion: startVersions.length ? startVersions.shift() : null });
+      }
       if (command === "approval_approve_and_grant") {
+        if (holdGrant) return new Promise((resolve, reject) => pendingGrants.push({ resolve, reject }));
         return grantError ? Promise.reject(new Error(grantError)) : Promise.resolve(grantUnsaved);
       }
       if (command === "replay_events") return Promise.resolve({ dropped: false, events: (journal.get(args.sessionId) ?? []).filter(e => e.seq > args.afterSeq) });
@@ -349,6 +362,13 @@ function bridgeHarness() {
     failResponses: value => { failResponses = value; },
     failGrant: message => { grantError = message; },
     unsavedGrant: message => { grantUnsaved = message; },
+    holdGrant: () => { holdGrant = true; },
+    failPendingGrant: message => {
+      holdGrant = false;
+      pendingGrants.shift().reject(new Error(message));
+    },
+    startVersions: versions => { startVersions.push(...versions); },
+    formVersions,
     holdResponses: () => { holdResponses = true; },
     failPendingResponse: () => { holdResponses = false; pendingResponses.shift().reject(new Error("IPC unavailable")); },
     exit: (id, reason) => listeners.get(`agent://exit/${id}`)?.({ payload: reason }),
@@ -988,6 +1008,70 @@ await checkAsync("a failed manual cancellation reopens and can be retried", asyn
   bubble = h.snapshot().messages.find(message => message.id === "cancel-retry");
   assert.equal(bubble.cancelled, true);
   assert.equal(h.commands.filter(command => command.type === "extension_ui_response" && command.id === "cancel-retry").length, 2);
+});
+
+await checkAsync("a per-session omp version decides a pattern form, not one global version", async () => {
+  const h = bridgeHarness();
+  h.startVersions(["19.1.9", "19.2.0"]);
+  const { a, b } = await twoTabs(h);
+  const pattern = '<form><input name="slug" pattern="[a-z]+" value="abc"></form>';
+  h.emit(a, { type: "extension_ui_request", id: "pattern-191", method: "form", html: pattern });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  const refused = h.snapshot().messages.find(message => message.id === "pattern-191");
+  assert.equal(refused.cancelled, true, "19.1 cannot verify a pattern and must refuse it");
+  assert.match(refused.formError, /pattern/i);
+  h.emit(b, { type: "extension_ui_request", id: "pattern-192", method: "form", html: pattern });
+  await h.bridge.activateSession(b);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  const shown = h.snapshot().messages.find(message => message.id === "pattern-192");
+  assert.ok(shown, "the 19.2 tab shows the form");
+  assert.equal(Boolean(shown.cancelled), false, "19.2 treats the pattern as a hint");
+  assert.ok(shown.form, "the parsed form is kept");
+  assert.deepEqual(h.formVersions.filter(Boolean).sort(), ["19.1.9", "19.2.0"]);
+});
+
+await checkAsync("a rejected approve-and-remember after a tab switch reopens the captured tab's prompt", async () => {
+  const h = bridgeHarness();
+  const { a, b } = await twoTabs(h);
+  h.emit(a, {
+    type: "extension_ui_request", id: "approve-switched", method: "select",
+    title: "Allow tool: bash\nCommand: ls", options: ["Approve", "Deny"],
+  });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const prompt = h.snapshot().messages.find(message => message.kind === "ask" && message.id === "approve-switched");
+  h.holdGrant();
+  const pending = h.bridge.approveAndRemember(prompt, "session");
+  await h.bridge.activateSession(b);
+  h.failPendingGrant("prompt is not pending");
+  await pending;
+  assert.equal(h.snapshot().activeSessionId, b);
+  assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /approve-switched|open again/);
+  await h.bridge.activateSession(a);
+  const reopened = h.snapshot().messages.find(message => message.id === "approve-switched");
+  assert.equal(Boolean(reopened.answered), false, "the originating tab's prompt is open again");
+  assert.equal(Boolean(reopened.cancelled), false);
+  assert.match(h.snapshot().messages.at(-1).blocks[0].text, /Approve and remember failed:\*\* prompt is not pending/);
+});
+
+await checkAsync("an omp withdrawal during a pending grant stays closed without an open-again note", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.emit(a, {
+    type: "extension_ui_request", id: "approve-withdrawn", method: "select",
+    title: "Allow tool: bash\nCommand: ls", options: ["Approve", "Deny"],
+  });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const prompt = h.snapshot().messages.find(message => message.kind === "ask" && message.id === "approve-withdrawn");
+  h.holdGrant();
+  const pending = h.bridge.approveAndRemember(prompt, "session");
+  h.emit(a, { type: "extension_ui_request", id: "cancel-grant", method: "cancel", targetId: "approve-withdrawn" });
+  h.failPendingGrant("prompt is not pending");
+  await pending;
+  const bubble = h.snapshot().messages.find(message => message.id === "approve-withdrawn");
+  assert.equal(bubble.cancelled, true);
+  assert.equal(bubble.closedByOmp, true);
+  assert.equal(bubble.answered, undefined);
+  assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /open again|Approve and remember failed/);
 });
 
 await checkAsync("a failed approve-and-remember reopens the approval so a following Deny is sent", async () => {

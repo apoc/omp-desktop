@@ -336,6 +336,30 @@ check("answerError applies omp 19.1's submit-time rules to each field's own pars
   assert.match(H.answerError(form, { req: "ok" }), /"r": Required/);
   // Shape-only validation is unchanged; the constraint layer is separate.
   assert.equal(H.validateData(form, { num: 2 }), true);
+  // 19.2.0 no longer applies fieldError on submit: the same answer passes,
+  // while shape errors are still refused.
+  for (const version of ["19.2.0", "omp/19.2.1", "20.0.0"]) {
+    assert.equal(H.answerError(form, { req: "ok", num: 5 }, version), null, version);
+    assert.match(H.answerError(form, { unknown: 1 }, version), /unknown field/, version);
+  }
+});
+
+check("a required radio sharing its name with a checkbox group is accepted from omp 19.2.0 on", () => {
+  const { form } = parse(`<form>
+    <label><input type="radio" name="pick" value="one" required>One</label>
+    <label><input type="checkbox" name="pick" value="two">Two</label>
+    <label><input type="checkbox" name="pick" value="three">Three</label>
+  </form>`);
+  const checkboxAnswer = { pick: ["two"] };
+  // 19.1.x checks the required radio against its own (empty) parsed value
+  // and fails the ask tool; 19.2.0+ accepts the checkbox answer.
+  assert.match(H.answerError(form, checkboxAnswer), /"pick": Required/);
+  assert.match(H.answerError(form, checkboxAnswer, "19.1.9"), /"pick": Required/);
+  for (const version of ["19.2.0", "19.2.1", "omp/19.2.1", "19.10.0"]) {
+    assert.equal(H.answerError(form, checkboxAnswer, version), null, version);
+  }
+  // Shape checks still apply on every version.
+  assert.notEqual(H.answerError(form, { pick: 5 }, "19.2.0"), null);
 });
 
 check("a required field sharing its name with another is checked against its own answer", () => {
@@ -383,6 +407,20 @@ check("password forms are refused with a terminal-only note", () => {
   assert.equal(parsed.form, undefined);
   assert.equal(parsed.error, "This form asks for a password; enter it in a terminal instead — omp would echo it in its output.");
   assert.doesNotMatch(JSON.stringify(parsed), /prefilled-secret/);
+});
+
+check("a form redacted by the backend is refused with the password note", () => {
+  const refusal = "This form asks for a password; enter it in a terminal instead — omp would echo it in its output.";
+  for (const marker of [
+    '<form data-omp-desktop-redacted="password"></form>',
+    "<form data-omp-desktop-redacted='password'><input name=ok value=visible></form>",
+  ]) {
+    const parsed = parse(marker);
+    assert.equal(parsed.form, undefined, marker);
+    assert.equal(parsed.error, refusal, marker);
+  }
+  // Only the exact marker value is refused; other data attributes parse.
+  assert.equal(parse(`<form data-omp-desktop-redacted="no"><input name=ok value=fine></form>`).error, undefined);
 });
 
 check("autocomplete password markers are refused on every input type", () => {
@@ -668,7 +706,10 @@ check("omp's validator rejects every shape this builder refuses to validate", ()
     { feature: ["ci", "ci"] },
     { name: 3 },
     { count: true },
-  ]) assert.equal(H.validateData(form, bad), false, JSON.stringify(bad));
+  ]) {
+    assert.equal(H.validateData(form, bad), false, JSON.stringify(bad));
+    assert.equal(rejects(form, bad), true, JSON.stringify(bad));
+  }
   assert.equal(H.validateData(form, { count: 4 }), true);
   assert.equal(H.validateData(form, { count: "4" }), true);
 });

@@ -483,8 +483,9 @@
 
   /** Parse agent-written form HTML. `documentImpl` is a test seam for Node,
    *  where DOMParser does not exist; the app always uses DOMParser.
-   *  `ompVersion` is the running omp's `--version` (see `omp_version` in
-   *  Rust); a form carrying a `pattern` is refused unless it is 19.2.0+,
+   *  `ompVersion` is the asking tab's own `omp --version`, bound to the
+   *  session at spawn time (Rust `start_session`); a form carrying a
+   *  `pattern` is refused unless it is 19.2.0+,
    *  because 19.1.x checks patterns itself and would reject an answer this
    *  side cannot verify. Returns `{form}` or `{error}` — an error means the
    *  request is cancelled so omp never waits on a card that cannot be
@@ -501,6 +502,11 @@
       const root = document.body ?? document.documentElement ?? document;
       const elements = root === document.documentElement ? documentElements : allElements(root);
       const formNode = elements.find(node => localName(node) === "form");
+      // `reader.rs` replaces a form whose HTML mentions a credential with
+      // this marker before journaling or emitting it, so neither the original
+      // HTML nor a prefilled value ever reaches this parser.
+      if (attr(formNode ?? root, "data-omp-desktop-redacted") === "password")
+        return { error: PASSWORD_REFUSAL };
       const passwordControl = node => localName(node) === "input"
         && (passwordMarker(attr(node, "type")) || passwordMarker(attr(node, "autocomplete")));
       if (descendants(formNode ?? root, passwordControl).length > 0)
@@ -759,12 +765,15 @@
     return readAnswer(form, data).error ?? null;
   }
 
-  /** Why omp 19.1.x would reject `data` on submit, or null: the shape rules
-   *  above, then omp's `fieldError` (data.ts) on every field's own parsed
-   *  value. `pattern` is deliberately absent — it is never compiled here;
-   *  a form carrying one is refused at parse time unless the running omp is
-   *  19.2.0+ and treats it as a display hint. */
-  function answerError(form, data) {
+  /** Why `data` would be rejected, or null: always the shape rules above,
+   *  then — only below omp 19.2.0 (or when the session's version is unknown)
+   *  — omp 19.1.x's `fieldError` (data.ts) on every field's own parsed
+   *  value. From 19.2.0 omp no longer applies `fieldError` to a submitted
+   *  answer, and a required radio sharing its name with a checkbox group is
+   *  accepted there; replaying the 19.1 check would refuse a valid answer.
+   *  `pattern` is absent at every version: a form carrying one is refused at
+   *  parse time unless omp is 19.2.0+ and treats it as a display hint. */
+  function answerError(form, data, ompVersion) {
     let answer;
     try {
       answer = readAnswer(form, data);
@@ -772,6 +781,7 @@
       return error?.message ?? String(error ?? "field shape");
     }
     if (answer.error) return answer.error;
+    if (versionAtLeast(ompVersion, PATTERN_MIN_VERSION)) return null;
     for (const { field, name, value } of answer.fields) {
       const problem = fieldError(field, value);
       if (problem) return `Form field ${JSON.stringify(name)}: ${problem}`;

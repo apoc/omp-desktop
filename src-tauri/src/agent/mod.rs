@@ -209,7 +209,7 @@ impl AgentBridge {
         launch: Launch<'_>,
         app: AppHandle,
         rule_book: Arc<crate::approval::RuleBook>,
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
         let Launch {
             cwd,
             resume,
@@ -217,15 +217,16 @@ impl AgentBridge {
             mode,
             config,
         } = launch;
-        let (mut child, supervisor) = match spawn_omp(cwd, resume, profile, mode, config) {
-            Ok(c) => c,
-            Err(e) => {
-                // Cached *and* returned: the caller gets the reason now, the
-                // cache serves the frontend's later `session_status` query.
-                self.cache_error(&session_id, e.clone());
-                return Err(e);
-            }
-        };
+        let (mut child, supervisor, omp_version) =
+            match spawn_omp(cwd, resume, profile, mode, config) {
+                Ok(c) => c,
+                Err(e) => {
+                    // Cached *and* returned: the caller gets the reason now, the
+                    // cache serves the frontend's later `session_status` query.
+                    self.cache_error(&session_id, e.clone());
+                    return Err(e);
+                }
+            };
         let mut stdin = child.stdin.take().expect("stdin piped");
         // A failed write means omp is already gone; the stdout reader reports
         // its exit like any other.
@@ -324,7 +325,7 @@ impl AgentBridge {
             last_errors: Arc::clone(&self.last_errors),
         });
         spawn_stderr_reader(session_id, stderr, stderr_tail);
-        Ok(())
+        Ok(omp_version)
     }
 
     /// Kills the session's process tree and drops its session-scoped

@@ -68,130 +68,11 @@ fn sanitize_frame(value: &mut serde_json::Value) -> bool {
     redacted
 }
 
-struct HtmlAttribute<'a> {
-    name: &'a str,
-    value: &'a str,
-    start: usize,
-    end: usize,
-}
-
-/// One step of the attribute scan. `Malformed` means the tag cannot be
-/// tokenized unambiguously any more (an unterminated quoted value), which the
-/// caller treats as sensitive.
-enum HtmlScan<'a> {
-    Attribute(HtmlAttribute<'a>),
-    End,
-    Malformed,
-}
-
-/// Skip whitespace and `/` characters that cannot close the tag; whether a
-/// `/` was consumed. Used both before an attribute name and after one.
-fn skip_separators(bytes: &[u8], cursor: &mut usize) -> bool {
-    let mut solidus = false;
-    while *cursor < bytes.len() {
-        if bytes[*cursor].is_ascii_whitespace() {
-            *cursor += 1;
-        } else if bytes[*cursor] == b'/' && bytes.get(*cursor + 1) != Some(&b'>') {
-            solidus = true;
-            *cursor += 1;
-        } else {
-            break;
-        }
-    }
-    solidus
-}
-
-/// Read one attribute from an `<input>` tag, preserving byte spans so the
-/// caller can remove it without parsing or reconstructing the HTML.
-///
-/// The grammar follows HTML's tokenizer closely enough that the attributes a
-/// browser assigns to an `<input>` are exactly the ones seen here:
-///
-/// * Whitespace separates attributes.
-/// * A `/` that is not immediately followed by `>` is skipped like
-///   whitespace (spec: "self-closing start tag state" →
-///   "before attribute name state"). A browser keeps reading attributes after
-///   `<input type=password / value=x>`, so skipping it like whitespace keeps
-///   that `value` visible to the password stripper.
-/// * `>` (and EOF), or `/` directly before `>`, end the tag.
-/// * An attribute without `=` has an empty value and ends at its name — the
-///   separator after it stays, so the rewritten tag is still an `<input>`.
-fn next_html_attribute<'a>(tag: &'a str, cursor: &mut usize) -> HtmlScan<'a> {
-    let bytes = tag.as_bytes();
-    let start = *cursor;
-    skip_separators(bytes, cursor);
-    if *cursor >= bytes.len() || bytes[*cursor] == b'>' {
-        return HtmlScan::End;
-    }
-    if bytes[*cursor] == b'/' {
-        // `/` directly before `>`: the tag is self-closing and ends here.
-        return HtmlScan::End;
-    }
-    let name_start = *cursor;
-    while *cursor < bytes.len()
-        && !bytes[*cursor].is_ascii_whitespace()
-        && !matches!(bytes[*cursor], b'=' | b'>' | b'/')
-    {
-        *cursor += 1;
-    }
-    let name_end = *cursor;
-    // After the name, `/` ends the attribute just like whitespace does. Once a
-    // solidus has been consumed, a following `=` starts a new attribute name
-    // in HTML, never this attribute's value.
-    let solidus = skip_separators(bytes, cursor);
-    if *cursor >= bytes.len() || bytes[*cursor] != b'=' || solidus {
-        return HtmlScan::Attribute(HtmlAttribute {
-            name: &tag[name_start..name_end],
-            value: "",
-            start,
-            end: name_end,
-        });
-    }
-    *cursor += 1;
-    while *cursor < bytes.len() && bytes[*cursor].is_ascii_whitespace() {
-        *cursor += 1;
-    }
-    let (value_start, value_end) =
-        if *cursor < bytes.len() && matches!(bytes[*cursor], b'\'' | b'"') {
-            let quote = bytes[*cursor];
-            let value_start = *cursor + 1;
-            *cursor = value_start;
-            while *cursor < bytes.len() && bytes[*cursor] != quote {
-                *cursor += 1;
-            }
-            let value_end = *cursor;
-            if *cursor < bytes.len() {
-                *cursor += 1;
-            } else {
-                // EOF inside a quoted value: the browser never emits this tag
-                // and swallows the rest of the markup inside the value, so the
-                // caller cannot safely rewrite it.
-                return HtmlScan::Malformed;
-            }
-            (value_start, value_end)
-        } else {
-            let value_start = *cursor;
-            while *cursor < bytes.len()
-                && !bytes[*cursor].is_ascii_whitespace()
-                && bytes[*cursor] != b'>'
-            {
-                *cursor += 1;
-            }
-            (value_start, *cursor)
-        };
-    HtmlScan::Attribute(HtmlAttribute {
-        name: &tag[name_start..name_end],
-        value: &tag[value_start..value_end],
-        start,
-        end: *cursor,
-    })
-}
-
-/// Decode the character references a browser applies inside an attribute
-/// value before the form parser compares it. `None` means any `&` left
+/// Decode the character references a browser applies to text and attribute
+/// values before the form parser reads them. `None` means any `&` left
 /// unresolved — callers treat that as sensitive rather than guessing, so a
 /// malformed reference cannot hide a password marker. The scan is single-pass
-/// and allocates only for the small `type`/`autocomplete` values that use it.
+/// and allocates only the decoded copy, which the caller compares and drops.
 fn decode_html_attribute(value: &str) -> Option<String> {
     fn named(name: &str) -> Option<&'static str> {
         Some(match name {
@@ -243,110 +124,21 @@ fn decode_html_attribute(value: &str) -> Option<String> {
     Some(out)
 }
 
-/// Whether an attribute value names a credential input after the browser's
-/// own character-reference decoding. An undecodable value is sensitive.
-///
-/// This is the one rule both stack halves share (`passwordMarker` in
-/// `src/app/html-form.js`): once decoded, a `type`/`autocomplete` value is a
-/// password marker when it contains `password` anywhere, compared
-/// ASCII-case-insensitively. No token splitting and no trimming, so padding
-/// with NBSP, a BOM or any other separator cannot slip a credential input
-/// past the guard. The byte-window scan needs no allocation — the needle is
-/// ASCII, so it can never straddle a UTF-8 continuation byte.
-fn sensitive_attribute(name: &str, value: &str) -> bool {
-    let is_type = name.eq_ignore_ascii_case("type");
-    if !is_type && !name.eq_ignore_ascii_case("autocomplete") {
-        return false;
-    }
-    decode_html_attribute(value).is_none_or(|decoded| contains_password_marker(&decoded))
-}
+/// The fixed form HTML a credential-bearing request is replaced with before
+/// it is journaled or emitted. `src/app/html-form.js` refuses it with the
+/// same terminal-only password note as a password field.
+const REDACTED_FORM_HTML: &str = r#"<form data-omp-desktop-redacted="password"></form>"#;
 
-/// Case-insensitive ASCII substring test for the literal `password`.
-fn contains_password_marker(value: &str) -> bool {
-    const MARKER: &[u8] = b"password";
-    value
-        .as_bytes()
-        .windows(MARKER.len())
-        .any(|window| window.eq_ignore_ascii_case(MARKER))
-}
-
-/// Remove prefilled credentials from password-like `<input>` elements in an
-/// ask-form HTML string. Returns `None` when no value needs removal, keeping
-/// the ordinary frame path allocation-free. Each tag is scanned twice at
-/// most and the output is allocated only after the first sensitive value.
-fn strip_password_values(html: &str) -> Option<String> {
-    let bytes = html.as_bytes();
-    let mut cursor = 0;
-    let mut copied = 0;
-    let mut output: Option<String> = None;
-    while let Some(relative) = html[cursor..].find('<') {
-        let tag_start = cursor + relative;
-        let name_start = tag_start + 1;
-        let name_end = name_start + "input".len();
-        if html.get(name_start..name_end).is_none_or(|name| {
-            !name.eq_ignore_ascii_case("input")
-                || bytes
-                    .get(name_end)
-                    .is_some_and(|byte| !byte.is_ascii_whitespace() && !matches!(byte, b'>' | b'/'))
-        }) {
-            cursor = name_start;
-            continue;
-        }
-
-        let mut probe = 0;
-        let mut sensitive = false;
-        loop {
-            match next_html_attribute(&html[name_end..], &mut probe) {
-                HtmlScan::Attribute(attribute) => {
-                    if sensitive_attribute(attribute.name, attribute.value) {
-                        sensitive = true;
-                    }
-                }
-                HtmlScan::End => break,
-                // An input tag this scanner cannot tokenize unambiguously is
-                // treated as sensitive: drop the whole tag rather than guess
-                // where the browser ends it.
-                HtmlScan::Malformed => {
-                    sensitive = true;
-                    break;
-                }
-            }
-        }
-        let tag_end = name_end + probe;
-        if sensitive {
-            let mut attributes = 0;
-            loop {
-                match next_html_attribute(&html[name_end..], &mut attributes) {
-                    HtmlScan::Attribute(attribute) => {
-                        if !attribute.name.eq_ignore_ascii_case("value") {
-                            continue;
-                        }
-                        let out = output.get_or_insert_with(|| String::with_capacity(html.len()));
-                        out.push_str(&html[copied..name_end + attribute.start]);
-                        copied = name_end + attribute.end;
-                    }
-                    HtmlScan::End => break,
-                    // Fail closed: the browser swallows the rest of the markup
-                    // inside the unterminated value, so everything from this
-                    // tag's `<` on goes, value attributes included.
-                    HtmlScan::Malformed => {
-                        let out = output.get_or_insert_with(|| String::with_capacity(html.len()));
-                        out.push_str(&html[copied..tag_start]);
-                        return output;
-                    }
-                }
-            }
-        }
-        cursor = if tag_end < bytes.len() {
-            tag_end + 1
-        } else {
-            bytes.len()
-        };
-    }
-    output.map(|mut out| {
-        out.push_str(&html[copied..]);
-        out
-    })
+/// Whether a form's HTML mentions a credential. Character references are
+/// decoded first (an unresolved `&` fails closed), then the whole decoded
+/// string is ASCII-lowercased and searched for `password`. One rule for every
+/// spelling — a `type`/`autocomplete` value, a field name, prose in a label,
+/// a numeric or named entity — and no HTML tokenizing, slicing or index
+/// arithmetic, so no input shape can panic it server-side. The trade-off is
+/// deliberate: a form merely mentioning the word is refused too.
+fn form_mentions_password(html: &str) -> bool {
+    decode_html_attribute(html)
+        .is_none_or(|decoded| decoded.to_ascii_lowercase().contains("password"))
 }
 
 /// Sanitize one raw RPC line. Parses `raw` as JSON and redacts sensitive
@@ -366,16 +158,13 @@ fn sanitize_line(raw: &[u8]) -> (String, Option<serde_json::Value>) {
             let is_form = value.get("type").and_then(serde_json::Value::as_str)
                 == Some("extension_ui_request")
                 && value.get("method").and_then(serde_json::Value::as_str) == Some("form");
-            let stripped_html = if is_form {
-                value
+            let mentions_password = is_form
+                && value
                     .get("html")
                     .and_then(serde_json::Value::as_str)
-                    .and_then(strip_password_values)
-            } else {
-                None
-            };
-            if let Some(html) = stripped_html {
-                value["html"] = serde_json::Value::String(html);
+                    .is_some_and(form_mentions_password);
+            if mentions_password {
+                value["html"] = serde_json::Value::String(REDACTED_FORM_HTML.to_string());
                 redacted = true;
             }
             // Re-serializing costs a second full pass (escaping, number
@@ -960,186 +749,114 @@ mod tests {
         assert_eq!(parsed.unwrap()["toolName"], "bash");
     }
 
-    #[test]
-    fn sanitize_form_strips_prefilled_passwords_before_journaling() {
-        let html = r#"<form><input name="a" TYPE = "PASSWORD" value = "double-canary"><input type='password' value='single-canary'><input type=password value=unquoted-canary><input type=text autocomplete="off current-password" value="auto-canary"><input type=text autocomplete=new-password value=auto-unquoted><input name=ok value=keep-me></form>"#;
-        let raw = json!({
+    fn form_frame(html: &str) -> String {
+        json!({
             "type": "extension_ui_request",
             "id": "form-secret",
             "method": "form",
             "html": html,
         })
-        .to_string();
-        let (out, parsed) = sanitize_line(raw.as_bytes());
+        .to_string()
+    }
+
+    /// Any form that mentions a credential is replaced wholesale, before the
+    /// frame is journaled or emitted — no prefilled value survives and no
+    /// token of the original HTML does either.
+    #[test]
+    fn sanitize_form_replaces_any_password_form_before_journaling() {
+        let html = r#"<form><input name="a" TYPE = "PASSWORD" value = "double-canary"><input type='password' value='single-canary'><input type=text autocomplete="off current-password" value="auto-canary"><label>Password <input name=ok value=keep-me></label></form>"#;
+        let (out, parsed) = sanitize_line(form_frame(html).as_bytes());
         let parsed = parsed.expect("valid JSON parses");
+        assert_eq!(parsed["html"], REDACTED_FORM_HTML);
+        assert_eq!(parsed["method"], "form");
+
         let mut journal = EventJournal::new(4, 1 << 20);
         journal.push(Arc::from(out));
         let replay = journal.since(0);
         let journaled = replay.events[0].text.as_ref();
-        for canary in [
-            "double-canary",
-            "single-canary",
-            "unquoted-canary",
-            "auto-canary",
-            "auto-unquoted",
-        ] {
+        for canary in ["double-canary", "single-canary", "auto-canary", "keep-me"] {
             assert!(!journaled.contains(canary), "journal leaked {canary}");
-            assert!(!parsed["html"].as_str().unwrap().contains(canary));
         }
-        assert!(journaled.contains(r"name=ok value=keep-me"));
-        assert!(!parsed["html"]
-            .as_str()
-            .unwrap()
-            .contains("current-password\" value"));
+        assert!(!journaled.contains("PASSWORD"));
+        assert!(journaled.contains("data-omp-desktop-redacted"));
     }
 
-    /// The scanner tokenizes `<input>` attributes the way HTML does, so a
-    /// `value` the browser still reads after a stray `/` is stripped too.
+    /// The browser decodes character references before the form parser sees
+    /// them, so the match does too. An unresolved `&` cannot hide the
+    /// marker: it fails closed to a match.
     #[test]
-    fn sanitize_form_follows_html_attribute_tokenization_around_solidus() {
-        for (html, expected) in [
-            // `/` before an attribute is skipped like whitespace: the browser
-            // reads `value` as an attribute and so does the stripper.
-            (
-                "<form><input type=password / value=slash-canary></form>",
-                Some("<form><input type=password></form>"),
-            ),
-            (
-                "<form><input type=password/ value=solidus-canary></form>",
-                Some("<form><input type=password/></form>"),
-            ),
-            // A solidus inside an unquoted value is data, so the value is
-            // stripped up to the `>` and nothing is left dangling.
-            (
-                "<form><input type=password value=kept-canary/></form>",
-                Some("<form><input type=password></form>"),
-            ),
-            // An unquoted value runs through `/value=…`, exactly as in HTML, so
-            // there is no second attribute to strip and the tag stays as is.
-            // The frontend's marker check still refuses this form.
-            ("<form><input/type=password/value=x></form>", None),
+    fn sanitize_form_matches_decoded_entities_and_fails_closed() {
+        for html in [
+            r#"<form><input type="&#112;assword" value="decimal-canary"></form>"#,
+            r#"<form><input type="&#x70;ASSWORD" value="hex-canary"></form>"#,
+            r#"<form><input type="&#112assword" value="no-semicolon-canary"></form>"#,
+            r#"<form><input autocomplete="off&Tab;new-password" value="named-canary"></form>"#,
+            r#"<form><input type="pass&bogus;word" value="undecodable-canary"></form>"#,
+            r#"<form><input name="user_password" value="name-canary"></form>"#,
+            "<form><p>Password: <input name=n value=\u{feff}padding-canary></p></form>",
+            "<form><input type=text value=\"héllo wörld password\"></form>",
         ] {
-            let stripped = strip_password_values(html);
-            assert_eq!(stripped.as_deref(), expected, "{html}");
-            if let Some(out) = stripped {
-                assert!(!out.contains("canary"), "{html} leaked: {out}");
+            let (out, parsed) = sanitize_line(form_frame(html).as_bytes());
+            let parsed = parsed.expect("valid JSON parses");
+            assert_eq!(parsed["html"], REDACTED_FORM_HTML, "{html}");
+            assert!(!out.contains("canary"), "{html} leaked: {out}");
+        }
+    }
+
+    /// No HTML tokenizer, no byte-slice indices: malformed, unterminated,
+    /// huge and multibyte input is just a string to this rule, so nothing can
+    /// panic or be cut in the middle of a UTF-8 sequence.
+    #[test]
+    fn sanitize_form_handles_malformed_huge_and_multibyte_html() {
+        let huge_text = "日本語とalfabet".repeat(80_000);
+        let safe = format!("<form><p>{huge_text}</p><input name=n></form>");
+        assert!(huge_text.len() > 1_000_000);
+        let (_, parsed) = sanitize_line(form_frame(&safe).as_bytes());
+        assert_eq!(parsed.expect("valid JSON")["html"], safe);
+
+        let mut secret = safe;
+        secret.insert_str(
+            secret.len() - "</form>".len(),
+            "<input type=password value=huge-canary>",
+        );
+        let (out, parsed) = sanitize_line(form_frame(&secret).as_bytes());
+        assert_eq!(parsed.expect("valid JSON")["html"], REDACTED_FORM_HTML);
+        assert!(!out.contains("huge-canary"));
+
+        for (malformed, redacted) in [
+            (
+                "<form><input type=\"password value=unterminated-canary",
+                true,
+            ),
+            ("<form><input type='password", true),
+            ("<form><input/type=password/value=x></form>", true),
+            ("<form><<<>>><input type=\"pass\u{0}word\">", false),
+            ("<form><input value='a &amp; b'></form>", false),
+            ("&&&&&&<form></form>", true),
+        ] {
+            let (out, parsed) = sanitize_line(form_frame(malformed).as_bytes());
+            let parsed = parsed.expect("valid JSON");
+            assert_eq!(
+                parsed["html"] == REDACTED_FORM_HTML,
+                redacted,
+                "{malformed}"
+            );
+            if redacted {
+                assert!(!out.contains("unterminated-canary"), "{malformed}");
             }
         }
     }
 
-    /// A bare `value` attribute is removed up to its name, never together with
-    /// the separator that follows it: the rewritten tag must stay an `<input>`.
     #[test]
-    fn sanitize_form_removes_a_bare_value_without_merging_the_next_attribute() {
-        for (html, expected) in [
-            (
-                "<form><input value type=password></form>",
-                "<form><input type=password></form>",
-            ),
-            (
-                "<form><input value name=pw type=password></form>",
-                "<form><input name=pw type=password></form>",
-            ),
-            (
-                "<form><input type=password value></form>",
-                "<form><input type=password></form>",
-            ),
+    fn sanitize_form_leaves_non_password_forms_and_other_methods_untouched() {
+        for html in [
+            r"<form><input type=text value=keep-me><input autocomplete=off value=also-keep></form>",
+            r"<form><input value='a &amp; b'></form>",
         ] {
-            assert_eq!(
-                strip_password_values(html).as_deref(),
-                Some(expected),
-                "{html}"
-            );
+            let (out, parsed) = sanitize_line(form_frame(html).as_bytes());
+            assert_eq!(parsed.unwrap()["html"], html);
+            assert!(out.contains("keep-me") || out.contains("&amp;"));
         }
-    }
-
-    /// An `<input>` that cannot be tokenized unambiguously is sensitive: the
-    /// whole tag goes, because the browser swallows the rest of the markup
-    /// inside its unterminated value.
-    #[test]
-    fn sanitize_form_fails_closed_on_an_unterminated_quoted_value() {
-        let html = "<form><input type=\"password value=unterminated-canary";
-        let out = strip_password_values(html).expect("a malformed input tag is rewritten");
-        assert_eq!(out, "<form>");
-        assert!(!out.contains("unterminated-canary"));
-        assert!(!out.contains("password"));
-    }
-
-    #[test]
-    fn sanitize_form_decodes_sensitive_attribute_entities_and_fails_closed() {
-        for (label, attribute) in [
-            ("decimal", r#"type="&#112;assword""#),
-            ("hex", r#"type="&#x70;assword""#),
-            ("missing semicolon", r#"type="&#112assword""#),
-            ("mixed case", r#"type="&#x50;ASSWORD""#),
-            ("named whitespace", r#"autocomplete="off&Tab;new-password""#),
-            ("undecodable", r#"type="pass&bogus;word""#),
-        ] {
-            let html = format!(r#"<form><input {attribute} value="{label}-canary"></form>"#);
-            let raw =
-                json!({"type":"extension_ui_request", "method":"form", "html":html}).to_string();
-            let (out, parsed) = sanitize_line(raw.as_bytes());
-            assert!(
-                !out.contains(&format!("{label}-canary")),
-                "{label} leaked into output"
-            );
-            let parsed = parsed.expect("valid JSON parses");
-            assert!(
-                !parsed["html"]
-                    .as_str()
-                    .unwrap()
-                    .contains(&format!("{label}-canary")),
-                "{label} leaked into parsed frame"
-            );
-        }
-    }
-
-    #[test]
-    fn sanitize_form_treats_padded_password_markers_as_credentials() {
-        // NBSP (U+00A0) between autocomplete tokens and a BOM (U+FEFF) around
-        // the type value: neither is ASCII whitespace, so a trimming or
-        // token-splitting rule would miss them. Both stack halves use the same
-        // decoded-substring rule, so neither can slip past.
-        for (label, attribute, canary) in [
-            (
-                "nbsp autocomplete",
-                "autocomplete=\"foo\u{a0}current-password\"",
-                "nbsp-canary",
-            ),
-            (
-                "bom type",
-                "type=\"\u{feff}password\u{feff}\"",
-                "bom-canary",
-            ),
-        ] {
-            let html = format!("<form><input {attribute} value=\"{canary}\"></form>");
-            let raw =
-                json!({"type":"extension_ui_request", "method":"form", "html":html}).to_string();
-            let (out, parsed) = sanitize_line(raw.as_bytes());
-            assert!(!out.contains(canary), "{label} leaked into output");
-            let parsed = parsed.expect("valid JSON parses");
-            assert!(
-                !parsed["html"].as_str().unwrap().contains(canary),
-                "{label} leaked into parsed frame"
-            );
-            let mut journal = EventJournal::new(4, 1 << 20);
-            journal.push(Arc::from(out));
-            let replay = journal.since(0);
-            assert!(
-                !replay.events[0].text.contains(canary),
-                "{label} leaked into journal"
-            );
-        }
-    }
-
-    #[test]
-    fn sanitize_form_leaves_non_password_values_and_other_methods_untouched() {
-        let html =
-            r"<form><input type=text value=keep-me><input autocomplete=off value=also-keep></form>";
-        let raw = json!({"type":"extension_ui_request", "method":"form", "html":html}).to_string();
-        let (out, parsed) = sanitize_line(raw.as_bytes());
-        assert_eq!(parsed.unwrap()["html"], html);
-        assert!(out.contains("keep-me"));
 
         let raw = json!({"type":"extension_ui_request", "method":"select", "html":"<input type=password value=select-canary>"}).to_string();
         let (out, _) = sanitize_line(raw.as_bytes());

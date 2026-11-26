@@ -532,11 +532,15 @@ test("phone answers are validated per ask kind before reaching omp", async () =>
   }
 });
 
-async function runAnswer(api, item, value) {
+async function runAnswer(api, item, value, ompVersion) {
   const calls = [], results = [];
-  const snap = snapshot({ messages: [item] });
+  const snap = snapshot({
+    messages: [item],
+    sessions: [{ id: "a", name: "Work", path: "/project", ompVersion }],
+  });
   const handle = api.makeActionHandler({
     answerAsk: (...a) => calls.push(a), answerConfirm: (...a) => calls.push(a), answerAskDialog: (...a) => calls.push(a),
+    answerForm: (...a) => calls.push(a),
     remoteActionResult: (...a) => results.push(a),
   }, () => snap, liveStatus);
   await handle({ reqId: "r", deviceId: "d", tabId: "a", kind: "answer", askId: item.id, value });
@@ -594,6 +598,22 @@ test("phone form answers obey the field rules omp 19.1 checks on submit", async 
   assert.equal(api.invalidAnswer(card, { name: "Ada Lovelace", count: 3 }), null);
   for (const value of [{}, { name: "Ada" }, { name: "Ada Lovelace", count: 5 }, { name: "Ada Lovelace", count: "x" }])
     assert.equal(api.invalidAnswer(card, value), "invalid answer", JSON.stringify(value));
+});
+
+test("a phone form answer replays omp's 19.1 submit rules only below 19.2.0", async () => {
+  const { api } = load();
+  const form = {
+    sections: [],
+    fields: [{ kind: "text", name: "name", type: "text", multiline: false, label: "Name", value: "", placeholder: "", required: true, rows: 1 }],
+    hidden: [],
+  };
+  const card = { kind: "ask", id: "f3", method: "form", title: "", form, answered: false, cancelled: false };
+  for (const version of [undefined, null, "19.1.9"]) {
+    assert.equal((await runAnswer(api, card, {}, version)).card.error, "invalid answer", String(version));
+  }
+  for (const version of ["19.2.0", "omp/19.2.1"]) {
+    assert.equal((await runAnswer(api, card, {}, version)).card.error, null, version);
+  }
 });
 
 test("blank prompt and steer text is refused", async () => {

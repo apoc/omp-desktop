@@ -5,7 +5,6 @@ use std::ffi::{OsStr, OsString};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
 
 /// Windows: prevent a console window from flashing when we spawn omp.exe
 /// (or a widget plugin) from a GUI-subsystem parent. omp speaks JSON-RPC
@@ -99,19 +98,11 @@ pub fn omp_output<S: AsRef<OsStr>>(args: &[S]) -> Result<std::process::Output, S
 /// rebuilt.
 const MIN_OMP_VERSION: [u32; 3] = [18, 20, 0];
 
-/// The binary whose `omp --version` check passed. Only a pass is
-/// remembered, and only for that path: after a refusal the next tab start
-/// asks again, so an `omp update` takes effect without restarting the app,
-/// and a PATH change that finds another omp is checked anew. A binary
-/// replaced in place by an older one after a pass goes unnoticed until the
-/// next launch.
-static VERSION_OK: Mutex<Option<PathBuf>> = Mutex::new(None);
-
-/// The version [`check_omp_version`] read from that same binary. Kept beside
-/// [`VERSION_OK`] and keyed by the path it came from, so the frontend's form
-/// rules (a `pattern` needs 19.2.0+) see the version of the omp that can
-/// actually ask, not of whatever `omp` a later PATH change finds.
-static KNOWN_VERSION: Mutex<Option<([u32; 3], PathBuf)>> = Mutex::new(None);
+// No version cache: a path alone does not identify a binary (`omp update`
+// replaces it in place), while the frontend's form rules need the version of
+// the exact incarnation it is talking to. Reading `--version` on every spawn
+// returns that version to the session start and keeps an updated or swapped
+// binary from being mistaken for the one checked earlier.
 
 /// `[major, minor, patch]` from one line of `omp --version` output
 /// (`omp/18.5.1`). A leading `v` and a pre-release or build suffix
@@ -164,18 +155,18 @@ fn version_refusal(output: &str) -> Option<String> {
 /// and then the RPC commands the frontend sends would fail one by one. Runs
 /// `--version` on the very binary the session spawns. When it can't be run
 /// at all the check stands aside and the spawn fails with the real reason.
-fn check_omp_version(omp: &Omp) -> Result<(), String> {
-    if VERSION_OK
-        .lock()
-        .is_ok_and(|ok| ok.as_deref() == Some(omp.binary.as_path()))
-    {
-        return Ok(());
-    }
+///
+/// Returns the `major.minor.patch` this process reported alongside the pass,
+/// so the session start can bind the version to that exact incarnation. When
+/// `--version` cannot be run at all the check stands aside (`None`, the spawn
+/// then fails with the real reason); output without a readable version is
+/// refused, as before.
+fn check_omp_version(omp: &Omp) -> Result<Option<String>, String> {
     let output = match omp.output(&["--version"]) {
         Ok(output) => output,
         Err(e) => {
             eprintln!("[omp-desktop] version check skipped: {e}");
-            return Ok(());
+            return Ok(None);
         }
     };
     let text = format!(
@@ -186,42 +177,7 @@ fn check_omp_version(omp: &Omp) -> Result<(), String> {
     if let Some(refusal) = version_refusal(&text) {
         return Err(refusal);
     }
-    if let Ok(mut known) = KNOWN_VERSION.lock() {
-        if let Some(version) = text.lines().find_map(parse_version_line) {
-            *known = Some((version, omp.binary.clone()));
-        }
-    }
-    if let Ok(mut ok) = VERSION_OK.lock() {
-        *ok = Some(omp.binary.clone()); // the cache owns its copy; `omp` is borrowed
-    }
-    Ok(())
-}
-
-/// `major.minor.patch` of the omp binary a run would spawn, or `None` when it
-/// cannot be run or its output carries no version. Reuses the startup check's
-/// cached read for the same binary; otherwise runs `omp --version` once and
-/// caches the result, so a version change (`omp update`) is picked up by the
-/// next caller without restarting the app.
-pub fn omp_version() -> Option<String> {
-    let omp = Omp::locate().ok()?;
-    if let Ok(known) = KNOWN_VERSION.lock() {
-        if let Some((version, path)) = known.as_ref() {
-            if path == &omp.binary {
-                return Some(fmt_version(*version));
-            }
-        }
-    }
-    let output = omp.output(&["--version"]).ok()?;
-    let text = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let version = text.lines().find_map(parse_version_line)?;
-    if let Ok(mut known) = KNOWN_VERSION.lock() {
-        *known = Some((version, omp.binary));
-    }
-    Some(fmt_version(version))
+    Ok(text.lines().find_map(parse_version_line).map(fmt_version))
 }
 
 /// Build the `--profile=<id>` flag from a resolved profile id, or `None`
@@ -367,20 +323,22 @@ fn sanitize_child_env(cmd: &mut Command) {
 /// `omp_args` for why). Returns the child alongside a
 /// [`crate::supervisor::ProcessSupervisor`] already attached to it, so the
 /// whole process tree (subagents, tool-call children) can be torn down as
-/// a unit — plain `Child::kill` only signals the direct `omp` process.
+/// a unit — plain `Child::kill` only signals the direct `omp` process — and
+/// the version that same check read from this incarnation (`None` only when
+/// `--version` itself could not be run).
 pub(super) fn spawn_omp(
     cwd: Option<&str>,
     resume: Option<&str>,
     profile: Option<&str>,
     mode: ApprovalMode,
     config: Option<&Path>,
-) -> Result<(Child, crate::supervisor::ProcessSupervisor), String> {
+) -> Result<(Child, crate::supervisor::ProcessSupervisor, Option<String>), String> {
     let omp = Omp::locate()?;
     // Refused here rather than left to fail later: an omp too old for the
     // RPC surface the frontend uses would start and then break feature by
     // feature. The message is cached in `last_errors`, where `session_status`
     // and `switchSessionProfile`'s failure note both surface it.
-    check_omp_version(&omp)?;
+    let version = check_omp_version(&omp)?;
     // Resolve once so `current_dir` and `--cwd=` (see `resolve_cwd`) can
     // never disagree or compound a relative value into a nested path.
     let resolved_cwd = cwd.filter(|dir| !dir.is_empty()).map(resolve_cwd);
@@ -402,7 +360,7 @@ pub(super) fn spawn_omp(
     let child = crate::spawn_gate::spawn(&mut cmd)
         .map_err(|e| format!("failed to spawn {}: {e}", omp.binary.display()))?;
     let supervisor = crate::supervisor::ProcessSupervisor::attach(&child);
-    Ok((child, supervisor))
+    Ok((child, supervisor, version))
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

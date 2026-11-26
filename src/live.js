@@ -465,18 +465,12 @@
     }
   }
 
-  // The running omp's version, as `omp_version` reports it
-  // (`major.minor.patch`, or null when unreadable). Unknown refuses a form
-  // carrying `pattern`: this side cannot verify what omp would check.
-  let ompVersion = null;
-
-  /** Re-read the omp version. Failures keep the previous value (null at
-   *  start), and the caller never waits on it: a form that arrives first is
-   *  refused when it carries a pattern, which is the fail-closed choice. */
-  function _refreshOmpVersion() {
-    _invokeSafe("omp_version", {}).then(version => {
-      ompVersion = typeof version === "string" ? version : null;
-    });
+  // The omp version of the process a tab is talking to, bound per session
+  // when `start_session` reports the `--version` it read at spawn time
+  // (`_spawnSession`). Unknown (`null`) refuses a form carrying a `pattern`:
+  // this side cannot verify what omp would check.
+  function _ompVersionOf(sessionId = activeSessionId) {
+    return sessionRegistry.get(sessionId)?.ompVersion ?? null;
   }
 
   // Git browser reads: `cmd` for the active tab's project folder, as
@@ -611,7 +605,7 @@
   // new object and must not be rolled back by this stale completion.
   function _patchSessionBubble(sessionId, bubble, patch, deliveryNote = false) {
     const target = activeSessionId === sessionId ? state : sessionSnapshots.get(sessionId);
-    if (!target) return;
+    if (!target) return false;
     let changed = false;
     let messages = target.messages.map(message => {
       if (message !== bubble) return message;
@@ -629,6 +623,22 @@
     }
     target.messages = messages;
     if (changed && activeSessionId === sessionId) notify();
+    return changed;
+  }
+
+  // Append a note to the transcript of the tab that owns `sessionId`, even
+  // when another tab is active: a late IPC outcome belongs to the prompt's
+  // tab, not to whatever the user is looking at now. Only a tab that still
+  // has a saved snapshot can receive one.
+  function _noteSession(sessionId, text) {
+    const target = activeSessionId === sessionId ? state : sessionSnapshots.get(sessionId);
+    if (!target) return;
+    target.messages = [...target.messages, _assistantBubble({
+      model: target.model?.name ?? null,
+      blocks: [{ type: "text", text }],
+      completed: true,
+    })];
+    if (activeSessionId === sessionId) notify();
   }
 
   // Reopen only a locally settled bubble whose answer was not delivered.
@@ -1286,14 +1296,15 @@
    *  Side-effectful (Tauri IPC invoke, event listeners), so not unit-tested
    *  directly. */
   async function _spawnSession(id, cwd, { resume = null, profile }) {
-    const approvalMode = await window.__TAURI__.core.invoke("start_session", {
+    const started = await window.__TAURI__.core.invoke("start_session", {
       args: { sessionId: id, cwd: cwd ?? "", resume, profile },
     });
-    // The version of the omp this session spawns: a form's `pattern` is only a
-    // display hint from 19.2.0 on, while 19.1.x checks it itself (see
-    // `HTML_FORM.parse`). Refreshed per spawn so `omp update` needs no app
-    // restart; a failed read leaves null, which refuses pattern forms.
-    _refreshOmpVersion();
+    // What this incarnation was started with. The approval mode is Rust's
+    // resolution for the tab's folder; the version is the one the same spawn
+    // check read from this exact omp (`--version`), so two tabs may carry
+    // different versions. Unknown leaves null, which refuses pattern forms.
+    const approvalMode = started?.approvalMode;
+    const ompVersion = typeof started?.ompVersion === "string" ? started.ompVersion : null;
     // A fresh incarnation owns this id now, and `start_session` cleared the
     // backend's cached error for it — so a *new* startup failure must be
     // reportable again. Cleared after the spawn resolved, so a spawn that
@@ -1312,6 +1323,7 @@
       sessionRegistry.set(id, {
         ...spawned, processStartedAt: Date.now(),
         approvalMode: AMODE.isMode(approvalMode) ? approvalMode : null,
+        ompVersion,
       });
     }
     // Git: read initial branch and work tree and arm the HEAD watcher
@@ -1793,9 +1805,11 @@
     // the repository's work tree, shared by every tab on a folder of it.
     sessionRegistry.set(id, {
       id, name: tabName, path: cwd ?? "", color, branch: null, repoRoot: null, profile,
-      // The approval mode `start_session` spawned this tab's current omp
-      // with (set by `_spawnSession`); null while no process runs it.
+      // The approval mode and omp version `start_session` spawned this tab's
+      // current process with (set by `_spawnSession`); null while no process
+      // runs it. The version is per incarnation, never global.
       approvalMode: null,
+      ompVersion: null,
       // The conversation's `.jsonl`, same form as `SavedSession.path`: known
       // up front for a resume, filled in from `get_state` otherwise (see
       // `_applyRpcState`). `resumeSession` matches on it to focus instead of
@@ -2494,7 +2508,7 @@
       // shell cannot read is cancelled at once and leaves a visible note, so
       // omp never waits on a card that could not be submitted.
       if (ev.method === "form") {
-        const parsed = HTML_FORM.parse(ev.html, undefined, ompVersion);
+        const parsed = HTML_FORM.parse(ev.html, undefined, _ompVersionOf());
         if (!parsed.form) {
           const sessionId = activeSessionId;
           const bubble = _askMessage("form", ev, {
@@ -4288,7 +4302,9 @@
       // The last gate before the wire: a form answered past its own rules
       // would make omp 19.1.x fail the ask tool after the desktop already
       // settled the bubble. Refuse here instead, leaving the card open.
-      const problem = message?.form ? HTML_FORM.answerError(message.form, outgoing) : null;
+      const problem = message?.form
+        ? HTML_FORM.answerError(message.form, outgoing, _ompVersionOf(message.sessionId))
+        : null;
       if (problem) {
         console.warn(`[live] refused form answer for '${id}':`, problem);
         return false;
@@ -4369,8 +4385,10 @@
      *  the bubble is reopened for a plain Approve/Deny and a note says why —
      *  never a fallback `send_command` Approve, which would answer whatever
      *  process now holds the id. A non-null value means the prompt was
-     *  approved but the rule was not saved. Both only while this activation
-     *  of the tab is still the one shown (the bubble lives in its state). */
+     *  approved but the rule was not saved. The outcome patches the captured
+     *  prompt's own transcript and note even if the user switched tabs while
+     *  the IPC call ran; an omp withdrawal (`closedByOmp`) is left closed and
+     *  gets no "open again" note. */
     async approveAndRemember(prompt, scope) {
       const sessionId = prompt?.sessionId;
       if (!sessionId || sessionId !== activeSessionId || !prompt.id) return;
@@ -4380,20 +4398,21 @@
       const res = await _invokeResult("approval_approve_and_grant", { sessionId, requestId: prompt.id, scope });
       const unsaved = res.ok ? res.value : null;
       if (res.ok && !unsaved) return;
-      if (_switchGen !== gen || activeSessionId !== sessionId) {
-        console.warn(`[live] approve and remember for '${sessionId}':`, res.ok ? unsaved : res.error);
-        return;
-      }
+      const switched = _switchGen !== gen || activeSessionId !== sessionId;
       if (!res.ok) {
-        // Nothing reached omp: reopen the exact bubble this call settled, so
-        // a following Deny has a live prompt to answer. Identity keeps an
-        // omp withdrawal, or a newer answer, from being rolled back.
-        _patchSessionBubble(sessionId, settled, _reopenAsk);
-        _pushAssistantNote(`**Approve and remember failed:** ${res.error}. The prompt is open again.`);
+        // Nothing reached omp: reopen the exact bubble this call settled in
+        // its own tab, so a following Deny has a live prompt to answer.
+        // Identity keeps an omp withdrawal, or a newer answer, from being
+        // rolled back — and a withdrawn prompt gets no "open again" note.
+        if (_patchSessionBubble(sessionId, settled, _reopenAsk)) {
+          _noteSession(sessionId, `**Approve and remember failed:** ${res.error}. The prompt is open again.`);
+        }
       } else {
-        _pushAssistantNote(`**Approved, but the rule was not saved:** ${unsaved}`);
+        _noteSession(sessionId, `**Approved, but the rule was not saved:** ${unsaved}`);
       }
-      notify();
+      if (switched) {
+        console.warn(`[live] approve and remember for '${sessionId}':`, res.ok ? unsaved : res.error);
+      }
     },
 
     /** Revoke a previously granted rule. No-op if it wasn't granted. */
