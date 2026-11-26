@@ -129,11 +129,6 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "fork",
     // Goal mode: omp's `goal` command (get/create/resume/pause/drop).
     "goal",
-    // Settings → Agent (#37): omp's session-scoped automatic compaction and
-    // retry switches: sent to a new process when turned off, and to every
-    // open tab on change.
-    "set_auto_compaction",
-    "set_auto_retry",
 ];
 
 /// What one omp process is started with (`start_session` → `spawn_omp`).
@@ -725,7 +720,7 @@ mod tests {
         };
         let live = flat(include_str!("../../../src/live.js"));
         let mut checked = 0;
-        for callee in ["_send(", "_sendWithResponse(", "_sendToAll("] {
+        for callee in ["_send(", "_sendWithResponse("] {
             for (idx, _) in live.match_indices(callee) {
                 let args = &live[idx + callee.len()..];
                 if let Some(rest) = args.strip_prefix("{type:\"") {

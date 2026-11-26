@@ -162,9 +162,9 @@
       { name: "Goals", src: "omp config", rows: [
         custom("goalContinue", "Keep working on a goal", "omp continues an active goal on its own after each turn instead of waiting for you. Costs tokens while unattended.", "goal auto continue"),
       ] },
-      { name: "omp behaviour", rows: [
-        tweak("autoCompaction", "toggle", "Auto-compact context", "omp summarises older turns when the context fills up. Off: you run `/compact` yourself.", "compaction context window"),
-        tweak("autoRetry", "toggle", "Retry failed requests", "omp retries a request the provider refused or dropped, with a retry row you can stop.", "retry error rate limit"),
+      { name: "omp behaviour", src: "omp config", rows: [
+        custom("autoCompaction", "Auto-compact context", "omp summarises older turns when the context fills up. Off: you run `/compact` yourself.", "compaction context window"),
+        custom("autoRetry", "Retry failed requests", "omp retries a request the provider refused or dropped, with a retry row you can stop.", "retry error rate limit"),
       ] },
     ] },
     { id: "session", icon: "clock", title: "Session", blurb: "Tabs across restarts, closing, naming and app updates.", groups: [

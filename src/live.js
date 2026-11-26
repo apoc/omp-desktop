@@ -3240,13 +3240,6 @@
         // process falls back to one `select` per question until told again.
         _sendWithResponse({ type: "set_ask_dialog", enabled: true })
           .catch(err => console.warn("[live] set_ask_dialog failed:", err));
-        // Settings → Agent: on (the default) leaves omp's own
-        // compaction/retry config in charge, so a fresh process is only
-        // told when the user turned one off (session-scoped, per process
-        // like the ask dialog). A live change goes to every open tab either
-        // way (`setSessionPrefs`).
-        if (!sessionPrefs.autoCompaction) _send({ type: "set_auto_compaction", enabled: false });
-        if (!sessionPrefs.autoRetry) _send({ type: "set_auto_retry", enabled: false });
         _send({ type: "get_state" });
         _send({ type: "get_messages" });
         _send({ type: "get_available_models" });
@@ -3285,20 +3278,6 @@
   function _invokeSend(cmd) {
     return window.__TAURI__.core
       .invoke("send_command", { sessionId: activeSessionId, json: JSON.stringify(cmd) });
-  }
-
-  /** Send `cmd` to every open tab's omp, uncorrelated (no `id`: a response
-   *  replayed into a tab later is ignored by `_handleResponse`). A tab
-   *  whose process is gone or still starting misses it; its new process
-   *  starts from omp's own config plus `_initFetch`'s "off" overrides. */
-  function _sendToAll(cmd) {
-    if (!window.__TAURI__) return;
-    const json = JSON.stringify(cmd);
-    // A warning, not `_invokeSafe`'s error: a tab missing it is expected.
-    for (const sessionId of sessionRegistry.keys()) {
-      window.__TAURI__.core.invoke("send_command", { sessionId, json })
-        .catch(e => console.warn(`[live] ${cmd.type} for '${sessionId}' not sent:`, e));
-    }
   }
 
   function _logSendError(e) { console.error("[live] send error:", e); }
@@ -4242,6 +4221,19 @@
      *  the setting omp reports afterwards. */
     setGoalContinuation(profile, enabled) {
       return _invokeResult("goal_continuation_set", { profile, enabled });
+    },
+    /** One of omp's own boolean settings for `profile` (src-tauri
+     *  omp_config.rs; `setting` is `autoCompaction` or `autoRetry`, never
+     *  an omp key): `{ok, value}` or `{ok: false, error}` with omp's reason.
+     *  Profile passed explicitly, like `goalContinuation`. */
+    ompSetting(profile, setting) {
+      return _invokeResult("omp_setting_get", { profile, setting });
+    },
+    /** Writes it to omp's config for `profile`; running tabs of that
+     *  profile pick it up without a restart (no RPC frame is sent). Same
+     *  result shape, with the value omp reports afterwards. */
+    setOmpSetting(profile, setting, enabled) {
+      return _invokeResult("omp_setting_set", { profile, setting, enabled });
     },
     /** Manual rename from the tab bar or sidebar (#32): omp's own
      *  `/rename <title>` builtin, so the name is stored as user-set and
@@ -5235,20 +5227,17 @@
       _closeConfirmAnswer?.(ok === true);
     },
 
-    /** Apply Settings → Session / Agent prefs (`restoreTabs`,
-     *  `confirmBusyClose`, `autoName`, `autoCompaction`, `autoRetry`; any
-     *  subset, the rest kept). Idempotent: only a changed value acts.
-     *  `restoreTabs` only matters at launch (read from the stored tweaks
-     *  then) and `autoName` at each auto-title check, so neither sends
-     *  anything here. */
+    /** Apply Settings → Session prefs (`restoreTabs`, `confirmBusyClose`,
+     *  `autoName`; any subset, the rest kept). Idempotent: only a changed
+     *  value acts. `restoreTabs` only matters at launch (read from the
+     *  stored tweaks then) and `autoName` at each auto-title check, so
+     *  neither sends anything here. */
     setSessionPrefs(values) {
       // fromTweaks keeps only PREFS.KEYS, so the whole tweaks object may come in.
       const next = PREFS.fromTweaks({ ...sessionPrefs, ...values }, window.TWEAK_DEFAULTS);
       const changed = PREFS.changedKeys(sessionPrefs, next);
       if (changed.length === 0) return;
       sessionPrefs = next;
-      if (changed.includes("autoCompaction")) _sendToAll({ type: "set_auto_compaction", enabled: next.autoCompaction });
-      if (changed.includes("autoRetry")) _sendToAll({ type: "set_auto_retry", enabled: next.autoRetry });
       if (changed.includes("confirmBusyClose")) _syncCloseGuard(_sessionsView());
     },
 

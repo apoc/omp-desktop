@@ -26,6 +26,7 @@ mod keybindings;
 mod model_usage;
 mod navigation_guard;
 mod omp_cli;
+mod omp_config;
 mod open_tabs;
 mod pr_automation;
 mod private_fs;
@@ -1104,6 +1105,37 @@ async fn goal_continuation_set(
     off_ipc(move || goal_config::set(profile.as_deref(), enabled)).await?
 }
 
+/// Whether omp's own config has `setting` (`autoCompaction` /
+/// `autoRetry`) on for `profile` — see `omp_config::get_bool`. `profile` is
+/// resolved like [`goal_continuation_get`]'s, and the webview names a
+/// closed setting, never an omp key.
+///
+/// Runs `async` + `spawn_blocking`: it shells out to `omp config get`.
+#[tauri::command]
+async fn omp_setting_get(
+    profile: Option<String>,
+    setting: omp_config::BoolSetting,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+) -> Result<bool, String> {
+    let profile = store.resolve_owned(profile)?;
+    off_ipc(move || omp_config::get_bool(profile.as_deref(), setting)).await?
+}
+
+/// Turn `setting` on or off in omp's config for `profile` — see
+/// `omp_config::set_bool`. Returns the effective value re-read after the
+/// write. Same profile resolution and `async` + `spawn_blocking` shape as
+/// [`omp_setting_get`].
+#[tauri::command]
+async fn omp_setting_set(
+    profile: Option<String>,
+    setting: omp_config::BoolSetting,
+    enabled: bool,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+) -> Result<bool, String> {
+    let profile = store.resolve_owned(profile)?;
+    off_ipc(move || omp_config::set_bool(profile.as_deref(), setting, enabled)).await?
+}
+
 /// Shared profile-resolution and home-dir setup for the three keybindings
 /// commands. Returns `(home, resolved_profile, env_dir)` ready to pass to
 /// `keybindings::payload` / `keybindings::payload_with_overlay`.
@@ -1675,6 +1707,8 @@ pub fn run() {
             usage_stats,
             goal_continuation_get,
             goal_continuation_set,
+            omp_setting_get,
+            omp_setting_set,
             list_project_files,
             list_profiles,
             create_profile,

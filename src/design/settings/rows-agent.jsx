@@ -9,6 +9,12 @@
                      holds "rpc") in omp's config of ctx.goal.profileId,
                      read and written through app/use-goal-mode.jsx's
                      useGoalContinuation (goal_continuation_get/set)
+     autoCompaction  omp's auto-compaction (`compaction.enabled` and a
+     autoRetry       non-empty `compaction.methodOrder`) and `retry.enabled`
+                     in the same profile's config, through
+                     app/use-omp-setting.jsx's useOmpSetting
+                     (omp_setting_get/set); omp's config watcher applies a
+                     change to the profile's running tabs
    ═════════════════════════════════════════════════════════════════════ */
 
 function _SRA_profileName(ctx, id) {
@@ -40,10 +46,14 @@ function _SRA_StartupProfile({ row, ctx, query }) {
   );
 }
 
-function _SRA_GoalContinue({ row, ctx, query }) {
+/** A switch that owns one of omp's own booleans for the goal row's profile
+ *  (no desktop copy, no RPC frame). `useValue(bridge, profileId)` is the
+ *  hook the value comes from (`{value, busy, error, set}`); every such row
+ *  shares the scope sentence, loading and error states of the goal row. */
+function _SRA_OmpSwitch({ row, ctx, query, useValue }) {
   const { SettingsRow: Row, SettingsToggle: Toggle } = window;
   const profileId = ctx.goal?.profileId ?? null;
-  const cont = window.useGoalContinuation(ctx.bridge, profileId, true);
+  const cont = useValue(ctx.bridge, profileId);
   const name = profileId ? _SRA_profileName(ctx, profileId) : null;
   const scope = name ? OMP_TR(" Applies to profile “{name}” (omp's config); its running tabs pick it up without a restart.", { name }) : "";
   let control;
@@ -62,7 +72,21 @@ function _SRA_GoalContinue({ row, ctx, query }) {
   );
 }
 
+function _SRA_GoalContinue(props) {
+  return <_SRA_OmpSwitch {...props} useValue={(bridge, profileId) => window.useGoalContinuation(bridge, profileId, true)} />;
+}
+
+function _SRA_AutoCompaction(props) {
+  return <_SRA_OmpSwitch {...props} useValue={(bridge, profileId) => window.useOmpSetting(bridge, "autoCompaction", profileId, true)} />;
+}
+
+function _SRA_AutoRetry(props) {
+  return <_SRA_OmpSwitch {...props} useValue={(bridge, profileId) => window.useOmpSetting(bridge, "autoRetry", profileId, true)} />;
+}
+
 Object.assign(window.OMP_SETTINGS_ROWS = window.OMP_SETTINGS_ROWS || {}, {
   startupProfile: _SRA_StartupProfile,
   goalContinue: _SRA_GoalContinue,
+  autoCompaction: _SRA_AutoCompaction,
+  autoRetry: _SRA_AutoRetry,
 });

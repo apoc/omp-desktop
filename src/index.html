@@ -570,6 +570,10 @@
   <script type="text/babel" src="app/use-keymap.jsx"></script>
   <script type="text/babel" src="app/use-subagent-manager.jsx"></script>
   <script type="text/babel" src="app/use-updater.jsx"></script>
+  <!-- Settings → Agent's omp-config hooks (useOmpFlag, useOmpSetting); no
+       top-level destructures. Loads before use-goal-mode.jsx, which builds
+       useGoalContinuation on window.useOmpFlag. -->
+  <script type="text/babel" src="app/use-omp-setting.jsx"></script>
   <!-- Goal mode in the composer; destructures window.GoalStrip,
        window.OMP_SESSION_UI, window.OMP_GOAL and window.OMP_TURN_STATUS
        at top level. -->

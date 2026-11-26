@@ -37,7 +37,7 @@ function harness() {
     },
     OMP_EXT_WIDGETS: { EMPTY: {} },
     OMP_SESSION_PREFS: {
-      fromTweaks: () => ({ autoCompaction: true, autoRetry: true }),
+      fromTweaks: () => ({}),
       closeGuardArmed: () => false,
     },
     OMP_TWEAKS_STORE: { read: () => ({}) },

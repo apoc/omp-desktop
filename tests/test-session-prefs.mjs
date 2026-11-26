@@ -29,7 +29,7 @@ function check(label, fn) {
   passed++;
 }
 
-const DEFAULTS = { restoreTabs: true, confirmBusyClose: false, autoName: true, autoCompaction: true, autoRetry: true, theme: "aurora" };
+const DEFAULTS = { restoreTabs: true, confirmBusyClose: false, autoName: true, theme: "aurora" };
 const ON = { ...P.fromTweaks({}, DEFAULTS), confirmBusyClose: true };
 const OFF = P.fromTweaks({}, DEFAULTS);
 const tab = (id, runState, name = id) => ({ id, name, runState });
@@ -37,12 +37,18 @@ const tab = (id, runState, name = id) => ({ id, name, runState });
 // ── fromTweaks / changedKeys ─────────────────────────────────────────────
 check("fromTweaks: defaults fill missing keys, only the pref keys are kept", () => {
   assert.deepEqual(P.fromTweaks({}, DEFAULTS),
-    { restoreTabs: true, confirmBusyClose: false, autoName: true, autoCompaction: true, autoRetry: true });
+    { restoreTabs: true, confirmBusyClose: false, autoName: true });
+});
+check("fromTweaks: omp's own switches are not desktop prefs (#92)", () => {
+  assert.deepEqual([...P.KEYS], ["restoreTabs", "confirmBusyClose", "autoName"]);
+  const p = P.fromTweaks({ autoCompaction: false, autoRetry: false }, { ...DEFAULTS, autoCompaction: true, autoRetry: true });
+  assert.equal("autoCompaction" in p, false);
+  assert.equal("autoRetry" in p, false);
 });
 check("fromTweaks: stored booleans win", () => {
-  const p = P.fromTweaks({ restoreTabs: false, autoRetry: false }, DEFAULTS);
+  const p = P.fromTweaks({ restoreTabs: false, confirmBusyClose: true }, DEFAULTS);
   assert.equal(p.restoreTabs, false);
-  assert.equal(p.autoRetry, false);
+  assert.equal(p.confirmBusyClose, true);
   assert.equal(p.autoName, true);
 });
 check("fromTweaks: a malformed stored value falls back to the default", () => {
@@ -56,7 +62,7 @@ check("fromTweaks: no tweaks and no defaults → every pref off", () => {
 });
 check("changedKeys: only differing keys, in KEYS order", () => {
   assert.deepEqual(P.changedKeys(OFF, OFF), []);
-  assert.deepEqual(P.changedKeys(OFF, { ...OFF, autoRetry: false, restoreTabs: false }), ["restoreTabs", "autoRetry"]);
+  assert.deepEqual(P.changedKeys(OFF, { ...OFF, autoName: false, restoreTabs: false }), ["restoreTabs", "autoName"]);
 });
 
 // ── busy tabs ────────────────────────────────────────────────────────────

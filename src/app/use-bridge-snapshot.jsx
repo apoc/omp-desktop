@@ -21,7 +21,9 @@ function useBridgeSnapshot(bridge, setters) {
       setters.setActivity(snap.activity);
       setters.setSparkline(snap.sparkline);
       setters.setModelState(snap.model || _UB_NULL_MODEL);
-      if (snap.thinkingLevel) setters.setThinkingLevel(snap.thinkingLevel);
+      // Applied even when null: a new tab has no level until its first
+      // get_state, and keeping the previous tab's would show it as this tab's.
+      setters.setThinkingLevel(snap.thinkingLevel ?? null);
       setters.setSessions(snap.sessions ?? []);
       setters.setPromptHistory(snap.promptHistory ?? []);
       setters.setSubagents(snap.subagents);
