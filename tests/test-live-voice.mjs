@@ -251,14 +251,14 @@ function bridgeHarness() {
     OMP_HTML_FORM: {
       parse: html => html === "empty"
         ? { error: "The form is empty." }
-        : { form: {
-          sections: [{ title: "Setup", blocks: [], fieldset: true }],
-          fields: [{ kind: "text", name: html.includes("password") ? "pw" : "name", type: html.includes("password") ? "password" : "text", multiline: false, label: "Name", value: "", placeholder: "", required: false, rows: 1 }],
-          hidden: html.includes("hidden") ? [["token", "desktop-default"]] : [],
-          hasPasswords: html.includes("password"),
-        } },
-      withHiddenDefaults: (form, data) => ({ ...Object.fromEntries(form.hidden), ...data }),
-      publicData: (form, data) => Object.fromEntries(Object.entries(data).map(([name, value]) => [name, form.fields.some(field => field.name === name && field.type === "password") ? "••••••••" : value])),
+        : html.includes("password")
+          ? { error: "This form asks for a password; enter it in a terminal instead — omp would echo it in its output." }
+          : { form: {
+            sections: [{ title: "Setup", blocks: [], fieldset: true }],
+            fields: [{ kind: "text", name: "name", type: "text", multiline: false, label: "Name", value: "", placeholder: "", required: false, rows: 1 }],
+            hidden: html.includes("hidden") ? [["token", "desktop-default"]] : [],
+          } },
+      withHiddenDefaults: (form, data) => ({ ...data, ...Object.fromEntries(form.hidden) }),
     },
     OMP_SUBAGENTS: { emptySubagents: () => ({}), subscriptionLevelFor: () => "progress", mergeSnapshots: () => ({}) },
     OMP_QUEUE: { EMPTY_QUEUE: {} }, OMP_GOAL: { UNKNOWN: {} }, OMP_EXT_WIDGETS: { EMPTY: {} },
@@ -292,7 +292,8 @@ function bridgeHarness() {
     if (matches.length >= count) return Promise.resolve(matches[count - 1]);
     return new Promise(resolve => waiters.push({ type, count, resolve }));
   }
-  let releaseStart = null, holdStart = false, holdHistory = false, failResponses = false, approvalMode = "write";
+  let releaseStart = null, holdStart = false, holdHistory = false, failResponses = false, holdResponses = false, approvalMode = "write";
+  const pendingResponses = [];
   const histories = new Map();
   const invocations = [];
   w.__TAURI__ = {
@@ -320,6 +321,7 @@ function bridgeHarness() {
           queueMicrotask(() => reply(cmd, true, { messages: histories.get(cmd.sessionId) ?? [] }));
         }
         if (cmd.type === "extension_ui_response" && failResponses) return Promise.reject(new Error("IPC unavailable"));
+        if (cmd.type === "extension_ui_response" && holdResponses) return new Promise((resolve, reject) => pendingResponses.push({ resolve, reject }));
         if ((cmd.type === "live_start" || cmd.type === "dictation_start") && holdStart) return new Promise(resolve => { releaseStart = resolve; });
       }
       return Promise.resolve(null);
@@ -339,6 +341,8 @@ function bridgeHarness() {
     holdHistory: () => { holdHistory = true; },
     setHistory: (id, messages) => { histories.set(id, messages); },
     failResponses: value => { failResponses = value; },
+    holdResponses: () => { holdResponses = true; },
+    failPendingResponse: () => { holdResponses = false; pendingResponses.shift().reject(new Error("IPC unavailable")); },
     exit: (id, reason) => listeners.get(`agent://exit/${id}`)?.({ payload: reason }),
   };
 }
@@ -891,17 +895,19 @@ await checkAsync("a second form answer is not resent", async () => {
   assert.equal(h.commands.filter(command => command.type === "extension_ui_response" && command.id === "form2").length, 1);
 });
 
-await checkAsync("password answers are sent but only masked data and merged hidden defaults reach state", async () => {
+await checkAsync("a password form is cancelled immediately with a visible terminal-only note", async () => {
   const h = bridgeHarness();
   const { a } = await twoTabs(h);
-  h.emit(a, { type: "extension_ui_request", id: "secret", method: "form", html: "<form><input type=hidden name=token><input type=password name=pw></form>" });
-  await new Promise(resolve => setTimeout(resolve, 250));
-  await h.bridge.answerForm("secret", { pw: "typed-secret" });
-  const reply = h.commands.find(command => command.type === "extension_ui_response" && command.id === "secret");
-  assert.deepEqual(reply.data, { token: "desktop-default", pw: "typed-secret" });
+  h.emit(a, { type: "extension_ui_request", id: "secret", method: "form", html: "<form><input type=password name=pw value=prefilled-secret></form>" });
+  await new Promise(resolve => setTimeout(resolve, 30));
   const bubble = h.snapshot().messages.find(message => message.id === "secret");
-  assert.deepEqual(bubble.data, { token: "desktop-default", pw: "••••••••" });
-  assert.doesNotMatch(JSON.stringify(bubble), /typed-secret/);
+  assert.equal(bubble.cancelled, true);
+  assert.equal(bubble.form, null);
+  assert.match(bubble.formError, /enter it in a terminal instead/);
+  const reply = h.commands.find(command => command.type === "extension_ui_response" && command.id === "secret");
+  assert.equal(reply.cancelled, true);
+  assert.equal(reply.data, undefined);
+  assert.doesNotMatch(JSON.stringify(bubble), /prefilled-secret/);
 });
 
 await checkAsync("a failed form answer stays open and retryable, without retaining its answer", async () => {
@@ -919,6 +925,43 @@ await checkAsync("a failed form answer stays open and retryable, without retaini
   assert.equal(await h.bridge.answerForm("retry", { name: "second" }), true);
   bubble = h.snapshot().messages.find(message => message.id === "retry");
   assert.deepEqual([bubble.answered, bubble.data], [true, { name: "second" }]);
+});
+
+await checkAsync("a delayed answer failure rolls back only its originating tab", async () => {
+  const h = bridgeHarness();
+  const { a, b } = await twoTabs(h);
+  h.emit(a, { type: "extension_ui_request", id: "delayed", method: "form", html: "<form><input name=name></form>" });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  h.holdResponses();
+  const answer = h.bridge.answerForm("delayed", { name: "first" });
+  await h.waitCommand("extension_ui_response");
+  await h.bridge.activateSession(b);
+  h.failPendingResponse();
+  assert.equal(await answer, false);
+  assert.equal(h.snapshot().activeSessionId, b);
+  assert.equal(h.snapshot().messages.some(message => message.id === "delayed"), false);
+  assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /Answer could not be delivered/);
+  await h.bridge.activateSession(a);
+  const bubble = h.snapshot().messages.find(message => message.id === "delayed");
+  assert.equal(Boolean(bubble.answered), false);
+  assert.match(h.snapshot().messages.at(-1).blocks[0].text, /could not be delivered/i);
+});
+
+await checkAsync("omp withdrawal while an answer is pending stays withdrawn after delivery fails", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.emit(a, { type: "extension_ui_request", id: "withdrawn", method: "form", html: "<form><input name=name></form>" });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  h.holdResponses();
+  const answer = h.bridge.answerForm("withdrawn", { name: "first" });
+  await h.waitCommand("extension_ui_response");
+  h.emit(a, { type: "extension_ui_request", id: "cancel-withdrawn", method: "cancel", targetId: "withdrawn" });
+  h.failPendingResponse();
+  assert.equal(await answer, false);
+  const bubble = h.snapshot().messages.find(message => message.id === "withdrawn");
+  assert.equal(bubble.cancelled, true);
+  assert.equal(bubble.closedByOmp, true);
+  assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /Answer could not be delivered/);
 });
 
 await checkAsync("an unsupported form cancellation reports delivery failure visibly", async () => {

@@ -14,16 +14,13 @@
   }
 
   function phoneForm(form) {
-    const fields = new Map();
-    for (const field of form.fields ?? []) {
-      fields.set(field, field.type === "password" ? { ...field, value: "" } : field);
-    }
+    const fieldIndices = new Map((form.fields ?? []).map((field, index) => [field, index]));
     return {
       ...form,
-      fields: (form.fields ?? []).map(field => fields.get(field)),
+      fields: form.fields ?? [],
       sections: (form.sections ?? []).map(section => ({
         ...section,
-        blocks: (section.blocks ?? []).map(block => block.kind === "field" ? { ...block, field: fields.get(block.field) ?? block.field } : block),
+        blocks: (section.blocks ?? []).map(block => block.kind === "field" ? { ...block, field: fieldIndices.get(block.field) } : block),
       })),
       // Hidden defaults never leave the desktop; it merges them on answer.
       hidden: [],
@@ -152,7 +149,7 @@
 
   // The phone is untrusted input: check the value fits the open ask's kind.
   // null (cancel) is always allowed. Returns an error text or null.
-  function invalidAnswer(ask, value) {
+  function invalidAnswer(ask, value, desktopForm) {
     if (value === null) return null;
     const bad = "invalid answer";
     switch (ask.kind) {
@@ -164,8 +161,10 @@
       case "input": case "editor": return typeof value === "string" ? null : bad;
       case "dialog":
         return validDialogAnswers(ask.questions, value) ? null : bad;
-      case "form":
-        return ask.form && window.OMP_HTML_FORM?.validateData(ask.form, value) ? null : bad;
+      case "form": {
+        const form = desktopForm ?? ask.form;
+        return form && window.OMP_HTML_FORM?.validateData(form, value) ? null : bad;
+      }
       default: return bad;
     }
   }
@@ -237,17 +236,23 @@
           case "abort": await deliver(() => bridge.abort()); break;
           case "answer": {
             const deadline = Date.now() + 5000;
-            let ask;
+            let ask, desktopForm;
             while (true) {
               guard();
               const snapshot = getSnapshot();
               if (activeTab() !== tabId || snapshot?.activeSessionId !== tabId) throw new Error("tab not available");
-              ask = (snapshot.messages ?? []).map(askCard).find(q => q?.id === action.askId);
-              if (ask || Date.now() >= deadline) break;
+              const source = (snapshot.messages ?? []).find(message => {
+                const card = askCard(message);
+                if (card?.id !== action.askId) return false;
+                ask = card;
+                desktopForm = message.form ?? message.ask?.form;
+                return true;
+              });
+              if (source || Date.now() >= deadline) break;
               await new Promise(resolve => setTimeout(resolve, 100));
             }
             if (!ask) throw new Error("question no longer open");
-            const invalid = invalidAnswer(ask, action.value);
+            const invalid = invalidAnswer(ask, action.value, desktopForm);
             if (invalid) throw new Error(invalid);
             const call = answerCall(ask, action.value);
             await deliver(() => bridge[call.method](...call.args));

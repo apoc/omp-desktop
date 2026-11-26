@@ -543,7 +543,6 @@ window.OMP_I18N.add("zh", {
   "Other (type your own)": "其他（自行输入）",
   "Image: {alt}": "图片：{alt}",
   "Pattern: {pattern}": "模式：{pattern}",
-  "omp will echo submitted values, including passwords, in its tool output.": "omp 会在其工具输出中回显提交的值，包括密码。",
   "omp submits the form's defaults after {time}": "omp 将在 {time} 后提交表单的默认值",
   "Fix the marked fields before sending": "发送前请修正标记的字段",
   "Required": "必填",

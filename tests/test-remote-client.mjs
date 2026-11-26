@@ -145,6 +145,16 @@ class Element {
   }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map(c => c.textContent).join(""); }
+  get value() { return this._value ?? ""; }
+  set value(value) {
+    this._value = String(value);
+    if (this.type === "range") {
+      const number = Number(this._value);
+      const min = this.min === undefined || this.min === "" ? 0 : Number(this.min);
+      const max = this.max === undefined || this.max === "" ? 100 : Number(this.max);
+      this._value = String(Math.min(max, Math.max(min, Number.isFinite(number) ? number : min)));
+    }
+  }
   set innerHTML(value) { this.markup = value; }
   get firstElementChild() { return this.children[0]; }
   pause() {}
@@ -492,7 +502,7 @@ await check("form asks render the parsed controls and send omp's data shape", as
   ] };
   const name = { kind: "text", name: "name", type: "text", multiline: false, label: "Name", value: "", placeholder: "Your name", required: true, rows: 1 };
   const form = {
-    sections: [{ title: "Setup", fieldset: true, blocks: [{ kind: "text", text: "Pick one", heading: false }, { kind: "field", field: db }, { kind: "field", field: name }, { kind: "image", alt: "Diagram" }] }],
+    sections: [{ title: "Setup", fieldset: true, blocks: [{ kind: "text", text: "Pick one", heading: false }, { kind: "field", field: 0 }, { kind: "field", field: 1 }, { kind: "image", alt: "Diagram" }] }],
     fields: [db, name], hidden: [],
   };
   await b.message({ t: "view", view: { ...view().view, asks: [{ id: "f", kind: "form", title: "Setup", message: "", form, timeout: 30000 }] } });
@@ -500,13 +510,26 @@ await check("form asks render the parsed controls and send omp's data shape", as
   assert.match(b.app.textContent, /Diagram/);
   assert.match(b.app.textContent, /defaults after 30 s/);
   assert.equal(b.button("Off").disabled, true);
+  const other = b.nodes().find(n => n.tagName === "input" && n.placeholder === "Other (type your own)");
+  other.value = "SQLite"; await other.emit("input");
   await b.button("MySQL").emit("click");
+  assert.equal(other.value, "", "a radio pick clears the visible Other draft");
   const text = b.nodes().find(n => n.tagName === "input" && n.placeholder === "Your name");
   text.value = "Ada"; await text.emit("input");
   await b.button("Submit").emit("click");
   assert.equal(b.frames.at(-1).kind, "answer");
   assert.equal(b.frames.at(-1).askId, "f");
   assert.deepEqual(b.frames.at(-1).value, { db: "my", name: "Ada" });
+});
+await check("range drafts store the browser-normalized value shown on the phone", async () => {
+  const b = browser(); await b.connect();
+  const range = { kind: "text", name: "level", type: "range", multiline: false, label: "Level", value: "99", placeholder: "", required: false, min: 1, max: 9, step: 1, rows: 1 };
+  const form = { sections: [{ title: "", fieldset: false, blocks: [{ kind: "field", field: 0 }] }], fields: [range], hidden: [] };
+  await b.message({ t: "view", view: { ...view().view, asks: [{ id: "r", kind: "form", title: "Range", message: "", form }] } });
+  const input = b.nodes().find(n => n.tagName === "input" && n.type === "range");
+  assert.equal(input.value, "9");
+  await b.button("Submit").emit("click");
+  assert.deepEqual(b.frames.at(-1).value, { level: 9 });
 });
 await check("an unsupported form shows its note and no submit button", async () => {
   const b = browser(); await b.connect();

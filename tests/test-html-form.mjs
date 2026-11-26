@@ -277,21 +277,11 @@ check("fieldError enforces required, numeric bounds, lengths, email and URL; pat
   assert.equal(H.fieldError(by("pick"), []), "Required");
 });
 
-check("password prefill is dropped and submitted passwords are masked in public data and summaries", () => {
+check("password forms are refused with a terminal-only note", () => {
   const parsed = parse(`<form><input name="user" value="Ada"><input type="password" name="pw" value="prefilled-secret"></form>`);
-  assert.equal(parsed.error, undefined, parsed.error);
-  const { form } = parsed;
-  assert.deepEqual(form.fields.map(f => f.name), ["user", "pw"]);
-  const password = form.fields.find(f => f.name === "pw");
-  assert.equal(password.value, "");
-  assert.equal(form.hasPasswords, true);
-  assert.doesNotMatch(JSON.stringify(form), /prefilled-secret/);
-  assert.deepEqual(JSON.parse(JSON.stringify(H.defaultData(form))), { user: "Ada", pw: "" });
-  const draft = H.setText(H.emptyDraft(form), form, 1, "typed-secret");
-  assert.deepEqual(JSON.parse(JSON.stringify(H.buildData(form, draft, { hidden: false }))), { user: "Ada", pw: "typed-secret" });
-  assert.deepEqual(JSON.parse(JSON.stringify(H.publicData(form, H.buildData(form, draft)))), { user: "Ada", pw: "••••••••" });
-  assert.deepEqual(H.summary(form, { user: "Ada", pw: "typed-secret" }), { answer: null, count: 2 });
-  assert.doesNotMatch(JSON.stringify(H.summary(form, { pw: "typed-secret" })), /typed-secret/);
+  assert.equal(parsed.form, undefined);
+  assert.equal(parsed.error, "This form asks for a password; enter it in a terminal instead — omp would echo it in its output.");
+  assert.doesNotMatch(JSON.stringify(parsed), /prefilled-secret/);
 });
 
 check("single-choice picks clear Other and missing checkbox values match omp's on default", () => {
@@ -315,6 +305,23 @@ check("oversized HTML, excessive nodes, deep nesting and over 1000 options are u
   assert.match(parse(`<form><select name="x">${options}</select></form>`).error, /could not be read/i);
 });
 
+check("node and depth limits cover the whole document, not only the first form", () => {
+  assert.match(parse(`<form><input name="x"></form>${"<span></span>".repeat(10001)}`).error, /could not be read/i);
+  assert.match(parse(`<form><input name="x"></form>${"<div>".repeat(70)}${"</div>".repeat(70)}`).error, /could not be read/i);
+});
+
+check("expanded display text is capped at 64 KiB, including the 2 KiB table fixture", () => {
+  // One header borrowed by 42 rows expands a compact source to 55 KB of labels.
+  const header = "h".repeat(1310);
+  const controls = 42;
+  const html = `<form><table><tr><th>${header}</th></tr>${'<tr><td><input name=r></td></tr>'.repeat(controls)}</table></form>`;
+  assert.ok(html.length < 3 * 1024, `fixture source was ${html.length}`);
+  assert.equal(header.length * controls, 55020);
+  assert.match(parse(html.replace("</form>", `${"<p>context</p>".repeat(1600)}</form>`)).error, /could not be read/i);
+  const hugeOptions = Array.from({ length: 700 }, (_, i) => `<option value="${i}">${"x".repeat(100)}</option>`).join("");
+  assert.match(parse(`<form><select name="x">${hugeOptions}</select></form>`).error, /could not be read/i);
+});
+
 check("multiline options and table control labels follow omp's parse.ts oracle", () => {
   // Ported from parse.ts: option text uses /\s+/g, unlike ordinary spans.
   const ompOption = text => text.replace(/\s+/g, " ").trim();
@@ -327,22 +334,29 @@ check("multiline options and table control labels follow omp's parse.ts oracle",
   assert.equal(form.fields[1].other, false);
 });
 
-check("phone data omits hidden defaults while desktop data retains them", () => {
+check("a table control's own wrapping label wins over the whole cell", () => {
+  const { form } = parse(`<form><table><tr><th>Header</th></tr><tr><td>Cell context <label>Own label <input name="answer"></label></td></tr></table></form>`);
+  assert.equal(form.fields[0].label, "Own label");
+});
+
+check("phone data omits hidden defaults while desktop data retains them authoritatively", () => {
   const { form } = parse(`<form><input type="hidden" name="large" value="secret"><input name="shown" value="yes"></form>`);
   assert.deepEqual(JSON.parse(JSON.stringify(H.buildData(form, H.emptyDraft(form), { hidden: false }))), { shown: "yes" });
   assert.deepEqual(JSON.parse(JSON.stringify(H.withHiddenDefaults(form, { shown: "yes" }))), { large: "secret", shown: "yes" });
+  assert.deepEqual(JSON.parse(JSON.stringify(H.withHiddenDefaults(form, { large: "forged", shown: "yes" }))), { large: "secret", shown: "yes" });
 });
 
-check("range constraints are assigned before its value", () => {
+check("range constraints are assigned before its value and native normalization is returned", () => {
   const input = {
-    log: [],
+    log: [], normalized: "4",
     set min(value) { this.log.push(["min", value]); },
     set max(value) { this.log.push(["max", value]); },
     set step(value) { this.log.push(["step", value]); },
     set value(value) { this.log.push(["value", value]); },
+    get value() { return this.normalized; },
   };
-  H.setInputValue(input, { type: "range", min: 1, max: 9, step: 0.5 }, "4");
-  assert.deepEqual(input.log, [["min", 1], ["max", 9], ["step", 0.5], ["value", "4"]]);
+  assert.equal(H.setInputValue(input, { type: "range", min: 1, max: 9, step: 0.5 }, "99"), "4");
+  assert.deepEqual(input.log, [["min", 1], ["max", 9], ["step", 0.5], ["value", "99"]]);
 });
 
 check("summary shows visible answers only, never hidden values", () => {
@@ -433,6 +447,14 @@ function ompParseResponse(form, data) {
 function rejects(form, data) {
   try { ompParseResponse(form, data); return false; } catch { return true; }
 }
+
+check("nested table rows are parsed only by their closest table, matching omp", () => {
+  const { form } = parse(`<form><table><tr><th>Outer</th></tr><tr><td><label>Once <input type="checkbox" name="c" value="outer"></label><table><tr><td><label>Inner <input type="checkbox" name="c" value="inner"></label></td></tr></table></td></tr></table></form>`);
+  assert.deepEqual(form.fields[0].options.map(option => option.value), ["outer", "inner"]);
+  const data = H.buildData(form, H.pick(H.emptyDraft(form), form, 0, 1));
+  assert.deepEqual(JSON.parse(JSON.stringify(data)), { c: ["inner"] });
+  assert.doesNotThrow(() => ompParseResponse(form, data), "omp must accept the nested-table answer");
+});
 
 check("builder data is accepted by a port of omp's parseFormDialogResponse", () => {
   const { form } = parse(mixed);

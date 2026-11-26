@@ -590,32 +590,48 @@
     return settled;
   }
 
-  // Undo a local `_settleAsk` whose answer never reached omp: the bubble
-  // with this id that reads answered (and was not cancelled by omp since)
-  // takes input again. The caller publishes.
-  function _reopenAsk(id) {
-    state.messages = state.messages.map(m => {
-      if (m.kind === "ask" && m.id === id && (m.answered || (m.cancelled && !m.closedByOmp))) {
-        const { answered: _a, answer: _v, answers: _answers, data: _data, cancelled: _c, ...open } = m;
-        return open;
-      }
-      return m;
+  // Patch the exact bubble captured before an asynchronous IPC hand-off. If
+  // its tab is backgrounded, update that tab's saved snapshot instead of the
+  // active transcript. Identity matters: a cancellation or newer answer is a
+  // new object and must not be rolled back by this stale completion.
+  function _patchSessionBubble(sessionId, bubble, patch, deliveryNote = false) {
+    const target = activeSessionId === sessionId ? state : sessionSnapshots.get(sessionId);
+    if (!target) return;
+    let changed = false;
+    let messages = target.messages.map(message => {
+      if (message !== bubble) return message;
+      const next = patch(message);
+      if (next === message) return message;
+      changed = true;
+      return next;
     });
+    if (changed && deliveryNote) {
+      messages = [...messages, _assistantBubble({
+        model: target.model?.name ?? null,
+        blocks: [{ type: "text", text: "**Answer could not be delivered to omp.** The prompt is open again; please retry." }],
+        completed: true,
+      })];
+    }
+    target.messages = messages;
+    if (changed && activeSessionId === sessionId) notify();
+  }
+
+  // Reopen only a still-locally-settled bubble. omp's own withdrawal wins.
+  function _reopenAsk(bubble) {
+    if (bubble.closedByOmp || bubble.cancelled) return bubble;
+    const { answered: _a, answer: _v, answers: _answers, data: _data, cancelled: _c, ...open } = bubble;
+    return open;
   }
 
   // Resolve a pending ask bubble: settle it, then send `payload` back to
   // omp — only if it was still open, so a re-answer sends nothing.
-  // Proven with an eval-kernel cell (7/7 cases: patch applied, array
-  // replaced, {value}/{confirmed}/{cancelled} payload shapes preserved
-  // per caller, and re-answer + unknown-id both send nothing).
   async function _resolveAsk(id, patch, payload) {
-    if (!_settleAsk(id, patch)) return false;
+    const sessionId = activeSessionId;
+    const index = state.messages.findIndex(m => m.kind === "ask" && m.id === id && !m.answered && !m.cancelled);
+    if (index < 0 || !_settleAsk(id, patch)) return false;
+    const bubble = state.messages[index];
     const delivered = await _send({ type: "extension_ui_response", id, ...payload });
-    if (!delivered) {
-      _reopenAsk(id);
-      _pushAssistantNote("**Answer could not be delivered to omp.** The prompt is open again; please retry.");
-      notify();
-    }
+    if (!delivered) _patchSessionBubble(sessionId, bubble, _reopenAsk, true);
     return delivered;
   }
 
@@ -2459,21 +2475,23 @@
       if (ev.method === "form") {
         const parsed = HTML_FORM.parse(ev.html);
         if (!parsed.form) {
-          state.messages = [...state.messages, _askMessage("form", ev, {
+          const sessionId = activeSessionId;
+          const bubble = _askMessage("form", ev, {
             title: "Unsupported form",
             form: null,
             formError: parsed.error ?? "The form could not be read.",
             timeout: ev.timeout ?? null,
             data: null,
             cancelled: true,
-          })];
+          });
+          state.messages = [...state.messages, bubble];
           notify();
           _send({ type: "extension_ui_response", id: ev.id, cancelled: true }).then(delivered => {
             if (delivered) return;
-            state.messages = state.messages.map(message => message.kind === "ask" && message.id === ev.id
-              ? { ...message, formError: `${message.formError} Cancellation could not be delivered to omp.` }
-              : message);
-            notify();
+            _patchSessionBubble(sessionId, bubble, message => ({
+              ...message,
+              formError: `${message.formError} Cancellation could not be delivered to omp.`,
+            }));
           });
           return;
         }
@@ -2518,7 +2536,9 @@
           return;
         }
         // omp settled it itself (turn stopped, or its ask timeout ran out).
-        _settleAsk(ev.targetId, { cancelled: true, closedByOmp: true });
+        // This also wins over a local answer whose IPC hand-off is pending.
+        const bubble = state.messages.find(message => message.kind === "ask" && message.id === ev.targetId && !message.closedByOmp);
+        if (bubble) _patchSessionBubble(activeSessionId, bubble, message => ({ ...message, cancelled: true, closedByOmp: true }));
         return;
       }
       // An extension's status line or text widget (#52): kept per tab, shown
@@ -4241,8 +4261,7 @@
     answerForm(id, data) {
       const message = state.messages.find(m => m.kind === "ask" && m.id === id && m.method === "form");
       const outgoing = message?.form ? HTML_FORM.withHiddenDefaults(message.form, data) : data;
-      const publicData = message?.form ? HTML_FORM.publicData(message.form, outgoing) : null;
-      return _resolveAsk(id, { answered: true, data: publicData }, { data: outgoing });
+      return _resolveAsk(id, { answered: true, data: outgoing }, { data: outgoing });
     },
 
     /**

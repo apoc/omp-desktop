@@ -305,10 +305,6 @@
       }
       const draft = askDrafts.get(key) ?? F.emptyDraft(form);
       askDrafts.set(key, draft);
-      // JSON does not preserve the parser's shared field references; the
-      // model's fields and blocks are in the same document order, so walk the
-      // fields by position.
-      let fieldCursor = 0;
       const problem = node("p", "", "error");
       const refresh = () => {
         const errors = F.draftErrors(form, draft);
@@ -335,12 +331,9 @@
           holder.append(table);
           container.append(holder);
         } else if (entry.kind === "field") {
-          container.append(formField(entry.field, fieldCursor++, form, draft, refresh));
+          container.append(formField(form.fields[entry.field], entry.field, form, draft, refresh));
         }
       };
-      if (form.hasPasswords) {
-        wrap.append(node("p", "omp will echo submitted values, including passwords, in its tool output.", "form-error"));
-      }
       for (const section of form.sections) {
         const box = node("section", undefined, `form-section${section.fieldset ? " fieldset" : ""}`);
         if (section.title) box.append(node("div", section.title, "form-legend"));
@@ -395,6 +388,7 @@
         rows.setAttribute("role", field.multi ? "group" : "radiogroup");
         rows.setAttribute("aria-label", question);
         const rowNodes = [];
+        let otherInput;
         field.options.forEach((option, oi) => {
           const row = node("div", undefined, "ask-row");
           const pick = node("button");
@@ -413,16 +407,19 @@
           rows.append(row);
           rowNodes.push(row);
         });
-        const syncRows = () => rowNodes.forEach((row, oi) => {
-          const on = draft[index].picks.includes(oi);
-          row.classList.toggle("selected", on);
-          row.firstElementChild.setAttribute("aria-checked", String(on));
-        });
+        const syncRows = () => {
+          rowNodes.forEach((row, oi) => {
+            const on = draft[index].picks.includes(oi);
+            row.classList.toggle("selected", on);
+            row.firstElementChild.setAttribute("aria-checked", String(on));
+          });
+          if (otherInput && otherInput.value !== draft[index].other) otherInput.value = draft[index].other;
+        };
         syncRows();
         section.append(rows);
         if (field.other) {
           const wrap = node("div", undefined, "ask-other form-other");
-          const input = node("input");
+          const input = otherInput = node("input");
           input.className = "ask-other-input";
           input.value = draft[index].other;
           input.placeholder = "Other (type your own)";
@@ -443,7 +440,7 @@
       } else {
         const input = node("input", undefined, "ask-other-input selectable");
         input.type = field.type || "text";
-        F.setInputValue(input, field, draft[index]);
+        draft[index] = F.setInputValue(input, field, draft[index]);
         input.placeholder = field.placeholder || "";
         input.required = field.required;
         input.addEventListener("input", () => update(F.setText(draft, form, index, input.value)));

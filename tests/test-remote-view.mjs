@@ -152,15 +152,19 @@ test("buildView forwards a parsed form and its timeout, never the raw HTML", () 
   assert.deepEqual(own(broken.asks), [{ id: "bad", kind: "form", title: "Continue?", message: "", formError: "The form is empty." }]);
 });
 
-test("phone forms never publish password prefill", () => {
+test("phone forms serialize each field once and omit hidden defaults", () => {
   const { api } = load();
+  const field = { kind: "text", name: "shown", type: "text", value: "yes", label: "Shown", options: [] };
   const form = {
-    sections: [], hidden: [["large", "hidden-secret"]], hasPasswords: true,
-    fields: [{ kind: "text", name: "pw", type: "password", value: "must-not-leak", label: "Password", options: [] }],
+    sections: [{ title: "", fieldset: false, blocks: [{ kind: "field", field }] }],
+    fields: [field], hidden: [["large", "hidden-secret"]],
   };
-  const view = api.buildView(snapshot({ messages: [ask("pw", "form", { form })] }));
-  assert.equal(view.asks[0].form.fields[0].value, "");
-  assert.doesNotMatch(JSON.stringify(view), /must-not-leak|hidden-secret/);
+  const view = api.buildView(snapshot({ messages: [ask("f", "form", { form })] }));
+  assert.deepEqual(own(view.asks[0].form), {
+    sections: [{ title: "", fieldset: false, blocks: [{ kind: "field", field: 0 }] }],
+    fields: [field], hidden: [],
+  });
+  assert.doesNotMatch(JSON.stringify(view), /hidden-secret/);
 });
 
 test("answerCall dispatches select / confirm / input / editor / dialog / form / cancel", () => {
@@ -554,7 +558,7 @@ test("phone form answers are validated against the parsed model before reaching 
       ], required: false },
       { kind: "text", name: "count", type: "number", multiline: false, label: "Count", value: "", placeholder: "", required: false, rows: 1 },
     ],
-    hidden: [],
+    hidden: [["token", "desktop-default"]],
   };
   const card = { kind: "form", id: "f", form };
   for (const value of [null, {}, { db: "pg" }, { db: "custom" }, { db: "pg", tags: ["a", "b"] }, { db: "pg", count: 4 }])
@@ -567,11 +571,11 @@ test("phone form answers are validated against the parsed model before reaching 
   const handle = api.makeActionHandler({
     answerForm: (...args) => calls.push(args), remoteActionResult: (...args) => results.push(args),
   }, snap, liveStatus);
-  await handle({ reqId: "r", deviceId: "d", tabId: "a", kind: "answer", askId: "f", value: { db: "pg", tags: ["a"] } });
-  assert.deepEqual(calls, [["f", { db: "pg", tags: ["a"] }]]);
+  await handle({ reqId: "r", deviceId: "d", tabId: "a", kind: "answer", askId: "f", value: { db: "pg", tags: ["a"], token: "desktop-default" } });
+  assert.deepEqual(calls, [["f", { db: "pg", tags: ["a"], token: "desktop-default" }]]);
   assert.deepEqual(results, [["r", true]]);
   await handle({ reqId: "r2", deviceId: "d", tabId: "a", kind: "answer", askId: "f", value: { db: "off" } });
-  assert.deepEqual(calls, [["f", { db: "pg", tags: ["a"] }]]);
+  assert.deepEqual(calls, [["f", { db: "pg", tags: ["a"], token: "desktop-default" }]]);
   assert.deepEqual(results.at(-1), ["r2", false, "invalid answer"]);
 });
 

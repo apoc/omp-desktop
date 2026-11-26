@@ -30,7 +30,9 @@
   const MAX_BLOCKS = 2000;
   const MAX_OPTIONS = 1000;
   const MAX_TABLE_CELLS = 2000;
-  const PASSWORD_MASK = "••••••••";
+  const MAX_DISPLAY_BYTES = 64 * 1024;
+  const PASSWORD_REFUSAL = "This form asks for a password; enter it in a terminal instead — omp would echo it in its output.";
+  let UTF8;
 
   function nonBlank(value) {
     return typeof value === "string" && value.trim() ? value : null;
@@ -94,6 +96,27 @@
     return descendants(node, element => ["input", "select", "textarea"].includes(localName(element))).length > 0;
   }
 
+  // querySelectorAll("tr") plus closest("table") in omp's parser: a nested
+  // table's rows belong to that table, never to the outer decision matrix.
+  function tableRows(table) {
+    const rows = [];
+    const walk = node => {
+      for (const child of children(node)) {
+        if (child.nodeType !== 1) continue;
+        const tag = localName(child);
+        if (tag === "table") continue;
+        if (tag === "tr") rows.push(child);
+        else walk(child);
+      }
+    };
+    walk(table);
+    return rows;
+  }
+
+  function wrappingLabel(cell, control) {
+    return descendants(cell, element => localName(element) === "label" && descendants(element, candidate => candidate === control).length > 0).at(-1) ?? null;
+  }
+
   function allElements(root) {
     const out = [];
     const pending = [{ node: root, depth: 0 }];
@@ -121,6 +144,22 @@
       this.blockCount = 0;
       this.optionCount = 0;
       this.tableCellCount = 0;
+      this.displayBytes = 0;
+    }
+
+    budget(text) {
+      this.displayBytes += (UTF8 ??= new TextEncoder()).encode(String(text ?? "")).length;
+      if (this.displayBytes > MAX_DISPLAY_BYTES) throw new Error("This form has too much display text to show.");
+    }
+
+    budgetField(field) {
+      this.budget(field.label);
+      if (field.kind === "choice") for (const option of field.options) this.budget(option.label);
+      else {
+        this.budget(field.value);
+        this.budget(field.placeholder);
+        this.budget(field.pattern);
+      }
     }
 
     build() {
@@ -141,7 +180,6 @@
         sections: this.sections.filter(section => section.title !== "" || section.blocks.length > 0),
         fields: this.fields,
         hidden: this.hidden,
-        hasPasswords: this.fields.some(field => field.type === "password"),
       };
     }
 
@@ -158,11 +196,16 @@
       this.inline = "";
       if (!text) return;
       if (++this.blockCount > MAX_BLOCKS) throw new Error("This form has too much content to show.");
+      this.budget(text);
       this.section.blocks.push({ kind: "text", text, heading: Boolean(heading) });
     }
 
     block(block) {
       if (++this.blockCount > MAX_BLOCKS) throw new Error("This form has too much content to show.");
+      if (block.kind === "text" || block.kind === "pre" || block.kind === "image") this.budget(block.text ?? block.alt);
+      else if (block.kind === "list") for (const item of block.items) this.budget(item);
+      else if (block.kind === "table") for (const row of block.rows) for (const cell of row) this.budget(cell);
+      else if (block.kind === "field") this.budgetField(block.field);
       this.section.blocks.push(block);
     }
 
@@ -252,6 +295,7 @@
     }
 
     startSection(title, fieldset) {
+      this.budget(title);
       if (this.section.blocks.length === 0 && this.section.title === "") {
         this.section.title = title;
         this.section.fieldset = fieldset;
@@ -277,7 +321,7 @@
 
     table(node) {
       this.flush(false);
-      const rows = descendants(node, child => localName(child) === "tr");
+      const rows = tableRows(node);
       const cellsOf = row => children(row).filter(cell => ["td", "th"].includes(localName(cell)));
       this.tableCellCount += rows.reduce((count, row) => count + cellsOf(row).length, 0);
       if (this.tableCellCount > MAX_TABLE_CELLS) throw new Error("This form has too many table cells to show.");
@@ -301,7 +345,8 @@
         if (text) this.block({ kind: "text", text, heading: false });
         cells.forEach((cell, column) => {
           for (const control of descendants(cell, child => ["input", "select", "textarea"].includes(localName(child)))) {
-            const own = labelText(cell);
+            const label = wrappingLabel(cell, control);
+            const own = labelText(label ?? cell);
             this.control(control, own || header[column] || null);
           }
         });
@@ -374,6 +419,7 @@
           // later enabled duplicate could never be submitted distinctly.
           if (group.options.some(existing => !existing.disabled && existing.value === option.value)) option.disabled = true;
           group.options.push(option);
+          this.budget(option.label);
           group.required ||= required;
           return;
         }
@@ -384,7 +430,7 @@
       return this.addField({
         kind: "text", name, type, multiline: false,
         label: own || name.replace(/[_-]+/g, " "),
-        value: type === "password" ? "" : value ?? "",
+        value: value ?? "",
         placeholder: attr(control, "placeholder") ?? "",
         required,
         min: numberAttr(control, "min"),
@@ -417,7 +463,10 @@
       else if (typeof DOMParser !== "undefined") document = new DOMParser().parseFromString(html, "text/html");
       else return { error: "This page cannot read forms." };
       const root = document.body ?? document.documentElement ?? document;
-      const formNode = descendants(root, node => localName(node) === "form")[0];
+      const elements = allElements(root);
+      const formNode = elements.find(node => localName(node) === "form");
+      if (descendants(formNode ?? root, node => localName(node) === "input" && (attr(node, "type") ?? "text").toLowerCase() === "password").length > 0)
+        return { error: PASSWORD_REFUSAL };
       const builder = new Builder(formNode ?? root);
       const form = builder.build();
       if (!form.fields.some(field => field.name) && form.hidden.length === 0)
@@ -502,16 +551,10 @@
   // Phone answers omit hidden inputs to stay inside the action size limit;
   // the desktop adds the authoritative parsed defaults before handing off.
   function withHiddenDefaults(form, data) {
-    return Object.assign(Object.create(null), Object.fromEntries(form.hidden), data);
-  }
-
-  // Only this redacted copy enters settled message state. The original data
-  // goes straight to omp, whose own tool output echoes submitted values.
-  function publicData(form, data) {
-    const safe = Object.create(null);
-    const passwords = new Set(form.fields.filter(field => field.type === "password").map(field => field.name));
-    for (const [name, value] of Object.entries(data ?? {})) safe[name] = passwords.has(name) ? PASSWORD_MASK : value;
-    return safe;
+    const merged = Object.assign(Object.create(null), data);
+    const visible = new Set(form.fields.map(field => field.name));
+    for (const [name, value] of form.hidden) if (!visible.has(name)) merged[name] = value;
+    return merged;
   }
 
   function setInputValue(input, field, value) {
@@ -521,6 +564,7 @@
     if (field.max !== undefined) input.max = field.max;
     if (field.step !== undefined) input.step = field.step;
     input.value = value;
+    return input.value;
   }
 
   function fieldError(field, value) {
@@ -659,7 +703,7 @@
     const parts = [];
     for (const field of form.fields) {
       if (!field.name || hiddenNames.has(field.name) || !Object.hasOwn(data ?? {}, field.name)) continue;
-      const value = field.type === "password" ? PASSWORD_MASK : data[field.name];
+      const value = data[field.name];
       const values = Array.isArray(value) ? value : [value];
       const shown = values.flatMap(entry => {
         if (entry === undefined || entry === null || String(entry).trim() === "") return [];
@@ -694,7 +738,7 @@
   }
 
   window.OMP_HTML_FORM = {
-    parse, emptyDraft, pick, setOther, setText, buildData, defaultData, withHiddenDefaults, publicData, setInputValue,
+    parse, emptyDraft, pick, setOther, setText, buildData, defaultData, withHiddenDefaults, setInputValue,
     fieldError, draftErrors, dataError, validateData, summary, summaryPrompt, timeoutLabel, isArrayChoice, choiceValue, textValue,
   };
 })();
