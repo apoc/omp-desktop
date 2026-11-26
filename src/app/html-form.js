@@ -740,17 +740,8 @@
     return "";
   }
 
-  function timeoutLabel(ms) {
-    if (!Number.isFinite(ms) || ms <= 0) return null;
-    const seconds = Math.max(1, Math.round(ms / 1000));
-    if (seconds < 60) return `${seconds} s`;
-    const minutes = Math.floor(seconds / 60);
-    const rest = seconds % 60;
-    return rest ? `${minutes} min ${rest} s` : `${minutes} min`;
-  }
-
   window.OMP_HTML_FORM = {
     parse, emptyDraft, pick, setOther, setText, buildData, defaultData, withHiddenDefaults, setInputValue,
-    fieldError, draftErrors, dataError, validateData, summary, summaryPrompt, timeoutLabel, isArrayChoice, choiceValue, textValue,
+    fieldError, draftErrors, dataError, validateData, summary, summaryPrompt, isArrayChoice, choiceValue, textValue,
   };
 })();

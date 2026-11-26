@@ -605,10 +605,4 @@ check("random answers from the draft replay against omp's validator", () => {
   }
 });
 
-check("timeout labels reuse the ask dialog's seconds/minutes wording", () => {
-  assert.equal(H.timeoutLabel(45000), "45 s");
-  assert.equal(H.timeoutLabel(90000), "1 min 30 s");
-  assert.equal(H.timeoutLabel(0), null);
-});
-
 console.log(`html-form: ${passed} checks passed`);

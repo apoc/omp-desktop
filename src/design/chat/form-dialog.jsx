@@ -171,7 +171,7 @@ function FormDialog({ msg, onSubmit, onCancel }) {
   const errors = _FD.draftErrors(form, draft);
   const canSend = Object.keys(errors).length === 0;
   const fieldIndex = new Map(form.fields.map((field, index) => [field, index]));
-  const timeout = _FD.timeoutLabel(msg.timeout);
+  const timeout = window.OMP_ASK_DIALOG.timeoutLabel(msg.timeout);
   const keepShiftTab = e => {
     if (e.key === "Tab" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) e.stopPropagation();
   };
