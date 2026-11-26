@@ -60,3 +60,9 @@ omp facts:
   - the custom rows' pure logic, if any is extracted;
   - the snapshot hook applying a `null` thinking level, if a harness reaches `use-bridge-snapshot.jsx` (otherwise state why in the report);
   - `tests/test-i18n.mjs` passes.
+
+## Amendments (review round 1)
+
+- **D92-1a Auto-compaction is two keys.** omp's effective auto-compaction is `compaction.enabled && compaction.methodOrder` non-empty (`session-maintenance.ts` 7107-7112; legacy `compaction.strategy: "off"` migrates to `methodOrder: []`). The switch reads both under one lock and shows `enabled && !methodOrder.is_empty()`. Turning it on sets `enabled: true` when needed and runs `omp config reset compaction.methodOrder` when the order is empty, which is what omp's own setter does. Turning it off sets only `enabled: false`. Retry stays one key.
+- **D92-7 Scope is the profile's config.** `omp config` runs in the desktop's own working directory, so a tab project's `.omp/config.yml` is neither read nor shown. The docs and CHANGELOG say "the profile's config" and name this limit. Per-project values are out of scope.
+- **D92-8 Hook placement.** The generic omp-config hook moves out of `use-goal-mode.jsx` into its own `src/app/use-omp-setting.jsx`, loaded before `use-goal-mode.jsx` in `src/index.html`. The goal hook builds on it.
