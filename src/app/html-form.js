@@ -48,6 +48,14 @@
     return value === undefined || value === null ? null : String(value);
   }
 
+  /** Credential marker shared by both stack halves: after entity decoding the
+   *  browser already did, a `type`/`autocomplete` value counts as a password
+   *  field when it contains "password" anywhere — no token splitting and no
+   *  dependence on whitespace, so NBSP or BOM padding cannot slip past. */
+  function passwordMarker(value) {
+    return (value ?? "").toLowerCase().includes("password");
+  }
+
   function children(node) {
     return Array.from(node?.childNodes ?? []);
   }
@@ -467,10 +475,8 @@
       const root = document.body ?? document.documentElement ?? document;
       const elements = root === document.documentElement ? documentElements : allElements(root);
       const formNode = elements.find(node => localName(node) === "form");
-      const passwordControl = node => localName(node) === "input" && (
-        (attr(node, "type") ?? "text").trim().toLowerCase() === "password"
-        || (attr(node, "autocomplete") ?? "").toLowerCase().split(/\s+/).some(token => token === "current-password" || token === "new-password")
-      );
+      const passwordControl = node => localName(node) === "input"
+        && (passwordMarker(attr(node, "type")) || passwordMarker(attr(node, "autocomplete")));
       if (descendants(formNode ?? root, passwordControl).length > 0)
         return { error: PASSWORD_REFUSAL };
       const builder = new Builder(formNode ?? root);
@@ -729,7 +735,7 @@
       const text = section.blocks.find(block => block.kind === "text" || block.kind === "pre");
       if (text) return (text.text ?? "").trim().split(/\r?\n/, 1)[0];
       const field = section.blocks.find(block => block.kind === "field")?.field;
-      if (field) return field.label || field.name;
+      if (field) return field.label || field.name.replace(/[_-]+/g, " ");
     }
     return "";
   }

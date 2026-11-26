@@ -169,14 +169,10 @@ fn decode_html_attribute(value: &str) -> Option<String> {
         out.push_str(&rest[..amp]);
         rest = &rest[amp + 1..];
         if let Some(after_hash) = rest.strip_prefix('#') {
-            let (radix, digits) = if let Some(hex) = after_hash
+            let (radix, digits) = after_hash
                 .strip_prefix('x')
                 .or_else(|| after_hash.strip_prefix('X'))
-            {
-                (16, hex)
-            } else {
-                (10, after_hash)
-            };
+                .map_or((10, after_hash), |hex| (16, hex));
             let end = digits
                 .find(|c: char| !c.is_digit(radix))
                 .unwrap_or(digits.len());
@@ -204,22 +200,29 @@ fn decode_html_attribute(value: &str) -> Option<String> {
 
 /// Whether an attribute value names a credential input after the browser's
 /// own character-reference decoding. An undecodable value is sensitive.
+///
+/// This is the one rule both stack halves share (`passwordMarker` in
+/// `src/app/html-form.js`): once decoded, a `type`/`autocomplete` value is a
+/// password marker when it contains `password` anywhere, compared
+/// ASCII-case-insensitively. No token splitting and no trimming, so padding
+/// with NBSP, a BOM or any other separator cannot slip a credential input
+/// past the guard. The byte-window scan needs no allocation — the needle is
+/// ASCII, so it can never straddle a UTF-8 continuation byte.
 fn sensitive_attribute(name: &str, value: &str) -> bool {
     let is_type = name.eq_ignore_ascii_case("type");
     if !is_type && !name.eq_ignore_ascii_case("autocomplete") {
         return false;
     }
-    let Some(decoded) = decode_html_attribute(value) else {
-        return true;
-    };
-    if is_type {
-        decoded.trim().eq_ignore_ascii_case("password")
-    } else {
-        decoded.split_ascii_whitespace().any(|token| {
-            token.eq_ignore_ascii_case("current-password")
-                || token.eq_ignore_ascii_case("new-password")
-        })
-    }
+    decode_html_attribute(value).is_none_or(|decoded| contains_password_marker(&decoded))
+}
+
+/// Case-insensitive ASCII substring test for the literal `password`.
+fn contains_password_marker(value: &str) -> bool {
+    const MARKER: &[u8] = b"password";
+    value
+        .as_bytes()
+        .windows(MARKER.len())
+        .any(|window| window.eq_ignore_ascii_case(MARKER))
 }
 
 /// Remove prefilled credentials from password-like `<input>` elements in an
@@ -945,6 +948,44 @@ mod tests {
                     .unwrap()
                     .contains(&format!("{label}-canary")),
                 "{label} leaked into parsed frame"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_form_treats_padded_password_markers_as_credentials() {
+        // NBSP (U+00A0) between autocomplete tokens and a BOM (U+FEFF) around
+        // the type value: neither is ASCII whitespace, so a trimming or
+        // token-splitting rule would miss them. Both stack halves use the same
+        // decoded-substring rule, so neither can slip past.
+        for (label, attribute, canary) in [
+            (
+                "nbsp autocomplete",
+                "autocomplete=\"foo\u{a0}current-password\"",
+                "nbsp-canary",
+            ),
+            (
+                "bom type",
+                "type=\"\u{feff}password\u{feff}\"",
+                "bom-canary",
+            ),
+        ] {
+            let html = format!("<form><input {attribute} value=\"{canary}\"></form>");
+            let raw =
+                json!({"type":"extension_ui_request", "method":"form", "html":html}).to_string();
+            let (out, parsed) = sanitize_line(raw.as_bytes());
+            assert!(!out.contains(canary), "{label} leaked into output");
+            let parsed = parsed.expect("valid JSON parses");
+            assert!(
+                !parsed["html"].as_str().unwrap().contains(canary),
+                "{label} leaked into parsed frame"
+            );
+            let mut journal = EventJournal::new(4, 1 << 20);
+            journal.push(Arc::from(out));
+            let replay = journal.since(0);
+            assert!(
+                !replay.events[0].text.contains(canary),
+                "{label} leaked into journal"
             );
         }
     }

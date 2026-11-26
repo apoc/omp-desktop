@@ -305,6 +305,25 @@ check("autocomplete password markers are refused on every input type", () => {
   assert.equal(parse(`<form><input name=user autocomplete=username value=Ada></form>`).error, undefined);
 });
 
+check("password markers match as decoded substrings, without token splitting", () => {
+  const refusal = "This form asks for a password; enter it in a terminal instead — omp would echo it in its output.";
+  for (const attribute of [
+    "type=text autocomplete=\"foo\u00a0current-password\"",
+    "autocomplete=\"section-login\u00a0new-password\"",
+    "autocomplete=\"one-time-password-hint\"",
+    "type=\"\uFEFFpassword\uFEFF\"",
+    "type=Password",
+    "autocomplete=new-password",
+  ]) {
+    const parsed = parse(`<form><input ${attribute} name=pw value=prefilled-secret></form>`);
+    assert.equal(parsed.form, undefined, attribute);
+    assert.equal(parsed.error, refusal);
+    assert.doesNotMatch(JSON.stringify(parsed), /prefilled-secret/);
+  }
+  assert.equal(parse(`<form><input name=user type=text autocomplete=username value=Ada></form>`).error, undefined);
+  assert.equal(parse(`<form><input name=note value=ordinary-text></form>`).error, undefined);
+});
+
 check("single-choice picks clear Other and missing checkbox values match omp's on default", () => {
   const { form } = parse(`<form><label><input type="radio" name="r" value="a">A</label><label><input type="radio" name="r" value="b">B</label><label><input type="checkbox" name="c" checked>C</label></form>`);
   let draft = H.setOther(H.emptyDraft(form), form, 0, "custom");
@@ -374,6 +393,12 @@ check("multiline options and table control labels follow omp's parse.ts oracle",
 check("a table control's own wrapping label wins over the whole cell", () => {
   const { form } = parse(`<form><table><tr><th>Header</th></tr><tr><td>Cell context <label>Own label <input name="answer"></label></td></tr></table></form>`);
   assert.equal(form.fields[0].label, "Own label");
+});
+
+check("collapsed summary prompt uses the same fallback label as the field budget", () => {
+  const { form } = parse(`<form><select name="api_key"><option value="a">A</option></select></form>`);
+  assert.equal(form.fields[0].label, "");
+  assert.equal(H.summaryPrompt(form), "api key");
 });
 
 check("phone data omits hidden defaults while desktop data retains them authoritatively", () => {

@@ -1019,6 +1019,12 @@ await checkAsync("a reopened refused form renders a working retry control", asyn
   assert.ok(retry, "refusal must render Retry");
   retry.props.onClick();
   assert.equal(retries, 1);
+  const settledTree = window.FormDialog({
+    msg: { id: "refused", form: null, formError: "Refusal could not be delivered.", cancelled: true },
+    onSubmit: () => {}, onCancel: () => { retries++; },
+  });
+  assert.equal(walk(settledTree).find(node => node?.type === "button" && node.children.includes("Retry")), undefined,
+    "a settled refusal bubble must not offer Retry");
 });
 
 await checkAsync("omp withdrawal wins over a failed refusal cancellation", async () => {

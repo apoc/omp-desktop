@@ -160,7 +160,7 @@ function FormDialog({ msg, onSubmit, onCancel }) {
         </div>
         <div className="ask-dialog-foot">
           <span className="ask-foot-spacer" />
-          <button type="button" className="ask-opt" onClick={onCancel}>{OMP_TR("Retry")}</button>
+          {!done && <button type="button" className="ask-opt" onClick={onCancel}>{OMP_TR("Retry")}</button>}
         </div>
       </div>
     );
