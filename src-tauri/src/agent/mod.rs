@@ -593,7 +593,9 @@ fn validate_command_type(trimmed: &str) -> Result<serde_json::Value, String> {
     if parsed.get("data").is_some()
         && (cmd_type != "extension_ui_response" || !parsed["data"].is_object())
     {
-        return Err("command 'data' is only allowed as an extension_ui_response object".to_string());
+        return Err(
+            "command 'data' is only allowed as an extension_ui_response object".to_string(),
+        );
     }
     Ok(parsed)
 }
