@@ -52,3 +52,15 @@ omp's facts (`oh-my-pi/packages/coding-agent/src/modes/rpc/rpc-frame.ts`):
 - Surrogate repair: lone high, lone low, a valid pair kept, `\\ud800` untouched, repair inside a reassembled payload.
 - Unparsable line: the diagnostic frame only, with no raw bytes; `saw_frame` is unaffected.
 - JS: a regression test that a `desktop_frame_error` frame is ignored, if a `live.js` harness covers `_dispatchFrame` (`tests/test-pr-automation-bridge.mjs` loads `live.js` with stubs).
+
+## Amendments (review round 1)
+
+- **D94-7 Deep frames are parsed, within a ceiling.** serde_json refuses anything nested more than 128 levels. omp and `JSON.parse` accept such frames, and a model can produce them: a deeply nested tool-call argument is echoed in `message_end`, then in every later `get_messages`. Turning these into `unparsable` would hide a message and break history loading for that session. So:
+  - A line or payload that serde rejects gets one string-aware depth scan. This runs on the failure path only, never per line.
+  - When the maximum depth is between 129 and `MAX_FRAME_DEPTH` (1024), it is parsed again with serde_json's `unbounded_depth` feature (`Deserializer::disable_recursion_limit`).
+  - Deeper than that, or still invalid, gives `unparsable`, as D94-3 says.
+  - The reader thread is spawned with an explicit stack size large enough for parse, `sanitize_frame` and `Value` drop at `MAX_FRAME_DEPTH`. A test runs that worst case on a thread of the same size.
+  - The surrogate repair and the depth retry compose: repair, then the depth retry.
+- **D94-8 Contract docs say "logical frame".** The following now describe one event or entry per logical frame, sized up to 64 MiB (`MAX_REASSEMBLED_BYTES`):
+  - `AgentBridge`'s `# Events` doc, `LineEvent`, the `agent/mod.rs` submodule list (add `frames`) and the journal budget reasoning (`mod.rs` `EVENT_JOURNAL_MAX_BYTES`, `journal.rs`);
+  - `inflight.rs`'s per-line hook.
