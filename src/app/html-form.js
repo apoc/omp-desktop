@@ -32,7 +32,29 @@
   const MAX_TABLE_CELLS = 2000;
   const MAX_DISPLAY_BYTES = 64 * 1024;
   const PASSWORD_REFUSAL = "This form asks for a password; enter it in a terminal instead — omp would echo it in its output.";
+  // omp 19.1.x applies its own `fieldError` (required, min/max,
+  // min/maxLength, email, url and `pattern`) to the submitted answer and
+  // fails the ask tool on a violation; the desktop only observes the stdin
+  // hand-off, so it must refuse such a form up front. From 19.2.0 on,
+  // `pattern` is a display hint again (rpc-mode.ts no longer applies
+  // fieldError). Required, bounds and lengths are enforced here on every
+  // version: harmless where omp no longer checks them.
+  const PATTERN_MIN_VERSION = [19, 2, 0];
+  const PATTERN_REFUSAL = "This form's `pattern` needs omp 19.2 or newer: older omp checks it itself and could reject an answer the desktop cannot verify. Update omp.";
   let UTF8;
+
+  /** Whether an omp version string like `19.2.1` (or `omp/19.2.1`) reaches
+   *  `minimum`. A missing or unreadable version is treated as too old. */
+  function versionAtLeast(version, minimum) {
+    const match = /^(?:\S*\/)?v?(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(version ?? "").trim());
+    if (!match) return false;
+    const found = [Number(match[1]), Number(match[2]), Number(match[3] ?? 0)];
+    for (const [index, part] of minimum.entries()) {
+      if (found[index] !== part) return found[index] > part;
+    }
+    return true;
+  }
+
 
   function nonBlank(value) {
     return typeof value === "string" && value.trim() ? value : null;
@@ -415,7 +437,7 @@
       if (type === "radio" || type === "checkbox") {
         const option = {
           value: value ?? "on",
-          label: own || value || name,
+          label: own || (value ?? name),
           checked: control.hasAttribute?.("checked") ?? attr(control, "checked") !== null,
           disabled: control.hasAttribute?.("disabled") ?? attr(control, "disabled") !== null,
         };
@@ -460,10 +482,14 @@
   }
 
   /** Parse agent-written form HTML. `documentImpl` is a test seam for Node,
-   *  where DOMParser does not exist; the app always uses DOMParser. Returns
-   *  `{form}` or `{error}` — an error means the request is cancelled so omp
-   *  never waits on a card that cannot be answered. */
-  function parse(html, documentImpl) {
+   *  where DOMParser does not exist; the app always uses DOMParser.
+   *  `ompVersion` is the running omp's `--version` (see `omp_version` in
+   *  Rust); a form carrying a `pattern` is refused unless it is 19.2.0+,
+   *  because 19.1.x checks patterns itself and would reject an answer this
+   *  side cannot verify. Returns `{form}` or `{error}` — an error means the
+   *  request is cancelled so omp never waits on a card that cannot be
+   *  answered. */
+  function parse(html, documentImpl, ompVersion) {
     if (typeof html !== "string" || !html.trim()) return { error: "The form is empty." };
     if (new TextEncoder().encode(html).length > MAX_HTML_BYTES) return { error: "The form HTML is too large to show." };
     let document;
@@ -481,6 +507,9 @@
         return { error: PASSWORD_REFUSAL };
       const builder = new Builder(formNode ?? root);
       const form = builder.build();
+      if (form.fields.some(field => field.pattern !== undefined)
+        && !versionAtLeast(ompVersion, PATTERN_MIN_VERSION))
+        return { error: PATTERN_REFUSAL };
       if (!form.fields.some(field => field.name) && form.hidden.length === 0)
         return { error: "The form has no named controls." };
       return { form };
@@ -506,6 +535,16 @@
       if (Number.isFinite(number)) return number;
     }
     return text;
+  }
+
+  /** One field's value from its own draft entry. `buildData` and
+   *  `draftErrors` both call this, so a field that shares its name with
+   *  another is validated against its own answer and not against the last
+   *  value `buildData` happened to write for that name. */
+  function entryValue(field, entry) {
+    return field.kind === "text"
+      ? textValue(field, typeof entry === "string" ? entry : field.value)
+      : choiceValue(field, new Set(entry?.picks ?? []), entry?.other);
   }
 
   function emptyDraft(form) {
@@ -542,15 +581,19 @@
     return draft.map((value, i) => i === index ? text : value);
   }
 
+  /** Clear a choice field's draft entry, used when a single-choice select
+   *  goes back to its "Choose…" placeholder. */
+  function clearPick(draft, form, index) {
+    if (form.fields[index]?.kind !== "choice") return draft;
+    return draft.map((value, i) => i === index ? { picks: [], other: "" } : value);
+  }
+
   function buildData(form, draft, { hidden = true } = {}) {
     const data = Object.create(null);
     if (hidden) for (const [name, value] of form.hidden) data[name] = value;
     for (const [index, field] of form.fields.entries()) {
       if (!field.name) continue;
-      const entry = draft[index];
-      const value = field.kind === "text"
-        ? textValue(field, typeof entry === "string" ? entry : field.value)
-        : choiceValue(field, new Set(entry?.picks ?? []), entry?.other);
+      const value = entryValue(field, draft[index]);
       if (value !== undefined) data[field.name] = value;
     }
     return data;
@@ -581,6 +624,10 @@
 
   function fieldError(field, value) {
     if (field.kind === "choice") {
+      // Two entries for one value (a picked option plus the same text in
+      // Other) make omp fail the answer with `unexpected value`; say so
+      // before the request is sent.
+      if (Array.isArray(value) && new Set(value).size !== value.length) return "That answer is already picked";
       const empty = value === undefined || (Array.isArray(value) && value.length === 0);
       if (!field.required || !empty) return undefined;
       return isArrayChoice(field) ? "Select at least one" : "Required";
@@ -607,11 +654,10 @@
   }
 
   function draftErrors(form, draft) {
-    const data = buildData(form, draft);
     const errors = {};
     form.fields.forEach((field, index) => {
       if (!field.name) return;
-      const error = fieldError(field, data[field.name]);
+      const error = fieldError(field, entryValue(field, draft[index]));
       if (error) errors[index] = error;
     });
     return errors;
@@ -663,21 +709,22 @@
     }
   }
 
-  /** Why omp would reject `data`, or null. This is parseFormDialogResponse
-   *  without the side effects: unknown names, shapes, disabled options and
-   *  duplicate entries are refused; `required` and patterns are UI hints
-   *  only, exactly as omp treats them here. */
-  function dataError(form, data) {
-    if (!isRecord(data)) return "data must be an object";
+  /** Every field of `data` parsed into its own value, plus a shape error.
+   *  Mirrors `parseFormDialogResponse`'s per-name grouping: one entry answers
+   *  every field of its name, a field of another shape declines it, at least
+   *  one field must carry the entry, and an undeclared name is refused. */
+  function readAnswer(form, data) {
+    if (!isRecord(data)) return { error: "data must be an object" };
     const named = form.fields.filter(field => field.name);
     const names = new Set([...named.map(field => field.name), ...form.hidden.map(([name]) => name)]);
-    for (const name of Object.keys(data)) if (!names.has(name)) return `unknown field ${name}`;
+    for (const name of Object.keys(data)) if (!names.has(name)) return { error: `unknown field ${name}` };
     const hidden = new Map(form.hidden);
     const groups = new Map();
     for (const field of named) {
       if (!groups.has(field.name)) groups.set(field.name, []);
       groups.get(field.name).push(field);
     }
+    const fields = [];
     for (const [name, group] of groups) {
       const entry = Object.hasOwn(data, name) ? data[name] : undefined;
       const hiddenValue = hidden.get(name);
@@ -687,17 +734,47 @@
           const value = field.kind === "choice"
             ? parseChoiceOrHidden(field, entry, hiddenValue)
             : parseText(field, entry);
-          return { value, carried: true };
+          return { field, name, value, carried: true };
         } catch (error) {
           if (group.length === 1) throw error;
           mismatch ??= error;
           return {
+            field,
+            name,
             value: field.kind === "choice" ? parseChoice(field, undefined) : parseText(field, undefined),
             carried: false,
           };
         }
       });
       if (!values.some(value => value.carried)) throw mismatch ?? new Error("field shape");
+      fields.push(...values);
+    }
+    return { fields };
+  }
+
+  /** Why omp would reject `data` by shape, or null: unknown names, wrong
+   *  shapes, disabled options and duplicate entries. Constraint rules
+   *  (`required`, bounds, lengths, email, url) are `answerError`'s. */
+  function dataError(form, data) {
+    return readAnswer(form, data).error ?? null;
+  }
+
+  /** Why omp 19.1.x would reject `data` on submit, or null: the shape rules
+   *  above, then omp's `fieldError` (data.ts) on every field's own parsed
+   *  value. `pattern` is deliberately absent — it is never compiled here;
+   *  a form carrying one is refused at parse time unless the running omp is
+   *  19.2.0+ and treats it as a display hint. */
+  function answerError(form, data) {
+    let answer;
+    try {
+      answer = readAnswer(form, data);
+    } catch (error) {
+      return error?.message ?? String(error ?? "field shape");
+    }
+    if (answer.error) return answer.error;
+    for (const { field, name, value } of answer.fields) {
+      const problem = fieldError(field, value);
+      if (problem) return `Form field ${JSON.stringify(name)}: ${problem}`;
     }
     return null;
   }
@@ -741,7 +818,8 @@
   }
 
   window.OMP_HTML_FORM = {
-    parse, emptyDraft, pick, setOther, setText, buildData, defaultData, withHiddenDefaults, setInputValue,
-    fieldError, draftErrors, dataError, validateData, summary, summaryPrompt, isArrayChoice, choiceValue, textValue,
+    parse, emptyDraft, pick, setOther, setText, clearPick, buildData, defaultData, withHiddenDefaults, setInputValue,
+    fieldError, draftErrors, dataError, answerError, validateData, summary, summaryPrompt,
+    isArrayChoice, choiceValue, textValue, versionAtLeast,
   };
 })();

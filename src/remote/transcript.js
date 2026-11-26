@@ -306,8 +306,16 @@
       const draft = askDrafts.get(key) ?? F.emptyDraft(form);
       askDrafts.set(key, draft);
       const problem = node("p", "", "error");
+      // Field errors live beside their own control, not only in the footer:
+      // "Needs at least 8 characters" must name the field it belongs to.
+      const slots = new Map();
       const refresh = () => {
         const errors = F.draftErrors(form, draft);
+        for (const [index, slot] of slots) {
+          const text = errors[index] ?? "";
+          slot.textContent = text;
+          slot.hidden = !text;
+        }
         problem.textContent = Object.keys(errors).length ? "Fix the marked fields before sending." : "";
       };
       const block = (entry, container) => {
@@ -331,7 +339,7 @@
           holder.append(table);
           container.append(holder);
         } else if (entry.kind === "field") {
-          container.append(formField(form.fields[entry.field], entry.field, form, draft, refresh));
+          container.append(formField(form.fields[entry.field], entry.field, form, draft, refresh, ask.id, slots));
         }
       };
       for (const section of form.sections) {
@@ -357,20 +365,29 @@
       return wrap;
     }
 
-    function formField(field, index, form, draft, refresh) {
+    function formField(field, index, form, draft, refresh, askId, slots) {
       const F = window.OMP_HTML_FORM;
       const section = node("section", undefined, "ask-q form-field");
       const question = field.label || (field.options?.length === 1 ? field.options[0].label : "") || field.name.replace(/[_-]+/g, " ");
-      section.append(node("div", question, "ask-question form-field-label"));
+      // One id per ask and field so each control has an accessible name; the
+      // same ids never collide across asks in the transcript.
+      const questionId = `form-${askId}-${index}-q`;
+      const controlId = `form-${askId}-${index}-c`;
+      const labelled = field.kind !== "choice" || (field.select && !field.multi);
+      const questionNode = node(labelled ? "label" : "div", question, "ask-question form-field-label");
+      questionNode.id = questionId;
+      if (labelled) questionNode.htmlFor = controlId;
+      section.append(questionNode);
       const update = next => { draft.splice(0, draft.length, ...next); refresh(); };
       if (field.kind === "choice" && field.select && !field.multi) {
         const select = node("select", undefined, "ask-other-input form-select selectable");
+        select.id = controlId;
         const entry = draft[index];
-        if (!entry.picks.length) {
-          const empty = node("option", "Choose…");
-          empty.value = "-1";
-          select.append(empty);
-        }
+        // The placeholder stays available after a pick, and choosing it clears
+        // the draft, so what the dropdown shows is always what Submit sends.
+        const empty = node("option", "Choose…");
+        empty.value = "-1";
+        select.append(empty);
         field.options.forEach((option, oi) => {
           const element = node("option", option.label);
           element.value = String(oi);
@@ -380,13 +397,13 @@
         });
         select.addEventListener("change", () => {
           const oi = Number(select.value);
-          if (oi >= 0) update(F.pick(draft, form, index, oi));
+          update(oi >= 0 ? F.pick(draft, form, index, oi) : F.clearPick(draft, form, index));
         });
         section.append(select);
       } else if (field.kind === "choice") {
         const rows = node("div", undefined, "ask-rows");
         rows.setAttribute("role", field.multi ? "group" : "radiogroup");
-        rows.setAttribute("aria-label", question);
+        rows.setAttribute("aria-labelledby", questionId);
         const rowNodes = [];
         let otherInput;
         field.options.forEach((option, oi) => {
@@ -423,6 +440,7 @@
           input.className = "ask-other-input";
           input.value = draft[index].other;
           input.placeholder = "Other (type your own)";
+          input.setAttribute("aria-label", "Other (type your own)");
           input.addEventListener("input", () => {
             update(F.setOther(draft, form, index, input.value));
             syncRows();
@@ -432,6 +450,7 @@
         }
       } else if (field.multiline) {
         const area = node("textarea", undefined, "ask-editor-textarea selectable");
+        area.id = controlId;
         area.value = draft[index];
         area.rows = field.rows || 4;
         area.placeholder = field.placeholder || "";
@@ -439,6 +458,7 @@
         section.append(area);
       } else {
         const input = node("input", undefined, "ask-other-input selectable");
+        input.id = controlId;
         input.type = field.type || "text";
         draft[index] = F.setInputValue(input, field, draft[index]);
         input.placeholder = field.placeholder || "";
@@ -447,6 +467,10 @@
         section.append(input);
       }
       if (field.pattern) section.append(node("div", `Pattern: ${field.pattern}`, "form-context"));
+      const errorSlot = node("div", "", "form-error");
+      errorSlot.hidden = true;
+      slots.set(index, errorSlot);
+      section.append(errorSlot);
       return section;
     }
 

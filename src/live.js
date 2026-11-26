@@ -465,6 +465,20 @@
     }
   }
 
+  // The running omp's version, as `omp_version` reports it
+  // (`major.minor.patch`, or null when unreadable). Unknown refuses a form
+  // carrying `pattern`: this side cannot verify what omp would check.
+  let ompVersion = null;
+
+  /** Re-read the omp version. Failures keep the previous value (null at
+   *  start), and the caller never waits on it: a form that arrives first is
+   *  refused when it carries a pattern, which is the fail-closed choice. */
+  function _refreshOmpVersion() {
+    _invokeSafe("omp_version", {}).then(version => {
+      ompVersion = typeof version === "string" ? version : null;
+    });
+  }
+
   // Git browser reads: `cmd` for the active tab's project folder, as
   // `_invokeResult`'s `{ok, value | error}`; null with no project open.
   async function _gitBrowserInvoke(cmd, args) {
@@ -578,15 +592,16 @@
   // left alone) is the subtle part — it lives here once, for the user's
   // answers (_resolveAsk) and omp's own `cancel` alike.
   function _settleAsk(id, patch) {
-    let settled = false;
+    let settled = null;
     state.messages = state.messages.map(m => {
       if (m.kind === "ask" && m.id === id && !m.answered && !m.cancelled) {
-        settled = true;
-        return { ...m, ...patch };
+        settled = { ...m, ...patch };
+        return settled;
       }
       return m;
     });
-    if (settled) notify();
+    if (!settled) return null;
+    notify();
     return settled;
   }
 
@@ -1274,6 +1289,11 @@
     const approvalMode = await window.__TAURI__.core.invoke("start_session", {
       args: { sessionId: id, cwd: cwd ?? "", resume, profile },
     });
+    // The version of the omp this session spawns: a form's `pattern` is only a
+    // display hint from 19.2.0 on, while 19.1.x checks it itself (see
+    // `HTML_FORM.parse`). Refreshed per spawn so `omp update` needs no app
+    // restart; a failed read leaves null, which refuses pattern forms.
+    _refreshOmpVersion();
     // A fresh incarnation owns this id now, and `start_session` cleared the
     // backend's cached error for it — so a *new* startup failure must be
     // reportable again. Cleared after the spawn resolved, so a spawn that
@@ -2474,7 +2494,7 @@
       // shell cannot read is cancelled at once and leaves a visible note, so
       // omp never waits on a card that could not be submitted.
       if (ev.method === "form") {
-        const parsed = HTML_FORM.parse(ev.html);
+        const parsed = HTML_FORM.parse(ev.html, undefined, ompVersion);
         if (!parsed.form) {
           const sessionId = activeSessionId;
           const bubble = _askMessage("form", ev, {
@@ -4265,6 +4285,14 @@
     answerForm(id, data) {
       const message = state.messages.find(m => m.kind === "ask" && m.id === id && m.method === "form");
       const outgoing = message?.form ? HTML_FORM.withHiddenDefaults(message.form, data) : data;
+      // The last gate before the wire: a form answered past its own rules
+      // would make omp 19.1.x fail the ask tool after the desktop already
+      // settled the bubble. Refuse here instead, leaving the card open.
+      const problem = message?.form ? HTML_FORM.answerError(message.form, outgoing) : null;
+      if (problem) {
+        console.warn(`[live] refused form answer for '${id}':`, problem);
+        return false;
+      }
       return _resolveAsk(id, { answered: true, data: outgoing }, { data: outgoing });
     },
 
@@ -4346,7 +4374,8 @@
     async approveAndRemember(prompt, scope) {
       const sessionId = prompt?.sessionId;
       if (!sessionId || sessionId !== activeSessionId || !prompt.id) return;
-      if (!_settleAsk(prompt.id, { answered: true, answer: "Approve" })) return;
+      const settled = _settleAsk(prompt.id, { answered: true, answer: "Approve" });
+      if (!settled) return;
       const gen = _switchGen;
       const res = await _invokeResult("approval_approve_and_grant", { sessionId, requestId: prompt.id, scope });
       const unsaved = res.ok ? res.value : null;
@@ -4356,7 +4385,10 @@
         return;
       }
       if (!res.ok) {
-        _reopenAsk(prompt.id);
+        // Nothing reached omp: reopen the exact bubble this call settled, so
+        // a following Deny has a live prompt to answer. Identity keeps an
+        // omp withdrawal, or a newer answer, from being rolled back.
+        _patchSessionBubble(sessionId, settled, _reopenAsk);
         _pushAssistantNote(`**Approve and remember failed:** ${res.error}. The prompt is open again.`);
       } else {
         _pushAssistantNote(`**Approved, but the rule was not saved:** ${unsaved}`);
@@ -5183,6 +5215,7 @@
     // The approval-mode view, alongside: the status bar and the restart
     // plan read it, and spawns never wait for it (Rust resolves the mode).
     void _refreshApprovalModes();
+    _refreshOmpVersion();
     _refreshProfiles()
       .catch(e => console.error("[live] startup profile load failed:", e))
       // Tab ids are never reused across a webview reload: anything Rust still

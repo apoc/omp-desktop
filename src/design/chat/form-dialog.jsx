@@ -20,7 +20,7 @@ function _FD_Check() {
   return <_FD_Icon name="check" size={10} strokeWidth={2.2} dotColor="transparent" aria-hidden="true" />;
 }
 
-function _FD_Block({ block, fieldIndex, form, draft, errors, update }) {
+function _FD_Block({ block, fieldIndex, form, draft, errors, update, idPrefix }) {
   switch (block.kind) {
     case "text":
       return <div className={`form-context${block.heading ? " form-heading" : ""}`}>{block.text}</div>;
@@ -42,25 +42,56 @@ function _FD_Block({ block, fieldIndex, form, draft, errors, update }) {
       return <div className="form-image-alt">{OMP_TR("Image: {alt}", { alt: block.alt })}</div>;
     case "field": {
       const index = fieldIndex.get(block.field);
-      return <_FD_Field field={block.field} index={index} form={form} draft={draft} error={errors[index]} update={update} />;
+      return <_FD_Field field={block.field} index={index} form={form} draft={draft} error={errors[index]} update={update} idPrefix={idPrefix} />;
     }
     default:
       return null;
   }
 }
 
-function _FD_Field({ field, index, form, draft, error, update }) {
+function _FD_Field({ field, index, form, draft, error, update, idPrefix }) {
   const entry = draft[index];
   const question = field.label || (field.options?.length === 1 ? field.options[0].label : "") || field.name.replace(/[_-]+/g, " ");
+  // Stable, unique ids so every control has an accessible name: text-like
+  // controls and the single-choice select point at the question with a native
+  // label, choice groups name themselves through aria-labelledby.
+  const prefix = idPrefix ? `${idPrefix}-${index}` : `form-field-${index}`;
+  const questionId = `${prefix}-q`;
+  const controlId = `${prefix}-c`;
+  const choice = field.kind === "choice";
+  const radioRefs = React.useRef([]);
+  const enabledIndices = (field.options ?? []).flatMap((option, oi) => option.disabled ? [] : [oi]);
+  // Arrow keys move focus and selection inside a radiogroup, one tab stop per
+  // group (roving tabindex) — the WAI-ARIA radio pattern. Checkboxes keep
+  // native button activation.
+  const onRadioKey = (e, oi) => {
+    if (field.multi) return;
+    const position = enabledIndices.indexOf(oi);
+    if (position < 0) return;
+    let next;
+    if (e.key === "ArrowDown" || e.key === "ArrowRight") next = enabledIndices[(position + 1) % enabledIndices.length];
+    else if (e.key === "ArrowUp" || e.key === "ArrowLeft") next = enabledIndices[(position - 1 + enabledIndices.length) % enabledIndices.length];
+    else if (e.key === "Home") next = enabledIndices[0];
+    else if (e.key === "End") next = enabledIndices.at(-1);
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+    update(_FD.pick(draft, form, index, next));
+    radioRefs.current[next]?.focus();
+  };
   const rows = (multi) => (
-    <div className="ask-rows" role={multi ? "group" : "radiogroup"} aria-label={question}>
+    <div className="ask-rows" role={multi ? "group" : "radiogroup"} aria-labelledby={questionId}>
       {field.options.map((option, oi) => {
         const on = entry.picks.includes(oi);
+        const tabStop = on || (entry.picks.length === 0 && enabledIndices[0] === oi);
         return (
           <div key={oi} className={`ask-row${on ? " selected" : ""}${option.disabled ? " dimmed" : ""}`}>
             <button type="button" className="ask-row-btn" role={multi ? "checkbox" : "radio"}
               aria-checked={on} disabled={option.disabled}
-              onClick={() => update(_FD.pick(draft, form, index, oi))}>
+              tabIndex={multi ? undefined : (tabStop ? 0 : -1)}
+              ref={el => { if (!multi) radioRefs.current[oi] = el; }}
+              onClick={() => update(_FD.pick(draft, form, index, oi))}
+              onKeyDown={e => onRadioKey(e, oi)}>
               <span className={`ask-mark ${multi ? "box" : "radio"}`}>{multi && on && <_FD_Check />}</span>
               <span className="ask-row-text"><span className="ask-row-label"><span>{option.label}</span></span></span>
             </button>
@@ -72,12 +103,12 @@ function _FD_Field({ field, index, form, draft, error, update }) {
   let control;
   if (field.kind === "choice" && field.select && !field.multi) {
     control = (
-      <select className="ask-other-input form-select selectable" value={entry.picks[0] ?? -1}
+      <select id={controlId} className="ask-other-input form-select selectable" value={entry.picks[0] ?? -1}
         onChange={e => {
           const next = Number(e.target.value);
-          update(next >= 0 ? _FD.pick(draft, form, index, next) : draft);
+          update(next >= 0 ? _FD.pick(draft, form, index, next) : _FD.clearPick(draft, form, index));
         }}>
-        {entry.picks.length === 0 && <option value="-1">{OMP_TR("Choose…")}</option>}
+        <option value="-1">{OMP_TR("Choose…")}</option>
         {field.options.map((option, oi) => (
           <option key={oi} value={oi} disabled={option.disabled}>{option.label}</option>
         ))}
@@ -90,6 +121,7 @@ function _FD_Field({ field, index, form, draft, error, update }) {
         {field.other && (
           <div className="ask-other form-other">
             <input className="ask-other-input" type="text" value={entry.other}
+              aria-label={OMP_TR("Other (type your own)")}
               placeholder={OMP_TR("Other (type your own)")}
               onChange={e => update(_FD.setOther(draft, form, index, e.target.value))} />
           </div>
@@ -98,21 +130,26 @@ function _FD_Field({ field, index, form, draft, error, update }) {
     );
   } else if (field.multiline) {
     control = (
-      <textarea className="ask-editor-textarea selectable" value={entry} rows={field.rows || 4}
+      <textarea id={controlId} className="ask-editor-textarea selectable" value={entry} rows={field.rows || 4}
         placeholder={field.placeholder} maxLength={field.maxLength || undefined}
         onChange={e => update(_FD.setText(draft, form, index, e.target.value))} />
     );
   } else {
     control = (
-      <input className="ask-other-input selectable" type={field.type || "text"} value={entry}
+      <input id={controlId} className="ask-other-input selectable" type={field.type || "text"} value={entry}
         placeholder={field.placeholder} required={field.required}
-        min={field.min} max={field.max} minLength={field.minLength} maxLength={field.maxLength}
+        min={field.min} max={field.max} step={field.step}
+        minLength={field.minLength} maxLength={field.maxLength}
         onChange={e => update(_FD.setText(draft, form, index, e.target.value))} />
     );
   }
+  const labelProps = { className: "ask-question form-field-label", id: questionId };
+  const hasLabel = !choice || (field.select && !field.multi);
   return (
     <section className="ask-q form-field">
-      <div className="ask-question form-field-label">{question}</div>
+      {hasLabel
+        ? <label {...labelProps} htmlFor={controlId}>{question}</label>
+        : <div {...labelProps}>{question}</div>}
       {control}
       {field.pattern && <div className="form-context">{OMP_TR("Pattern: {pattern}", { pattern: field.pattern })}</div>}
       {error && <div className="form-error" role="alert">{OMP_TR(error)}</div>}
@@ -182,7 +219,7 @@ function FormDialog({ msg, onSubmit, onCancel }) {
           {section.title && <div className="form-legend">{section.title}</div>}
           {section.blocks.map((block, bi) => (
             <_FD_Block key={bi} block={block} fieldIndex={fieldIndex} form={form}
-              draft={draft} errors={errors} update={update} />
+              draft={draft} errors={errors} update={update} idPrefix={`form-${msg.id}`} />
           ))}
         </section>
       ))}

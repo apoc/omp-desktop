@@ -561,9 +561,9 @@ test("phone form answers are validated against the parsed model before reaching 
     hidden: [["token", "desktop-default"]],
   };
   const card = { kind: "form", id: "f", form };
-  for (const value of [null, {}, { db: "pg" }, { db: "custom" }, { db: "pg", tags: ["a", "b"] }, { db: "pg", count: 4 }])
+  for (const value of [null, { db: "pg" }, { db: "custom" }, { db: "pg", tags: ["a", "b"] }, { db: "pg", count: 4 }])
     assert.equal(api.invalidAnswer(card, value), null, JSON.stringify(value));
-  for (const value of ["x", [], { db: "off" }, { db: ["pg"] }, { db: "pg", tags: "a" }, { db: "pg", tags: ["z", "q"] }, { db: "pg", count: true }, { db: "pg", nope: "x" }])
+  for (const value of ["x", [], {}, { db: "off" }, { db: ["pg"] }, { db: "pg", tags: "a" }, { db: "pg", tags: ["z", "q"] }, { db: "pg", count: true }, { db: "pg", nope: "x" }])
     assert.equal(api.invalidAnswer(card, value), "invalid answer", JSON.stringify(value));
 
   const calls = [], results = [];
@@ -577,6 +577,23 @@ test("phone form answers are validated against the parsed model before reaching 
   await handle({ reqId: "r2", deviceId: "d", tabId: "a", kind: "answer", askId: "f", value: { db: "off" } });
   assert.deepEqual(calls, [["f", { db: "pg", tags: ["a"], token: "desktop-default" }]]);
   assert.deepEqual(results.at(-1), ["r2", false, "invalid answer"]);
+});
+
+test("phone form answers obey the field rules omp 19.1 checks on submit", async () => {
+  const { api } = load();
+  const form = {
+    sections: [],
+    fields: [
+      { kind: "text", name: "name", type: "text", multiline: false, label: "Name", value: "", placeholder: "", required: true, minLength: 8, rows: 1 },
+      { kind: "text", name: "count", type: "number", multiline: false, label: "Count", value: "", placeholder: "", required: false, min: 2, max: 4, rows: 1 },
+    ],
+    hidden: [],
+  };
+  const card = { kind: "form", id: "f2", form };
+  assert.equal(api.invalidAnswer(card, { name: "Ada Lovelace" }), null);
+  assert.equal(api.invalidAnswer(card, { name: "Ada Lovelace", count: 3 }), null);
+  for (const value of [{}, { name: "Ada" }, { name: "Ada Lovelace", count: 5 }, { name: "Ada Lovelace", count: "x" }])
+    assert.equal(api.invalidAnswer(card, value), "invalid answer", JSON.stringify(value));
 });
 
 test("blank prompt and steer text is refused", async () => {

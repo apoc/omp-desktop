@@ -343,6 +343,14 @@ fn stop_session(
     widget_host.session_closed(&session_id);
 }
 
+/// The omp binary's version (`major.minor.patch`), or `null` when it cannot be
+/// read. The frontend's form rules read it: a form carrying a `pattern` is
+/// refused unless omp is 19.2.0+, because 19.1.x checks patterns itself.
+#[tauri::command]
+fn omp_version() -> Option<String> {
+    agent::spawn::omp_version()
+}
+
 /// End tabs for good: their omp processes (with their session grants),
 /// widget runs, git watchers, browsers and terminal shells. The one place a
 /// tab ends. The two slow teardowns are independent and run side by side:
@@ -1556,6 +1564,7 @@ pub fn run() {
             send_command,
             start_session,
             stop_session,
+            omp_version,
             terminal_open,
             terminal_status,
             terminal_replay,

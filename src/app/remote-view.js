@@ -163,7 +163,10 @@
         return validDialogAnswers(ask.questions, value) ? null : bad;
       case "form": {
         const form = desktopForm ?? ask.form;
-        return form && window.OMP_HTML_FORM?.validateData(form, value) ? null : bad;
+        // Shape *and* the constraints omp 19.1.x applies on submit: the phone
+        // is untrusted input, so a required/bounds/length violation is refused
+        // here instead of letting omp fail the ask tool afterwards.
+        return form && window.OMP_HTML_FORM?.answerError(form, value) === null ? null : bad;
       }
       default: return bad;
     }

@@ -75,18 +75,57 @@ struct HtmlAttribute<'a> {
     end: usize,
 }
 
+/// One step of the attribute scan. `Malformed` means the tag cannot be
+/// tokenized unambiguously any more (an unterminated quoted value), which the
+/// caller treats as sensitive.
+enum HtmlScan<'a> {
+    Attribute(HtmlAttribute<'a>),
+    End,
+    Malformed,
+}
+
+/// Skip whitespace and `/` characters that cannot close the tag; whether a
+/// `/` was consumed. Used both before an attribute name and after one.
+fn skip_separators(bytes: &[u8], cursor: &mut usize) -> bool {
+    let mut solidus = false;
+    while *cursor < bytes.len() {
+        if bytes[*cursor].is_ascii_whitespace() {
+            *cursor += 1;
+        } else if bytes[*cursor] == b'/' && bytes.get(*cursor + 1) != Some(&b'>') {
+            solidus = true;
+            *cursor += 1;
+        } else {
+            break;
+        }
+    }
+    solidus
+}
+
 /// Read one attribute from an `<input>` tag, preserving byte spans so the
-/// caller can remove it without parsing or reconstructing the HTML. The
-/// scanner deliberately understands only the small HTML attribute grammar
-/// needed here; malformed tags are left untouched.
-fn next_html_attribute<'a>(tag: &'a str, cursor: &mut usize) -> Option<HtmlAttribute<'a>> {
+/// caller can remove it without parsing or reconstructing the HTML.
+///
+/// The grammar follows HTML's tokenizer closely enough that the attributes a
+/// browser assigns to an `<input>` are exactly the ones seen here:
+///
+/// * Whitespace separates attributes.
+/// * A `/` that is not immediately followed by `>` is skipped like
+///   whitespace (spec: "self-closing start tag state" →
+///   "before attribute name state"). A browser keeps reading attributes after
+///   `<input type=password / value=x>`, so skipping it like whitespace keeps
+///   that `value` visible to the password stripper.
+/// * `>` (and EOF), or `/` directly before `>`, end the tag.
+/// * An attribute without `=` has an empty value and ends at its name — the
+///   separator after it stays, so the rewritten tag is still an `<input>`.
+fn next_html_attribute<'a>(tag: &'a str, cursor: &mut usize) -> HtmlScan<'a> {
     let bytes = tag.as_bytes();
     let start = *cursor;
-    while *cursor < bytes.len() && bytes[*cursor].is_ascii_whitespace() {
-        *cursor += 1;
+    skip_separators(bytes, cursor);
+    if *cursor >= bytes.len() || bytes[*cursor] == b'>' {
+        return HtmlScan::End;
     }
-    if *cursor >= bytes.len() || matches!(bytes[*cursor], b'>' | b'/') {
-        return None;
+    if bytes[*cursor] == b'/' {
+        // `/` directly before `>`: the tag is self-closing and ends here.
+        return HtmlScan::End;
     }
     let name_start = *cursor;
     while *cursor < bytes.len()
@@ -96,15 +135,16 @@ fn next_html_attribute<'a>(tag: &'a str, cursor: &mut usize) -> Option<HtmlAttri
         *cursor += 1;
     }
     let name_end = *cursor;
-    while *cursor < bytes.len() && bytes[*cursor].is_ascii_whitespace() {
-        *cursor += 1;
-    }
-    if *cursor >= bytes.len() || bytes[*cursor] != b'=' {
-        return Some(HtmlAttribute {
+    // After the name, `/` ends the attribute just like whitespace does. Once a
+    // solidus has been consumed, a following `=` starts a new attribute name
+    // in HTML, never this attribute's value.
+    let solidus = skip_separators(bytes, cursor);
+    if *cursor >= bytes.len() || bytes[*cursor] != b'=' || solidus {
+        return HtmlScan::Attribute(HtmlAttribute {
             name: &tag[name_start..name_end],
             value: "",
             start,
-            end: *cursor,
+            end: name_end,
         });
     }
     *cursor += 1;
@@ -122,6 +162,11 @@ fn next_html_attribute<'a>(tag: &'a str, cursor: &mut usize) -> Option<HtmlAttri
             let value_end = *cursor;
             if *cursor < bytes.len() {
                 *cursor += 1;
+            } else {
+                // EOF inside a quoted value: the browser never emits this tag
+                // and swallows the rest of the markup inside the value, so the
+                // caller cannot safely rewrite it.
+                return HtmlScan::Malformed;
             }
             (value_start, value_end)
         } else {
@@ -134,7 +179,7 @@ fn next_html_attribute<'a>(tag: &'a str, cursor: &mut usize) -> Option<HtmlAttri
             }
             (value_start, *cursor)
         };
-    Some(HtmlAttribute {
+    HtmlScan::Attribute(HtmlAttribute {
         name: &tag[name_start..name_end],
         value: &tag[value_start..value_end],
         start,
@@ -250,21 +295,46 @@ fn strip_password_values(html: &str) -> Option<String> {
 
         let mut probe = 0;
         let mut sensitive = false;
-        while let Some(attribute) = next_html_attribute(&html[name_end..], &mut probe) {
-            if sensitive_attribute(attribute.name, attribute.value) {
-                sensitive = true;
+        loop {
+            match next_html_attribute(&html[name_end..], &mut probe) {
+                HtmlScan::Attribute(attribute) => {
+                    if sensitive_attribute(attribute.name, attribute.value) {
+                        sensitive = true;
+                    }
+                }
+                HtmlScan::End => break,
+                // An input tag this scanner cannot tokenize unambiguously is
+                // treated as sensitive: drop the whole tag rather than guess
+                // where the browser ends it.
+                HtmlScan::Malformed => {
+                    sensitive = true;
+                    break;
+                }
             }
         }
         let tag_end = name_end + probe;
         if sensitive {
             let mut attributes = 0;
-            while let Some(attribute) = next_html_attribute(&html[name_end..], &mut attributes) {
-                if !attribute.name.eq_ignore_ascii_case("value") {
-                    continue;
+            loop {
+                match next_html_attribute(&html[name_end..], &mut attributes) {
+                    HtmlScan::Attribute(attribute) => {
+                        if !attribute.name.eq_ignore_ascii_case("value") {
+                            continue;
+                        }
+                        let out = output.get_or_insert_with(|| String::with_capacity(html.len()));
+                        out.push_str(&html[copied..name_end + attribute.start]);
+                        copied = name_end + attribute.end;
+                    }
+                    HtmlScan::End => break,
+                    // Fail closed: the browser swallows the rest of the markup
+                    // inside the unterminated value, so everything from this
+                    // tag's `<` on goes, value attributes included.
+                    HtmlScan::Malformed => {
+                        let out = output.get_or_insert_with(|| String::with_capacity(html.len()));
+                        out.push_str(&html[copied..tag_start]);
+                        return output;
+                    }
                 }
-                let out = output.get_or_insert_with(|| String::with_capacity(html.len()));
-                out.push_str(&html[copied..name_end + attribute.start]);
-                copied = name_end + attribute.end;
             }
         }
         cursor = if tag_end < bytes.len() {
@@ -921,6 +991,78 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("current-password\" value"));
+    }
+
+    /// The scanner tokenizes `<input>` attributes the way HTML does, so a
+    /// `value` the browser still reads after a stray `/` is stripped too.
+    #[test]
+    fn sanitize_form_follows_html_attribute_tokenization_around_solidus() {
+        for (html, expected) in [
+            // `/` before an attribute is skipped like whitespace: the browser
+            // reads `value` as an attribute and so does the stripper.
+            (
+                "<form><input type=password / value=slash-canary></form>",
+                Some("<form><input type=password></form>"),
+            ),
+            (
+                "<form><input type=password/ value=solidus-canary></form>",
+                Some("<form><input type=password/></form>"),
+            ),
+            // A solidus inside an unquoted value is data, so the value is
+            // stripped up to the `>` and nothing is left dangling.
+            (
+                "<form><input type=password value=kept-canary/></form>",
+                Some("<form><input type=password></form>"),
+            ),
+            // An unquoted value runs through `/value=…`, exactly as in HTML, so
+            // there is no second attribute to strip and the tag stays as is.
+            // The frontend's marker check still refuses this form.
+            ("<form><input/type=password/value=x></form>", None),
+        ] {
+            let stripped = strip_password_values(html);
+            assert_eq!(stripped.as_deref(), expected, "{html}");
+            if let Some(out) = stripped {
+                assert!(!out.contains("canary"), "{html} leaked: {out}");
+            }
+        }
+    }
+
+    /// A bare `value` attribute is removed up to its name, never together with
+    /// the separator that follows it: the rewritten tag must stay an `<input>`.
+    #[test]
+    fn sanitize_form_removes_a_bare_value_without_merging_the_next_attribute() {
+        for (html, expected) in [
+            (
+                "<form><input value type=password></form>",
+                "<form><input type=password></form>",
+            ),
+            (
+                "<form><input value name=pw type=password></form>",
+                "<form><input name=pw type=password></form>",
+            ),
+            (
+                "<form><input type=password value></form>",
+                "<form><input type=password></form>",
+            ),
+        ] {
+            assert_eq!(
+                strip_password_values(html).as_deref(),
+                Some(expected),
+                "{html}"
+            );
+        }
+    }
+
+    /// An `<input>` that cannot be tokenized unambiguously is sensitive: the
+    /// whole tag goes, because the browser swallows the rest of the markup
+    /// inside its unterminated value.
+    #[test]
+    fn sanitize_form_fails_closed_on_an_unterminated_quoted_value() {
+        let html = "<form><input type=\"password value=unterminated-canary";
+        let out = strip_password_values(html).expect("a malformed input tag is rewritten");
+        assert_eq!(out, "<form>");
+        assert!(!out.contains("unterminated-canary"));
+        assert!(!out.contains("password"));
     }
 
     #[test]

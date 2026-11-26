@@ -259,6 +259,7 @@ function bridgeHarness() {
             hidden: html.includes("hidden") ? [["token", "desktop-default"]] : [],
           } },
       withHiddenDefaults: (form, data) => ({ ...data, ...Object.fromEntries(form.hidden) }),
+      answerError: () => null,
     },
     OMP_SUBAGENTS: { emptySubagents: () => ({}), subscriptionLevelFor: () => "progress", mergeSnapshots: () => ({}) },
     OMP_QUEUE: { EMPTY_QUEUE: {} }, OMP_GOAL: { UNKNOWN: {} }, OMP_EXT_WIDGETS: { EMPTY: {} },
@@ -293,6 +294,8 @@ function bridgeHarness() {
     return new Promise(resolve => waiters.push({ type, count, resolve }));
   }
   let releaseStart = null, holdStart = false, holdHistory = false, failResponses = false, holdResponses = false, approvalMode = "write";
+  let grantError = null;
+  let grantUnsaved = null;
   const pendingResponses = [];
   const histories = new Map();
   const invocations = [];
@@ -307,6 +310,9 @@ function bridgeHarness() {
         return Promise.resolve({ default: approvalMode, projects: {} });
       }
       if (command === "start_session") return Promise.resolve(approvalMode);
+      if (command === "approval_approve_and_grant") {
+        return grantError ? Promise.reject(new Error(grantError)) : Promise.resolve(grantUnsaved);
+      }
       if (command === "replay_events") return Promise.resolve({ dropped: false, events: (journal.get(args.sessionId) ?? []).filter(e => e.seq > args.afterSeq) });
       if (command === "send_command") {
         const cmd = { ...JSON.parse(args.json), sessionId: args.sessionId };
@@ -341,6 +347,8 @@ function bridgeHarness() {
     holdHistory: () => { holdHistory = true; },
     setHistory: (id, messages) => { histories.set(id, messages); },
     failResponses: value => { failResponses = value; },
+    failGrant: message => { grantError = message; },
+    unsavedGrant: message => { grantUnsaved = message; },
     holdResponses: () => { holdResponses = true; },
     failPendingResponse: () => { holdResponses = false; pendingResponses.shift().reject(new Error("IPC unavailable")); },
     exit: (id, reason) => listeners.get(`agent://exit/${id}`)?.({ payload: reason }),
@@ -980,6 +988,60 @@ await checkAsync("a failed manual cancellation reopens and can be retried", asyn
   bubble = h.snapshot().messages.find(message => message.id === "cancel-retry");
   assert.equal(bubble.cancelled, true);
   assert.equal(h.commands.filter(command => command.type === "extension_ui_response" && command.id === "cancel-retry").length, 2);
+});
+
+await checkAsync("a failed approve-and-remember reopens the approval so a following Deny is sent", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.emit(a, {
+    type: "extension_ui_request", id: "approve1", method: "select",
+    title: "Allow tool: bash\nCommand: ls -la", options: ["Approve", "Deny"],
+  });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const prompt = h.snapshot().messages.find(message => message.kind === "ask" && message.id === "approve1");
+  assert.ok(prompt, "the approval prompt is shown");
+  h.failGrant("prompt is not pending");
+  await h.bridge.approveAndRemember(prompt, "session");
+  const reopened = h.snapshot().messages.find(message => message.id === "approve1");
+  assert.equal(Boolean(reopened.answered), false, "a rejected grant must reopen the prompt");
+  assert.equal(Boolean(reopened.cancelled), false);
+  assert.equal(reopened.answer, undefined, "the optimistic Approve is rolled back");
+  assert.match(h.snapshot().messages.at(-1).blocks[0].text, /Approve and remember failed:\*\* prompt is not pending/);
+  assert.equal(
+    h.commands.filter(command => command.type === "extension_ui_response" && command.id === "approve1").length,
+    0,
+    "a rejected grant sends nothing to omp",
+  );
+  // With the prompt open again, the user can Deny — the response actually goes out.
+  h.failGrant(null);
+  assert.equal(await h.bridge.answerAsk("approve1", "Deny"), true);
+  const reply = h.commands.find(command => command.type === "extension_ui_response" && command.id === "approve1");
+  assert.equal(reply?.value, "Deny");
+  const settled = h.snapshot().messages.find(message => message.id === "approve1");
+  assert.deepEqual([settled.answered, settled.answer], [true, "Deny"]);
+});
+
+await checkAsync("an approved prompt and an unsaved rule both stay closed", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  for (const id of ["approve2", "approve3"]) {
+    h.emit(a, { type: "extension_ui_request", id, method: "select", title: "Allow tool: bash\nCommand: ls", options: ["Approve", "Deny"] });
+  }
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const prompt2 = h.snapshot().messages.find(message => message.id === "approve2");
+  h.failGrant(null);
+  await h.bridge.approveAndRemember(prompt2, "session");
+  let bubble = h.snapshot().messages.find(message => message.id === "approve2");
+  assert.deepEqual([bubble.answered, bubble.answer], [true, "Approve"], "a saved grant keeps the prompt settled");
+  assert.equal(h.snapshot().messages.some(message => message.blocks?.[0]?.text?.includes("rule was not saved")), false);
+  const prompt3 = h.snapshot().messages.find(message => message.id === "approve3");
+  h.failGrant(null);
+  h.unsavedGrant("could not write rules.json");
+  await h.bridge.approveAndRemember(prompt3, "session");
+  bubble = h.snapshot().messages.find(message => message.id === "approve3");
+  assert.deepEqual([bubble.answered, bubble.answer], [true, "Approve"], "an approved-but-unsaved rule stays settled");
+  assert.match(h.snapshot().messages.at(-1).blocks[0].text, /Approved, but the rule was not saved:\*\* could not write rules\.json/);
+  h.unsavedGrant(null);
 });
 
 await checkAsync("an unsupported form cancellation reports delivery failure visibly", async () => {

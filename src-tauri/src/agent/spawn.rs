@@ -107,6 +107,12 @@ const MIN_OMP_VERSION: [u32; 3] = [18, 20, 0];
 /// next launch.
 static VERSION_OK: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+/// The version [`check_omp_version`] read from that same binary. Kept beside
+/// [`VERSION_OK`] and keyed by the path it came from, so the frontend's form
+/// rules (a `pattern` needs 19.2.0+) see the version of the omp that can
+/// actually ask, not of whatever `omp` a later PATH change finds.
+static KNOWN_VERSION: Mutex<Option<([u32; 3], PathBuf)>> = Mutex::new(None);
+
 /// `[major, minor, patch]` from one line of `omp --version` output
 /// (`omp/18.5.1`). A leading `v` and a pre-release or build suffix
 /// (`18.5.1-dev.3`) are ignored; a line without three numeric components is
@@ -180,10 +186,42 @@ fn check_omp_version(omp: &Omp) -> Result<(), String> {
     if let Some(refusal) = version_refusal(&text) {
         return Err(refusal);
     }
+    if let Ok(mut known) = KNOWN_VERSION.lock() {
+        if let Some(version) = text.lines().find_map(parse_version_line) {
+            *known = Some((version, omp.binary.clone()));
+        }
+    }
     if let Ok(mut ok) = VERSION_OK.lock() {
         *ok = Some(omp.binary.clone()); // the cache owns its copy; `omp` is borrowed
     }
     Ok(())
+}
+
+/// `major.minor.patch` of the omp binary a run would spawn, or `None` when it
+/// cannot be run or its output carries no version. Reuses the startup check's
+/// cached read for the same binary; otherwise runs `omp --version` once and
+/// caches the result, so a version change (`omp update`) is picked up by the
+/// next caller without restarting the app.
+pub fn omp_version() -> Option<String> {
+    let omp = Omp::locate().ok()?;
+    if let Ok(known) = KNOWN_VERSION.lock() {
+        if let Some((version, path)) = known.as_ref() {
+            if path == &omp.binary {
+                return Some(fmt_version(*version));
+            }
+        }
+    }
+    let output = omp.output(&["--version"]).ok()?;
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let version = text.lines().find_map(parse_version_line)?;
+    if let Ok(mut known) = KNOWN_VERSION.lock() {
+        *known = Some((version, omp.binary));
+    }
+    Some(fmt_version(version))
 }
 
 /// Build the `--profile=<id>` flag from a resolved profile id, or `None`

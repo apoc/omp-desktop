@@ -109,6 +109,9 @@ function parseDocument(html) {
   return root;
 }
 const parse = html => H.parse(html, parseDocument(html));
+// Version-bound parse: omp 19.1.x checks a form's `pattern` on submit,
+// 19.2.0+ treats it as a display hint, and an unknown version fails closed.
+const parseAt = (html, version) => H.parse(html, parseDocument(html), version);
 const fields = html => parse(html).form.fields;
 const field = (html, name, index = 0) => fields(html).filter(f => f.name === name)[index];
 
@@ -267,7 +270,7 @@ check("blank Other text and unchecked boxes contribute nothing; numbers stay tex
 });
 
 check("fieldError enforces required, numeric bounds, lengths, email and URL; pattern stays a hint", () => {
-  const { form } = parse(`<form>
+  const { form } = parseAt(`<form>
     <input name="req" required>
     <input name="num" type="number" min="2" max="4">
     <input name="len" minlength="3" maxlength="5">
@@ -275,7 +278,7 @@ check("fieldError enforces required, numeric bounds, lengths, email and URL; pat
     <input name="url" type="url">
     <input name="pat" pattern="[a-z]+">
     <label><input type="checkbox" name="pick" value="a" required>Pick</label>
-  </form>`);
+  </form>`, "19.2.0");
   const by = name => form.fields.find(f => f.name === name);
   assert.equal(H.fieldError(by("req"), undefined), "Required");
   assert.equal(H.fieldError(by("num"), 5), "Must be at most 4");
@@ -287,6 +290,93 @@ check("fieldError enforces required, numeric bounds, lengths, email and URL; pat
   assert.equal(by("pat").pattern, "[a-z]+");
   assert.equal(H.fieldError(by("pick"), []), "Required");
 });
+
+check("a form carrying a pattern is refused below omp 19.2.0 and kept from 19.2.0 on", () => {
+  const html = `<form><input name="slug" pattern="[a-z]+" value="abc"></form>`;
+  for (const version of [undefined, null, "", "19.1.0", "19.1.9", "omp/19.0.4", "not-a-version"]) {
+    const parsed = parseAt(html, version);
+    assert.equal(parsed.form, undefined, String(version));
+    assert.match(parsed.error, /pattern/i);
+    assert.match(parsed.error, /19\.2/);
+  }
+  for (const version of ["19.2.0", "19.2.1", "omp/19.2.1", "19.10.0", "20.0.0"]) {
+    const parsed = parseAt(html, version);
+    assert.equal(parsed.error, undefined, version);
+    assert.equal(parsed.form.fields[0].pattern, "[a-z]+");
+  }
+  // A form without a pattern is unaffected on every version.
+  assert.equal(parseAt(`<form><input name="a" value="b"></form>`, "19.1.0").error, undefined);
+});
+
+check("versionAtLeast compares omp version strings and treats unknown as too old", () => {
+  assert.equal(H.versionAtLeast("19.2.0", [19, 2, 0]), true);
+  assert.equal(H.versionAtLeast("omp/19.2.1", [19, 2, 0]), true);
+  assert.equal(H.versionAtLeast("v19.2.0-dev.3", [19, 2, 0]), true);
+  assert.equal(H.versionAtLeast("19.10.0", [19, 2, 0]), true);
+  assert.equal(H.versionAtLeast("19.1.9", [19, 2, 0]), false);
+  assert.equal(H.versionAtLeast("18.20.0", [19, 2, 0]), false);
+  for (const unknown of [undefined, null, "", "19", "latest"]) assert.equal(H.versionAtLeast(unknown, [19, 2, 0]), false, String(unknown));
+});
+
+check("answerError applies omp 19.1's submit-time rules to each field's own parsed value", () => {
+  const { form } = parse(`<form>
+    <input name="req" required>
+    <input name="num" type="number" min="2" max="4">
+    <input name="len" minlength="3">
+    <input name="mail" type="email">
+    <input name="url" type="url">
+    <label><input type="radio" name="r" value="a" required>A</label><label><input type="radio" name="r" value="b">B</label>
+  </form>`);
+  assert.equal(H.answerError(form, { req: "ok", num: 2, len: "abc", mail: "a@b", url: "https://x.test", r: "a" }), null);
+  assert.match(H.answerError(form, { num: 2, len: "abc", mail: "a@b", url: "https://x.test", r: "a" }), /"req": Required/);
+  assert.match(H.answerError(form, { req: "ok", num: 5 }), /"num": Must be at most 4/);
+  assert.match(H.answerError(form, { req: "ok", len: "ab" }), /"len": Needs at least 3 characters/);
+  assert.match(H.answerError(form, { req: "ok", mail: "nope" }), /"mail": Enter an email address/);
+  assert.match(H.answerError(form, { req: "ok", url: "nope" }), /"url": Enter a full URL/);
+  assert.match(H.answerError(form, { req: "ok" }), /"r": Required/);
+  // Shape-only validation is unchanged; the constraint layer is separate.
+  assert.equal(H.validateData(form, { num: 2 }), true);
+});
+
+check("a required field sharing its name with another is checked against its own answer", () => {
+  // A checkbox group answered while a required same-name radio group is not:
+  // buildData keeps the last defined value for the name, but each field is
+  // checked against its own draft entry.
+  const { form } = parse(`<form>
+    <label><input type="radio" name="pick" value="one" required>One</label>
+    <label><input type="checkbox" name="pick" value="two">Two</label>
+  </form>`);
+  const draft = H.emptyDraft(form);
+  assert.deepEqual(H.draftErrors(form, draft), { 0: "Required" }, "an unanswered required radio must block Submit");
+  assert.equal(H.draftErrors(form, H.pick(draft, form, 1, 0))[0], "Required", "the checkbox answer must not satisfy the radio");
+  assert.deepEqual(H.draftErrors(form, H.pick(draft, form, 0, 0)), {});
+});
+
+check("an Other entry that repeats a picked option is a field error", () => {
+  const { form } = parse(`<form><label><input type="checkbox" name="i" value="ci">CI</label><label><input type="checkbox" name="i" value="cd">CD</label></form>`);
+  let draft = H.emptyDraft(form);
+  draft = H.pick(draft, form, 0, 0);
+  draft = H.setOther(draft, form, 0, "ci");
+  assert.equal(H.draftErrors(form, draft)[0], "That answer is already picked");
+  // A different typed value is still a valid Other answer.
+  assert.deepEqual(H.draftErrors(form, H.setOther(draft, form, 0, "terraform")), {});
+  const data = H.buildData(form, H.setOther(draft, form, 0, "terraform"));
+  assert.equal(H.answerError(form, data), null);
+  assert.match(H.answerError(form, H.buildData(form, draft)), /unexpected value/);
+});
+
+check("an explicitly empty option value keeps its empty label", () => {
+  // omp's parse.ts labels an option `value ?? name`; `value=""` is the empty
+  // label, not the group name. That empty label must not suppress Other
+  // (omp offers Other when no option reads "Other…").
+  const { form } = parse(`<form><label><input type="radio" name="other" value="">Custom</label><label><input type="radio" name="other" value="x">X</label></form>`);
+  assert.equal(form.fields[0].options[0].label, "Custom", "a wrapping label still names the option");
+  const unlabeled = parse(`<form><input type="radio" name="other" value=""><input type="radio" name="other" value="x"></form>`);
+  assert.equal(unlabeled.form.fields[0].options[0].label, "");
+  assert.equal(unlabeled.form.fields[0].label, "");
+  assert.equal(unlabeled.form.fields[0].other, true);
+});
+
 
 check("password forms are refused with a terminal-only note", () => {
   const parsed = parse(`<form><input name="user" value="Ada"><input type="password" name="pw" value="prefilled-secret"></form>`);
@@ -471,7 +561,33 @@ function ompParseText(field, value) {
   if (typeof value === "string" || (numeric && typeof value === "number" && Number.isFinite(value))) return ompTextValue(field, String(value));
   throw new Error("text shape");
 }
-function ompParseResponse(form, data) {
+// data.ts v19.1.0 `fieldError`, including the `pattern` check that release
+// applies to the submitted answer (`v`-flag regex, invalid pattern = no check).
+function ompCompilePattern(pattern) {
+  try { return new RegExp(`^(?:${pattern})$`, "v"); } catch { return undefined; }
+}
+function ompFieldError(field, value) {
+  if (field.kind === "choice") {
+    const empty = value === undefined || (Array.isArray(value) && value.length === 0);
+    if (!field.required || !empty) return undefined;
+    return arrayChoice(field) ? "Select at least one" : "Required";
+  }
+  const text = value === undefined ? "" : String(value);
+  if (text.trim() === "") return field.required ? "Required" : undefined;
+  if (field.type === "number" || field.type === "range") {
+    const n = Number(text);
+    if (!Number.isFinite(n)) return "Enter a number";
+    if (field.min !== undefined && n < field.min) return `Must be at least ${field.min}`;
+    if (field.max !== undefined && n > field.max) return `Must be at most ${field.max}`;
+  }
+  if (field.minLength !== undefined && text.length < field.minLength) return `Needs at least ${field.minLength} characters`;
+  if (field.maxLength !== undefined && text.length > field.maxLength) return `At most ${field.maxLength} characters`;
+  if (field.type === "email" && !/^[^\s@]+@[^\s@]+$/.test(text)) return "Enter an email address";
+  if (field.type === "url" && !URL.canParse(text)) return "Enter a full URL";
+  if (field.pattern && ompCompilePattern(field.pattern)?.test(text) === false) return `Must match ${field.pattern}`;
+  return undefined;
+}
+function ompParseResponse(form, data, { checkFields = false } = {}) {
   if (!isRecord(data)) throw new Error("data object");
   const named = form.fields.filter(f => f.name);
   const names = new Set([...named.map(f => f.name), ...form.hidden.map(([name]) => name)]);
@@ -502,12 +618,21 @@ function ompParseResponse(form, data) {
       }
     });
     if (!values.some(v => v.carried)) throw mismatch;
-    for (const { f, value, carried } of values) if (carried && value !== undefined) out[name] = value;
+    for (const { f, value, carried } of values) {
+      if (checkFields) {
+        const problem = ompFieldError(f, value);
+        if (problem) throw new Error(`Form field ${JSON.stringify(name)}: ${problem}`);
+      }
+      if (carried && value !== undefined) out[name] = value;
+    }
   }
   return out;
 }
 function rejects(form, data) {
   try { ompParseResponse(form, data); return false; } catch { return true; }
+}
+function rejects19(form, data) {
+  try { ompParseResponse(form, data, { checkFields: true }); return false; } catch { return true; }
 }
 
 check("nested table rows are parsed only by their closest table, matching omp", () => {
@@ -548,8 +673,46 @@ check("omp's validator rejects every shape this builder refuses to validate", ()
   assert.equal(H.validateData(form, { count: "4" }), true);
 });
 
-// Random forms and random answers: the builder must produce exactly the
-// reply omp accepts. A deterministic LCG keeps failures reproducible.
+check("the client's submit rules match the v19.1.0 oracle on every negative case", () => {
+  const html = `<form>
+    <input name="req" required>
+    <input name="num" type="number" min="2" max="4">
+    <input name="len" minlength="3" maxlength="5">
+    <input name="mail" type="email">
+    <input name="url" type="url">
+    <label><input type="radio" name="pick" value="a" required>A</label>
+    <label><input type="radio" name="pick" value="b">B</label>
+    <label><input type="checkbox" name="many" value="x" required>X</label>
+    <label><input type="checkbox" name="many" value="y">Y</label>
+  </form>`;
+  const { form } = parse(html);
+  const valid = { req: "ok", num: 4, len: "abcd", mail: "a@b.test", url: "https://x.test", pick: "a", many: ["x"] };
+  assert.equal(H.answerError(form, valid), null);
+  assert.equal(rejects19(form, valid), false);
+  for (const bad of [
+    {},
+    { ...valid, req: undefined },
+    { ...valid, num: 5 },
+    { ...valid, num: 1 },
+    { ...valid, num: "nope" },
+    { ...valid, len: "ab" },
+    { ...valid, len: "abcdef" },
+    { ...valid, mail: "nope" },
+    { ...valid, url: "nope" },
+    { ...valid, pick: ["a"] },
+    { ...valid, many: [] },
+    { ...valid, many: "x" },
+    { ...valid, extra: 1 },
+  ]) {
+    assert.notEqual(H.answerError(form, bad), null, JSON.stringify(bad));
+    assert.equal(rejects19(form, bad), true, JSON.stringify(bad));
+  }
+  assert.equal(H.answerError(form, { ...valid, pick: "b" }), null);
+});
+
+// Random forms and random answers: the draft fills every required field, and
+// the reply must pass the client's own checks plus the v19.1.0 oracle and the
+// shape-only 19.2 oracle. A deterministic LCG keeps failures reproducible.
 function lcg(seed) {
   let s = seed >>> 0;
   return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2 ** 32);
@@ -599,9 +762,33 @@ check("random answers from the draft replay against omp's validator", () => {
         if (rnd() < 0.6) draft = H.setText(draft, form, index, String(1 + Math.floor(rnd() * 9)));
       } else if (rnd() < 0.6) draft = H.setText(draft, form, index, ` text ${round} `);
     }
+    // A valid answer fills every field the client marks: omp 19.1 rejects a
+    // missing required answer, so a draft the client would submit must not
+    // leave one empty.
+    for (let guard = 0; guard <= form.fields.length; guard++) {
+      const errors = H.draftErrors(form, draft);
+      const keys = Object.keys(errors);
+      if (!keys.length) break;
+      for (const key of keys) {
+        const index = Number(key);
+        const f = form.fields[index];
+        if (f.kind === "choice") {
+          const option = f.options.findIndex(o => !o.disabled);
+          assert.ok(option >= 0, "a required choice needs an enabled option");
+          draft = H.pick(draft, form, index, option);
+        } else if (f.type === "number" || f.type === "range") {
+          draft = H.setText(draft, form, index, String(f.min ?? 1));
+        } else {
+          draft = H.setText(draft, form, index, "filled");
+        }
+      }
+    }
+    assert.deepEqual(H.draftErrors(form, draft), {}, html);
     const data = JSON.parse(JSON.stringify(H.buildData(form, draft)));
     assert.equal(H.validateData(form, data), true, H.dataError(form, data) ?? JSON.stringify(data));
+    assert.equal(H.answerError(form, data), null, H.answerError(form, data) ?? JSON.stringify(data));
     assert.deepEqual(JSON.parse(JSON.stringify(ompParseResponse(form, data))), data, html);
+    assert.doesNotThrow(() => ompParseResponse(form, data, { checkFields: true }), html);
   }
 });
 
