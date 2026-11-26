@@ -13,6 +13,23 @@
     return sessions.map(s => ({ id: s.id, title: s.name ?? "", project: projectName(s.path) }));
   }
 
+  function phoneForm(form) {
+    const fields = new Map();
+    for (const field of form.fields ?? []) {
+      fields.set(field, field.type === "password" ? { ...field, value: "" } : field);
+    }
+    return {
+      ...form,
+      fields: (form.fields ?? []).map(field => fields.get(field)),
+      sections: (form.sections ?? []).map(section => ({
+        ...section,
+        blocks: (section.blocks ?? []).map(block => block.kind === "field" ? { ...block, field: fields.get(block.field) ?? block.field } : block),
+      })),
+      // Hidden defaults never leave the desktop; it merges them on answer.
+      hidden: [],
+    };
+  }
+
   function askCard(message) {
     const ask = message.ask ?? message;
     if (message.kind !== "ask" && !message.ask) return null;
@@ -31,7 +48,7 @@
       ...(kind === "editor" && typeof (ask.prefill ?? ask.value) === "string" ? { value: ask.prefill ?? ask.value } : {}),
       ...(kind === "dialog" ? { questions: ask.questions ?? [] } : {}),
       ...(kind === "form" ? {
-        ...(ask.form ? { form: ask.form } : {}),
+        ...(ask.form ? { form: phoneForm(ask.form) } : {}),
         ...(Number.isFinite(ask.timeout) && ask.timeout > 0 ? { timeout: ask.timeout } : {}),
         ...(typeof ask.formError === "string" ? { formError: ask.formError } : {}),
       } : {}),

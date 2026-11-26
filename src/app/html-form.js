@@ -23,8 +23,14 @@
   ]);
   const HEADING = new Set(["h1", "h2", "h3", "h4", "h5", "h6", "summary"]);
   const IGNORED_INPUTS = new Set(["button", "file", "image", "reset", "submit"]);
+  const MAX_HTML_BYTES = 256 * 1024;
+  const MAX_NODES = 10000;
+  const MAX_DEPTH = 64;
   const MAX_FIELDS = 500;
   const MAX_BLOCKS = 2000;
+  const MAX_OPTIONS = 1000;
+  const MAX_TABLE_CELLS = 2000;
+  const PASSWORD_MASK = "••••••••";
 
   function nonBlank(value) {
     return typeof value === "string" && value.trim() ? value : null;
@@ -90,15 +96,15 @@
 
   function allElements(root) {
     const out = [];
-    const visit = node => {
-      for (const child of children(node)) {
-        if (child.nodeType !== 1) continue;
-        out.push(child);
-        visit(child);
-      }
-    };
-    visit(root);
-    return out;
+    const pending = [{ node: root, depth: 0 }];
+    let nodes = 0;
+    while (pending.length) {
+      const { node, depth } = pending.pop();
+      if (++nodes > MAX_NODES || depth > MAX_DEPTH) throw new Error("This form has too much markup to show.");
+      if (node.nodeType === 1 && depth > 0) out.push(node);
+      for (const child of children(node)) pending.push({ node: child, depth: depth + 1 });
+    }
+    return out.reverse();
   }
 
   class Builder {
@@ -113,6 +119,8 @@
       this.inline = "";
       this.fieldsetDepth = 0;
       this.blockCount = 0;
+      this.optionCount = 0;
+      this.tableCellCount = 0;
     }
 
     build() {
@@ -133,6 +141,7 @@
         sections: this.sections.filter(section => section.title !== "" || section.blocks.length > 0),
         fields: this.fields,
         hidden: this.hidden,
+        hasPasswords: this.fields.some(field => field.type === "password"),
       };
     }
 
@@ -268,14 +277,35 @@
 
     table(node) {
       this.flush(false);
-      if (hasControl(node)) {
-        this.walkChildren(node);
-        this.flush(false);
+      const rows = descendants(node, child => localName(child) === "tr");
+      const cellsOf = row => children(row).filter(cell => ["td", "th"].includes(localName(cell)));
+      this.tableCellCount += rows.reduce((count, row) => count + cellsOf(row).length, 0);
+      if (this.tableCellCount > MAX_TABLE_CELLS) throw new Error("This form has too many table cells to show.");
+      if (!hasControl(node)) {
+        const cells = rows.map(row => cellsOf(row).map(labelText));
+        let headerRows = 0;
+        while (headerRows < rows.length && cellsOf(rows[headerRows]).every(cell => localName(cell) === "th")) headerRows++;
+        if (cells.some(row => row.length)) this.block({ kind: "table", rows: cells, headerRows });
         return;
       }
-      const rows = descendants(node, child => localName(child) === "tr").map(row =>
-        children(row).filter(cell => ["td", "th"].includes(localName(cell))).map(labelText));
-      if (rows.some(row => row.length)) this.block({ kind: "table", rows });
+      // A decision matrix: row text stays context and an unlabelled control
+      // borrows its column header, exactly as omp's parse.ts does.
+      let header = [];
+      for (const row of rows) {
+        const cells = cellsOf(row);
+        if (cells.every(cell => localName(cell) === "th") && !hasControl(row)) {
+          header = cells.map(labelText);
+          continue;
+        }
+        const text = cells.filter(cell => !hasControl(cell)).map(labelText).filter(Boolean).join(" · ");
+        if (text) this.block({ kind: "text", text, heading: false });
+        cells.forEach((cell, column) => {
+          for (const control of descendants(cell, child => ["input", "select", "textarea"].includes(localName(child)))) {
+            const own = labelText(cell);
+            this.control(control, own || header[column] || null);
+          }
+        });
+      }
     }
 
     detachedLabel(control) {
@@ -293,7 +323,7 @@
       if (tag === "select") {
         const multi = control.hasAttribute?.("multiple") ?? attr(control, "multiple") !== null;
         const options = descendants(control, child => localName(child) === "option").map(option => {
-          const label = normalize(textOf(option));
+          const label = textOf(option).replace(/\s+/g, " ").trim();
           return {
             value: attr(option, "value") ?? label,
             label,
@@ -301,6 +331,8 @@
             disabled: option.hasAttribute?.("disabled") ?? attr(option, "disabled") !== null,
           };
         });
+        this.optionCount += options.length;
+        if (this.optionCount > MAX_OPTIONS) throw new Error("This form has too many options to show.");
         if (!multi && !options.some(option => option.checked)) {
           const first = options.find(option => !option.disabled);
           if (first) first.checked = true;
@@ -333,9 +365,14 @@
           checked: control.hasAttribute?.("checked") ?? attr(control, "checked") !== null,
           disabled: control.hasAttribute?.("disabled") ?? attr(control, "disabled") !== null,
         };
+        this.optionCount++;
+        if (this.optionCount > MAX_OPTIONS) throw new Error("This form has too many options to show.");
         const key = `${type}\0${name}`;
         const group = this.groups.get(key);
         if (group) {
+          // omp resolves a submitted value to the first enabled option. A
+          // later enabled duplicate could never be submitted distinctly.
+          if (group.options.some(existing => !existing.disabled && existing.value === option.value)) option.disabled = true;
           group.options.push(option);
           group.required ||= required;
           return;
@@ -347,11 +384,12 @@
       return this.addField({
         kind: "text", name, type, multiline: false,
         label: own || name.replace(/[_-]+/g, " "),
-        value: value ?? "",
+        value: type === "password" ? "" : value ?? "",
         placeholder: attr(control, "placeholder") ?? "",
         required,
         min: numberAttr(control, "min"),
         max: numberAttr(control, "max"),
+        step: numberAttr(control, "step"),
         pattern: attr(control, "pattern") ?? undefined,
         minLength: numberAttr(control, "minlength"),
         maxLength: numberAttr(control, "maxlength"),
@@ -372,6 +410,7 @@
    *  never waits on a card that cannot be answered. */
   function parse(html, documentImpl) {
     if (typeof html !== "string" || !html.trim()) return { error: "The form is empty." };
+    if (new TextEncoder().encode(html).length > MAX_HTML_BYTES) return { error: "The form HTML is too large to show." };
     let document;
     try {
       if (documentImpl) document = documentImpl;
@@ -426,7 +465,7 @@
         ? entry.picks.filter(pickIndex => pickIndex !== optionIndex)
         : [...entry.picks, optionIndex].sort((a, b) => a - b)
       : [optionIndex];
-    return draft.map((value, i) => i === index ? { ...entry, picks } : value);
+    return draft.map((value, i) => i === index ? { ...entry, picks, other: field.multi ? entry.other : "" } : value);
   }
 
   function setOther(draft, form, index, text) {
@@ -442,9 +481,9 @@
     return draft.map((value, i) => i === index ? text : value);
   }
 
-  function buildData(form, draft) {
+  function buildData(form, draft, { hidden = true } = {}) {
     const data = Object.create(null);
-    for (const [name, value] of form.hidden) data[name] = value;
+    if (hidden) for (const [name, value] of form.hidden) data[name] = value;
     for (const [index, field] of form.fields.entries()) {
       if (!field.name) continue;
       const entry = draft[index];
@@ -460,12 +499,28 @@
     return buildData(form, emptyDraft(form));
   }
 
-  function compilePattern(pattern) {
-    try {
-      return new RegExp(`^(?:${pattern})$`, "v");
-    } catch {
-      return undefined;
-    }
+  // Phone answers omit hidden inputs to stay inside the action size limit;
+  // the desktop adds the authoritative parsed defaults before handing off.
+  function withHiddenDefaults(form, data) {
+    return Object.assign(Object.create(null), Object.fromEntries(form.hidden), data);
+  }
+
+  // Only this redacted copy enters settled message state. The original data
+  // goes straight to omp, whose own tool output echoes submitted values.
+  function publicData(form, data) {
+    const safe = Object.create(null);
+    const passwords = new Set(form.fields.filter(field => field.type === "password").map(field => field.name));
+    for (const [name, value] of Object.entries(data ?? {})) safe[name] = passwords.has(name) ? PASSWORD_MASK : value;
+    return safe;
+  }
+
+  function setInputValue(input, field, value) {
+    // Range inputs clamp when value is assigned; constraints must already be
+    // present so the displayed and submitted numbers are identical.
+    if (field.min !== undefined) input.min = field.min;
+    if (field.max !== undefined) input.max = field.max;
+    if (field.step !== undefined) input.step = field.step;
+    input.value = value;
   }
 
   function fieldError(field, value) {
@@ -492,8 +547,6 @@
         return "Enter a full URL";
       }
     }
-    if (field.pattern && compilePattern(field.pattern)?.test(text) === false)
-      return `Must match ${field.pattern.length > 40 ? `${field.pattern.slice(0, 39)}…` : field.pattern}`;
     return undefined;
   }
 
@@ -606,7 +659,7 @@
     const parts = [];
     for (const field of form.fields) {
       if (!field.name || hiddenNames.has(field.name) || !Object.hasOwn(data ?? {}, field.name)) continue;
-      const value = data[field.name];
+      const value = field.type === "password" ? PASSWORD_MASK : data[field.name];
       const values = Array.isArray(value) ? value : [value];
       const shown = values.flatMap(entry => {
         if (entry === undefined || entry === null || String(entry).trim() === "") return [];
@@ -641,7 +694,7 @@
   }
 
   window.OMP_HTML_FORM = {
-    parse, emptyDraft, pick, setOther, setText, buildData, defaultData, fieldError, draftErrors,
-    dataError, validateData, summary, summaryPrompt, timeoutLabel, isArrayChoice, choiceValue, textValue,
+    parse, emptyDraft, pick, setOther, setText, buildData, defaultData, withHiddenDefaults, publicData, setInputValue,
+    fieldError, draftErrors, dataError, validateData, summary, summaryPrompt, timeoutLabel, isArrayChoice, choiceValue, textValue,
   };
 })();

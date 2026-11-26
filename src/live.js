@@ -595,8 +595,8 @@
   // takes input again. The caller publishes.
   function _reopenAsk(id) {
     state.messages = state.messages.map(m => {
-      if (m.kind === "ask" && m.id === id && m.answered && !m.cancelled) {
-        const { answered: _a, answer: _v, ...open } = m;
+      if (m.kind === "ask" && m.id === id && (m.answered || (m.cancelled && !m.closedByOmp))) {
+        const { answered: _a, answer: _v, answers: _answers, data: _data, cancelled: _c, ...open } = m;
         return open;
       }
       return m;
@@ -608,9 +608,15 @@
   // Proven with an eval-kernel cell (7/7 cases: patch applied, array
   // replaced, {value}/{confirmed}/{cancelled} payload shapes preserved
   // per caller, and re-answer + unknown-id both send nothing).
-  function _resolveAsk(id, patch, payload) {
-    if (!_settleAsk(id, patch)) return Promise.resolve(false);
-    return _send({ type: "extension_ui_response", id, ...payload });
+  async function _resolveAsk(id, patch, payload) {
+    if (!_settleAsk(id, patch)) return false;
+    const delivered = await _send({ type: "extension_ui_response", id, ...payload });
+    if (!delivered) {
+      _reopenAsk(id);
+      _pushAssistantNote("**Answer could not be delivered to omp.** The prompt is open again; please retry.");
+      notify();
+    }
+    return delivered;
   }
 
   // Append a synthetic assistant note (process exited, startup failed,
@@ -2462,7 +2468,13 @@
             cancelled: true,
           })];
           notify();
-          _send({ type: "extension_ui_response", id: ev.id, cancelled: true });
+          _send({ type: "extension_ui_response", id: ev.id, cancelled: true }).then(delivered => {
+            if (delivered) return;
+            state.messages = state.messages.map(message => message.kind === "ask" && message.id === ev.id
+              ? { ...message, formError: `${message.formError} Cancellation could not be delivered to omp.` }
+              : message);
+            notify();
+          });
           return;
         }
         _queueAskBubble(_askMessage("form", ev, {
@@ -4227,7 +4239,10 @@
      * @param {Object<string, string|number|string[]>} data
      */
     answerForm(id, data) {
-      return _resolveAsk(id, { answered: true, data }, { data });
+      const message = state.messages.find(m => m.kind === "ask" && m.id === id && m.method === "form");
+      const outgoing = message?.form ? HTML_FORM.withHiddenDefaults(message.form, data) : data;
+      const publicData = message?.form ? HTML_FORM.publicData(message.form, outgoing) : null;
+      return _resolveAsk(id, { answered: true, data: publicData }, { data: outgoing });
     },
 
     /**

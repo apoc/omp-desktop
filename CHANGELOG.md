@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Prompts from omp 19.1+ (the ask tool's HTML forms) are shown and answerable on the desktop and phone; before, the tab waited forever. The form is parsed into a safe model (no HTML reaches the page), keeps its sections, rows, inputs, textareas and hidden defaults, and can be cancelled. A form the shell cannot parse is cancelled immediately with a visible note.
+- Prompts from omp 19.1+ (the ask tool's HTML forms) are shown and answerable on the desktop and phone; before, the tab waited forever. Parsing is bounded (256 KiB before `DOMParser`, plus node/depth/render limits) and produces a safe model rather than injecting HTML. Password prefill is dropped, password answers never enter settled message state or summaries and are not published to the phone, and password forms warn that omp echoes submitted values in its own tool output. Phone answers omit hidden defaults for the desktop to merge; failed answer hand-offs remain retryable. Pattern text is a hint only, choice/Other and table semantics match omp, and malformed phone/RPC answer shapes are rejected.
 
 ## [0.15.2] - 2026-11-23
 

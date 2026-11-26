@@ -255,7 +255,7 @@ check("blank Other text and unchecked boxes contribute nothing; numbers stay tex
   assert.deepEqual(JSON.parse(JSON.stringify(H.buildData(form, draft))), { n: "not a number" });
 });
 
-check("fieldError enforces required, numeric bounds, lengths, email, URL and pattern", () => {
+check("fieldError enforces required, numeric bounds, lengths, email and URL; pattern stays a hint", () => {
   const { form } = parse(`<form>
     <input name="req" required>
     <input name="num" type="number" min="2" max="4">
@@ -272,8 +272,77 @@ check("fieldError enforces required, numeric bounds, lengths, email, URL and pat
   assert.equal(H.fieldError(by("len"), "ab"), "Needs at least 3 characters");
   assert.equal(H.fieldError(by("mail"), "x"), "Enter an email address");
   assert.equal(H.fieldError(by("url"), "x"), "Enter a full URL");
-  assert.equal(H.fieldError(by("pat"), "AB"), "Must match [a-z]+");
+  assert.equal(H.fieldError(by("pat"), "AB"), undefined);
+  assert.equal(by("pat").pattern, "[a-z]+");
   assert.equal(H.fieldError(by("pick"), []), "Required");
+});
+
+check("password prefill is dropped and submitted passwords are masked in public data and summaries", () => {
+  const parsed = parse(`<form><input name="user" value="Ada"><input type="password" name="pw" value="prefilled-secret"></form>`);
+  assert.equal(parsed.error, undefined, parsed.error);
+  const { form } = parsed;
+  assert.deepEqual(form.fields.map(f => f.name), ["user", "pw"]);
+  const password = form.fields.find(f => f.name === "pw");
+  assert.equal(password.value, "");
+  assert.equal(form.hasPasswords, true);
+  assert.doesNotMatch(JSON.stringify(form), /prefilled-secret/);
+  assert.deepEqual(JSON.parse(JSON.stringify(H.defaultData(form))), { user: "Ada", pw: "" });
+  const draft = H.setText(H.emptyDraft(form), form, 1, "typed-secret");
+  assert.deepEqual(JSON.parse(JSON.stringify(H.buildData(form, draft, { hidden: false }))), { user: "Ada", pw: "typed-secret" });
+  assert.deepEqual(JSON.parse(JSON.stringify(H.publicData(form, H.buildData(form, draft)))), { user: "Ada", pw: "••••••••" });
+  assert.deepEqual(H.summary(form, { user: "Ada", pw: "typed-secret" }), { answer: null, count: 2 });
+  assert.doesNotMatch(JSON.stringify(H.summary(form, { pw: "typed-secret" })), /typed-secret/);
+});
+
+check("single-choice picks clear Other and missing checkbox values match omp's on default", () => {
+  const { form } = parse(`<form><label><input type="radio" name="r" value="a">A</label><label><input type="radio" name="r" value="b">B</label><label><input type="checkbox" name="c" checked>C</label></form>`);
+  let draft = H.setOther(H.emptyDraft(form), form, 0, "custom");
+  draft = H.pick(draft, form, 0, 1);
+  assert.deepEqual(draft[0], { picks: [1], other: "" });
+  assert.equal(form.fields[1].options[0].value, "on");
+});
+
+check("duplicate enabled choice values are disabled after their first occurrence", () => {
+  const { form } = parse(`<form><label><input type="checkbox" name="c" value="same">A</label><label><input type="checkbox" name="c" value="same">B</label><label><input type="checkbox" name="c" value="same" disabled>C</label></form>`);
+  assert.deepEqual(form.fields[0].options.map(o => o.disabled), [false, true, true]);
+});
+
+check("oversized HTML, excessive nodes, deep nesting and over 1000 options are unsupported", () => {
+  assert.match(H.parse("x".repeat(256 * 1024 + 1)).error, /too large/i);
+  assert.match(parse(`<form><input name="x">${"<div>".repeat(70)}${"</div>".repeat(70)}</form>`).error, /could not be read/i);
+  assert.match(parse(`<form><input name="x">${"<span></span>".repeat(10001)}</form>`).error, /could not be read/i);
+  const options = Array.from({ length: 1001 }, (_, i) => `<option value="${i}">${i}</option>`).join("");
+  assert.match(parse(`<form><select name="x">${options}</select></form>`).error, /could not be read/i);
+});
+
+check("multiline options and table control labels follow omp's parse.ts oracle", () => {
+  // Ported from parse.ts: option text uses /\s+/g, unlike ordinary spans.
+  const ompOption = text => text.replace(/\s+/g, " ").trim();
+  const { form } = parse(`<form><select name="s"><option> one\n  two </option></select><table><tr><th>Choice</th><th>Other</th></tr><tr><td><input type="radio" name="r" value="a"></td><td><input type="radio" name="r" value="b"></td></tr></table></form>`);
+  assert.equal(form.fields[0].options[0].label, ompOption(" one\n  two "));
+  // parse.ts gives an unlabelled control its column header. A column headed
+  // Other therefore suppresses the group's automatic Other.
+  const ompHeader = ["Choice", "Other"];
+  assert.deepEqual(form.fields[1].options.map(o => o.label), ompHeader);
+  assert.equal(form.fields[1].other, false);
+});
+
+check("phone data omits hidden defaults while desktop data retains them", () => {
+  const { form } = parse(`<form><input type="hidden" name="large" value="secret"><input name="shown" value="yes"></form>`);
+  assert.deepEqual(JSON.parse(JSON.stringify(H.buildData(form, H.emptyDraft(form), { hidden: false }))), { shown: "yes" });
+  assert.deepEqual(JSON.parse(JSON.stringify(H.withHiddenDefaults(form, { shown: "yes" }))), { large: "secret", shown: "yes" });
+});
+
+check("range constraints are assigned before its value", () => {
+  const input = {
+    log: [],
+    set min(value) { this.log.push(["min", value]); },
+    set max(value) { this.log.push(["max", value]); },
+    set step(value) { this.log.push(["step", value]); },
+    set value(value) { this.log.push(["value", value]); },
+  };
+  H.setInputValue(input, { type: "range", min: 1, max: 9, step: 0.5 }, "4");
+  assert.deepEqual(input.log, [["min", 1], ["max", 9], ["step", 0.5], ["value", "4"]]);
 });
 
 check("summary shows visible answers only, never hidden values", () => {

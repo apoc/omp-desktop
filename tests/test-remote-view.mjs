@@ -152,6 +152,17 @@ test("buildView forwards a parsed form and its timeout, never the raw HTML", () 
   assert.deepEqual(own(broken.asks), [{ id: "bad", kind: "form", title: "Continue?", message: "", formError: "The form is empty." }]);
 });
 
+test("phone forms never publish password prefill", () => {
+  const { api } = load();
+  const form = {
+    sections: [], hidden: [["large", "hidden-secret"]], hasPasswords: true,
+    fields: [{ kind: "text", name: "pw", type: "password", value: "must-not-leak", label: "Password", options: [] }],
+  };
+  const view = api.buildView(snapshot({ messages: [ask("pw", "form", { form })] }));
+  assert.equal(view.asks[0].form.fields[0].value, "");
+  assert.doesNotMatch(JSON.stringify(view), /must-not-leak|hidden-secret/);
+});
+
 test("answerCall dispatches select / confirm / input / editor / dialog / form / cancel", () => {
   const { api } = load();
   for (const [kind, value, method] of [

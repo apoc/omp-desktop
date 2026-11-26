@@ -338,6 +338,9 @@
           container.append(formField(entry.field, fieldCursor++, form, draft, refresh));
         }
       };
+      if (form.hasPasswords) {
+        wrap.append(node("p", "omp will echo submitted values, including passwords, in its tool output.", "form-error"));
+      }
       for (const section of form.sections) {
         const box = node("section", undefined, `form-section${section.fieldset ? " fieldset" : ""}`);
         if (section.title) box.append(node("div", section.title, "form-legend"));
@@ -352,7 +355,7 @@
       const submit = button("Submit", () => {
         const errors = form ? window.OMP_HTML_FORM.draftErrors(form, draft) : {};
         if (Object.keys(errors).length) { refresh(); return; }
-        onAnswer(ask.id, window.OMP_HTML_FORM.buildData(form, draft));
+        onAnswer(ask.id, window.OMP_HTML_FORM.buildData(form, draft, { hidden: false }));
       });
       submit.className = "ask-submit";
       foot.append(node("span", "", "ask-foot-spacer"), cancel, submit);
@@ -440,12 +443,13 @@
       } else {
         const input = node("input", undefined, "ask-other-input selectable");
         input.type = field.type || "text";
-        input.value = draft[index];
+        F.setInputValue(input, field, draft[index]);
         input.placeholder = field.placeholder || "";
         input.required = field.required;
         input.addEventListener("input", () => update(F.setText(draft, form, index, input.value)));
         section.append(input);
       }
+      if (field.pattern) section.append(node("div", `Pattern: ${field.pattern}`, "form-context"));
       return section;
     }
 

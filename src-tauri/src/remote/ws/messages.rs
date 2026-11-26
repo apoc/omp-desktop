@@ -69,6 +69,9 @@ fn build_action(session: &Authed, message: &Value, kind: &str) -> Option<Action>
     if message.get("askId").is_some_and(|raw| !raw.is_null()) && ask_id.is_none() {
         return None;
     }
+    if kind == "answer" && !message.as_object().is_some_and(|object| object.contains_key("value")) {
+        return None;
+    }
     let value = message.get("value").cloned(); // owned for the webview event
     if value
         .as_ref()

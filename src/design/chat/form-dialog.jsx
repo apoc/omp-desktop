@@ -114,6 +114,7 @@ function _FD_Field({ field, index, form, draft, error, update }) {
     <section className="ask-q form-field">
       <div className="ask-question form-field-label">{question}</div>
       {control}
+      {field.pattern && <div className="form-context">{OMP_TR("Pattern: {pattern}", { pattern: field.pattern })}</div>}
       {error && <div className="form-error" role="alert">{OMP_TR(error)}</div>}
     </section>
   );
@@ -124,8 +125,11 @@ function _FD_Summary({ form, data }) {
   const fields = form.fields.filter(field => field.name && !hidden.has(field.name));
   return (
     <div className="ask-dialog done form-dialog">
+      {form.hasPasswords && <div className="form-error" role="note">
+        {OMP_TR("omp will echo submitted values, including passwords, in its tool output.")}
+      </div>}
       {fields.map((field, i) => {
-        const value = data?.[field.name];
+        const value = field.type === "password" ? "••••••••" : data?.[field.name];
         const values = Array.isArray(value) ? value : value === undefined ? [] : [value];
         const shown = values.map(entry => field.kind === "choice"
           ? field.options.find(option => option.value === String(entry))?.label ?? String(entry)
@@ -172,6 +176,9 @@ function FormDialog({ msg, onSubmit, onCancel }) {
   };
   return (
     <div className="ask-dialog form-dialog" onKeyDown={keepShiftTab}>
+      {form.hasPasswords && <div className="form-error" role="note">
+        {OMP_TR("omp will echo submitted values, including passwords, in its tool output.")}
+      </div>}
       {form.sections.map((section, si) => (
         <section className={`form-section${section.fieldset ? " fieldset" : ""}`} key={si}>
           {section.title && <div className="form-legend">{section.title}</div>}
