@@ -47,9 +47,14 @@ function element(name, attributes = {}) {
   };
 }
 function parseDocument(html) {
+  const head = element("head");
   const body = element("body");
+  const documentElement = element("html");
   const root = element("#document");
-  root.childNodes.push(body);
+  documentElement.childNodes.push(head, body);
+  root.childNodes.push(documentElement);
+  root.documentElement = documentElement;
+  root.body = body;
   const stack = [body];
   const pushText = data => stack.at(-1).childNodes.push({ nodeType: 3, data: decode(data) });
   const start = /<([a-z][a-z0-9:-]*)((?:\s+[^\s=/>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?)*)\s*\/?>/iy;
@@ -67,7 +72,8 @@ function parseDocument(html) {
     if (html[lt + 1] === "/") {
       const end = html.indexOf(">", lt);
       const name = html.slice(lt + 2, end).trim().toLowerCase();
-      for (let k = stack.length - 1; k > 0; k--) {
+      if (name === "head") stack.splice(0, stack.length, body);
+      else for (let k = stack.length - 1; k > 0; k--) {
         if (stack[k].localName === name) { stack.length = k; break; }
       }
       i = end + 1;
@@ -76,6 +82,11 @@ function parseDocument(html) {
     start.lastIndex = lt;
     const match = start.exec(html);
     if (!match) { pushText("<"); i = lt + 1; continue; }
+    if (match[1].toLowerCase() === "head") {
+      stack.splice(0, stack.length, head);
+      i = start.lastIndex;
+      continue;
+    }
     const node = element(match[1].toLowerCase());
     let attr;
     attrs.lastIndex = 0;
@@ -318,6 +329,7 @@ check("oversized HTML, excessive nodes, deep nesting and over 1000 options are u
 check("node and depth limits cover the whole document, not only the first form", () => {
   assert.match(parse(`<form><input name="x"></form>${"<span></span>".repeat(10001)}`).error, /could not be read/i);
   assert.match(parse(`<form><input name="x"></form>${"<div>".repeat(70)}${"</div>".repeat(70)}`).error, /could not be read/i);
+  assert.match(parse(`<head>${"<meta>".repeat(10001)}</head><form><input name="x"></form>`).error, /could not be read/i);
 });
 
 check("expanded display text is capped at 64 KiB, including the 2 KiB table fixture", () => {
@@ -335,6 +347,14 @@ check("expanded display text is capped at 64 KiB, including the 2 KiB table fixt
 check("fallback field-name labels count toward the display budget", () => {
   const name = "fallback_".repeat(30);
   const html = `<form>${`<input name="${name}">`.repeat(300)}</form>`;
+  assert.ok(html.length < 256 * 1024);
+  assert.match(parse(html).error, /could not be read/i);
+});
+
+check("unlabeled choice-group name fallbacks count toward the display budget", () => {
+  const name = "choice_".repeat(40);
+  const groups = Array.from({ length: 300 }, (_, i) => `<input type="radio" name="${name}${i}" value="a"><input type="radio" name="${name}${i}" value="b">`).join("");
+  const html = `<form>${groups}</form>`;
   assert.ok(html.length < 256 * 1024);
   assert.match(parse(html).error, /could not be read/i);
 });

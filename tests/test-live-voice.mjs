@@ -998,6 +998,29 @@ await checkAsync("an unsupported form cancellation reports delivery failure visi
   assert.equal(h.commands.filter(command => command.type === "extension_ui_response" && command.id === "bad-delivery").length, 2);
 });
 
+await checkAsync("a reopened refused form renders a working retry control", async () => {
+  const Babel = createRequire(import.meta.url)(join(root, "src/babel.min.js"));
+  const { code } = Babel.transform(readFileSync(join(root, "src/design/chat/form-dialog.jsx"), "utf8"), { presets: ["react"] });
+  const window = { Icon: () => null, OMP_HTML_FORM: {} };
+  const React = {
+    Fragment: "fragment",
+    createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
+    useState: initial => [typeof initial === "function" ? initial() : initial, () => {}],
+    useEffect: () => {},
+  };
+  runInNewContext(code, { window, React, OMP_TR: text => text });
+  let retries = 0;
+  const tree = window.FormDialog({
+    msg: { id: "refused", form: null, formError: "Refusal could not be delivered." },
+    onSubmit: () => {}, onCancel: () => { retries++; },
+  });
+  const walk = node => [node, ...(node?.children ?? []).flatMap(walk)];
+  const retry = walk(tree).find(node => node?.type === "button" && node.children.includes("Retry"));
+  assert.ok(retry, "refusal must render Retry");
+  retry.props.onClick();
+  assert.equal(retries, 1);
+});
+
 await checkAsync("omp withdrawal wins over a failed refusal cancellation", async () => {
   const h = bridgeHarness();
   const { a } = await twoTabs(h);

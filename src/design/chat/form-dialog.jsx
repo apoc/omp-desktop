@@ -158,6 +158,10 @@ function FormDialog({ msg, onSubmit, onCancel }) {
           <div className="ask-sum-q"><span className="ask-sum-q-text">{OMP_TR("Unsupported form")}</span></div>
           <div className="ask-sum-a none">{msg.formError || OMP_TR("The form could not be read.")}</div>
         </div>
+        <div className="ask-dialog-foot">
+          <span className="ask-foot-spacer" />
+          <button type="button" className="ask-opt" onClick={onCancel}>{OMP_TR("Retry")}</button>
+        </div>
       </div>
     );
   }

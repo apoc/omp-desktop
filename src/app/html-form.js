@@ -154,6 +154,7 @@
 
     budgetField(field) {
       this.budget(field.label);
+      if (field.kind === "choice" && !field.label) this.budget(field.name.replace(/[_-]+/g, " "));
       if (field.kind === "choice") for (const option of field.options) this.budget(option.label);
       else {
         this.budget(field.value);
@@ -462,8 +463,9 @@
       if (documentImpl) document = documentImpl;
       else if (typeof DOMParser !== "undefined") document = new DOMParser().parseFromString(html, "text/html");
       else return { error: "This page cannot read forms." };
+      const documentElements = allElements(document.documentElement ?? document.body ?? document);
       const root = document.body ?? document.documentElement ?? document;
-      const elements = allElements(root);
+      const elements = root === document.documentElement ? documentElements : allElements(root);
       const formNode = elements.find(node => localName(node) === "form");
       const passwordControl = node => localName(node) === "input" && (
         (attr(node, "type") ?? "text").trim().toLowerCase() === "password"

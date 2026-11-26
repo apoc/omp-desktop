@@ -414,6 +414,7 @@ window.OMP_I18N.add("zh", {
   "Keep": "保留",
   "cancel": "取消",
   "Cancel": "取消",
+  "Retry": "重试",
   "Confirm": "确认",
   "save": "保存",
   "s": "秒",

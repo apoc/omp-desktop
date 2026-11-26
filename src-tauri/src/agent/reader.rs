@@ -142,6 +142,86 @@ fn next_html_attribute<'a>(tag: &'a str, cursor: &mut usize) -> Option<HtmlAttri
     })
 }
 
+/// Decode the character references a browser applies inside an attribute
+/// value before the form parser compares it. `None` means any `&` left
+/// unresolved — callers treat that as sensitive rather than guessing, so a
+/// malformed reference cannot hide a password marker. The scan is single-pass
+/// and allocates only for the small `type`/`autocomplete` values that use it.
+fn decode_html_attribute(value: &str) -> Option<String> {
+    fn named(name: &str) -> Option<&'static str> {
+        Some(match name {
+            "amp" | "AMP" => "&",
+            "lt" | "LT" => "<",
+            "gt" | "GT" => ">",
+            "quot" | "QUOT" => "\"",
+            "apos" => "'",
+            "nbsp" => "\u{a0}",
+            "Tab" => "\t",
+            "NewLine" => "\n",
+            "fjlig" => "fj",
+            _ => return None,
+        })
+    }
+
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        rest = &rest[amp + 1..];
+        if let Some(after_hash) = rest.strip_prefix('#') {
+            let (radix, digits) = if let Some(hex) = after_hash
+                .strip_prefix('x')
+                .or_else(|| after_hash.strip_prefix('X'))
+            {
+                (16, hex)
+            } else {
+                (10, after_hash)
+            };
+            let end = digits
+                .find(|c: char| !c.is_digit(radix))
+                .unwrap_or(digits.len());
+            if end == 0 {
+                return None;
+            }
+            let code = u32::from_str_radix(&digits[..end], radix).ok();
+            out.push(code.and_then(char::from_u32).unwrap_or('\u{fffd}'));
+            rest = &digits[end..];
+        } else {
+            let end = rest
+                .find(|c: char| !c.is_ascii_alphanumeric())
+                .unwrap_or(rest.len());
+            if end == 0 {
+                return None;
+            }
+            out.push_str(named(&rest[..end])?);
+            rest = &rest[end..];
+        }
+        rest = rest.strip_prefix(';').unwrap_or(rest);
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// Whether an attribute value names a credential input after the browser's
+/// own character-reference decoding. An undecodable value is sensitive.
+fn sensitive_attribute(name: &str, value: &str) -> bool {
+    let is_type = name.eq_ignore_ascii_case("type");
+    if !is_type && !name.eq_ignore_ascii_case("autocomplete") {
+        return false;
+    }
+    let Some(decoded) = decode_html_attribute(value) else {
+        return true;
+    };
+    if is_type {
+        decoded.trim().eq_ignore_ascii_case("password")
+    } else {
+        decoded.split_ascii_whitespace().any(|token| {
+            token.eq_ignore_ascii_case("current-password")
+                || token.eq_ignore_ascii_case("new-password")
+        })
+    }
+}
+
 /// Remove prefilled credentials from password-like `<input>` elements in an
 /// ask-form HTML string. Returns `None` when no value needs removal, keeping
 /// the ordinary frame path allocation-free. Each tag is scanned twice at
@@ -168,17 +248,7 @@ fn strip_password_values(html: &str) -> Option<String> {
         let mut probe = 0;
         let mut sensitive = false;
         while let Some(attribute) = next_html_attribute(&html[name_end..], &mut probe) {
-            if attribute.name.eq_ignore_ascii_case("type")
-                && attribute.value.trim().eq_ignore_ascii_case("password")
-            {
-                sensitive = true;
-            }
-            if attribute.name.eq_ignore_ascii_case("autocomplete")
-                && attribute.value.split_ascii_whitespace().any(|token| {
-                    token.eq_ignore_ascii_case("current-password")
-                        || token.eq_ignore_ascii_case("new-password")
-                })
-            {
+            if sensitive_attribute(attribute.name, attribute.value) {
                 sensitive = true;
             }
         }
@@ -851,8 +921,38 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_form_decodes_sensitive_attribute_entities_and_fails_closed() {
+        for (label, attribute) in [
+            ("decimal", r#"type="&#112;assword""#),
+            ("hex", r#"type="&#x70;assword""#),
+            ("missing semicolon", r#"type="&#112assword""#),
+            ("mixed case", r#"type="&#x50;ASSWORD""#),
+            ("named whitespace", r#"autocomplete="off&Tab;new-password""#),
+            ("undecodable", r#"type="pass&bogus;word""#),
+        ] {
+            let html = format!(r#"<form><input {attribute} value="{label}-canary"></form>"#);
+            let raw =
+                json!({"type":"extension_ui_request", "method":"form", "html":html}).to_string();
+            let (out, parsed) = sanitize_line(raw.as_bytes());
+            assert!(
+                !out.contains(&format!("{label}-canary")),
+                "{label} leaked into output"
+            );
+            let parsed = parsed.expect("valid JSON parses");
+            assert!(
+                !parsed["html"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&format!("{label}-canary")),
+                "{label} leaked into parsed frame"
+            );
+        }
+    }
+
+    #[test]
     fn sanitize_form_leaves_non_password_values_and_other_methods_untouched() {
-        let html = r"<form><input type=text value=keep-me><input autocomplete=off value=also-keep></form>";
+        let html =
+            r"<form><input type=text value=keep-me><input autocomplete=off value=also-keep></form>";
         let raw = json!({"type":"extension_ui_request", "method":"form", "html":html}).to_string();
         let (out, parsed) = sanitize_line(raw.as_bytes());
         assert_eq!(parsed.unwrap()["html"], html);
