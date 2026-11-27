@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Regression script for src/app/terminal-xterm.js — building a tab's xterm
-// (options, OSC 8 swallowed, fit addon, data / resize wiring), its key
+// (options, OSC 8 swallowed, fit and web-links addons, data / resize wiring), its key
 // routing (restart on Enter without leaking "\r", copy / paste chords,
 // chords handed back to the keymap), the ConPTY option and the lines it
 // writes. xterm itself is replaced by a recording fake; the routing
@@ -12,6 +12,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const { WebLinksAddon: RealWebLinksAddon } = require("../src/xterm-addon-web-links.js");
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -32,18 +36,23 @@ class FakeTerminal {
   paste(text) { (this.pasted ||= []).push(text); }
 }
 class FakeFit {}
+class FakeWebLinks {
+  constructor(handler, options) { this.handler = handler; this.options = options; }
+}
 
 const copied = [];
 let clipboardText = "";
+let isMac = true;
 const win = {
   Terminal: FakeTerminal,
   FitAddon: { FitAddon: FakeFit },
+  WebLinksAddon: { WebLinksAddon: FakeWebLinks },
   copyText: (t) => copied.push(t),
   navigator: { clipboard: { readText: async () => clipboardText } },
   OMP_TERMINAL: {
     clipboardAction: (e) => (e.key === "C" ? "copy" : e.key === "V" ? "paste" : null),
   },
-  OMP_KEYMAP: { guestShouldBypass: (e) => e.key === "bypass" },
+  OMP_KEYMAP: { guestShouldBypass: (e) => e.key === "bypass", detectMac: () => isMac },
 };
 // eslint-disable-next-line no-new-func
 new Function("window", readFileSync(join(root, "src/app/terminal-xterm.js"), "utf8"))(win);
@@ -67,7 +76,7 @@ const key = (type, k) => {
   return e;
 };
 
-function make({ restart = () => false, scrollback } = {}) {
+function make({ restart = () => false, scrollback, onLink = () => {} } = {}) {
   const seen = { data: [], resize: [], restarts: 0 };
   const made = X.createXterm({
     fontSize: 14,
@@ -76,6 +85,7 @@ function make({ restart = () => false, scrollback } = {}) {
     tryRestart: () => { const ok = restart(); if (ok) seen.restarts++; return ok; },
     onData: (d) => seen.data.push(d),
     onResize: (s) => seen.resize.push(s),
+    onLink,
   });
   return { ...made, seen };
 }
@@ -92,6 +102,497 @@ check("createXterm: options, OSC 8 swallowed, fit addon, wiring", () => {
   term.resize({ cols: 90, rows: 20 });
   assert.deepEqual(seen.data, ["ls\r"]);
   assert.deepEqual(seen.resize, [{ cols: 90, rows: 20 }]);
+});
+
+check("createXterm loads web links with the terminal's activation handler", () => {
+  const opened = [];
+  const { term } = make({ onLink: (e, url) => opened.push([e, url]) });
+  const links = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  assert.ok(links, "web-links addon loaded");
+  const event = { button: 0, metaKey: true };
+  const url = "https://example.com/";
+  const provide = realProvider([url], links.options, links.handler, term);
+  const link = provide()[0];
+  link.hover(event, link.text, link.range);
+  link.activate(event, url);
+  assert.deepEqual(opened, [[event, url]]);
+});
+
+/** Cells for a text string, one per code point. */
+function textCells(text, extra = {}) {
+  return Array.from(text, (chars) => ({ chars, width: 1, ...extra }));
+}
+
+/** xterm's cell for a column with no character: one blank column. */
+function nullCell() { return { chars: "", width: 1 }; }
+
+/** `text`'s cells, padded with null cells to a terminal row of `cols`. */
+function rowCells(text, cols) {
+  const cells = textCells(text);
+  while (cells.length < cols) cells.push(nullCell());
+  return cells;
+}
+
+/** Full-width terminal text wrapped into `cols`-wide rows, like xterm. */
+function wrappedRows(text, cols) {
+  const rows = [];
+  for (let at = 0; at < text.length; at += cols) {
+    rows.push({ cells: rowCells(text.slice(at, at + cols), cols), isWrapped: at > 0 });
+  }
+  return rows;
+}
+
+/**
+ * Buffer lines shaped like xterm's: every row `cols` cells wide, a row that
+ * continues the previous one flagged `isWrapped`, and `translateToString`
+ * built from the cells the way xterm does it (null cells read as spaces,
+ * continuation cells are skipped, `trimRight` drops the pad).
+ */
+function bufferLines(rows) {
+  return rows.map((entry, index) => {
+    const cells = entry.cells ?? textCells(entry.text ?? entry);
+    const isWrapped = entry.cells ? Boolean(entry.isWrapped) : entry.isWrapped ?? index > 0;
+    return {
+      length: cells.length,
+      isWrapped,
+      translateToString(trimRight) {
+        let text = "";
+        for (const cell of cells) if (cell.width) text += cell.chars || " ";
+        return trimRight ? text.replace(/ +$/, "") : text;
+      },
+      getCell(x, cell) {
+        const source = cells[x] ?? { chars: "", width: 0 };
+        cell.chars = source.chars ?? "";
+        cell.width = source.width ?? 0;
+        cell.invisible = Boolean(source.invisible);
+        cell.isInvisible = () => cell.invisible;
+        cell.getChars = () => cell.chars;
+        cell.getWidth = () => cell.width;
+      },
+    };
+  });
+}
+
+/** A buffer view over `rows`; `onRead` sees every `getLine` (a walk probe). */
+function bufferOf(rows, onRead) {
+  const lines = bufferLines(rows);
+  return { active: {
+    length: lines.length,
+    getLine(index) { onRead?.(index); return lines[index]; },
+    getNullCell: () => ({ ...nullCell(), invisible: false, getChars() { return this.chars; }, getWidth() { return this.width; }, isInvisible() { return this.invisible; } }),
+  } };
+}
+
+/** Run the real vendored provider against xterm-shaped wrapped buffer lines. */
+function realProvider(rows, options, activate, term) {
+  let provider;
+  const terminal = {
+    buffer: bufferOf(rows),
+    registerLinkProvider(p) { provider = p; return { dispose() {} }; },
+  };
+  if (term) term.buffer = terminal.buffer;
+  new RealWebLinksAddon(activate, options).activate(terminal);
+  return (y = 1) => {
+    let links;
+    provider.provideLinks(y, (value) => { links = value; });
+    return links;
+  };
+}
+
+check("a URL truncated by the real addon's wrapped-line scan never activates", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const addon = term.addons.find((candidate) => candidate instanceof FakeWebLinks);
+  const prefix = "https://example.test/path";
+  const url = `${prefix}${".".repeat(2300)}tail`;
+  assert.equal(url.length, 2329);
+  const lines = url.match(/.{1,100}/g);
+  const provide = realProvider(lines, addon.options, addon.handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, prefix, "the addon strips dots at its 2048-character scan boundary");
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, []);
+});
+
+check("duplicate URLs activate the token at the hovered occurrence", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://example.test/same";
+  const provide = realProvider([
+    { text: url, isWrapped: false },
+    { text: `${url}(2)`, isWrapped: false },
+  ], options, handler, term);
+  const links = provide(2);
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, url);
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, [`${url}(2)`]);
+});
+
+check("the real addon matches and activates complete bracketed IPv6 URLs", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  for (const url of ["http://[::1]", "http://[::1]/", "https://[2001:db8::1]:8443/path?q=1"]) {
+    const provide = realProvider([url], options, handler, term);
+    const links = provide();
+    assert.equal(links.length, 1, url);
+    assert.equal(links[0].text, url);
+    links[0].hover({}, links[0].text, links[0].range);
+    links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  }
+  assert.deepEqual(opened, ["http://[::1]", "http://[::1]/", "https://[2001:db8::1]:8443/path?q=1"]);
+});
+
+check("a bracketed IPv6 match never drops a following URL authority", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const candidate = "http://[2001:db8::1]@example.test/page";
+  const provide = realProvider([candidate], options, handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, "http://[2001:db8::1]");
+  assert.equal(new URL(candidate).host, "example.test");
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, []);
+});
+
+check("a token suffix that changes the userinfo or port never opens", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const cases = [
+    ["https://example.test(user):pw@example.test/path", "https://example.test"],
+    ["http://[::1]:pw@[::1]/", "http://[::1]"],
+    ["https://example.test(x)@example.test:8443/", "https://example.test"],
+  ];
+  for (const [candidate, matched] of cases) {
+    const provide = realProvider([candidate], options, handler, term);
+    const links = provide();
+    assert.equal(links.length, 1, candidate);
+    assert.equal(links[0].text, matched, candidate);
+    links[0].hover({}, links[0].text, links[0].range);
+    links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  }
+  assert.deepEqual(opened, []);
+});
+
+check("a match spanning concealed cells never activates", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://evil.test/path";
+  const cells = [
+    ...textCells("https://"),
+    ...textCells("evil.test", { invisible: true }),
+    ...textCells("/path"),
+  ];
+  const provide = realProvider([{ text: url, cells, isWrapped: false }], options, handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, url);
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, []);
+});
+
+check("concealed cells outside the match do not block it", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://example.test/visible";
+  const cells = [
+    ...textCells(url),
+    { chars: " ", width: 1 },
+    ...textCells("secret", { invisible: true }),
+  ];
+  const provide = realProvider([{ text: `${url} secret`, cells, isWrapped: false }], options, handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, [url]);
+});
+
+check("concealed cells right after the match stay out of its token", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://example.test/files/Notes";
+  const hidden = "(1).pdf?token=hidden";
+  const cells = [...textCells(url), ...textCells(hidden, { invisible: true })];
+  const provide = realProvider([{ text: url + hidden, cells, isWrapped: false }], options, handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, url);
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, [url]);
+});
+
+check("a URL the addon stops at after a legal character opens its full token", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://example.test/files/Notes(1).pdf";
+  const provide = realProvider([url], options, handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, "https://example.test/files/Notes");
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, [url]);
+});
+
+check("a URL found inside a larger token never activates its prefix", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://example.test/path";
+  const line = `see${url}`;
+  const provide = realProvider([line], options, handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, url);
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, []);
+});
+
+check("links after wide and combining characters activate at their cell offsets", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const wide = "https://example.test/wide";
+  const wideLine = {
+    text: `界 ${wide}`,
+    isWrapped: false,
+    cells: [
+      { chars: "界", width: 2 },
+      { chars: "", width: 0 },
+      { chars: " ", width: 1 },
+      ...textCells(wide),
+    ],
+  };
+  const combining = "https://example.test/accent";
+  const combiningLine = {
+    text: `e\u0301 ${combining}`,
+    isWrapped: false,
+    cells: [
+      { chars: "e\u0301", width: 1 },
+      { chars: " ", width: 1 },
+      ...textCells(combining),
+    ],
+  };
+  for (const [line, url] of [[wideLine, wide], [combiningLine, combining]]) {
+    const links = realProvider([line], options, handler, term)();
+    assert.equal(links.length, 1, url);
+    links[0].hover({}, links[0].text, links[0].range);
+    links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  }
+  assert.deepEqual(opened, [wide, combining]);
+});
+
+check("prose brackets stay out of the target, IPv6 host brackets stay in", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const cases = [
+    ["[https://example.test/build]", "https://example.test/build"],
+    ["(https://example.test/build)", "https://example.test/build"],
+    ["[http://[::1]]", "http://[::1]"],
+  ];
+  for (const [line, target] of cases) {
+    const links = realProvider([line], options, handler, term)();
+    assert.equal(links.length, 1, line);
+    links[0].hover({}, links[0].text, links[0].range);
+    links[0].activate({ button: 0, metaKey: true }, links[0].text);
+    assert.equal(opened.at(-1), target, line);
+  }
+  assert.deepEqual(opened, cases.map(([, target]) => target));
+});
+
+check("link activation checks the gesture before reading the buffer", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://example.test/";
+  let reads = 0;
+  Object.defineProperty(term, "buffer", {
+    configurable: true,
+    get() {
+      reads++;
+      return { active: {
+        length: 0,
+        getLine: () => undefined,
+        getNullCell: () => ({
+          chars: "", width: 0, invisible: false,
+          getChars() { return this.chars; },
+          getWidth() { return this.width; },
+          isInvisible() { return this.invisible; },
+        }),
+      } };
+    },
+  });
+  options.hover({}, url, { start: { x: 1, y: 1 }, end: { x: url.length, y: 1 } });
+  handler({ button: 0 }, url);
+  handler({ button: 0, metaKey: false }, url);
+  handler({ button: 1, metaKey: true }, url);
+  assert.equal(reads, 0, "no buffer scan without the link gesture");
+  handler({ button: 0, metaKey: true }, url);
+  assert.ok(reads > 0, "the link gesture reads the buffer");
+  const macReads = reads;
+  isMac = false;
+  try {
+    handler({ button: 0, metaKey: true }, url);
+    assert.equal(reads, macReads, "meta is not the link modifier off macOS");
+    handler({ button: 0, ctrlKey: true }, url);
+    assert.ok(reads > macReads, "ctrl is the link modifier off macOS");
+  } finally {
+    isMac = true;
+  }
+  assert.deepEqual(opened, []);
+});
+
+check("a logical line beyond the scan cap never activates", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = `https://example.test/${"a".repeat(2100)}`;
+  const provide = realProvider([url], options, handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, url, "the addon matches the long line; the scan cap refuses it");
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, []);
+});
+
+check("erased cell gaps split the token; a skipped cell keeps a following URL apart", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const cols = 80;
+  const splitCells = [...textCells("https://example.test/a"), nullCell(), ...textCells("/../../admin")];
+  while (splitCells.length < cols) splitCells.push(nullCell());
+  const gapCells = [...textCells("abc"), nullCell(), nullCell(), nullCell(), ...textCells("https://example.test/gap")];
+  while (gapCells.length < cols) gapCells.push(nullCell());
+  const cases = [
+    [splitCells, "https://example.test/a", "the token ends at the erased column"],
+    [gapCells, "https://example.test/gap", "the skipped columns end the prose token"],
+  ];
+  for (const [cells, target, why] of cases) {
+    const links = realProvider([{ cells, isWrapped: false }], options, handler, term)();
+    assert.equal(links.length, 1, why);
+    links[0].hover({}, links[0].text, links[0].range);
+    links[0].activate({ button: 0, metaKey: true }, links[0].text);
+    assert.equal(opened.at(-1), target, why);
+  }
+  assert.deepEqual(opened, ["https://example.test/a", "https://example.test/gap"]);
+});
+
+check("an erased cell in a wrapped row's last column is a gap, not the wide-character pad", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const cols = 23;
+  const url = "https://example.test/aX/note";
+  const rows = wrappedRows(url, cols);
+  assert.equal(rows.length, 2, "row 1 ends with the X, row 2 is the wrapped rest");
+  assert.equal(rows[0].cells[cols - 1].chars, "X");
+  rows[0].cells[cols - 1] = nullCell();
+  const links = realProvider(rows, options, handler, term)();
+  assert.equal(links.length, 1, "the addon reads the erased column as a space and still matches");
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, [], "the erased column splits the URL, so /a/note never opens");
+});
+
+check("the wide-character pad at a wrapped row's end stays out of the line", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const cols = 23;
+  const url = "https://example.test/a界";
+  const rows = [
+    { cells: rowCells("https://example.test/a", cols), isWrapped: false },
+    {
+      cells: [{ chars: "界", width: 2 }, { chars: "", width: 0 }, ...Array(cols - 2).fill(nullCell())],
+      isWrapped: true,
+    },
+  ];
+  assert.equal(rows[1].cells.length, cols);
+  assert.equal(rows[1].cells[0].width, 2, "xterm starts the wrapped row with the width-2 cell");
+  const links = realProvider(rows, options, handler, term)();
+  assert.equal(links.length, 1);
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, [url], "the pad column is no content, so the URL crosses the wrap");
+});
+
+check("unused columns after the final row's content do not count toward the cap", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = `https://example.test/${"a".repeat(2019)}`;
+  assert.equal(url.length, 2040);
+  const rows = wrappedRows(url, 80);
+  const last = rows.at(-1).cells;
+  assert.equal(last.length, 80);
+  assert.ok(last.filter((cell) => !cell.chars).length >= 40, "the final row ends in unused columns");
+  const links = realProvider(rows, options, handler, term)();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, url);
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, [url], "the trailing pad is no text, so the 2,040-character URL still opens");
+});
+
+check("a wrapped line over 64 rows never activates; exactly 64 rows still do", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const cols = 20;
+  const over = `https://example.test/a(${"x".repeat(1400)})`;
+  assert.ok(wrappedRows(over, cols).length > 64, "the repro line is longer than the cap");
+  const truncated = realProvider(wrappedRows(over, cols), options, handler, term)();
+  assert.equal(truncated.length, 1, "the addon still finds the URL prefix");
+  truncated[0].hover({}, truncated[0].text, truncated[0].range);
+  truncated[0].activate({ button: 0, metaKey: true }, truncated[0].text);
+  assert.deepEqual(opened, [], "a line the cell walk cannot read whole is refused");
+
+  const exact = `https://example.test/${"x".repeat(1259)}`;
+  assert.equal(exact.length, 1280);
+  assert.equal(wrappedRows(exact, cols).length, 64, "exactly at the row cap");
+  const complete = realProvider(wrappedRows(exact, cols), options, handler, term)();
+  assert.equal(complete.length, 1);
+  complete[0].hover({}, complete[0].text, complete[0].range);
+  complete[0].activate({ button: 0, metaKey: true }, complete[0].text);
+  assert.deepEqual(opened, [exact], "the cap is inclusive");
+});
+
+check("the backward wrapped-line walk stops at the row cap", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://example.test/late";
+  const rows = 200;
+  const lines = [];
+  for (let i = 0; i < rows; i++) {
+    lines.push({ cells: rowCells(i === rows - 1 ? url : "x".repeat(80), 80), isWrapped: i > 0 });
+  }
+  let reads = 0;
+  term.buffer = bufferOf(lines, () => { reads++; });
+  options.hover({}, url, { start: { x: 1, y: rows }, end: { x: url.length, y: rows } });
+  handler({ button: 0, metaKey: true }, url);
+  assert.deepEqual(opened, [], "the line is longer than the cap");
+  assert.ok(reads <= 65, `the walk stays within the 64-row window (read ${reads} rows)`);
 });
 
 check("createXterm: scrollback from the terminalScrollback tweak", () => {

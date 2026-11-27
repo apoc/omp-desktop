@@ -424,9 +424,16 @@ function App() {
   // startup default / empty-workspace pick, which must reload the omp layer.
   const keymap = useKeymap(bridge, activeProfileId);
 
+  // The browser panel (app/use-browser.jsx). `activeProject.id`, like the
+  // widgets below, not `activeSessionId`, which keeps a closed tab's id.
+  const browser = useBrowser({
+    bridge, activeSessionId: activeProject.id, sessionIds, open: side === "browser", setOpen: setBrowserOpen, tweaks: t, setTweak,
+  });
+
   // One shell per tab, in a panel above the composer (app/use-terminal.jsx).
+  // URLs use the same local-panel / system-browser opener as chat links.
   const terminal = useTerminal({
-    bridge, activeSessionId: planKey, sessionIds, tweaks: t, setTweak, appearance,
+    bridge, activeSessionId: planKey, sessionIds, tweaks: t, setTweak, appearance, openLink: browser.openTerminalLink,
   });
 
   const subagentUi = useSubagentManager({
@@ -436,11 +443,6 @@ function App() {
 
   const updater = useUpdater({ bridge, autoCheck: t.updateCheck ?? true, skipped: t.skippedUpdate, setTweak });
 
-  // The browser panel (app/use-browser.jsx). `activeProject.id`, like the
-  // widgets below, not `activeSessionId`, which keeps a closed tab's id.
-  const browser = useBrowser({
-    bridge, activeSessionId: activeProject.id, sessionIds, open: side === "browser", setOpen: setBrowserOpen, tweaks: t, setTweak,
-  });
   // The files panel (app/use-file-comments.jsx): per-tab explain / comment
   // marks on project files, sent with the next message like the browser's
   // annotation chips.

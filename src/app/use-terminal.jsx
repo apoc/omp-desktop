@@ -47,7 +47,7 @@ const {
 
 const _UT_FONT_PX = 13;
 
-function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak, appearance }) {
+function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak, appearance, openLink }) {
   const [state, setState] = React.useState(_UT_EMPTY);
   const stateRef = React.useRef(state);
   stateRef.current = state;
@@ -214,6 +214,13 @@ function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak, ap
         return true;
       },
       onData: (data) => bridge.terminalWrite(sid, data),
+      onLink: (event, url) => {
+        // The addon may retain this callback after a tab switch or recreate:
+        // only the terminal record that created it may open its own tab.
+        if (recs.current.get(sid) !== rec) return;
+        event.preventDefault();
+        openLink?.(sid, url, Boolean(event.shiftKey));
+      },
       // Only a live shell has a pty to resize; the size a shell starts at is
       // the one `spawn` sends (and corrects once the reply is in).
       onResize: ({ cols, rows }) => {
@@ -227,7 +234,7 @@ function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak, ap
     recs.current.set(sid, rec);
     ops.current.attach(sid, rec);
     return rec;
-  }, [bridge, respawn]);
+  }, [bridge, respawn, openLink]);
 
   const dispose = React.useCallback((sid) => {
     const rec = recs.current.get(sid);

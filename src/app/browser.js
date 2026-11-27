@@ -91,6 +91,15 @@
     return { url, external: Boolean(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) };
   }
 
+  // Routing of a terminal URL (already gated on the Cmd/Ctrl click by the
+  // terminal): a local link goes to the panel with chat's classification
+  // and `localLinks` preference; Shift, a remote URL or `localLinks` off go
+  // to the system browser. `{ url, external }`.
+  function terminalLink(href, shift, localLinks) {
+    const local = localUrl(href);
+    return { url: local ?? href, external: shift || !local || !localLinks };
+  }
+
   // ---- Annotations ---------------------------------------------------------
 
   const round = (v) => Math.round(v);
@@ -360,6 +369,7 @@
     browserCommand,
     localUrl,
     linkClick,
+    terminalLink,
     annotationText,
     neutralise,
     neutralisePage,

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Regression script for src/app/browser.js — pure helpers of the browser
-// panel: address normalisation, chat links, annotation text and merge into
+// panel: address normalisation, chat and terminal links, annotation text and merge into
 // the outgoing message, the submit routing it rides on (app/slash-commands.js
 // `routeSubmit` / `queuedFrame`), page coordinates, key and mouse events for
 // CDP, per-session chips, width, popover placement and the Chromium setting menu (over
@@ -501,6 +501,21 @@ check("localUrl accepts only explicit http(s) links to this machine", () => {
     "http://localhost.example.com/", "http://localhost@evil.com/", "http://example.com/localhost",
     "localhost:3000", "file:///etc/passwd", "javascript:alert(1)", "ftp://localhost/", "", null, undefined, 5,
   ]) assert.equal(B.localUrl(bad), null, String(bad));
+});
+
+check("terminalLink routes local, remote, Shift and unavailable panels", () => {
+  assert.deepEqual(B.terminalLink("http://localhost:3000/a", false, true), {
+    url: "http://localhost:3000/a", external: false,
+  }, "local URL with the panel tweak on");
+  assert.deepEqual(B.terminalLink("http://127.0.0.1:3000/a", true, true), {
+    url: "http://127.0.0.1:3000/a", external: true,
+  }, "Shift forces the system browser");
+  assert.deepEqual(B.terminalLink("https://example.com/a", false, true), {
+    url: "https://example.com/a", external: true,
+  }, "remote URL, unchanged");
+  assert.deepEqual(B.terminalLink("http://[::1]:3000/a", false, false), {
+    url: "http://[::1]:3000/a", external: true,
+  }, "panel unavailable");
 });
 
 check("linkClick: a primary click on a chat localhost link, external with a modifier", () => {
