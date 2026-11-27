@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A conversation opened after omp compacted it (relaunch, reopened tabs, resume from history) can show what the compaction summarized: a row at the top of the chat loads it from the session file, read-only, above the transcript, with a divider for each compaction; a long history loads a page at a time, up to the transcript's 169-entry limit. Settings → Session → “Show compacted history” loads it by itself when a conversation opens (off by default) (#85).
+
 ## [0.15.3] - 2026-11-27
 
 ### Changed

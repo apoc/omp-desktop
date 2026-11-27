@@ -167,6 +167,10 @@ function App() {
   // The tab on screen whose omp is restarting (the snapshot's
   // `restartingTab`), or null: the composer's restart note.
   const [restartingTab, setRestartingTab] = React.useState(null);
+  // The active tab's compacted history (#85, the snapshot's `olderHistory`:
+  // `{ available, loading, error }`) and the transcript cap (`transcriptMax`).
+  const [olderHistory, setOlderHistory] = React.useState(null);
+  const [transcriptMax, setTranscriptMax] = React.useState(0);
 
   // ── Cross-cutting effects ─────────────────────────────────────────────────
   // The rendered tab's project. Derived before the effects because the theme
@@ -177,7 +181,7 @@ function App() {
     setModels, setActivity, setSparkline,
     setModelState, setThinkingLevel,
     setSessions, setActiveSessionId, setProfiles, setStartupProfileId, setRecentProjects,
-    setNoTabProfileId, setWorkspaceNotes, setApprovalModes, setCloseConfirm, setRestartingTab,
+    setNoTabProfileId, setWorkspaceNotes, setApprovalModes, setCloseConfirm, setRestartingTab, setOlderHistory, setTranscriptMax,
     setPromptHistory, setSubagents, setSubagentTranscripts, setQueue, setQueueSending, setGoal, setExtWidgets, setLiveVoice, setDictation, setCodexLogin, setDictationCompleted,
   });
   useRemote({ bridge });
@@ -612,6 +616,7 @@ function App() {
   const handleCancelAsk  = React.useCallback((id) => { bridge?.cancelAsk(id); }, [bridge]);
   const handleGrantApproval = React.useCallback((prompt, scope) => { bridge?.approveAndRemember(prompt, scope); }, [bridge]);
   const handleStopRetry  = () => { prAutomation.pause(); bridge?.stopRetry(); };
+  const handleLoadOlderHistory = React.useCallback(() => { bridge?.loadOlderHistory(); }, [bridge]);
   const handlePickLogin = async (provider) => {
     if (!bridge) return;
     try {
@@ -1115,6 +1120,9 @@ function App() {
                     onToggleCollapse={handleToggleCollapse}
                     followOutput={t.followOutput}
                     submitKey={t.submitKey}
+                    olderHistory={olderHistory}
+                    transcriptMax={transcriptMax}
+                    onLoadOlderHistory={handleLoadOlderHistory}
                   />
                   <TerminalPanels sessions={sessions} activeId={planKey} terminal={terminal} />
                   <Composer

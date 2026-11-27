@@ -167,11 +167,12 @@
         custom("autoRetry", "Retry failed requests", "omp retries a request the provider refused or dropped, with a retry row you can stop.", "retry error rate limit"),
       ] },
     ] },
-    { id: "session", icon: "clock", title: "Session", blurb: "Tabs across restarts, closing, naming and app updates.", groups: [
+    { id: "session", icon: "clock", title: "Session", blurb: "Tabs across restarts, closing, naming, compacted history and app updates.", groups: [
       { name: "Tabs", rows: [
         tweak("restoreTabs", "toggle", "Reopen tabs on launch", "Start with the tabs and conversations that were open when you quit.", "restore session startup"),
         tweak("confirmBusyClose", "toggle", "Ask before closing a working tab", "Closing a tab whose agent is mid-turn stops it. Ask first, also when quitting.", "confirm quit close"),
         tweak("autoName", "toggle", "Name tabs automatically", "omp titles a new conversation from its first turns (one small model call). `/rename` always wins.", "rename title"),
+        tweak("showCompactedHistory", "toggle", "Show compacted history", "When a conversation opens, load what a compaction summarized above it, up to the transcript limit. Off: a row above the transcript loads it on request.", "compaction summary earlier older history transcript"),
       ] },
       { name: "Updates", rows: [
         tweak("updateCheck", "toggle", "Check for updates", "Look for a new release shortly after launch and every 6 hours. You choose when to install; “Check now” works either way.", "version release"),

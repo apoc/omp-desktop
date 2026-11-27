@@ -29,7 +29,7 @@ function check(label, fn) {
   passed++;
 }
 
-const DEFAULTS = { restoreTabs: true, confirmBusyClose: false, autoName: true, theme: "aurora" };
+const DEFAULTS = { restoreTabs: true, confirmBusyClose: false, autoName: true, showCompactedHistory: false, theme: "aurora" };
 const ON = { ...P.fromTweaks({}, DEFAULTS), confirmBusyClose: true };
 const OFF = P.fromTweaks({}, DEFAULTS);
 const tab = (id, runState, name = id) => ({ id, name, runState });
@@ -37,10 +37,10 @@ const tab = (id, runState, name = id) => ({ id, name, runState });
 // ── fromTweaks / changedKeys ─────────────────────────────────────────────
 check("fromTweaks: defaults fill missing keys, only the pref keys are kept", () => {
   assert.deepEqual(P.fromTweaks({}, DEFAULTS),
-    { restoreTabs: true, confirmBusyClose: false, autoName: true });
+    { restoreTabs: true, confirmBusyClose: false, autoName: true, showCompactedHistory: false });
 });
 check("fromTweaks: omp's own switches are not desktop prefs (#92)", () => {
-  assert.deepEqual([...P.KEYS], ["restoreTabs", "confirmBusyClose", "autoName"]);
+  assert.deepEqual([...P.KEYS], ["restoreTabs", "confirmBusyClose", "autoName", "showCompactedHistory"]);
   const p = P.fromTweaks({ autoCompaction: false, autoRetry: false }, { ...DEFAULTS, autoCompaction: true, autoRetry: true });
   assert.equal("autoCompaction" in p, false);
   assert.equal("autoRetry" in p, false);
@@ -50,6 +50,8 @@ check("fromTweaks: stored booleans win", () => {
   assert.equal(p.restoreTabs, false);
   assert.equal(p.confirmBusyClose, true);
   assert.equal(p.autoName, true);
+  assert.equal(p.showCompactedHistory, false);
+  assert.equal(P.fromTweaks({ showCompactedHistory: true }, DEFAULTS).showCompactedHistory, true);
 });
 check("fromTweaks: a malformed stored value falls back to the default", () => {
   const p = P.fromTweaks({ restoreTabs: "no", autoName: 0, confirmBusyClose: null }, DEFAULTS);

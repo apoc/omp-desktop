@@ -174,7 +174,7 @@ window.OMP_I18N.add("zh", {
 
   // ── Settings → Session ──
   "Session": "会话",
-  "Tabs across restarts, closing, naming and app updates.": "重启、关闭、命名和应用更新时的标签页行为。",
+  "Tabs across restarts, closing, naming, compacted history and app updates.": "重启、关闭、命名、已压缩的历史和应用更新时的标签页行为。",
   "Tabs": "标签页",
   "Reopen tabs on launch": "启动时重新打开标签页",
   "Start with the tabs and conversations that were open when you quit.": "以退出时打开的标签页和对话开始。",
@@ -182,6 +182,8 @@ window.OMP_I18N.add("zh", {
   "Closing a tab whose agent is mid-turn stops it. Ask first, also when quitting.": "关闭智能体正在处理中的标签页会中止它。关闭前先询问，退出时同样询问。",
   "Name tabs automatically": "自动命名标签页",
   "omp titles a new conversation from its first turns (one small model call). `/rename` always wins.": "omp 会根据新对话的前几轮命名（一次小模型调用）。`/rename` 始终优先。",
+  "Show compacted history": "显示已压缩的历史",
+  "When a conversation opens, load what a compaction summarized above it, up to the transcript limit. Off: a row above the transcript loads it on request.": "打开对话时，把压缩所概括的内容加载到对话上方，直至对话记录上限。关闭时：由对话记录上方的一行按需加载。",
   "Updates": "更新",
   "Check for updates": "检查更新",
   "Look for a new release shortly after launch and every 6 hours. You choose when to install; “Check now” works either way.": "启动后不久以及每 6 小时查找新版本。安装时机由你决定；“立即检查”始终可用。",
@@ -351,6 +353,10 @@ window.OMP_I18N.add("zh", {
   "compaction failed": "压缩失败",
   "context compacted": "上下文已压缩",
   "context compacted ·": "上下文已压缩 ·",
+  "Earlier history was compacted": "更早的历史已被压缩",
+  "Show earlier history": "显示更早的历史",
+  "Could not load earlier history: {reason}": "无法加载更早的历史：{reason}",
+  "omp has not saved this conversation yet": "omp 尚未保存此对话",
   "before": "之前",
   "after": "之后",
   "failed": "失败",

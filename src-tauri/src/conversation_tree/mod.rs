@@ -19,7 +19,7 @@ mod family;
 mod parse;
 
 use std::collections::HashSet;
-use std::io;
+use std::io::{self, BufRead};
 use std::path::Path;
 
 use serde::Serialize;
@@ -114,12 +114,12 @@ impl TreeEntry {
 ///
 /// omp creates the file lazily, once the first assistant message exists, yet
 /// `get_state().sessionFile` reports the path from the start. Such a path is
-/// accepted (as an empty tree) only while it still is a `.jsonl` name that
-/// is not a dangling link, in an existing directory under `root`: the same
-/// confinement as for an existing file. Paths stay in the caller's spelling
-/// (the canonical form only serves the checks), so they match the
-/// `sessionFile` omp reported.
-fn validate<'a>(
+/// accepted (callers return an empty result) only while it still is a
+/// `.jsonl` name that is not a dangling link, in an existing directory under
+/// `root`: the same confinement as for an existing file. Paths stay in the
+/// caller's spelling (the canonical form only serves the checks), so they
+/// match the `sessionFile` omp reported. Shared with `session_history`.
+pub fn validate<'a>(
     root: &Path,
     session_file: &'a Path,
 ) -> Result<Option<(&'a Path, &'a str)>, String> {
@@ -168,6 +168,26 @@ fn validate<'a>(
             Ok(None)
         }
         Err(e) => Err(format!("session file unavailable: {shown} ({e})")),
+    }
+}
+
+/// Feed each line of a session file to `each`, trimmed, with the byte offset
+/// and length of the raw line (its newline included). A line that is not
+/// UTF-8 is skipped; a read error ends the walk. Shared with
+/// `session_history`.
+pub fn for_each_line(mut reader: impl BufRead, mut each: impl FnMut(&str, u64, usize)) {
+    let mut buf = Vec::new();
+    let mut offset = 0;
+    loop {
+        buf.clear();
+        let len = match reader.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(len) => len,
+        };
+        if let Ok(line) = std::str::from_utf8(&buf) {
+            each(line.trim(), offset, len);
+        }
+        offset += len as u64;
     }
 }
 
