@@ -28,6 +28,9 @@
   const LIVE = window.OMP_LIVE_VOICE;
   const DICTATION = LIVE.DICTATION;
   const { tsOf, mergeTranscript } = window.OMP_TRANSCRIPT;
+  const OLDER = window.OMP_OLDER_HISTORY;
+  // `state.olderHistory` of a tab with no compacted history to load (#85).
+  const NO_OLDER_HISTORY = Object.freeze({ available: false, loading: false, error: null });
 
   // ── Safe defaults so design components never crash on missing fields ──────
   const DEFAULT_DATA = {
@@ -78,6 +81,10 @@
     asyncPending:   false,
     // `_trimMessages` cut the transcript's head (see the get_messages merge).
     trimmed:        false,
+    // Compacted history (#85, app/older-history.js): `{ available, loading,
+    // error }` — whether the session file holds what a compaction
+    // summarized above the transcript, and the load of it.
+    olderHistory:   NO_OLDER_HISTORY,
     // Subagent manager (src/app/subagents.js). Terminal agents are kept here
     // for the life of the session — omp's own registry forgets them.
     subagents:           SUB.emptySubagents(),
@@ -147,6 +154,9 @@
   // ── Minimap / message-history trim ───────────────────────────────────────
   const MINIMAP_COLS = 13;
   const MINIMAP_MAX  = MINIMAP_COLS * MINIMAP_COLS; // 169 — one full 13×13 grid
+  // Tab id → token of its compacted-history load in flight
+  // (`_loadOlderHistory`): only the newest load may write.
+  const _olderHistoryLoads = new Map();
 
   // ── Session registry ───────────────────────────────────────────────────────
   // Tracks all open tabs. The tab list in the UI is derived from this.
@@ -375,6 +385,8 @@
     const drop = MINIMAP_COLS;                      // evict one full row (13)
     state.messages = state.messages.slice(drop);
     state.trimmed = true;
+    // The cut head is gone on purpose: loading it back would undo the cap.
+    if (state.olderHistory.available) state.olderHistory = { ...state.olderHistory, available: false };
     for (const [id, idx] of activeToolCards) {
       const shifted = idx - drop;
       if (shifted < 0) activeToolCards.delete(id); // guard: possible on abort (no tool_execution_end)
@@ -437,6 +449,10 @@
       liveVoice:       state.liveVoice,
       dictation:       state.dictation,
       codexLogin:      state.codexLogin,
+      // Compacted history (#85) and the transcript cap its row's room is
+      // measured against (OMP_OLDER_HISTORY.room).
+      olderHistory:    state.olderHistory,
+      transcriptMax:   MINIMAP_MAX,
       // The tab on screen whose omp is restarting, or null (`_restartingTab`).
       restartingTab:   _restartingTab(),
       dictationCompleted: _dictationCompleted,
@@ -932,6 +948,7 @@
       exitReason:    null,
       asyncPending:  false,
       trimmed:       false,
+      olderHistory:  NO_OLDER_HISTORY,
       subagents:           SUB.emptySubagents(),
       subagentTranscripts: {},
       queue:         QUEUE.EMPTY_QUEUE,
@@ -986,6 +1003,7 @@
       exitReason:    state.exitReason,
       asyncPending:  state.asyncPending,
       trimmed:       state.trimmed,
+      olderHistory:  state.olderHistory,
       // Last-turn outcome for the auto-rename gate (see _applyRpcState):
       // survives tab switches so a snapshot-restored session does not
       // forget a failed first exchange and re-arm the one-shot.
@@ -1038,6 +1056,8 @@
       exitReason:    snap.exitReason ?? null,
       asyncPending:  snap.asyncPending ?? false,
       trimmed:       snap.trimmed ?? false,
+      // A load in flight is dropped on the way back (`_loadOlderHistory`).
+      olderHistory:  snap.olderHistory ? { ...snap.olderHistory, loading: false } : NO_OLDER_HISTORY,
       subagents:     snap.subagents ?? SUB.emptySubagents(),
       subagentTranscripts: {},
       queue:         snap.queue ?? QUEUE.EMPTY_QUEUE,
@@ -2364,6 +2384,15 @@
         streamingBubble = null;
       }
       state.messages = streamingBubble ? [...merged, streamingBubble] : merged;
+      // Compacted history (#85): whether the session file holds what the
+      // context's compaction summarized and the transcript doesn't show.
+      // Null keeps the value: the oldest shown message is loaded history
+      // (the last load's `more` still answers it), or it predates a
+      // compaction (see `OMP_OLDER_HISTORY.isAvailable`).
+      const older = OLDER.isAvailable(data.messages, merged, { trimmed: state.trimmed });
+      if (older !== null && older !== state.olderHistory.available) {
+        state.olderHistory = { ...state.olderHistory, available: older };
+      }
       // Backfill prompt history from the persisted transcript — runs on
       // every arrival (plain tab switch, or a resumed/restored session),
       // not just once: mergeOlder is a no-op for prompts already known, so
@@ -2375,6 +2404,10 @@
         ));
       }
       notify();
+      // Settings → Session "Show compacted history" (D9): this get_messages
+      // found history to load, so load it — once: after it, the oldest
+      // shown message is loaded history and `older` is null.
+      if (older === true && state.olderHistory.available && sessionPrefs.showCompactedHistory) void _loadOlderHistory();
 
     } else if (command === "get_available_models") {
       state.models = (data.models ?? []).map(m => ({
@@ -3759,6 +3792,65 @@
       sessionContext === context &&
       _switchGen === switchGen &&
       sessionRegistry.get(sessionId)?.branch === branch;
+  }
+
+  /** Load the compacted history above the active tab's transcript (#85,
+   *  docs/architecture/compacted-history.md D7): Rust's `session_history`
+   *  over the tab's session file, the newest entries before the oldest
+   *  shown message that the transcript cap still takes. The result goes in
+   *  only while the same tab is on screen with the same conversation and
+   *  anchor — any tab switch, respawn, conversation reset or new message
+   *  at the top voids it — and only the tab's newest load writes. */
+  async function _loadOlderHistory() {
+    const sid = activeSessionId;
+    if (!sid || state.olderHistory.loading) return;
+    const sessionFile = sessionRegistry.get(sid)?.sessionFile || null;
+    if (!sessionFile) {
+      state.olderHistory = { ...state.olderHistory, loading: false, error: OLDER.NO_SESSION_FILE };
+      notify();
+      return;
+    }
+    const limit = OLDER.room(state.messages, MINIMAP_MAX);
+    if (limit === 0) return;
+    const before = OLDER.anchorTs(state.messages);
+    const gen = _switchGen, context = sessionContext, token = {};
+    _olderHistoryLoads.set(sid, token);
+    state.olderHistory = { ...state.olderHistory, loading: true, error: null };
+    notify();
+    const res = await _invokeResult("session_history", { sessionFile, profile: _activeProfileId(), before, limit });
+    if (_olderHistoryLoads.get(sid) !== token) return; // a newer load owns the state
+    _olderHistoryLoads.delete(sid);
+    const current = activeSessionId === sid && _switchGen === gen && sessionContext === context &&
+      sessionRegistry.get(sid)?.sessionFile === sessionFile && OLDER.anchorTs(state.messages) === before;
+    if (!current) {
+      if (activeSessionId === sid) {
+        state.olderHistory = { ...state.olderHistory, loading: false };
+        notify();
+      } else {
+        const snap = sessionSnapshots.get(sid);
+        if (snap?.olderHistory?.loading) snap.olderHistory = { ...snap.olderHistory, loading: false };
+      }
+      return;
+    }
+    if (!res.ok) {
+      state.olderHistory = { ...state.olderHistory, loading: false, error: res.error };
+      notify();
+      return;
+    }
+    const entries = OLDER.adaptHistory(res.value?.items, { next: OLDER.oldestMessage(state.messages)?.kind });
+    // Room again: the transcript may have grown while the read ran.
+    const { messages, added, cut } = OLDER.prepend(state.messages, entries, MINIMAP_MAX, { more: res.value?.more === true });
+    if (added > 0) {
+      state.messages = messages;
+      // Index-keyed live state moves down with the transcript (cf. `_trimMessages`).
+      for (const [id, idx] of activeToolCards) activeToolCards.set(id, idx + added);
+    }
+    // More is left when Rust says so or the cap cut some of this page; a
+    // page that added nothing leaves the anchor where it was, so asking
+    // again would return the same.
+    const available = added > 0 && (cut > 0 || res.value?.more === true);
+    state.olderHistory = { available, loading: false, error: null };
+    notify();
   }
 
   /** A `goal` command's `{goal, state}` result applied to the active tab. */
@@ -5154,6 +5246,12 @@
     conversationTree(sessionFile, profile) {
       return _invokeResult("conversation_tree", { sessionFile, profile });
     },
+    /** Load the compacted history above the active tab's transcript (#85,
+     *  `_loadOlderHistory`); the outcome lands in the snapshot's
+     *  `olderHistory`. */
+    loadOlderHistory() {
+      return _loadOlderHistory();
+    },
     /** Re-ask a user prompt of this tab's file: omp copies the path before it
      *  into a new session file and the process moves there. Resolves to
      *  `{ok: true, text}` (the prompt, for the composer),
@@ -5331,10 +5429,11 @@
     },
 
     /** Apply Settings → Session prefs (`restoreTabs`, `confirmBusyClose`,
-     *  `autoName`; any subset, the rest kept). Idempotent: only a changed
-     *  value acts. `restoreTabs` only matters at launch (read from the
-     *  stored tweaks then) and `autoName` at each auto-title check, so
-     *  neither sends anything here. */
+     *  `autoName`, `showCompactedHistory`; any subset, the rest kept).
+     *  Idempotent: only a changed value acts. `restoreTabs` only matters at
+     *  launch (read from the stored tweaks then), `autoName` at each
+     *  auto-title check and `showCompactedHistory` at each get_messages, so
+     *  none of them sends anything here. */
     setSessionPrefs(values) {
       // fromTweaks keeps only PREFS.KEYS, so the whole tweaks object may come in.
       const next = PREFS.fromTweaks({ ...sessionPrefs, ...values }, window.TWEAK_DEFAULTS);

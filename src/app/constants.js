@@ -24,7 +24,8 @@
   // `terminalScrollback` is xterm's scrollback in lines; `submitKey` is
   // "enter" | "ctrl+enter" for multi-line fields; `pasteCollapseLines` is
   // the line count above which a paste becomes a chip; `restoreTabs`,
-  // `confirmBusyClose`, `autoName` drive live.js; `startScreen` is the
+  // `confirmBusyClose`, `autoName`, `showCompactedHistory` drive live.js;
+  // `startScreen` is the
   // empty workspace's animated screen (OMP_BACKDROPS.SCREENS). Rows,
   // labels and bounds: app/settings-schema.js.
   const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
@@ -68,7 +69,8 @@
     "pasteCollapseLines": 5,
     "restoreTabs": true,
     "confirmBusyClose": false,
-    "autoName": true
+    "autoName": true,
+    "showCompactedHistory": false
   }/*EDITMODE-END*/;
 
   const NULL_MODEL    = { id: "", name: "–", provider: "", note: "", latency: 0, current: false };

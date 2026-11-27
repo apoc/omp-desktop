@@ -37,6 +37,7 @@ mod recent_projects;
 mod redaction;
 mod remote;
 mod saved_sessions;
+mod session_history;
 mod spawn_gate;
 mod stats;
 mod supervisor;
@@ -324,6 +325,26 @@ async fn conversation_tree(
 ) -> Result<conversation_tree::ConversationTree, String> {
     let profile = store.resolve_owned(profile)?;
     off_ipc(move || conversation_tree::load(&app, &session_file, profile.as_deref())).await?
+}
+
+/// One page of the current branch's transcript history in a saved session
+/// file (`session_file`, under `profile`'s sessions directory): the newest
+/// `limit` display items before the entry whose message timestamp is
+/// `before`, for a tab whose context starts at a compaction summary (#85).
+///
+/// `spawn_blocking`: a session file can reach tens of MiB.
+#[tauri::command]
+async fn session_history(
+    session_file: String,
+    profile: Option<String>,
+    before: Option<f64>,
+    limit: u32,
+    store: State<'_, Arc<profiles::ProfileStore>>,
+    app: tauri::AppHandle,
+) -> Result<session_history::HistoryPage, String> {
+    let profile = store.resolve_owned(profile)?;
+    off_ipc(move || session_history::load(&app, &session_file, profile.as_deref(), before, limit))
+        .await?
 }
 
 /// Kill the omp process for a tab session. Also drops its session-scoped
@@ -1690,6 +1711,7 @@ pub fn run() {
             open_url_external,
             list_saved_sessions,
             conversation_tree,
+            session_history,
             approval_rules_list,
             approval_approve_and_grant,
             approval_rules_revoke,

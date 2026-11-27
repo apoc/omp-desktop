@@ -246,6 +246,9 @@
 .retry-status { flex: 1; min-width: 0; color: var(--fg-4); font-size: var(--d-text-xs); }
 .retry-stop { flex: none; white-space: nowrap; padding: 3px 12px; font-size: var(--d-text-xs); }
 .retry-stop-error { color: var(--rose); font-size: var(--d-text-xs); }
+/* compacted-history row (chat/earlier-history-row.jsx, #85) */
+.earlier-history-load { flex: none; white-space: nowrap; padding: 3px 12px; font-size: var(--d-text-xs); }
+.earlier-history-error { padding: 2px 12px 10px; color: var(--rose); font-size: var(--d-text-xs); }
 
 .tool-search {
   padding: 6px 8px 8px;

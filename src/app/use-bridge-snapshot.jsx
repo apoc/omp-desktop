@@ -44,6 +44,10 @@ function useBridgeSnapshot(bridge, setters) {
       setters.setApprovalModes(snap.approvalModes ?? null);
       setters.setCloseConfirm(snap.closeConfirm ?? null);
       setters.setRestartingTab(snap.restartingTab ?? null);
+      // Compacted history (#85) and the transcript cap its row's room is
+      // measured against.
+      setters.setOlderHistory(snap.olderHistory ?? null);
+      setters.setTranscriptMax(snap.transcriptMax ?? 0);
       if (snap.activeSessionId) setters.setActiveSessionId(snap.activeSessionId);
     });
     return unsub;

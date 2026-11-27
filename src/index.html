@@ -391,11 +391,12 @@
   <script type="text/babel" src="design/chat/ask-dialog.jsx"></script>
   <script type="text/babel" src="design/chat/form-dialog.jsx"></script>
   <script type="text/babel" src="design/chat/ask-bubble.jsx"></script>
-  <!-- chat-view.jsx destructures window.RetryRow, window.GoalRow and
-       window.ApprovalRow at top level. -->
+  <!-- chat-view.jsx destructures window.RetryRow, window.GoalRow,
+       window.ApprovalRow and window.EarlierHistoryRow at top level. -->
   <script type="text/babel" src="design/chat/retry-row.jsx"></script>
   <script type="text/babel" src="design/chat/goal-row.jsx"></script>
   <script type="text/babel" src="design/chat/approval-row.jsx"></script>
+  <script type="text/babel" src="design/chat/earlier-history-row.jsx"></script>
   <script type="text/babel" src="design/chat/chat-view.jsx"></script>
   <!-- Subagent manager UI. bits → controls → inspector (destructures the
        controls) → pane (destructures the inspector) → rail card; all before
@@ -565,6 +566,12 @@
        before both. -->
   <script src="app/transcript-merge.js"></script>
   <script src="adapter.js"></script>
+  <!-- Compacted history (#85): availability, anchor, room, the
+       session_history items as transcript entries, the prepend. IIFE
+       (window.adaptAgentMessages at call time, so after adapter.js);
+       live.js reads window.OMP_OLDER_HISTORY at its top-level init and
+       chat-view.jsx / earlier-history-row.jsx at render time. -->
+  <script src="app/older-history.js"></script>
   <!-- Session-name tab rename: pure gate/note/title helpers for the
        after-first-turn auto `/rename`. Dependency-free IIFE; live.js
        reads window.OMP_SESSION_TITLE at its top-level init, so it must
