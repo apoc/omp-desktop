@@ -55,7 +55,10 @@ impl State {
             .tabs
             .iter()
             .map(|tab| {
-                let (busy, asks) = live.get(&tab.id).copied().unwrap_or((false, 0));
+                let (busy, asks) = live
+                    .sessions
+                    .get(&tab.id)
+                    .map_or((false, 0), |s| (s.busy, s.asks));
                 json!({
                     "id": tab.id, "title": tab.title, "project": tab.project,
                     "busy": busy, "hasAsk": asks > 0,

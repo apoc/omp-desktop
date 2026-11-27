@@ -493,4 +493,188 @@ check("a yield without a retry row and a dead process leave no trace", () => {
   assert.equal(T.retryIndex(T.retryCleared(waiting)), -1);
 });
 
+// ── displayRunState: the tracker over a frozen snapshot ───────────────────
+// A background tab has no live listener; Rust's tracker (all processes) is
+// overlaid on what the tab froze when it was left. Only the dot reads it:
+// every guard reads the tab's own `runState`.
+const tracker = (busy, asks, background = false, asksOpened) => ({ busy, asks, background, ...(asksOpened === undefined ? {} : { asksOpened }) });
+const ALL_STATES = ["idle", "waiting-user", "running", "background", "retrying"];
+
+check("a new ask reaches an unfocused background tab from the tracker", () => {
+  for (const cached of ALL_STATES) {
+    assert.equal(T.displayRunState(cached, tracker(true, 1), true, true), "waiting-user", cached);
+  }
+  assert.equal(T.displayRunState("idle", tracker(false, 2), true, true), "waiting-user", "a queued form field");
+});
+
+check("failed wins over the tracker and before it loaded", () => {
+  assert.equal(T.displayRunState("failed", tracker(true, 3), true, true), "failed", "a dead process keeps its verdict");
+  assert.equal(T.displayRunState("failed", tracker(true, 3), false), "failed");
+  assert.equal(T.displayRunState("failed", null, true, true), "failed");
+});
+
+check("a tracker report newer than the freeze owns the dot", () => {
+  // The two P1 cases: a tab frozen at `idle` before anything ran.
+  assert.equal(T.displayRunState("idle", tracker(true, 0), true, true), "running", "idle + busy is mid-turn");
+  assert.equal(T.displayRunState("idle", tracker(false, 0, true), true, true), "background", "idle + pending job");
+  // A frozen retry row: only a report that moved since the freeze retires it.
+  assert.equal(T.displayRunState("retrying", tracker(true, 0), true, true), "running", "a moved run is not the frozen retry");
+  assert.equal(T.displayRunState("retrying", tracker(false, 0), true, true), "idle", "settled ends the retries");
+  assert.equal(T.displayRunState("retrying", tracker(false, 1), true, true), "waiting-user");
+  assert.equal(T.displayRunState("retrying", tracker(false, 0, true), true, true), "background");
+  // Every frozen work state follows the same tracker.
+  for (const cached of ["waiting-user", "running", "background"]) {
+    assert.equal(T.displayRunState(cached, tracker(false, 0), true, true), "idle", cached);
+    assert.equal(T.displayRunState(cached, tracker(true, 0), true, true), "running", cached);
+    assert.equal(T.displayRunState(cached, tracker(false, 0, true), true, true), "background", cached);
+  }
+});
+
+check("a report that predates the freeze may raise the frozen state, never lower it", () => {
+  // The busy fan-out for the tab that was just left is still in flight, so
+  // the tracker's entry is the one from before the turn — or there is none
+  // at all (it never reported the tab). Neither retires the frozen work.
+  for (const cached of ALL_STATES) {
+    assert.equal(T.displayRunState(cached, null, true, false), cached, `${cached}: no entry yet`);
+    assert.equal(T.displayRunState(cached, tracker(false, 0), true, false), cached, `${cached}: stale idle entry`);
+  }
+  // An ask the tab never saw still raises it — an ask is never a retirement.
+  for (const cached of ALL_STATES) {
+    assert.equal(T.displayRunState(cached, tracker(false, 1), true, false), "waiting-user", `${cached}: stale ask`);
+  }
+  // A run the snapshot missed raises it; `running` outranks `background`.
+  assert.equal(T.displayRunState("idle", tracker(true, 0), true, false), "running", "stale busy raises idle");
+  assert.equal(T.displayRunState("background", tracker(true, 0), true, false), "running", "busy outranks background");
+  assert.equal(T.displayRunState("running", tracker(true, 0, true), true, false), "running", "a stale job cannot retire the run");
+  // The retry row is newer than an unchanged busy entry: it stands.
+  assert.equal(T.displayRunState("retrying", tracker(true, 0), true, false), "retrying", "unchanged busy keeps the live row");
+  assert.equal(T.displayRunState("waiting-user", tracker(true, 0), true, false), "waiting-user", "an ask outranks a stale run");
+});
+
+check("until the first tracker snapshot the frozen state stands", () => {
+  for (const cached of ALL_STATES) {
+    assert.equal(T.displayRunState(cached, null, false), cached);
+    // Entries only arrive with the snapshot; a stray one is not trusted.
+    assert.equal(T.displayRunState(cached, tracker(true, 0), false), cached);
+    assert.equal(T.displayRunState(cached, tracker(false, 0), false), cached);
+    assert.equal(T.displayRunState(cached, null, false, true), cached, "no snapshot, no evidence");
+  }
+});
+
+check("a newer removal means the process is gone: the stale ask retires", () => {
+  // Rust removes a session's tracker entry on exit. The background tab keeps
+  // its frozen transcript, so an ask there would otherwise stay amber. Only
+  // the removal itself, after the freeze, is evidence of that.
+  for (const cached of ALL_STATES) {
+    assert.equal(T.displayRunState(cached, null, true, true), "idle", cached);
+    assert.equal(T.displayRunState(cached, null, true), cached, `${cached}: absence alone proves nothing`);
+  }
+});
+
+check("guardRunState raises a frozen state to the dot, never lowers it, and keeps failed", () => {
+  // Raise: a turn the tab started after it was left (frozen idle, dot busy).
+  assert.equal(T.guardRunState("idle", "running"), "running");
+  assert.equal(T.guardRunState("idle", "waiting-user"), "waiting-user");
+  assert.equal(T.guardRunState("idle", "background"), "background");
+  assert.equal(T.guardRunState("background", "retrying"), "retrying");
+  assert.equal(T.guardRunState("running", "waiting-user"), "waiting-user");
+  // Never lower: a frozen run whose dot a newer report retired stays busy.
+  assert.equal(T.guardRunState("running", "idle"), "running");
+  assert.equal(T.guardRunState("waiting-user", "running"), "waiting-user");
+  assert.equal(T.guardRunState("retrying", "background"), "retrying");
+  assert.equal(T.guardRunState("idle", "idle"), "idle");
+  // `failed` is the process's own verdict.
+  assert.equal(T.guardRunState("failed", "running"), "failed");
+  assert.equal(T.guardRunState("failed", "waiting-user"), "failed");
+  // The busy predicates the guards use read that raised state.
+  const tabs = [{ id: "a", path: "/p", repoRoot: "/r", runState: T.guardRunState("idle", "running"), displayRunState: "running" }];
+  assert.equal(T.busyInRepo(tabs, "/r"), true, "a run the frozen tab never saw is repo work");
+  assert.equal(T.busyElsewhere(tabs, "b", "/p"), true, "and busy elsewhere");
+  const frozenRun = [{ id: "a", path: "/p", repoRoot: "/r", runState: T.guardRunState("running", "idle"), displayRunState: "idle" }];
+  assert.equal(T.busyInRepo(frozenRun, "/r"), true, "the frozen run still counts");
+});
+
+// app-live.jsx's restart note: `refuse` is a refused submit (records the
+// bridge's restarting tab), `snapshot` a new `restartingTab` (the effect
+// keeps or drops the recorded tab), `shown` what the composer on `tab` renders.
+function restartNote() {
+  let noteTab = null, restartingTab = null;
+  return {
+    refuse: tab => { noteTab = tab; },
+    snapshot: tab => { restartingTab = tab; noteTab = T.restartNoteKept(noteTab, tab); },
+    shown: composerTab => T.restartNoteShown(noteTab, composerTab, restartingTab),
+  };
+}
+
+check("the restart note shows after a refused submit on the restarting tab and goes when the restart ends", () => {
+  const n = restartNote();
+  n.snapshot("a");
+  assert.equal(n.shown("a"), false, "no submit refused yet");
+  n.refuse("a");
+  assert.equal(n.shown("a"), true, "a refused submit on the restarting tab");
+  n.snapshot(null);
+  assert.equal(n.shown("a"), false, "the restart ended: gone without a submit");
+  n.snapshot("a");
+  assert.equal(n.shown("a"), false, "a later restart of that tab shows nothing until a submit is refused");
+});
+
+check("the restart note never shows on another tab", () => {
+  const n = restartNote();
+  n.snapshot("a");
+  n.refuse("a");
+  // Detached: the composer renders another tab (App's fallback) while A restarts.
+  assert.equal(n.shown("b"), false, "not on B while A is detached");
+  assert.equal(n.shown("a"), true, "on A");
+  // The user moved to B mid-restart: B is not restarting.
+  n.snapshot(null);
+  assert.equal(n.shown("b"), false);
+  n.refuse(null); // a refusal whose restarting tab is unknown records none
+  assert.equal(n.shown("a"), false);
+  assert.equal(T.restartNoteShown("b", "b", "a"), false, "a note recorded for B never shows while A restarts");
+});
+
+check("a frozen ask yields to a tracker entry that has stamped a question", () => {
+  // The tracker reads every frame before the tab's listener, so an entry
+  // naming no open ask after it has opened one can only be a closed ask the
+  // frozen snapshot predates (the `cancel` line). The P2 case: no evidence
+  // revision moved, so the pre-fix rule kept the orange dot forever.
+  assert.equal(T.displayRunState("waiting-user", tracker(true, 0, false, 1), true, false), "running");
+  assert.equal(T.displayRunState("waiting-user", tracker(false, 0, false, 1), true, false), "idle");
+  assert.equal(T.displayRunState("waiting-user", tracker(false, 0, true, 1), true, false), "background");
+  assert.equal(T.displayRunState("waiting-user", tracker(false, 2, false, 2), true, false), "waiting-user",
+    "an open ask is not a retirement");
+  // An entry that never stamped a question knows nothing about the frozen
+  // one: absence is not evidence there.
+  assert.equal(T.displayRunState("waiting-user", tracker(false, 0), true, false), "waiting-user");
+  assert.equal(T.displayRunState("waiting-user", tracker(false, 0, false, 0), true, false), "waiting-user");
+  assert.equal(T.displayRunState("waiting-user", null, true, false), "waiting-user", "no entry, no proof");
+  // Before the tracker loaded it is not consulted at all.
+  assert.equal(T.displayRunState("waiting-user", tracker(false, 0, false, 1), false, false), "waiting-user");
+  // The exception is the ask only: a frozen run keeps its dot until evidence.
+  assert.equal(T.displayRunState("running", tracker(false, 0, false, 1), true, false), "running");
+  assert.equal(T.displayRunState("retrying", tracker(false, 0, false, 1), true, false), "retrying");
+});
+
+check("counter-probe: the pre-fix overlay lost work in both directions", () => {
+  // The rule before the evidence stamp: a loaded snapshot without an entry
+  // read as an exited process, and any busy entry kept a frozen retry row.
+  const preFix = (cached, live, loaded) => {
+    if (cached === "failed") return "failed";
+    if (!loaded) return cached;
+    if (!live) return "idle";
+    if (live.asks > 0) return "waiting-user";
+    if (live.busy) return cached === "retrying" ? "retrying" : "running";
+    if (live.background) return "background";
+    return "idle";
+  };
+  // P1: a run frozen mid-turn loses its dot (and the close prompt) while
+  // its busy fan-out is still in flight.
+  assert.equal(preFix("running", null, true), "idle", "absence alone retired the run");
+  assert.equal(T.displayRunState("running", null, true), "running", "the frozen run stands until evidence");
+  assert.equal(T.displayRunState("running", null, true, true), "idle", "only a newer removal retires it");
+  // P2: a busy → idle → busy wake returned the old retry row.
+  assert.equal(preFix("retrying", tracker(true, 0), true), "retrying", "busy alone kept the stale row");
+  assert.equal(T.displayRunState("retrying", tracker(true, 0), true, true), "running", "a moved run reads running");
+});
+
 console.log(`test-turn-status: ${passed} checks passed`);

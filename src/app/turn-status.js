@@ -47,6 +47,92 @@
   const busyInRepo = (sessions, root) =>
     !!root && sessions.some(s => s.repoRoot === root && isBusyRunState(s.runState));
 
+  /** The displayed run state (the tab dot) of a background tab after
+   *  overlaying the backend tracker (`agent://attention`,
+   *  `src-tauri/src/remote/tracker.rs`) on the run state its frozen
+   *  snapshot carries. A background tab has no live `agent://line`
+   *  listener, so its snapshot's asks and turn never move; the tracker
+   *  sees every process's frames and knows better.
+   *
+   *  `cached` is `runStateOf` over the snapshot (`live.js`
+   *  `_sessionsView`), `live` the tracker entry (`busy`, `asks`,
+   *  `asksOpened`, `background`) or null when it has none, `loaded` whether
+   *  `live.js` has received the tracker snapshot at all, and `fresh`
+   *  whether the tracker reported this session after the tab was frozen.
+   *
+   *  The dot only: a background tab's guard state (`runState`, what every
+   *  guard reads) is `guardRunState`, which this may raise but never lower.
+   *
+   *  A newer report owns the display: the run settled, the ask cleared or
+   *  the process exited. An older one may still know more than the snapshot
+   *  does — an ask that arrived, a run the tab never saw — but it may not
+   *  make the dot look less busy: absence alone is not proof of exit (the
+   *  busy fan-out for the tab just left may still be in flight), and a
+   *  frozen run stands until a later report retires it. An ask is the
+   *  exception: the tracker reads every frame before the tab's own
+   *  listener, so when it names no open question and has stamped a question
+   *  before, the frozen ask can only be one it already closed — the
+   *  `cancel` the frozen snapshot predates. `retrying` survives only while
+   *  the tracker has not moved since the freeze: the row lives in the
+   *  frozen transcript, and a busy → idle → busy wake makes it a run of the
+   *  past. `failed` is the process's own verdict and wins. */
+  function displayRunState(cached, live, loaded, fresh = false) {
+    if (cached === "failed") return "failed";
+    if (!loaded) return cached;
+    const tracked = _trackedRunState(live);
+    if (cached === "waiting-user" && tracked !== "waiting-user" && _asksOpened(live) > 0) return tracked;
+    if (fresh) return tracked;
+    return RUN_STATE_RANK[tracked] > RUN_STATE_RANK[cached] ? tracked : cached;
+  }
+
+  /** A background tab's guard state (`runState`: busy-close and quit
+   *  confirmation, the close guard, the updater's busy count, PR
+   *  automation, the branch picker): the stronger of its frozen run state
+   *  `cached` and the dot's `display` (`displayRunState`), so a turn the
+   *  tab started after it was left counts as busy. Raise-only: a tracker
+   *  report never lowers it below the frozen state, so a frozen busy tab
+   *  that went idle stays busy for guards until it is activated — annoying,
+   *  but safe. `failed` stays `failed`. */
+  function guardRunState(cached, display) {
+    if (cached === "failed") return "failed";
+    return (RUN_STATE_RANK[display] ?? 0) > (RUN_STATE_RANK[cached] ?? 0) ? display : cached;
+  }
+
+  /** The composer's "omp is restarting in this tab" note (`app-live.jsx`).
+   *  `noteTab` is the tab a submit was refused on (the bridge's
+   *  `restartingTab()` at that moment), `composerTab` the tab the composer
+   *  renders, `restartingTab` the snapshot's. Shown only while all three
+   *  name the same tab: never on another tab, never after the restart. */
+  function restartNoteShown(noteTab, composerTab, restartingTab) {
+    return noteTab != null && noteTab === composerTab && noteTab === restartingTab;
+  }
+
+  /** `noteTab` once the snapshot's `restartingTab` changed: kept while that
+   *  tab still restarts, else dropped, so a later restart of the same tab
+   *  shows no note until a submit is refused again. */
+  function restartNoteKept(noteTab, restartingTab) {
+    return noteTab != null && noteTab === restartingTab ? noteTab : null;
+  }
+
+  // Strongest first, as `runStateOf` decides: an older tracker report may
+  // still raise a tab's state to a stronger one, never lower it.
+  const RUN_STATE_RANK = { idle: 0, background: 1, running: 2, retrying: 3, "waiting-user": 4 };
+
+  function _trackedRunState(live) {
+    if (!live) return "idle";
+    if (Number.isFinite(live.asks) && live.asks > 0) return "waiting-user";
+    if (live.busy) return "running";
+    if (live.background) return "background";
+    return "idle";
+  }
+
+  /** How many questions the tracker has ever seen open in this session: an
+   *  entry that never saw one knows nothing about a frozen ask, so its
+   *  closed count cannot retire it. */
+  function _asksOpened(live) {
+    return Number.isFinite(live?.asksOpened) ? live.asksOpened : 0;
+  }
+
   /** Whether an `agent_end` is the agent yielding its turn. `yielded: false`
    *  ends are the agent's own continuations (a retry, compaction, a
    *  stop-time reminder); frames without the field count when terminal —
@@ -368,7 +454,7 @@
   }
 
   window.OMP_TURN_STATUS = Object.freeze({
-    runStateOf, isBusyRunState, busyElsewhere, busyInRepo, isYield, stripDiagnostics, providerHeadline, failureOf, finalFailures,
+    runStateOf, displayRunState, guardRunState, restartNoteShown, restartNoteKept, isBusyRunState, busyElsewhere, busyInRepo, isYield, stripDiagnostics, providerHeadline, failureOf, finalFailures,
     withPromptError, finishedJobsOf,
     failedStop, producedOutput, isHidden, retryIndex, retryStarted, retryAttempting, retryEnded, retryFinished, retryYielded, retryCleared,
   });

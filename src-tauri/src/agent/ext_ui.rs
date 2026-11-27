@@ -16,9 +16,9 @@
 //! process: an exit, a `stop_session` or a respawn under the same id
 //! (profile switch) all start from nothing.
 //!
-//! Only whole frames are seen here: a frame omp splits into protocol-v2
-//! chunks (over 1 MiB, far beyond the bounds below) reaches the frontend
-//! live but not this store.
+//! A frame omp splits into protocol-v2 chunks (over 1 MiB, far beyond the
+//! bounds below) arrives here whole: the reader reassembles chunk runs
+//! before any consumer sees them (`agent/frames.rs`).
 
 use serde_json::Value;
 

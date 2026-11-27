@@ -12,6 +12,7 @@ use super::hub::PublishPayload;
 use super::manager::{PairStart, RemoteManager};
 use super::net::{self, Iface};
 use super::settings::RemoteSettings;
+use super::tracker::{tracker, AttentionSnapshot};
 
 /// Run `work` against the managed [`RemoteManager`] on a blocking thread.
 async fn with_manager<T: Send + 'static>(
@@ -115,6 +116,17 @@ pub async fn remote_ready(ready: bool, app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn remote_push_test(app: AppHandle) -> Result<(), String> {
     with_manager(app, RemoteManager::push_test).await
+}
+
+/// Every session's tracker state (`busy`, `asks`, `asksOpened`,
+/// `background`) plus the snapshot revision, background tabs included. A
+/// webview reload starts its tab dots from this; the `agent://attention`
+/// event keeps them current. Needs no manager: the tracker is process-wide.
+#[tauri::command]
+pub async fn attention_snapshot() -> Result<AttentionSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(|| Arc::unwrap_or_clone(tracker().snapshot()))
+        .await
+        .map_err(|error| format!("join error: {error}"))
 }
 
 /// The `user.email` of the user's global and system git configuration, to

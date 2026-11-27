@@ -127,7 +127,7 @@ function TabBar({
             onDoubleClick={e => { if (onRename && !e.target.closest(".tab-close")) setRenaming(p.id); }}>
             <span className="tab-bar-mark" style={{ background: active ? p.color : "transparent" }} />
             <Icon name="folder" size={11} color={active ? p.color : "var(--fg-4)"} />
-            <TabRunDot state={p.runState} />
+            <TabRunDot state={p.displayRunState} />
             {renaming === p.id ? (
               <RenameField value={p.name}
                 onCommit={name => onRename(p.id, name)}

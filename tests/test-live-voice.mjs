@@ -275,9 +275,9 @@ function bridgeHarness() {
     OMP_SUBAGENTS: { emptySubagents: () => ({}), subscriptionLevelFor: () => "progress", mergeSnapshots: () => ({}) },
     OMP_QUEUE: { EMPTY_QUEUE: {} }, OMP_GOAL: { UNKNOWN: {} }, OMP_EXT_WIDGETS: { EMPTY: {} },
     OMP_TRANSCRIPT: {}, OMP_PROMPT_HISTORY: { DEFAULT_LIMIT: 100 },
-    OMP_SESSION_PREFS: { fromTweaks: () => ({ autoCompaction: true, autoRetry: true }), closeGuardArmed: () => false },
+    OMP_SESSION_PREFS: { fromTweaks: () => ({}), closeGuardArmed: () => false },
     OMP_TWEAKS_STORE: { read: () => ({}) },
-    OMP_TURN_STATUS: { runStateOf: () => "idle", isBusyRunState: () => false, retryCleared: messages => messages },
+    OMP_TURN_STATUS: { runStateOf: () => "idle", displayRunState: cached => cached, guardRunState: cached => cached, isBusyRunState: () => false, retryCleared: messages => messages },
     OMP_PROJECT_NAV: { basename: path => path.split("/").at(-1), findConversationTab: () => null },
     DEFAULT_PROFILE_ID: "default", INTENT_FRAMING: () => "", timeNow: () => "00:00",
   };
@@ -319,6 +319,8 @@ function bridgeHarness() {
       if (command === "create_profile") return Promise.resolve({ id: "other", name: "Other" });
       if (command === "list_profiles") return Promise.resolve({ profiles: [{ id: "default", name: "default" }, { id: "other", name: "Other" }] });
       if (command === "stop_session") { journal.delete(args.sessionId); return Promise.resolve(null); }
+      // No tracker here: every tab is idle to Rust (an approval restart).
+      if (command === "stop_session_if_idle") { journal.delete(args.sessionId); return Promise.resolve({ stopped: true, busy: false }); }
       if (command === "approval_mode_set_default") {
         approvalMode = args.mode;
         return Promise.resolve({ default: approvalMode, projects: {} });
@@ -1241,6 +1243,30 @@ await checkAsync("omp withdrawal wins over a failed refusal cancellation", async
   assert.equal(bubble.cancelled, true);
   assert.doesNotMatch(bubble.formError, /could not be delivered/i);
   assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /Answer could not be delivered/);
+});
+
+// Settings → Agent: compaction and retry belong to omp's config (#92). The
+// webview names a closed setting, the bridge never pushes a per-process
+// override to a running omp.
+await checkAsync("omp's compaction and retry are read and written through the config commands, with the profile and a setting name", async () => {
+  const h = bridgeHarness();
+  assert.deepEqual(await h.bridge.ompSetting("work", "autoCompaction"), { ok: true, value: null });
+  assert.deepEqual(await h.bridge.setOmpSetting("work", "autoRetry", false), { ok: true, value: null });
+  assert.deepEqual(h.invocations.map(i => [i.command, i.args]), [
+    ["omp_setting_get", { profile: "work", setting: "autoCompaction" }],
+    ["omp_setting_set", { profile: "work", setting: "autoRetry", enabled: false }],
+  ]);
+});
+
+await checkAsync("a new tab sends no set_auto_compaction or set_auto_retry frame", async () => {
+  const h = bridgeHarness();
+  const a = await h.bridge.openSession(null);
+  await h.waitCommand("get_available_commands");
+  const b = await h.bridge.openSession(null);
+  await h.bridge.activateSession(a);
+  await h.bridge.activateSession(b);
+  assert.ok(h.commands.some(c => c.type === "get_state"));
+  assert.deepEqual(h.commands.filter(c => /^set_auto_/.test(c.type)), []);
 });
 
 console.log(`test-live-voice: ${passed} checks passed`);

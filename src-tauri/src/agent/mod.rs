@@ -1,8 +1,9 @@
 //! Per-session omp process bridge.
 //!
 //! Each tab owns one omp child process spawned via `start_session`. Its
-//! stdout is forwarded as `agent://line/{session_id}` Tauri events; its
-//! exit (clean or otherwise) is announced as `agent://exit/{session_id}`.
+//! stdout's logical frames are forwarded as `agent://line/{session_id}`
+//! Tauri events; its exit (clean or otherwise) is announced as
+//! `agent://exit/{session_id}`.
 //!
 //! Submodules:
 //! - [`inner`]      — `BridgeInner` per-session record (generation token,
@@ -11,6 +12,9 @@
 //!   `CREATE_NO_WINDOW` flag.
 //! - [`reader`]     — stdout/stderr reader threads, bounded
 //!   `read_until_capped`, and credential redaction.
+//! - [`frames`]     — physical stdout lines → logical frames: protocol-v2
+//!   chunk reassembly, lone-surrogate repair, deep-frame parsing, and the
+//!   `desktop_frame_error` diagnostic (#94).
 //! - [`journal`]    — bounded per-session event ring + replay.
 //! - [`ext_ui`]     — latest omp extension status lines / widgets (#52).
 //! - [`inflight`]   — the assistant message being streamed, rebuilt from
@@ -22,6 +26,7 @@
 
 mod approvals;
 pub mod ext_ui;
+mod frames;
 pub mod inflight;
 mod inner;
 pub mod journal;
@@ -37,7 +42,7 @@ use tauri::AppHandle;
 
 use approvals::PendingApprovals;
 use ext_ui::ExtUiState;
-use inflight::{InFlight, Snapshot};
+use inflight::InFlight;
 use inner::BridgeInner;
 use journal::{EventJournal, Replay};
 use reader::{spawn_stderr_reader, spawn_stdout_reader};
@@ -51,10 +56,12 @@ use spawn::spawn_omp;
 const EVENT_JOURNAL_CAPACITY: usize = 4096;
 
 /// Total byte budget for one session's event journal. Bounds the ring by
-/// size as well as entry count: a single RPC line may be up to
-/// `reader::MAX_LINE_BYTES` (16 MiB), so the line count alone (4096 × 16 MiB)
-/// would permit tens of gigabytes of resident memory per open tab. 8 MiB comfortably holds a
-/// normal background-tab gap while capping the pathological case.
+/// size as well as entry count: one entry is one logical frame, up to
+/// `frames::MAX_REASSEMBLED_BYTES` (64 MiB) when omp chunked it, so the
+/// entry count alone (4096 × 64 MiB) would permit hundreds of gigabytes of
+/// resident memory per open tab. 8 MiB comfortably holds a normal
+/// background-tab gap while capping the pathological case; a single larger
+/// frame is still kept on its own (see `journal.rs`).
 const EVENT_JOURNAL_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 /// Written to every omp process's stdin right after the spawn, before the
@@ -129,11 +136,6 @@ const ALLOWED_COMMAND_TYPES: &[&str] = &[
     "fork",
     // Goal mode: omp's `goal` command (get/create/resume/pause/drop).
     "goal",
-    // Settings → Agent (#37): omp's session-scoped automatic compaction and
-    // retry switches: sent to a new process when turned off, and to every
-    // open tab on change.
-    "set_auto_compaction",
-    "set_auto_retry",
 ];
 
 /// What one omp process is started with (`start_session` → `spawn_omp`).
@@ -152,11 +154,24 @@ pub struct Launch<'a> {
     pub config: Option<&'a std::path::Path>,
 }
 
+/// What [`AgentBridge::stop_session_if_idle`] did, as the webview gets it:
+/// `{ stopped, busy }`. `busy` means the tracker held the session at work
+/// and nothing was touched; neither flag means the bridge lock was poisoned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct ConditionalStop {
+    pub stopped: bool,
+    pub busy: bool,
+}
+
 /// Manages one omp process per tab session.
 ///
 /// # Events
-/// - `agent://line/{session_id}` — payload: a single JSON-encoded RPC
-///   line (string). One event per line that omp wrote to stdout.
+/// - `agent://line/{session_id}` — payload: `{seq, text}`, `text` one
+///   logical RPC frame as JSON text, redacted, stamped with its journal
+///   `seq`. One event per logical frame: an ordinary stdout line, a chunk
+///   run omp split a frame of 1 MiB or more into (up to 64 MiB, reassembled
+///   into one event), or a fixed `desktop_frame_error` diagnostic standing
+///   in for a line or run the desktop could not use.
 /// - `agent://exit/{session_id}` — payload: a string. Empty (`""`) on
 ///   normal process exit; non-empty contains a human-readable error
 ///   describing why the session ended (spawn failed, line truncated past
@@ -339,17 +354,62 @@ impl AgentBridge {
             let Ok(mut s) = self.sessions.lock() else {
                 return;
             };
-            let removed = s.remove(session_id);
-            // Clear liveness before releasing the lock: a reader thread
-            // parked on this same mutex must see `alive == false` the
-            // instant it observes the entry gone, not after — see
-            // reader.rs's post-EOF `None` arm.
-            if let Some(inner) = &removed {
-                inner.alive.store(false, Ordering::Release);
-                crate::remote::tracker::tracker().on_exit(session_id);
-            }
-            removed
+            remove_locked(&mut s, session_id)
         };
+        self.finish_stop(session_id, removed, rule_book);
+    }
+
+    /// [`Self::stop_session`], but only while the tracker
+    /// (`remote::tracker`) reports the session idle: not busy, no open
+    /// question, no background work. A busy session is left untouched (no
+    /// side effect at all) and reported as `{ stopped: false, busy: true }`.
+    /// No tracker entry counts as idle; an unknown session is stopped the
+    /// way `stop_session` stops one (its grants and cached error go).
+    /// Used only for approval-mode restarts (`live.js` `_respawnSession`
+    /// `ifIdle`); a profile switch and a tab close stop unconditionally.
+    ///
+    /// The tracker is read under the `sessions` lock, the same critical
+    /// section that removes the entry, so no `start_session` or
+    /// `stop_session` can interleave. Accepted window: the stdout reader
+    /// records frames without this lock, so a frame read right after the
+    /// check (an `agent_start` from a queued prompt) still dies with the
+    /// process — the same as a kill an instant earlier, and omp keeps the
+    /// conversation on disk for the `--resume` that follows.
+    pub fn stop_session_if_idle(
+        &self,
+        session_id: &str,
+        rule_book: &crate::approval::RuleBook,
+    ) -> ConditionalStop {
+        let removed = {
+            let Ok(mut s) = self.sessions.lock() else {
+                return ConditionalStop {
+                    stopped: false,
+                    busy: false,
+                };
+            };
+            if crate::remote::tracker::tracker().session_at_work(session_id) {
+                return ConditionalStop {
+                    stopped: false,
+                    busy: true,
+                };
+            }
+            remove_locked(&mut s, session_id)
+        };
+        self.finish_stop(session_id, removed, rule_book);
+        ConditionalStop {
+            stopped: true,
+            busy: false,
+        }
+    }
+
+    /// The part of a stop after the map entry is gone: reap it (or drop
+    /// stale grants when there was none) and forget its cached error.
+    fn finish_stop(
+        &self,
+        session_id: &str,
+        removed: Option<BridgeInner>,
+        rule_book: &crate::approval::RuleBook,
+    ) {
         if let Some(inner) = removed {
             reap_and_clear_grants(session_id, inner, rule_book);
         } else {
@@ -441,15 +501,23 @@ impl AgentBridge {
     }
 
     /// The assistant message a session is streaming, as far as it got (see
-    /// [`inflight`]); `None` between messages and for an unknown or ended
-    /// session.
-    pub fn streaming_message(&self, session_id: &str) -> Option<Snapshot> {
+    /// [`inflight`]), as JSON text: `null` between messages and for an
+    /// unknown or ended session. Takes the session's state out under the
+    /// `sessions` lock, then serializes it on Tauri's blocking pool
+    /// ([`crate::off_ipc`]) rather than the caller's thread: the recursion
+    /// needs more stack than the 1 MiB `WebView2` main thread a sync command
+    /// runs on (see [`inflight::snapshot_json`] for the measure).
+    ///
+    /// # Errors
+    /// Serializing the snapshot failed, or the worker panicked.
+    pub async fn streaming_message(&self, session_id: &str) -> Result<String, String> {
         let Ok(Some(inflight)) = self.with_entry(session_id, |inner| Arc::clone(&inner.inflight))
         else {
-            return None;
+            return Ok("null".to_owned());
         };
-        // Copied out under the reader's lock, serialised after it is released.
-        inflight.lock().ok().and_then(|s| s.snapshot())
+        crate::off_ipc(move || inflight::snapshot_json(&inflight))
+            .await?
+            .map_err(|e| e.to_string())
     }
 
     /// `pick` applied to `session_id`'s map entry, holding the `sessions`
@@ -531,6 +599,22 @@ impl Drop for AgentBridge {
     fn drop(&mut self) {
         self.shutdown_all();
     }
+}
+
+/// Take `session_id`'s entry out of the locked `sessions` map, shared by
+/// both stops. Liveness is cleared before the lock is released: a reader
+/// thread parked on the same mutex must see `alive == false` the instant it
+/// observes the entry gone, not after — see reader.rs's post-EOF `None` arm.
+fn remove_locked(
+    sessions: &mut HashMap<String, BridgeInner>,
+    session_id: &str,
+) -> Option<BridgeInner> {
+    let removed = sessions.remove(session_id);
+    if let Some(inner) = &removed {
+        inner.alive.store(false, Ordering::Release);
+        crate::remote::tracker::tracker().on_exit(session_id);
+    }
+    removed
 }
 
 /// Reap `prev`'s process tree off-thread (so the Tauri command thread is
@@ -663,7 +747,7 @@ mod tests {
         };
         let live = flat(include_str!("../../../src/live.js"));
         let mut checked = 0;
-        for callee in ["_send(", "_sendWithResponse(", "_sendToAll("] {
+        for callee in ["_send(", "_sendWithResponse("] {
             for (idx, _) in live.match_indices(callee) {
                 let args = &live[idx + callee.len()..];
                 if let Some(rest) = args.strip_prefix("{type:\"") {
@@ -908,6 +992,35 @@ mod tests {
     }
 
     #[test]
+    fn streaming_message_follows_the_session_entry() {
+        let bridge = AgentBridge::new();
+        let state = Mutex::new(InFlight::default());
+        inflight::record(
+            &state,
+            3,
+            Some(serde_json::json!({
+                "type": "message_start", "messageId": "msg-1",
+                "message": { "role": "assistant", "content": [] },
+            })),
+        );
+        bridge.sessions.lock().unwrap().insert(
+            "sess-x".into(),
+            BridgeInner {
+                inflight: Arc::new(state),
+                ..idle_inner(Arc::new(AtomicBool::new(true)))
+            },
+        );
+        let streaming = |id: &str| tauri::async_runtime::block_on(bridge.streaming_message(id));
+        assert_eq!(
+            streaming("sess-x").unwrap(),
+            r#"{"messageId":"msg-1","seq":3,"message":{"content":[],"role":"assistant"}}"#
+        );
+        assert_eq!(streaming("other").unwrap(), "null");
+        bridge.sessions.lock().unwrap().remove("sess-x");
+        assert_eq!(streaming("sess-x").unwrap(), "null");
+    }
+
+    #[test]
     fn replacing_a_session_clears_its_rule_book_session_grants() {
         let dir = std::env::temp_dir().join(format!(
             "omp-desktop-agent-mod-test-{}-{}",
@@ -994,7 +1107,11 @@ mod tests {
                 r#"{"type":"extension_ui_response","id":"q","value":"Deny"}"#,
             )
             .unwrap();
-        assert_eq!(tracker().snapshot()[sid], (false, 0));
+        let snapshot = tracker().snapshot();
+        assert_eq!(
+            (snapshot.sessions[sid].busy, snapshot.sessions[sid].asks),
+            (false, 0)
+        );
         tracker().on_exit(sid);
     }
 
@@ -1039,7 +1156,11 @@ mod tests {
                 r#"{"type":"extension_ui_response","id":"q","value":"Deny"}"#
             )
             .is_err());
-        assert_eq!(tracker().snapshot()[sid], (false, 1));
+        let snapshot = tracker().snapshot();
+        assert_eq!(
+            (snapshot.sessions[sid].busy, snapshot.sessions[sid].asks),
+            (false, 1)
+        );
         tracker().on_exit(sid);
     }
 
@@ -1063,6 +1184,113 @@ mod tests {
         let dir = crate::test_support::TempDir::new("tracker", "stop-session");
         let rules = crate::approval::RuleBook::new(dir.path().to_path_buf());
         bridge.stop_session(sid, &rules);
-        assert!(!tracker.snapshot().contains_key(sid));
+        assert!(!tracker.snapshot().sessions.contains_key(sid));
+    }
+}
+
+#[cfg(test)]
+mod stop_if_idle_tests {
+    use super::tests::{approval_prompt, idle_inner};
+    use super::*;
+    use crate::approval::{RuleBook, RuleScope};
+    use crate::remote::tracker::tracker;
+    use serde_json::{json, Value};
+    use std::time::Instant;
+
+    const REFUSED: ConditionalStop = ConditionalStop {
+        stopped: false,
+        busy: true,
+    };
+    const STOPPED: ConditionalStop = ConditionalStop {
+        stopped: true,
+        busy: false,
+    };
+
+    fn frame(sid: &str, frame_type: &str, frame: Option<&Value>) {
+        tracker().on_frame(
+            sid,
+            Some(frame_type),
+            frame,
+            Instant::now(),
+            &AtomicBool::new(true),
+        );
+    }
+
+    /// A tracker that holds the session at work — mid-run, an open question,
+    /// background work — refuses with no side effect: the process entry,
+    /// its liveness, its session grants and the tracker entry all stay. Once
+    /// the tracker reports it idle the same call stops it like `stop_session`.
+    #[test]
+    fn refuses_while_the_tracker_holds_the_session_at_work_and_stops_once_idle() {
+        let dir = crate::test_support::TempDir::new("stop-if-idle", "at-work");
+        let rules = RuleBook::new(dir.path().to_path_buf());
+        let background = json!({
+            "type": "response", "command": "get_state", "success": true,
+            "data": { "hasPendingAsyncWork": true },
+        });
+        let prompt = approval_prompt("q", "bash");
+        let cases: [(&str, &str, Option<&Value>, &str); 3] = [
+            ("stop-if-idle-busy", "agent_start", None, "agent_end"),
+            (
+                "stop-if-idle-ask",
+                "extension_ui_request",
+                Some(&prompt),
+                "agent_end",
+            ),
+            (
+                "stop-if-idle-background",
+                "response",
+                Some(&background),
+                "session_settled",
+            ),
+        ];
+        for (sid, at_work, payload, settle) in cases {
+            let bridge = AgentBridge::new();
+            let alive = Arc::new(AtomicBool::new(true));
+            bridge
+                .sessions
+                .lock()
+                .unwrap()
+                .insert(sid.into(), idle_inner(Arc::clone(&alive)));
+            rules.grant(sid, None, "bash", RuleScope::Session).unwrap();
+            frame(sid, at_work, payload);
+
+            assert_eq!(bridge.stop_session_if_idle(sid, &rules), REFUSED, "{sid}");
+            assert!(bridge.sessions.lock().unwrap().contains_key(sid), "{sid}");
+            assert!(alive.load(Ordering::Acquire), "{sid}");
+            assert!(rules.is_granted(sid, None, "bash"), "{sid}");
+            assert!(tracker().snapshot().sessions.contains_key(sid), "{sid}");
+
+            frame(sid, settle, None);
+            assert_eq!(bridge.stop_session_if_idle(sid, &rules), STOPPED, "{sid}");
+            assert!(bridge.sessions.lock().unwrap().is_empty(), "{sid}");
+            assert!(!alive.load(Ordering::Acquire), "{sid}");
+            assert!(!rules.is_granted(sid, None, "bash"), "{sid}");
+            assert!(!tracker().snapshot().sessions.contains_key(sid), "{sid}");
+        }
+    }
+
+    /// No tracker entry is idle, and an unknown session is stopped the way
+    /// `stop_session` stops one: its stale grants go.
+    #[test]
+    fn no_tracker_entry_and_an_unknown_session_count_as_idle() {
+        let dir = crate::test_support::TempDir::new("stop-if-idle", "untracked");
+        let rules = RuleBook::new(dir.path().to_path_buf());
+        let bridge = AgentBridge::new();
+        let sid = "stop-if-idle-untracked";
+        bridge
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(sid.into(), idle_inner(Arc::new(AtomicBool::new(true))));
+        assert_eq!(bridge.stop_session_if_idle(sid, &rules), STOPPED);
+        assert!(bridge.sessions.lock().unwrap().is_empty());
+
+        let unknown = "stop-if-idle-unknown";
+        rules
+            .grant(unknown, None, "bash", RuleScope::Session)
+            .unwrap();
+        assert_eq!(bridge.stop_session_if_idle(unknown, &rules), STOPPED);
+        assert!(!rules.is_granted(unknown, None, "bash"));
     }
 }

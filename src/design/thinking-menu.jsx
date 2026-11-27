@@ -4,7 +4,8 @@
    menu opens and again when the model changes while it is open. A pick is
    `set_thinking_level`; the pill shows the level omp reports applied
    (live.js, `thinking_level_changed`), so a pick omp clamps shows what omp
-   chose. Cycling stays on the keymap (`app.thinking.cycle`) and the
+   chose, and no level until omp has reported one (a new tab). Cycling
+   stays on the keymap (`app.thinking.cycle`) and the
    `/thinking` palette entry. composer.jsx renders this by its global name,
    keyed by tab: a tab switch remounts it, closed, with nothing in flight. */
 
@@ -62,7 +63,7 @@ function ThinkingMenu({ model, level, cycleHint, onLoad, onSet }) {
         title={cycleHint ? `thinking level (${cycleHint} cycles)` : "thinking level"}
         onClick={() => (open ? close() : setOpen(true))}>
         <_TM_Icon name="thinking" size={11} color="var(--lilac)" />
-        <span style={{ color: "var(--fg-2)" }}>{OMP_TR("thinking ·")} {level}</span>
+        <span style={{ color: "var(--fg-2)" }}>{level ? `${OMP_TR("thinking ·")} ${level}` : OMP_TR("thinking level")}</span>
         <_TM_Icon name="chev" size={10} color="var(--fg-4)" />
       </button>
       {open && (

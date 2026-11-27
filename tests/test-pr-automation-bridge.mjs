@@ -37,7 +37,7 @@ function harness() {
     },
     OMP_EXT_WIDGETS: { EMPTY: {} },
     OMP_SESSION_PREFS: {
-      fromTweaks: () => ({ autoCompaction: true, autoRetry: true }),
+      fromTweaks: () => ({}),
       closeGuardArmed: () => false,
     },
     OMP_TWEAKS_STORE: { read: () => ({}) },
@@ -95,7 +95,7 @@ function harness() {
   w.__TAURI__ = {
     core: {
       async invoke(command, args) {
-        if (command === "start_session") return "write";
+        if (command === "start_session") return { approvalMode: "write", ompVersion: null };
         if (command === "start_git_watch") return { branch: "feature", root: "/repo" };
         if (command === "stop_session") {
           journal.delete(args.sessionId);
@@ -533,6 +533,33 @@ await check(
     const current = snapshot();
     h.setResult(current);
     assert.equal(await h.bridge.prAutomationSnapshot(id), current);
+  },
+);
+
+// Not PR automation: this is the one harness that drives live.js's line
+// dispatch. The Rust reader replaces a line it cannot turn into a frame with
+// a fixed `desktop_frame_error` (#94); the bridge only logs it.
+await check(
+  "a desktop_frame_error frame is logged once and changes nothing",
+  async () => {
+    const h = harness(),
+      id = await h.bridge.openSession("/project");
+    await flush();
+    h.clean();
+    const before = h.bridge.getState().messages;
+    const warn = console.warn,
+      warned = [];
+    console.warn = (...args) => warned.push(args.join(" "));
+    try {
+      h.emit(id, { type: "desktop_frame_error", reason: "chunk_invalid" });
+      await flush();
+    } finally {
+      console.warn = warn;
+    }
+    assert.equal(h.bridge.getState().messages, before);
+    assert.deepEqual(warned, [
+      "[live] omp sent an unusable frame: chunk_invalid",
+    ]);
   },
 );
 console.log(`pr-automation-bridge: ${passed} checks passed`);

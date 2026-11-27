@@ -1,11 +1,13 @@
-//! Busy / dialog state for every agent process, including background tabs.
-//! The reader reuses its parsed frame; callbacks must only enqueue work.
+//! Busy / dialog / background-work state for every agent process, including
+//! background tabs. The reader reuses its parsed frame; callbacks must only
+//! enqueue work.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use serde_json::Value;
 
 const MAX_ID_BYTES: usize = 256;
@@ -23,26 +25,71 @@ pub trait TrackerSink: Send + Sync {
     fn changed(&self, sid: &str, t: Option<Transition>);
 }
 
+/// Stamp for a newly opened question. One sequence for the whole process,
+/// so a tab respawned under the same id continues upward instead of
+/// restarting at 1 — a watcher never mistakes an old count for a new ask.
+static ASK_OPEN_SEQ: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Default)]
 struct SessionState {
     busy: bool,
     turn_started: Option<Instant>,
     open: HashSet<String>,
+    /// `ASK_OPEN_SEQ` stamp of the last question opened in this session.
+    asks_opened: u64,
+    /// omp reports background work (an async job) that can still wake the
+    /// session after it yielded.
+    background: bool,
 }
 
-pub type Snapshot = HashMap<String, (bool, usize)>;
+/// One session as the webview and the phones see it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSnapshot {
+    pub busy: bool,
+    pub asks: usize,
+    /// Rising with every question opened here, independent of how many are
+    /// still open: answering one while another opens in the same batch
+    /// leaves `asks` unchanged but raises this. Carries no prompt content.
+    pub asks_opened: u64,
+    pub background: bool,
+}
+
+impl SessionSnapshot {
+    /// Whether the session's agent is at work: mid-run, waiting on an open
+    /// question, or holding background work that can wake it. What the close
+    /// guard and `stop_session_if_idle` treat as busy.
+    pub const fn at_work(&self) -> bool {
+        self.busy || self.asks > 0 || self.background
+    }
+}
+
+pub type Snapshot = HashMap<String, SessionSnapshot>;
+
+/// What the webview receives after every committed change: all sessions plus
+/// a monotonic revision. A snapshot older than the last applied one is
+/// ignored, so an initial `attention_snapshot` reply racing live events
+/// cannot roll the tab dots (or a dock bounce) back.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttentionSnapshot {
+    pub revision: u64,
+    pub sessions: Snapshot,
+}
 
 #[derive(Default)]
 pub struct Tracker {
     inner: Mutex<HashMap<String, SessionState>>,
-    snapshot: RwLock<Arc<Snapshot>>,
+    snapshot: RwLock<Arc<AttentionSnapshot>>,
     sink: Mutex<Option<Arc<dyn TrackerSink>>>,
 }
 
 /// The frames that change tracked state; everything else is ignored.
 enum Event<'a> {
     Start,
-    End,
+    End { awaiting: Option<bool> },
+    Settled,
+    AsyncWork(bool),
     Open(&'a str),
     Cancel(&'a str),
 }
@@ -51,7 +98,28 @@ impl<'a> Event<'a> {
     fn classify(frame_type: Option<&str>, frame: Option<&'a Value>) -> Option<Self> {
         match frame_type? {
             "agent_start" => Some(Self::Start),
-            "agent_end" => Self::yields(frame).then_some(Self::End),
+            "agent_end" => Self::yields(frame).then(|| Self::End {
+                awaiting: frame
+                    .and_then(|end| end.get("awaitingAsyncWork"))
+                    .and_then(Value::as_bool),
+            }),
+            "session_settled" => Some(Self::Settled),
+            // The active tab asks for `get_state` on every activation and
+            // `agent_end`; its `hasPendingAsyncWork` is the same flag the
+            // webview's `asyncPending` uses. Background tabs keep the last
+            // value until `session_settled` (or a yielding `agent_end` that
+            // names `awaitingAsyncWork`).
+            "response" => {
+                let frame = frame?;
+                if frame.get("command").and_then(Value::as_str) != Some("get_state") {
+                    return None;
+                }
+                frame
+                    .get("data")
+                    .and_then(|data| data.get("hasPendingAsyncWork"))
+                    .and_then(Value::as_bool)
+                    .map(Self::AsyncWork)
+            }
             "extension_ui_request" => {
                 let frame = frame?;
                 let text = |key: &str| frame.get(key).and_then(Value::as_str);
@@ -119,6 +187,8 @@ fn apply(
                 } else {
                     state.busy = true;
                     state.turn_started = Some(now);
+                    // Running outranks background; the job that woke us is gone.
+                    state.background = false;
                     Outcome::Changed(None)
                 }
             } else {
@@ -127,18 +197,26 @@ fn apply(
                     SessionState {
                         busy: true,
                         turn_started: Some(now),
-                        open: HashSet::new(),
+                        ..SessionState::default()
                     },
                 );
                 Outcome::Changed(None)
             }
         }
-        Event::End => {
+        Event::End { awaiting } => {
             if let Some(state) = sessions.get_mut(sid) {
                 let started = state.turn_started.take();
-                let changed = state.busy || !state.open.is_empty();
+                let changed = state.busy
+                    || !state.open.is_empty()
+                    || awaiting.is_some_and(|v| v != state.background);
                 state.busy = false;
                 state.open.clear();
+                // Without the field the following `get_state` settles it for
+                // the active tab; a background tab keeps what it last
+                // reported until `session_settled`.
+                if let Some(awaiting) = awaiting {
+                    state.background = awaiting;
+                }
                 let finished = started.map(|start| Transition::TurnFinished {
                     ran: now.saturating_duration_since(start),
                 });
@@ -147,12 +225,45 @@ fn apply(
                 Outcome::Unchanged
             }
         }
+        Event::Settled => {
+            if let Some(state) = sessions.get_mut(sid) {
+                // Settling reports only that no background work can wake the
+                // session; the run still owns busy, dialogs and turn timing.
+                let changed = state.background;
+                state.background = false;
+                Outcome::when(changed, None)
+            } else {
+                Outcome::Unchanged
+            }
+        }
+        Event::AsyncWork(background) => {
+            if let Some(state) = sessions.get_mut(sid) {
+                let changed = state.background != background;
+                state.background = background;
+                Outcome::when(changed, None)
+            } else {
+                sessions.insert(
+                    sid.to_owned(),
+                    SessionState {
+                        background,
+                        ..SessionState::default()
+                    },
+                );
+                Outcome::when(true, None)
+            }
+        }
         Event::Open(id) => {
             let opened = if let Some(state) = sessions.get_mut(sid) {
-                state.open.len() < MAX_OPEN_QUESTIONS && state.open.insert(id.to_owned())
+                if state.open.len() < MAX_OPEN_QUESTIONS && state.open.insert(id.to_owned()) {
+                    state.asks_opened = ASK_OPEN_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+                    true
+                } else {
+                    false
+                }
             } else {
                 let mut state = SessionState::default();
                 state.open.insert(id.to_owned());
+                state.asks_opened = ASK_OPEN_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
                 sessions.insert(sid.to_owned(), state);
                 true
             };
@@ -166,24 +277,29 @@ impl Tracker {
         self.inner.lock().ok()
     }
 
-    fn publish_snapshot(&self, changed_sid: (&str, Option<(bool, usize)>)) {
+    fn publish_snapshot(&self, changed_sid: (&str, Option<SessionSnapshot>)) {
         let (sid, entry) = changed_sid;
         let mut guard = self
             .snapshot
             .write()
             .unwrap_or_else(PoisonError::into_inner);
+        let published = Arc::make_mut(&mut *guard);
         match entry {
             Some(value) => {
-                if let Some(slot) = Arc::make_mut(&mut *guard).get_mut(sid) {
+                if let Some(slot) = published.sessions.get_mut(sid) {
                     *slot = value;
                 } else {
-                    Arc::make_mut(&mut *guard).insert(sid.to_owned(), value);
+                    published.sessions.insert(sid.to_owned(), value);
                 }
             }
             None => {
-                Arc::make_mut(&mut *guard).remove(sid);
+                published.sessions.remove(sid);
             }
         }
+        // One step per committed change, so a coalesced fan-out event and an
+        // `attention_snapshot` reply can be ordered against each other.
+        published.revision += 1;
+        drop(guard);
     }
 
     pub fn set_sink(&self, sink: Arc<dyn TrackerSink>) {
@@ -241,9 +357,12 @@ impl Tracker {
             }
             let outcome = change(&mut sessions);
             if matches!(outcome, Outcome::Changed(_)) {
-                let entry = sessions
-                    .get(sid)
-                    .map(|state| (state.busy, state.open.len()));
+                let entry = sessions.get(sid).map(|state| SessionSnapshot {
+                    busy: state.busy,
+                    asks: state.open.len(),
+                    asks_opened: state.asks_opened,
+                    background: state.background,
+                });
                 self.publish_snapshot((sid, entry));
             }
             outcome
@@ -269,9 +388,25 @@ impl Tracker {
         }
     }
 
-    pub fn snapshot(&self) -> Arc<Snapshot> {
+    pub fn snapshot(&self) -> Arc<AttentionSnapshot> {
         let guard = self.snapshot.read().unwrap_or_else(PoisonError::into_inner);
         Arc::clone(&*guard)
+    }
+
+    /// Whether `sid`'s published entry is [`SessionSnapshot::at_work`]; no
+    /// entry is idle. Reads the snapshot under its read lock, no copy.
+    pub fn session_at_work(&self, sid: &str) -> bool {
+        let guard = self.snapshot.read().unwrap_or_else(PoisonError::into_inner);
+        guard
+            .sessions
+            .get(sid)
+            .is_some_and(SessionSnapshot::at_work)
+    }
+
+    /// Whether any published session is [`SessionSnapshot::at_work`].
+    pub fn any_at_work(&self) -> bool {
+        let guard = self.snapshot.read().unwrap_or_else(PoisonError::into_inner);
+        guard.sessions.values().any(SessionSnapshot::at_work)
     }
 
     fn notify(&self, sid: &str, transition: Option<Transition>) {

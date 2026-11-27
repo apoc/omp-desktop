@@ -1,15 +1,15 @@
-// Settings → Session / Agent behaviours that live.js applies (#37):
-// the prefs it takes from the tweaks, and the "ask before closing a busy
-// tab" confirmation — when closing a tab or quitting asks first, and what
-// the dialog says. Pure; live.js owns the side effects (the boot restore,
-// the auto-title gate, the omp switches, the Rust close guard).
+// Settings → Session behaviours that live.js applies (#37): the prefs it
+// takes from the tweaks, and the "ask before closing a busy tab"
+// confirmation — when closing a tab or quitting asks first, and what the
+// dialog says. Pure; live.js owns the side effects (the boot restore, the
+// auto-title gate, the Rust close guard).
 //
 // Exposes `window.OMP_SESSION_PREFS`; IIFE per the project rule for plain
 // <script> tags. Reads window.OMP_TURN_STATUS (app/turn-status.js, loaded
 // later) at call time only. Regression: test-session-prefs.mjs.
 (function () {
   /** The tweak keys live.js acts on (TWEAK_DEFAULTS, app/constants.js). */
-  const KEYS = Object.freeze(["restoreTabs", "confirmBusyClose", "autoName", "autoCompaction", "autoRetry"]);
+  const KEYS = Object.freeze(["restoreTabs", "confirmBusyClose", "autoName"]);
 
   /** The prefs from a tweaks object: each key's boolean, else its default
    *  (a missing or malformed stored value never flips a behaviour). */
@@ -47,8 +47,10 @@
       .map(s => ({ id: s.id, name: s.name || "untitled tab", state: BUSY_LABELS[s.runState] ?? "working" }));
   }
 
-  /** Whether the Rust close guard should hold the window's close: the
-   *  setting is on and some tab is busy. */
+  /** The `armed` flag of Rust's close guard (`set_close_guard`): the
+   *  setting is on and some tab is busy. Rust also holds the window's close
+   *  while `enabled` (the setting alone) and its tracker reports a session
+   *  at work (`lib.rs` `guard_holds`). */
   function closeGuardArmed(prefs, sessions) {
     // Runs on every notify: no per-tab objects just to test for one.
     if (!prefs?.confirmBusyClose || !Array.isArray(sessions)) return false;

@@ -567,6 +567,10 @@
        Dependency-free IIFE; live.js reads window.OMP_STREAM_DELTA at its
        top-level init, so it must load before live.js. -->
   <script src="app/stream-delta.js"></script>
+  <!-- OS attention (dock bounce) shared by rail widget attention and a new
+       ask in any tab. Dependency-free IIFE; live.js and app/use-widgets.jsx
+       read window.OMP_ATTENTION at call time, so it must load before both. -->
+  <script src="app/attention.js"></script>
   <script src="live.js"></script>
 
   <!-- App root — wired to OMP_BRIDGE, no demo effects -->
@@ -575,6 +579,10 @@
   <script type="text/babel" src="app/use-keymap.jsx"></script>
   <script type="text/babel" src="app/use-subagent-manager.jsx"></script>
   <script type="text/babel" src="app/use-updater.jsx"></script>
+  <!-- Settings → Agent's omp-config hooks (useOmpFlag, useOmpSetting); no
+       top-level destructures. Loads before use-goal-mode.jsx, which builds
+       useGoalContinuation on window.useOmpFlag. -->
+  <script type="text/babel" src="app/use-omp-setting.jsx"></script>
   <!-- Goal mode in the composer; destructures window.GoalStrip,
        window.OMP_SESSION_UI, window.OMP_GOAL and window.OMP_TURN_STATUS
        at top level. -->

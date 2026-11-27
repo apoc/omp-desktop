@@ -65,17 +65,23 @@
   }
 
   /** Tabs whose running mode differs from what their folder now resolves
-   *  to: `now` for idle ones, `later` for busy ones (restarted when they
-   *  next go idle). A failed tab has no process, and a tab with no
-   *  running mode yet is still spawning — neither needs a restart. */
-  function restartPlan(view, sessions) {
+   *  to: `now` for those to attempt now, `later` for busy ones (restarted
+   *  when they next go idle). A failed tab has no process, and a tab with
+   *  no running mode yet is still spawning — neither needs a restart.
+   *
+   *  Only the active tab `activeId` (null: none, a respawn detached it) is
+   *  judged by its `runState` (the live state): every other tab goes to
+   *  `now`, because its state froze when it was left and cannot tell.
+   *  live.js attempts those through Rust's conditional stop
+   *  (`stop_session_if_idle`), which refuses a busy one. */
+  function restartPlan(view, sessions, { activeId }) {
     const { isBusyRunState } = window.OMP_TURN_STATUS; // late-bound: turn-status.js loads after this file
     const now = [];
     const later = [];
     for (const s of Array.isArray(sessions) ? sessions : []) {
       if (!isMode(s?.approvalMode) || s.approvalMode === effectiveFor(view, s.path || null)) continue;
       if (s.runState === "failed") continue;
-      (isBusyRunState(s.runState) ? later : now).push(s.id);
+      (s.id === activeId && isBusyRunState(s.runState) ? later : now).push(s.id);
     }
     return { now, later };
   }

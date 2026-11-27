@@ -6,9 +6,12 @@
 // for plain <script> tags (see AGENTS.md "IIFE rule").
 //
 // A "tab" is a snapshot `sessions` entry: `{id, name, path, profile, color,
-// runState, sessionFile}`. A project is identified by (profile, folder): the
-// same folder opened under two profiles is two projects, because each runs
-// against its own omp tree. Pathless tabs (a resumed session with no
+// runState, displayRunState, sessionFile}`. `runState` is the guard state
+// (a background tab's frozen state raised, never lowered, by its dot:
+// `OMP_TURN_STATUS.guardRunState`); `displayRunState` is what its dot shows. A
+// project is identified by (profile, folder): the same folder opened under
+// two profiles is two projects, because each runs against its own omp tree.
+// Pathless tabs (a resumed session with no
 // recorded cwd) never group.
 (function () {
   const { DEFAULT_PROFILE_ID } = window; // app/constants.js
@@ -65,11 +68,12 @@
   }
 
   /** The most urgent member state: failed > waiting-user > retrying >
-   *  running > background > idle. */
+   *  running > background > idle. Display only (the group's dot): guards
+   *  read each tab's own `runState`. */
   function groupRunState(tabs) {
     let best = "idle";
     for (const tab of tabs) {
-      const state = tab.runState || "idle";
+      const state = tab.displayRunState || "idle";
       if ((RUN_STATE_RANK[state] ?? 0) > RUN_STATE_RANK[best]) best = state;
     }
     return best;

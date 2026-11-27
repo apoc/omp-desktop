@@ -110,7 +110,7 @@ check("statusCell: no running mode yet (spawn in flight) shows the target, not p
 
 // ── restartPlan ───────────────────────────────────────────────────────────
 
-check("restartPlan: idle mismatches now, busy ones later, matching and failed ones never", () => {
+check("restartPlan: the active tab goes now when idle, later when busy; matching, failed and spawning tabs never", () => {
   const sessions = [
     { id: "idle",       path: P, approvalMode: "write", runState: "idle" },
     { id: "idle2",      path: P, approvalMode: "always-ask", runState: "idle" },
@@ -123,9 +123,15 @@ check("restartPlan: idle mismatches now, busy ones later, matching and failed on
     { id: "other",      path: Q, approvalMode: "write", runState: "idle" },
     { id: "spawning",   path: P, approvalMode: null,    runState: "idle" },
   ];
-  assert.deepEqual(M.restartPlan(view, sessions), {
-    now: ["idle", "idle2"],
-    later: ["running", "retrying", "asking", "background"],
+  // Each tab in turn is the active one: where does it land?
+  const placed = id => {
+    const plan = M.restartPlan(view, sessions, { activeId: id });
+    return plan.later.includes(id) ? "later" : plan.now.includes(id) ? "now" : "never";
+  };
+  assert.deepEqual(Object.fromEntries(sessions.map(s => [s.id, placed(s.id)])), {
+    idle: "now", idle2: "now",
+    running: "later", retrying: "later", asking: "later", background: "later",
+    failed: "never", matches: "never", other: "never", spawning: "never",
   });
 });
 
@@ -136,12 +142,36 @@ check("restartPlan: a default change reaches every tab without its own override"
     { id: "b", path: Q,  approvalMode: "write", runState: "idle" },
     { id: "c", path: "", approvalMode: "write", runState: "running" },
   ];
-  assert.deepEqual(M.restartPlan(v, sessions), { now: ["b"], later: ["c"] });
+  assert.deepEqual(M.restartPlan(v, sessions, { activeId: "c" }), { now: ["b"], later: ["c"] });
+});
+
+check("restartPlan with the active tab named: only it waits on its run state; background tabs always attempt", () => {
+  const sessions = [
+    { id: "active",     path: P, approvalMode: "write", runState: "running" },
+    { id: "bgBusy",     path: P, approvalMode: "write", runState: "running" },
+    { id: "bgAsking",   path: P, approvalMode: "write", runState: "waiting-user" },
+    { id: "bgIdle",     path: P, approvalMode: "write", runState: "idle" },
+    { id: "bgFailed",   path: P, approvalMode: "write", runState: "failed" },
+    { id: "bgMatches",  path: P, approvalMode: "yolo",  runState: "running" },
+  ];
+  // Background tabs' states are frozen: Rust's conditional stop decides.
+  assert.deepEqual(M.restartPlan(view, sessions, { activeId: "active" }), {
+    now: ["bgBusy", "bgAsking", "bgIdle"],
+    later: ["active"],
+  });
+  // An idle active tab goes now too.
+  const idleActive = sessions.map(s => (s.id === "active" ? { ...s, runState: "idle" } : s));
+  assert.deepEqual(M.restartPlan(view, idleActive, { activeId: "active" }).now, ["active", "bgBusy", "bgAsking", "bgIdle"]);
+  // No active tab (a respawn detached it): every tab attempts.
+  assert.deepEqual(M.restartPlan(view, sessions, { activeId: null }), {
+    now: ["active", "bgBusy", "bgAsking", "bgIdle"],
+    later: [],
+  });
 });
 
 check("restartPlan: no sessions → empty plan", () => {
-  assert.deepEqual(M.restartPlan(view, []), { now: [], later: [] });
-  assert.deepEqual(M.restartPlan(view, undefined), { now: [], later: [] });
+  assert.deepEqual(M.restartPlan(view, [], { activeId: null }), { now: [], later: [] });
+  assert.deepEqual(M.restartPlan(view, undefined, { activeId: null }), { now: [], later: [] });
 });
 
 // ── projectRows ───────────────────────────────────────────────────────────

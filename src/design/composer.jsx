@@ -39,7 +39,7 @@ function hintKeyFor(actionId, fallback) {
 // ── The composer (input + plan/steer modes + send) ────────────────────
 // `submitKey` ("enter" | "ctrl+enter") and `pasteCollapseLines` come from the
 // tweaks (Settings › Composer); the defaults match TWEAK_DEFAULTS.
-function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, planBlocked = "", goalMode = false, goalTint = false, onToggleGoal, goalBlocked = "", goalStrip = null, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued, onSendQueuedNow, browserChips = [], onRemoveBrowserChip, onBrowserChipClick, fileChips = [], onRemoveFileChip, onFileChipClick, submitKey = "enter", pasteCollapseLines = 5, liveVoice, liveError, onLiveAction, codexLogin = null, voiceSpectrum = null, dictation, dictationError, onDictationAction, dictationCompleted, onAckDictation }) {
+function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePlan, planBlocked = "", goalMode = false, goalTint = false, onToggleGoal, goalBlocked = "", goalStrip = null, onOpenCmd, onOpenModel, currentModel, thinking, onLoadThinkingLevels, onSetThinking, isStreaming, backgroundWork = false, restartNote = false, onAbort, onApprove, annotationCount = 0, microcopy, onFollowUp, draftInsert, promptHistory = [], promptInsert, queue, queueSending, onRemoveQueued, onPromoteQueued, onSendQueuedNow, browserChips = [], onRemoveBrowserChip, onBrowserChipClick, fileChips = [], onRemoveFileChip, onFileChipClick, submitKey = "enter", pasteCollapseLines = 5, liveVoice, liveError, onLiveAction, codexLogin = null, voiceSpectrum = null, dictation, dictationError, onDictationAction, dictationCompleted, onAckDictation }) {
   // Drafts are per tab (issue #28). The composer stays mounted across tab
   // switches and keeps one draft per session id (app/session-ui.js
   // DRAFT_IDLE): text, pending image attachments (sent alongside the next
@@ -397,14 +397,15 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
   // shortcut only applies to a plain send — a follow-up must always send the
   // literal draft (plan §7: Ctrl+Q/Ctrl+Enter sends a follow-up even while a
   // '/' command is being typed), never silently reroute into executing the
-  // highlighted palette command instead.
+  // highlighted palette command instead. A dispatcher that returns `false`
+  // refused the message (the tab's omp is restarting): the draft stays.
   const sendWith = (dispatcher, { followUp = false } = {}) => {
     if (showSlash && !followUp) { execCmd(filtered[clampedIdx]); return; }
     if (pendingImages > 0) return; // a paste/pick is still preparing — its image would ship on the *next* message instead
     // A follow-up (`onFollowUp` dispatcher) requires non-empty text.
     if (!(followUp ? hasText : sendable)) return;
     const images = attachments.map(a => a.image);
-    dispatcher(expandPastes(text.trim(), draft.pastes), images);
+    if (dispatcher(expandPastes(text.trim(), draft.pastes), images) === false) return;
     // Back to an empty draft: text, attachments and collapsed pastes all
     // went out with this message, and the reset ends any prompt-history
     // recall. The in-flight image count is kept: an async-clipboard paste
@@ -773,6 +774,13 @@ function Composer({ sessionId, sessionIds, onSend, onPick, planMode, onTogglePla
           <span style={{ color: goalMode ? "var(--lilac)" : "var(--fg-2)" }}>{OMP_TR("goal")}</span>
         </button>
         <div style={{ flex: 1 }} />
+        {restartNote && (
+          // A submit refused while this tab's omp restarted (app-live
+          // `handleSend`): the draft above is still there to send again.
+          <span className="composer-bg-note" role="status" style={{ color: "var(--amber)" }}>
+            {OMP_TR("omp is restarting in this tab · your message was not sent; send it again once it is back")}
+          </span>
+        )}
         {backgroundWork && (
           <span className="composer-bg-note" title={OMP_TR("omp reports background work (an async bash, task or eval job) whose result will wake the agent")}>
             <TabRunDot state="background" />

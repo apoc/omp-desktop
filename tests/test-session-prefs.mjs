@@ -29,7 +29,7 @@ function check(label, fn) {
   passed++;
 }
 
-const DEFAULTS = { restoreTabs: true, confirmBusyClose: false, autoName: true, autoCompaction: true, autoRetry: true, theme: "aurora" };
+const DEFAULTS = { restoreTabs: true, confirmBusyClose: false, autoName: true, theme: "aurora" };
 const ON = { ...P.fromTweaks({}, DEFAULTS), confirmBusyClose: true };
 const OFF = P.fromTweaks({}, DEFAULTS);
 const tab = (id, runState, name = id) => ({ id, name, runState });
@@ -37,12 +37,18 @@ const tab = (id, runState, name = id) => ({ id, name, runState });
 // ── fromTweaks / changedKeys ─────────────────────────────────────────────
 check("fromTweaks: defaults fill missing keys, only the pref keys are kept", () => {
   assert.deepEqual(P.fromTweaks({}, DEFAULTS),
-    { restoreTabs: true, confirmBusyClose: false, autoName: true, autoCompaction: true, autoRetry: true });
+    { restoreTabs: true, confirmBusyClose: false, autoName: true });
+});
+check("fromTweaks: omp's own switches are not desktop prefs (#92)", () => {
+  assert.deepEqual([...P.KEYS], ["restoreTabs", "confirmBusyClose", "autoName"]);
+  const p = P.fromTweaks({ autoCompaction: false, autoRetry: false }, { ...DEFAULTS, autoCompaction: true, autoRetry: true });
+  assert.equal("autoCompaction" in p, false);
+  assert.equal("autoRetry" in p, false);
 });
 check("fromTweaks: stored booleans win", () => {
-  const p = P.fromTweaks({ restoreTabs: false, autoRetry: false }, DEFAULTS);
+  const p = P.fromTweaks({ restoreTabs: false, confirmBusyClose: true }, DEFAULTS);
   assert.equal(p.restoreTabs, false);
-  assert.equal(p.autoRetry, false);
+  assert.equal(p.confirmBusyClose, true);
   assert.equal(p.autoName, true);
 });
 check("fromTweaks: a malformed stored value falls back to the default", () => {
@@ -56,7 +62,7 @@ check("fromTweaks: no tweaks and no defaults → every pref off", () => {
 });
 check("changedKeys: only differing keys, in KEYS order", () => {
   assert.deepEqual(P.changedKeys(OFF, OFF), []);
-  assert.deepEqual(P.changedKeys(OFF, { ...OFF, autoRetry: false, restoreTabs: false }), ["restoreTabs", "autoRetry"]);
+  assert.deepEqual(P.changedKeys(OFF, { ...OFF, autoName: false, restoreTabs: false }), ["restoreTabs", "autoName"]);
 });
 
 // ── busy tabs ────────────────────────────────────────────────────────────
@@ -110,6 +116,25 @@ check("quitConfirm: lists every busy tab, singular and plural wording", () => {
 check("quitConfirm: nothing busy or setting off quits at once", () => {
   assert.equal(P.quitConfirm(ON, [tab("a", "idle")]), null);
   assert.equal(P.quitConfirm(OFF, [tab("a", "running")]), null);
+});
+
+// ── guard states (#89) ───────────────────────────────────────────────────
+check("busy helpers over guard states: a run started after the freeze counts, a retired one still does", () => {
+  const { guardRunState } = win.OMP_TURN_STATUS;
+  // Background tabs as `_sessionsView` builds them: frozen state, dot.
+  const startedSince = { ...tab("a", guardRunState("idle", "running")), displayRunState: "running" };
+  const askedSince = { ...tab("b", guardRunState("idle", "waiting-user")), displayRunState: "waiting-user" };
+  const retired = { ...tab("c", guardRunState("running", "idle")), displayRunState: "idle" };
+  const quiet = { ...tab("d", guardRunState("idle", "idle")), displayRunState: "idle" };
+  const dead = { ...tab("e", guardRunState("failed", "running")), displayRunState: "failed" };
+  const all = [startedSince, askedSince, retired, quiet, dead];
+  assert.deepEqual(P.busyTabs(all).map(t => [t.id, t.state]),
+    [["a", "working"], ["b", "waiting for your answer"], ["c", "working"]]);
+  assert.equal(P.closeGuardArmed(ON, [startedSince, quiet]), true, "a run the freeze never saw arms the guard");
+  assert.equal(P.closeGuardArmed(ON, [quiet, dead]), false);
+  assert.equal(P.tabCloseConfirm(ON, all, "a")?.kind, "tab");
+  assert.equal(P.tabCloseConfirm(ON, all, "d"), null);
+  assert.deepEqual(P.quitConfirm(ON, all).tabs.map(t => t.id), ["a", "b", "c"]);
 });
 
 console.log(`test-session-prefs: ${passed} checks passed`);

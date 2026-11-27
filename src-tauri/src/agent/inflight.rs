@@ -8,8 +8,9 @@
 //! long reply overflows; a reactivated tab whose replay came back `dropped`
 //! would show the streaming reply without everything before the gap. The
 //! stdout reader therefore applies every message frame here as well, and the
-//! frontend seeds that bubble from [`InFlight::snapshot`] (`streaming_message`
-//! command): `seq` names the last frame applied, so the frontend skips the
+//! frontend seeds that bubble from the text [`snapshot_json`] makes of it,
+//! which it gets through the `streaming_message` command: `seq` names the
+//! last frame applied, so the frontend skips the
 //! message's replayed frames at or below it and applies only newer ones.
 //! Like [`super::ext_ui`], it lives on the session's map entry and ends with
 //! the process.
@@ -102,7 +103,8 @@ impl InFlight {
         }
     }
 
-    pub fn snapshot(&self) -> Option<Snapshot> {
+    #[cfg(test)]
+    fn snapshot(&self) -> Option<Snapshot> {
         self.current.clone()
     }
 }
@@ -208,8 +210,8 @@ fn finish(content: &mut [Value], index: usize, field: &str, event: &mut Value) {
     }
 }
 
-/// The stdout reader's per-line hook, after the line's journal push and its
-/// emit: takes the parsed frame, the reader's last use of it. Other frames
+/// The stdout reader's per-frame hook, after the frame's journal push and
+/// its emit: takes the parsed frame, the reader's last use of it. Other frames
 /// never take the lock; a poisoned lock leaves the state as it is.
 pub(super) fn record(state: &std::sync::Mutex<InFlight>, seq: u64, frame: Option<Value>) {
     let Some((kind, frame)) = frame.and_then(|f| Some((Kind::of(&f)?, f))) else {
@@ -218,6 +220,29 @@ pub(super) fn record(state: &std::sync::Mutex<InFlight>, seq: u64, frame: Option
     if let Ok(mut state) = state.lock() {
         state.apply(seq, kind, frame);
     }
+}
+
+/// The in-flight message as `streaming_message` returns it: the
+/// [`Snapshot`]'s JSON, `null` between messages or under a poisoned lock.
+/// Serialized from the state itself while holding its lock, never from a
+/// copy: a `toolcall_end`'s arguments may nest up to
+/// [`super::frames::MAX_FRAME_DEPTH`] levels, and a clone and its drop would
+/// walk them twice more (D94-7). The text goes to the frontend as is, so
+/// nothing downstream walks the `Value` either.
+///
+/// Recursive like the reader's own work, but runs on another thread:
+/// `AgentBridge::streaming_message` calls it on Tauri's blocking pool (`off_ipc`), whose threads have
+/// Rust's default 2 MiB stack. Measured for a snapshot of the deepest tool
+/// call the reader takes (`a_ceiling_deep_tool_call_snapshot_serializes_off_ipc`):
+/// between 1.19 and 1.25 MiB in a debug build by arrays (objects between 704
+/// and 720 KiB), so the stack is at least 1.6 times the need. Not
+/// the IPC thread itself: a sync command runs on the `WebView2` main thread,
+/// whose 1 MiB the debug array case overflows.
+pub(super) fn snapshot_json(state: &std::sync::Mutex<InFlight>) -> serde_json::Result<String> {
+    state.lock().map_or_else(
+        |_| Ok("null".to_owned()),
+        |s| serde_json::to_string(&s.current),
+    )
 }
 
 #[cfg(test)]
@@ -400,5 +425,31 @@ mod tests {
         assert_eq!(state.lock().unwrap().snapshot(), None);
         record(&state, 3, Some(start("msg-1", "assistant")));
         assert_eq!(state.lock().unwrap().snapshot().unwrap().seq, 3);
+    }
+
+    #[test]
+    fn snapshot_json_is_the_snapshot_or_null() {
+        let state = std::sync::Mutex::new(InFlight::default());
+        assert_eq!(snapshot_json(&state).unwrap(), "null");
+        record(&state, 4, Some(start("msg-1", "assistant")));
+        assert_eq!(
+            snapshot_json(&state).unwrap(),
+            r#"{"messageId":"msg-1","seq":4,"message":{"content":[],"role":"assistant","timestamp":7}}"#
+        );
+    }
+
+    #[test]
+    fn snapshot_json_of_a_poisoned_lock_is_null() {
+        let state = std::sync::Mutex::new(InFlight::default());
+        record(&state, 4, Some(start("msg-1", "assistant")));
+        let _ = std::thread::scope(|s| {
+            s.spawn(|| {
+                let _guard = state.lock().unwrap();
+                panic!("poison");
+            })
+            .join()
+        });
+        assert!(state.is_poisoned());
+        assert_eq!(snapshot_json(&state).unwrap(), "null");
     }
 }

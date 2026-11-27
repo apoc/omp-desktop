@@ -57,7 +57,7 @@ check("every tweak row names a TWEAK_DEFAULTS key whose default is valid", () =>
 
 check("custom rows name the renderers the page expects", () => {
   assert.deepEqual(S.rows().filter(r => r.kind === "custom").map(r => r.type).sort(),
-    ["approvalMode", "approvalRules", "chromium", "goalContinue", "projectAppearance", "remoteCert", "remoteDevices", "remotePair", "remotePush", "remoteServer", "shell", "shortcuts", "startupProfile", "terminalHeight", "version", "widgets", "widths"]);
+    ["approvalMode", "approvalRules", "autoCompaction", "autoRetry", "chromium", "goalContinue", "projectAppearance", "remoteCert", "remoteDevices", "remotePair", "remotePush", "remoteServer", "shell", "shortcuts", "startupProfile", "terminalHeight", "version", "widgets", "widths"]);
   for (const r of S.rows().filter(r => r.kind === "custom")) for (const k of r.keys ?? []) assert.ok(k in D, k);
 });
 
@@ -201,6 +201,28 @@ check("the key bindings row is found by any shortcut action's name or id", () =>
   for (const q of [sidebar.label, sidebar.id]) {
     assert.ok(S.search(q, vals()).groups.some(g => g.rows.some(r => r.id === "custom:shortcuts")), q);
   }
+});
+
+check("auto-compaction and retry are custom rows over omp's config: searchable, no tweak behind them (#92)", () => {
+  assert.equal("autoCompaction" in D, false);
+  assert.equal("autoRetry" in D, false);
+  for (const [type, queries] of [
+    ["autoCompaction", ["auto-compact context", "summarises older turns", "/compact", "context window"]],
+    ["autoRetry", ["retry failed requests", "refused or dropped", "rate limit"]],
+  ]) {
+    const r = row(`custom:${type}`);
+    assert.equal(r.kind, "custom");
+    assert.deepEqual(r.keys ?? [], [], `${type} owns no tweak key, so no badge or section reset counts it`);
+    assert.equal(S.isModified(r, vals({ autoCompaction: false, autoRetry: false })), false);
+    for (const q of queries) {
+      const hit = S.search(q, vals()).groups.find(g => g.rows.some(x => x.id === r.id));
+      assert.ok(hit, `${type}: "${q}"`);
+      assert.equal(hit.sectionId, "agent");
+      assert.equal(hit.src, "omp config");
+    }
+  }
+  // A stored desktop "off" of the removed tweaks must not count as a modification either.
+  assert.deepEqual(S.resetEdits("agent", vals({ autoCompaction: false, autoRetry: false })), {});
 });
 
 console.log(`test-settings-schema: ${passed} checks passed`);
