@@ -104,7 +104,7 @@
   const MAX_LINK_ROWS = 64;
   const LINK_BREAK = /[\s"'`<>]/;
   const TOKEN_OPENERS = "([{";
-  const TOKEN_TRAILING = /[.,;:!?'"]/;
+  const TOKEN_TRAILING = /[.,;:!?]/;
   const TOKEN_PAIRS = { ")": "(", "]": "[", "}": "{" };
 
   /**
@@ -185,27 +185,6 @@
     return offset < 0 ? null : { text, offset };
   }
 
-  /** True when any cell holding the matched text (from cell `start`,
-   *  1-based, for `text.length` characters) is concealed with SGR 8. The
-   *  addon's range end is not used: at a line boundary it points at the next
-   *  row's first cell, while the length is exact. */
-  function matchHidesCells(buffer, start, text) {
-    const firstRow = start.y - 1;
-    if (firstRow < 0) return true;
-    const cell = buffer.getNullCell();
-    let remaining = text.length;
-    for (let row = firstRow; remaining > 0 && row - firstRow <= MAX_LINK_ROWS; row++) {
-      const line = buffer.getLine(row);
-      if (!line) return true;
-      for (let col = row === firstRow ? start.x - 1 : 0; col < line.length && remaining > 0; col++) {
-        line.getCell(col, cell);
-        if (cell.isInvisible?.()) return true;
-        if (cell.getWidth()) remaining -= cell.getChars().length || 1;
-      }
-    }
-    return remaining > 0;
-  }
-
   /**
    * The whitespace/quote-delimited token around the addon's match at
    * `offset`, without enclosing prose brackets or trailing punctuation.
@@ -239,26 +218,25 @@
 
   /**
    * The URL to open for the addon's hovered `url`: the whole token at the
-   * hovered cell range, read from the visible cells. Null when the match is
-   * not exactly there, spans a concealed cell, or the full token is not an
-   * http(s) URL with the same host as the matched text (a bracketed IPv6
-   * match followed by `@other-host` must not open the other host).
+   * hovered cell range, read from the visible cells. Null when the visible
+   * text there is not exactly the matched text (a concealed cell reads as a
+   * space) or when the full token's host, username or password differ from
+   * the matched text's (a bracketed IPv6 match followed by `@other-host`, or
+   * a `(user):pw@` suffix, must not change where the link goes).
    */
   function completeWebLink(buffer, hovered, url) {
     const range = hovered && hovered.range;
     if (!hovered || hovered.text !== url || !range) return null;
     const line = logicalLineAt(buffer, range.start.y - 1, range.start.x);
-    if (!line) return null;
-    if (line.text.slice(line.offset, line.offset + url.length) !== url) return null;
-    if (matchHidesCells(buffer, range.start, url)) return null;
+    if (!line || line.text.slice(line.offset, line.offset + url.length) !== url) return null;
     const token = linkTokenAt(line.text, line.offset, url.length);
-    if (!token || !/^https?:\/\//i.test(token)) return null;
+    if (!token) return null;
     try {
       const matched = new URL(url);
       const target = new URL(token);
-      if (!/^https?:$/.test(matched.protocol) || !/^https?:$/.test(target.protocol)) return null;
-      if (!target.host || matched.host !== target.host) return null;
-      return token;
+      const same = matched.host === target.host && matched.username === target.username
+        && matched.password === target.password;
+      return same ? token : null;
     } catch {
       return null;
     }

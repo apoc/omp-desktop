@@ -71,10 +71,6 @@ function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak, ap
   const scrollbackRef = React.useRef(scrollback);
   scrollbackRef.current = scrollback;
   const height = tweaks.terminalHeight;
-  const openLinkRef = React.useRef(openLink);
-  openLinkRef.current = openLink;
-  const localLinksRef = React.useRef(false);
-  localLinksRef.current = (tweaks.browserLocalhostInPanel ?? true) && Boolean(activeSessionId);
 
   const fit = React.useCallback((sid) => {
     const rec = recs.current.get(sid);
@@ -221,13 +217,9 @@ function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak, ap
       onLink: (event, url) => {
         // The addon may retain this callback after a tab switch or recreate:
         // only the terminal record that created it may open its own tab.
-        if (recs.current.get(sid) !== rec || rec.disposed) return;
-        const link = window.OMP_BROWSER.terminalLinkClick(
-          url, event, localLinksRef.current, window.OMP_KEYMAP.detectMac(),
-        );
-        if (!link) return;
+        if (recs.current.get(sid) !== rec) return;
         event.preventDefault();
-        openLinkRef.current?.(sid, link.url, link.external);
+        openLink?.(sid, url, Boolean(event.shiftKey));
       },
       // Only a live shell has a pty to resize; the size a shell starts at is
       // the one `spawn` sends (and corrects once the reply is in).
@@ -242,7 +234,7 @@ function useTerminal({ bridge, activeSessionId, sessionIds, tweaks, setTweak, ap
     recs.current.set(sid, rec);
     ops.current.attach(sid, rec);
     return rec;
-  }, [bridge, respawn]);
+  }, [bridge, respawn, openLink]);
 
   const dispose = React.useCallback((sid) => {
     const rec = recs.current.get(sid);

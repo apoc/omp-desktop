@@ -216,20 +216,21 @@ check("a URL truncated by the real addon's wrapped-line scan never activates", (
   assert.deepEqual(opened, []);
 });
 
-check("duplicate complete URLs activate at the hovered occurrence", () => {
+check("duplicate URLs activate the token at the hovered occurrence", () => {
   const opened = [];
   const { term } = make({ onLink: (event, url) => opened.push(url) });
   const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
   const url = "https://example.test/same";
   const provide = realProvider([
     { text: url, isWrapped: false },
-    { text: url, isWrapped: false },
+    { text: `${url}(2)`, isWrapped: false },
   ], options, handler, term);
-  const links = provide();
+  const links = provide(2);
   assert.equal(links.length, 1);
+  assert.equal(links[0].text, url);
   links[0].hover({}, links[0].text, links[0].range);
   links[0].activate({ button: 0, metaKey: true }, links[0].text);
-  assert.deepEqual(opened, [url]);
+  assert.deepEqual(opened, [`${url}(2)`]);
 });
 
 check("the real addon matches and activates complete bracketed IPv6 URLs", () => {
@@ -259,6 +260,26 @@ check("a bracketed IPv6 match never drops a following URL authority", () => {
   assert.equal(new URL(candidate).host, "example.test");
   links[0].hover({}, links[0].text, links[0].range);
   links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, []);
+});
+
+check("a token suffix that changes the userinfo or port never opens", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const cases = [
+    ["https://example.test(user):pw@example.test/path", "https://example.test"],
+    ["http://[::1]:pw@[::1]/", "http://[::1]"],
+    ["https://example.test(x)@example.test:8443/", "https://example.test"],
+  ];
+  for (const [candidate, matched] of cases) {
+    const provide = realProvider([candidate], options, handler, term);
+    const links = provide();
+    assert.equal(links.length, 1, candidate);
+    assert.equal(links[0].text, matched, candidate);
+    links[0].hover({}, links[0].text, links[0].range);
+    links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  }
   assert.deepEqual(opened, []);
 });
 
@@ -294,6 +315,22 @@ check("concealed cells outside the match do not block it", () => {
   const provide = realProvider([{ text: `${url} secret`, cells, isWrapped: false }], options, handler, term);
   const links = provide();
   assert.equal(links.length, 1);
+  links[0].hover({}, links[0].text, links[0].range);
+  links[0].activate({ button: 0, metaKey: true }, links[0].text);
+  assert.deepEqual(opened, [url]);
+});
+
+check("concealed cells right after the match stay out of its token", () => {
+  const opened = [];
+  const { term } = make({ onLink: (event, url) => opened.push(url) });
+  const { options, handler } = term.addons.find((addon) => addon instanceof FakeWebLinks);
+  const url = "https://example.test/files/Notes";
+  const hidden = "(1).pdf?token=hidden";
+  const cells = [...textCells(url), ...textCells(hidden, { invisible: true })];
+  const provide = realProvider([{ text: url + hidden, cells, isWrapped: false }], options, handler, term);
+  const links = provide();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].text, url);
   links[0].hover({}, links[0].text, links[0].range);
   links[0].activate({ button: 0, metaKey: true }, links[0].text);
   assert.deepEqual(opened, [url]);

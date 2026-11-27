@@ -10,12 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Notification sounds: a short synthesised sound plays when an agent asks you something or finishes a turn, in any tab, with six sounds to pick from and a volume (Settings → Session → Sounds, off by default; “in background” plays only while the window is not focused). Each cue has its own sound or none, and a ▶ button previews it (#91).
 - A conversation opened after omp compacted it (relaunch, reopened tabs, resume from history) can show what the compaction summarized: a row at the top of the chat loads it from the session file, read-only, above the transcript, with a divider for each compaction; a long history loads a page at a time, up to the transcript's 169-entry limit. Settings → Session → “Show compacted history” loads it by itself when a conversation opens (off by default) (#85).
-- Terminal URLs are underlined on hover and open with Cmd+click on macOS or Ctrl+click on Windows/Linux. Localhost links can open in the tab's browser panel; other links use the system browser, as do local links with Shift held.
-
-### Fixed
-
-- Terminal link clicks only open complete URLs from the visible tab: a long URL truncated at xterm's wrapped-line scan boundary, a match inside a larger token, a bracketed IPv6 URL followed by an authority suffix, or a stale click from an inactive tab's terminal no longer navigates anywhere.
-- Terminal link targets are read from the visible cells of the logical wrapped line: concealed (SGR 8) host text never becomes part of a URL, a URL the addon stops at after `(` opens in full, prose brackets stay out of the target, links after wide or combining characters activate, and the modifier is checked before any buffer scan.
+- Terminal URLs are underlined on hover and open with Cmd+click on macOS or Ctrl+click on Windows/Linux. Localhost links can open in the tab's browser panel; other links use the system browser, as do local links with Shift held; only a complete, visible URL opens (#87).
 
 ## [0.15.3] - 2026-11-27
 

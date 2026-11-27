@@ -433,7 +433,7 @@ function App() {
   // One shell per tab, in a panel above the composer (app/use-terminal.jsx).
   // URLs use the same local-panel / system-browser opener as chat links.
   const terminal = useTerminal({
-    bridge, activeSessionId: planKey, sessionIds, tweaks: t, setTweak, appearance, openLink: browser.openLink,
+    bridge, activeSessionId: planKey, sessionIds, tweaks: t, setTweak, appearance, openLink: browser.openTerminalLink,
   });
 
   const subagentUi = useSubagentManager({

@@ -458,7 +458,7 @@ test("hook: a stale open completion cannot release the newer tab's queued resize
   assert.deepEqual(closed, ["old", "new"]);
 });
 
-test("hook: a retained terminal opener ignores clicks from an inactive tab", async () => {
+test("hook: a retained terminal opener ignores links from an inactive tab", async () => {
   const { React, render, unmount } = fakeReact();
   const window = { OMP_BROWSER_SCREEN: { createScreen: () => ({ frame() {}, destroy() {}, size: () => ({ width: 1, height: 1, dpr: 1 }) }) } };
   loadHelpers(window);
@@ -479,10 +479,10 @@ test("hook: a retained terminal opener ignores clicks from an inactive tab", asy
   }));
 
   let ui = show("a");
-  const retained = ui.openLink;
+  const retained = ui.openTerminalLink;
   ui = show("b");
   retained("a", "http://localhost:3000/from-a", false);
-  retained("a", "https://example.test/from-a", true);
+  retained("a", "https://example.test/from-a", false);
   await flush();
   assert.deepEqual(navigated, []);
   assert.deepEqual(external, []);
@@ -531,8 +531,6 @@ test("hook: disposed and replaced terminal link callbacks stay inert", async () 
       onReplay: (s) => ({ stream: s, actions: [] }), endSync: (s) => ({ stream: { ...s, syncing: 0 }, actions: [] }),
       onAttach: (s) => ({ stream: s, actions: [] }), onOpened: (s) => ({ stream: s, actions: [] }),
     },
-    OMP_BROWSER: { terminalLinkClick: (url) => ({ url, external: false }) },
-    OMP_KEYMAP: { detectMac: () => true },
   };
   const bridge = {
     onTerminalData: () => ({ stop() {}, ready: Promise.resolve() }),
@@ -555,6 +553,8 @@ test("hook: disposed and replaced terminal link callbacks stay inert", async () 
   const event = { preventDefault() {} };
   callbacks[0](event, "http://localhost:3000/a");
   assert.deepEqual(opened, [["a", "http://localhost:3000/a", false]]);
+  callbacks[0]({ ...event, shiftKey: true }, "http://localhost:3000/shift");
+  assert.deepEqual(opened.pop(), ["a", "http://localhost:3000/shift", true]);
 
   ids = ["b"];
   ui = show();
@@ -570,6 +570,31 @@ test("hook: disposed and replaced terminal link callbacks stay inert", async () 
   assert.deepEqual(opened.at(-1), ["a", "http://localhost:3000/new-a", false]);
   await flush();
   unmount();
+});
+
+test("hook: a local terminal link opens in the panel, or externally with the tweak off or Shift", () => {
+  const { React, render } = fakeReact();
+  const window = { OMP_BROWSER_SCREEN: { createScreen: () => ({ frame() {}, destroy() {}, size: () => ({ width: 1, height: 1, dpr: 1 }) }) } };
+  loadHelpers(window);
+  const useBrowser = runInNewContext(source("src/app/use-browser.jsx") + "\nuseBrowser", { window, React });
+  const external = [];
+  const bridge = { openExternalUrl: (url) => { external.push(url); return Promise.resolve({ ok: true }); } };
+  const openBy = {};
+  const show = (tweaks) => render(() => useBrowser({
+    bridge, activeSessionId: "s", sessionIds: ["s"], tweaks,
+    open: Boolean(openBy.s), setOpen: (on) => { openBy.s = on; },
+  }));
+  const url = "http://localhost:3000/a";
+  show({}).openTerminalLink("s", url, false);
+  assert.equal(openBy.s, true, "tweak on: the panel opens to load it");
+  assert.deepEqual(external, []);
+  openBy.s = undefined;
+  show({}).openTerminalLink("s", url, true);
+  assert.deepEqual(external, [url], "Shift: the system browser");
+  assert.equal(openBy.s, undefined);
+  show({ browserLocalhostInPanel: false }).openTerminalLink("s", url, false);
+  assert.deepEqual(external, [url, url], "tweak off: the system browser");
+  assert.equal(openBy.s, undefined, "the panel stays closed");
 });
 
 test("hook: a localhost chat link opens in the panel; a modifier click goes to the system browser", () => {

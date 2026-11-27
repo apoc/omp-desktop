@@ -503,34 +503,19 @@ check("localUrl accepts only explicit http(s) links to this machine", () => {
   ]) assert.equal(B.localUrl(bad), null, String(bad));
 });
 
-check("terminalLinkClick routes local, remote, Shift and unavailable panels", () => {
-  const mac = { button: 0, metaKey: true };
-  assert.deepEqual(B.terminalLinkClick("http://localhost:3000/a", mac, true, true), {
+check("terminalLink routes local, remote, Shift and unavailable panels", () => {
+  assert.deepEqual(B.terminalLink("http://localhost:3000/a", false, true), {
     url: "http://localhost:3000/a", external: false,
   }, "local URL with the panel tweak on");
-  assert.deepEqual(B.terminalLinkClick("http://127.0.0.1:3000/a", { ...mac, shiftKey: true }, true, true), {
+  assert.deepEqual(B.terminalLink("http://127.0.0.1:3000/a", true, true), {
     url: "http://127.0.0.1:3000/a", external: true,
   }, "Shift forces the system browser");
-  assert.deepEqual(B.terminalLinkClick("https://example.com/a", mac, true, true), {
+  assert.deepEqual(B.terminalLink("https://example.com/a", false, true), {
     url: "https://example.com/a", external: true,
-  }, "remote URL");
-  assert.deepEqual(B.terminalLinkClick("http://[::1]:3000/a", mac, false, true), {
+  }, "remote URL, unchanged");
+  assert.deepEqual(B.terminalLink("http://[::1]:3000/a", false, false), {
     url: "http://[::1]:3000/a", external: true,
-  }, "panel tweak off");
-  assert.deepEqual(B.terminalLinkClick("http://localhost:3000/a", mac, false, true), {
-    url: "http://localhost:3000/a", external: true,
-  }, "no tab");
-});
-
-check("terminalLinkClick requires the platform's primary modified click", () => {
-  const url = "https://example.com/";
-  assert.equal(B.terminalLinkClick(url, { button: 0 }, true, true), null, "plain click");
-  assert.equal(B.terminalLinkClick(url, { button: 0, metaKey: true }, true, false), null, "Cmd is not Ctrl on Linux");
-  assert.equal(B.terminalLinkClick(url, { button: 0, ctrlKey: true }, true, true), null, "Ctrl is not Cmd on macOS");
-  assert.equal(B.terminalLinkClick(url, { button: 1, metaKey: true }, true, true), null, "middle click");
-  assert.deepEqual(B.terminalLinkClick(url, { button: 0, ctrlKey: true }, true, false), {
-    url, external: true,
-  });
+  }, "panel unavailable");
 });
 
 check("linkClick: a primary click on a chat localhost link, external with a modifier", () => {

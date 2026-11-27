@@ -2,9 +2,10 @@
    Rust owns Chromium, the screencast and the annotation
    overlay (src-tauri/src/browser/); this hook mirrors what the open tab's
    panel channel reports (one Tauri Channel per `browserOpenPanel`: state,
-   tabs, picks, frames), keeps the annotation chips and routes
-   localhost chat links (`onChatClick`, the markdown containers' delegated
-   click). Whether the active tab shows the panel is app-live.jsx's per-tab
+   tabs, picks, frames), keeps the annotation chips and routes localhost
+   links to the panel: chat links (`onChatClick`, the markdown containers'
+   delegated click) and terminal URLs (`openTerminalLink`, called by
+   app/use-terminal.jsx). Whether the active tab shows the panel is app-live.jsx's per-tab
    side column (`open` / `setOpen`). Painting and input forwarding are
    app/browser-screen.js, the pure decisions app/browser.js. The panel
    element must stay mounted while `open` (the effect binds the
@@ -175,18 +176,14 @@ function useBrowser({ bridge, activeSessionId, sessionIds, open: shown, setOpen,
   // Show `url` (already normalised) in the panel, opening it first if needed.
   // While `browserOpenPanel` is still in flight the backend has no view to
   // navigate yet, so the URL is queued (latest wins) and the open flushes it.
-  const openUrl = React.useCallback((url, targetSid = sid) => {
-    if (!targetSid) return;
-    if (targetSid !== sid) {
-      bridge?.browserNavigate(targetSid, url);
-      return;
-    }
+  const openUrl = React.useCallback((url) => {
+    if (!sid) return;
     if (open && !openInFlight.current?.pending) {
-      bridge?.browserNavigate(targetSid, url);
+      bridge?.browserNavigate(sid, url);
       return;
     }
-    wantUrl.current = { sid: targetSid, url };
-    if (targetSid === sid && !open) setOpen(true);
+    wantUrl.current = { sid, url };
+    if (!open) setOpen(true);
   }, [bridge, sid, open, setOpen]);
 
   // A plain click on a localhost link in the chat opens it here (when the
@@ -194,26 +191,33 @@ function useBrowser({ bridge, activeSessionId, sessionIds, open: shown, setOpen,
   // the external opener — wry has no `on_new_window` handler, so the native
   // new-window behaviour would open nothing. `onChatClick` is the markdown
   // containers' delegated click (MarkdownLinkContext, ui/markdown.jsx):
-  // null while the tweak is off or no tab is open, stable otherwise, so the
-  // chat does not re-render as the panel changes.
+  // null while the tweak is off or no tab is open; it changes only with
+  // those two, so the chat does not re-render as the panel changes.
+  // `openTerminalLink` is the terminal's equivalent: stable, it takes the
+  // URL of a Cmd/Ctrl+click (Shift: `shift`) from the terminal of tab
+  // `targetSid` and drops it unless that is the active tab.
   const localLinks = (tweaks?.browserLocalhostInPanel ?? true) && Boolean(sid);
   const openLink = React.useRef(null);
-  openLink.current = (targetSid, url, external) => {
-    // A terminal can retain a callback after its tab loses visibility.
-    if (targetSid !== sid) return;
-    if (!external) return openUrl(url, targetSid);
+  openLink.current = (url, external) => {
+    if (!external) return openUrl(url);
     Promise.resolve(bridge?.openExternalUrl(url)).then(
       (res) => { if (res && !res.ok) console.error("[browser] open failed:", res.error); },
       (err) => console.error("[browser] open failed:", err),
     );
   };
-  const openLinkStable = React.useCallback((targetSid, url, external) => openLink.current(targetSid, url, external), []);
   const onChatClick = React.useMemo(() => (localLinks ? (e) => {
     const link = _UB.linkClick(e);
     if (!link) return;
     e.preventDefault();
-    openLink.current(sid, link.url, link.external);
-  } : null), [localLinks, sid]);
+    openLink.current(link.url, link.external);
+  } : null), [localLinks]);
+  const terminalLinkRef = React.useRef(null);
+  terminalLinkRef.current = (targetSid, href, shift) => {
+    if (targetSid !== sid) return;
+    const link = _UB.terminalLink(href, shift, localLinks);
+    openLink.current(link.url, link.external);
+  };
+  const openTerminalLink = React.useCallback((targetSid, href, shift) => terminalLinkRef.current(targetSid, href, shift), []);
 
   const savePending = React.useCallback((comment) => {
     const text = comment.trim();
@@ -249,7 +253,7 @@ function useBrowser({ bridge, activeSessionId, sessionIds, open: shown, setOpen,
   }), [bridge, sid, showAnnotate]);
 
   return {
-    open, close, openUrl, openLink: openLinkStable, onChatClick, fullView, setFullView,
+    open, close, openUrl, openTerminalLink, onChatClick, fullView, setFullView,
     width: tweaks?.browserWidth ?? 0, // px; 0 = default (half the stage) — see OMP_BROWSER.clampWidth
     setWidth: (px) => setTweak("browserWidth", Math.round(px)),
     state, tabs, page, annotate, setAnnotate,
