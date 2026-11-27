@@ -6,7 +6,6 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
-use std::time::Duration;
 
 use base64::Engine;
 use serde_json::{json, Value};
@@ -15,12 +14,12 @@ use crate::test_support::eventually;
 
 use super::super::broker::BrokerClient;
 use super::super::cdp::CdpClient;
-use super::super::tests::{cdp_error, cdp_result, fake_cdp, mouse, panel, CHROMIUM};
+use super::super::tests::{
+    cdp_error, cdp_result, fake_cdp, mouse, panel, CHROMIUM, CHROMIUM_EVENT,
+};
 use super::super::view::{BrowserEmit, Core, Frame, Pick, Rect, TabInfo, View, ViewState};
 use super::super::{lock, BrowserManager};
 use super::{CapturedImage, BINDING, WORLD};
-
-const WAIT: Duration = Duration::from_secs(3);
 
 fn rect(x: f64, y: f64, w: f64, h: f64) -> Rect {
     Rect { x, y, w, h }
@@ -436,7 +435,10 @@ impl Picks {
 
     /// The picks, once there are at least `n`.
     fn wait(&self, n: usize) -> Vec<Pick> {
-        eventually(WAIT, || Some(self.all()).filter(|all| all.len() >= n)).expect("the picks")
+        eventually(CHROMIUM_EVENT, || {
+            Some(self.all()).filter(|all| all.len() >= n)
+        })
+        .expect("the picks")
     }
 }
 
@@ -471,7 +473,7 @@ fn goto(view: &View, url: &str, marker: &str) {
         "document.readyState === 'complete' && !!document.querySelector({})",
         serde_json::to_string(marker).unwrap()
     );
-    eventually(Duration::from_secs(5), || {
+    eventually(CHROMIUM_EVENT, || {
         (eval(view, &found) == json!(true)).then_some(())
     })
     .expect("the page loaded");
@@ -482,7 +484,7 @@ fn goto(view: &View, url: &str, marker: &str) {
 fn ready(view: &View, annotate: bool) {
     let overlay = "(o => o ? o.style.visibility !== 'hidden' : false)\
                    (document.querySelector('omp-annotate-overlay'))";
-    let up = eventually(Duration::from_secs(5), || {
+    let up = eventually(CHROMIUM_EVENT, || {
         let loaded = eval(view, "document.readyState") == json!("complete");
         (loaded && eval(view, overlay) == json!(annotate)).then_some(())
     });
@@ -575,7 +577,7 @@ fn element_pick_reports_selector_and_swallows_the_click() {
     view.annotate(false).unwrap();
     ready(&view, false);
     click(&view, center(&view, "button"));
-    let clicked = eventually(WAIT, || {
+    let clicked = eventually(CHROMIUM_EVENT, || {
         (eval(&view, "document.title") == json!("clicked")).then_some(())
     });
     assert!(
@@ -630,7 +632,9 @@ fn clicks_inside_a_frame_are_swallowed_too_and_make_no_pick() {
     };
     goto(&view, FRAME_PAGE, "iframe");
     let framed = "!!document.querySelector('iframe').contentDocument.querySelector('button')";
-    let loaded = eventually(WAIT, || (eval(&view, framed) == json!(true)).then_some(()));
+    let loaded = eventually(CHROMIUM_EVENT, || {
+        (eval(&view, framed) == json!(true)).then_some(())
+    });
     assert!(loaded.is_some(), "the frame's button is there");
     view.annotate(true).unwrap();
     ready(&view, true);
@@ -651,7 +655,7 @@ fn clicks_inside_a_frame_are_swallowed_too_and_make_no_pick() {
     view.annotate(false).unwrap();
     ready(&view, false);
     click(&view, (100.0, 50.0));
-    let clicked = eventually(WAIT, || {
+    let clicked = eventually(CHROMIUM_EVENT, || {
         (eval(&view, "document.title") == json!("framed")).then_some(())
     });
     assert!(
@@ -995,7 +999,7 @@ fn concurrent_target_switch_and_toggle_leave_shown_overlay_matching_flag() {
     view.annotate(false).unwrap();
     ready(&view, false);
     click(&view, center(&view, "button"));
-    eventually(WAIT, || {
+    eventually(CHROMIUM_EVENT, || {
         (eval(&view, "document.title") == json!("clicked")).then_some(())
     })
     .expect("toggle-off leaves clicks reaching the shown page");
@@ -1052,18 +1056,18 @@ fn capture_scrolled_pick_has_clean_block_pixels_also_concurrently() {
     // during capture changes the centre pixel even if the scroll is correct.
     let (x, y) = center(&view, "#block");
     view.input(&mouse("mouseMoved", 10.0, 10.0)).unwrap();
-    eventually(WAIT, || {
+    eventually(CHROMIUM_EVENT, || {
         (eval(&view, "!!document.querySelector('#block:hover')") == json!(false)).then_some(())
     })
     .expect("hover input left the block");
     view.input(&mouse("mouseMoved", x + 1.0, y)).unwrap();
-    eventually(WAIT, || {
+    eventually(CHROMIUM_EVENT, || {
         (eval(&view, "!!document.querySelector('#block:hover')") == json!(true)).then_some(())
     })
     .expect("hover input reached the block");
     // Chromium may return an old compositor tile after scrolling. Wait on
     // actual pixels, not a fixed delay or DOM readiness.
-    eventually(WAIT, || {
+    eventually(CHROMIUM_EVENT, || {
         let image = view.capture(&doc_rect).unwrap();
         (center_pixel(&image) == [20, 180, 60]).then_some(())
     })

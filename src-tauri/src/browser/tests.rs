@@ -26,16 +26,30 @@ pub(super) fn home_dir() -> Option<PathBuf> {
 }
 
 /// Ample time for a proxy connection's peer check (`lsof` may take
-/// seconds).
+/// seconds), for the proxy tests' own waits; a wait on the browser's answer
+/// through the proxy uses [`CHROMIUM_EVENT`].
 pub(super) const PEER_CHECK: Duration = Duration::from_secs(10);
+
+/// How long a test waits for Chromium to deliver an event or reach a state it
+/// expects (a page loaded, frames, a follow, a tab or title, a hold ending, a
+/// state or error showing up). A loaded CI runner delays Chromium's events by
+/// tens of seconds (the Windows release run 46022559880 failed five tests
+/// within one ~90 s window, where its sibling run passed). These waits end as
+/// soon as the event is there, so a long deadline costs nothing when it
+/// passes: use this one for every positive wait on a real Chromium, never a
+/// shorter literal. Waits whose length is itself the assertion (a quiet
+/// period, a lower bound on a hold) and negative waits (time for something
+/// that must not happen) stay short.
+pub(super) const CHROMIUM_EVENT: Duration = Duration::from_secs(30);
 
 /// Sends `request` to the proxy at `127.0.0.1:port`, then collects the
 /// reply until the proxy closes the connection (it does after every
-/// response), for at most [`PEER_CHECK`] per read: a slow peer check can
-/// hold the first byte back.
+/// response), for at most [`CHROMIUM_EVENT`] per read: the reply waits for
+/// the peer check, a lazy browser launch and Chromium's own answer, and
+/// any of them can hold the first byte back on a loaded runner.
 pub(super) fn http_roundtrip(port: u16, request: &[u8]) -> io::Result<Vec<u8>> {
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))?;
-    stream.set_read_timeout(Some(PEER_CHECK))?;
+    stream.set_read_timeout(Some(CHROMIUM_EVENT))?;
     stream.write_all(request)?;
     let mut got = Vec::new();
     // What arrived before an error is kept in `got`.
@@ -919,7 +933,7 @@ fn release_closes_connections_kills_chromium_removes_profile() {
     );
     let profile = m.profile_dir_for_test("s1").unwrap();
     m.release("s1");
-    ws.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    ws.set_read_timeout(Some(CHROMIUM_EVENT)).unwrap();
     assert!(
         matches!(ws.read(&mut buf), Ok(0) | Err(_)),
         "agent socket closed"
@@ -980,11 +994,11 @@ fn a_newer_open_supersedes_one_in_flight() {
             let emit = Arc::clone(&older) as Arc<dyn BrowserEmit>;
             m.open_panel_with("s1", 400, 300, 1.0, emit, move |_| {
                 reached.send(()).unwrap();
-                let _ = wait_release.recv_timeout(Duration::from_secs(30));
+                let _ = wait_release.recv_timeout(CHROMIUM_EVENT);
             })
         });
         wait_reached
-            .recv_timeout(Duration::from_secs(30))
+            .recv_timeout(CHROMIUM_EVENT)
             .expect("the first open got as far as installing");
         let emit = Arc::clone(&newer) as Arc<dyn BrowserEmit>;
         m.open_panel("s1", 300, 200, 1.0, emit).unwrap();
@@ -996,7 +1010,7 @@ fn a_newer_open_supersedes_one_in_flight() {
         !older.heard(Status::Idle),
         "the superseded open's close stays silent: {older:?}"
     );
-    let running = eventually(Duration::from_secs(3), || {
+    let running = eventually(CHROMIUM_EVENT, || {
         (newer.last() == Some(Status::Running)).then_some(())
     });
     assert!(running.is_some(), "the live panel: {newer:?}");
