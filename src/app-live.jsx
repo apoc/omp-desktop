@@ -607,6 +607,7 @@ function App() {
   const handlePickModel  = m  => { setModelState(m); bridge?.setModel(m); };
   const handleAskAnswer  = React.useCallback((id, value) => { bridge?.answerAsk(id, value); }, [bridge]); // bridge = window.OMP_BRIDGE, assigned once before React renders — stable ref
   const handleAskDialogAnswer = React.useCallback((id, answers) => { bridge?.answerAskDialog(id, answers); }, [bridge]);
+  const handleAskFormAnswer = React.useCallback((id, data) => { bridge?.answerForm(id, data); }, [bridge]);
   const handleConfirmAsk = React.useCallback((id, confirmed) => { bridge?.answerConfirm(id, confirmed); }, [bridge]);
   const handleCancelAsk  = React.useCallback((id) => { bridge?.cancelAsk(id); }, [bridge]);
   const handleGrantApproval = React.useCallback((prompt, scope) => { bridge?.approveAndRemember(prompt, scope); }, [bridge]);
@@ -1097,6 +1098,7 @@ function App() {
                     onAnnotate={handleAnnotate}
                     onAskAnswer={handleAskAnswer}
                     onAskDialogAnswer={handleAskDialogAnswer}
+                    onAskFormAnswer={handleAskFormAnswer}
                     onConfirmAsk={handleConfirmAsk}
                     onCancelAsk={handleCancelAsk}
                     onGrantApproval={handleGrantApproval}

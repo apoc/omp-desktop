@@ -38,6 +38,7 @@ function load(time = clock()) {
   const path = new URL("../src/app/remote-view.js", import.meta.url);
   assert.ok(existsSync(path), "remote view module must exist");
   const window = {};
+  runInNewContext(readFileSync(new URL("../src/app/html-form.js", import.meta.url), "utf8"), { window });
   runInNewContext(readFileSync(path, "utf8"), { window, ...time });
   return { api: window.OMP_REMOTE_VIEW, window, time };
 }
@@ -137,13 +138,48 @@ test("buildView trims to last 100 messages and 2 000 tool characters without los
   assert.equal(api.buildView(snapshot({ messages }), { maxMessages: 2, maxToolChars: 3 }).messages.at(-1).tool.output, "xxx");
 });
 
-test("answerCall dispatches select / confirm / input / editor / dialog / cancel", () => {
+test("buildView forwards a parsed form and its timeout, never the raw HTML", () => {
+  const { api } = load();
+  const form = {
+    sections: [{ title: "Setup", blocks: [], fieldset: true }],
+    fields: [{ kind: "choice", name: "db", multi: false, select: false, other: true, label: "", options: [{ value: "pg", label: "Postgres", checked: true, disabled: false }], required: false }],
+    hidden: [],
+  };
+  const view = api.buildView(snapshot({ messages: [ask("f", "form", { title: "Setup", form, timeout: 30000 })] }));
+  assert.deepEqual(own(view.asks), [{ id: "f", kind: "form", title: "Setup", message: "", form, timeout: 30000 }]);
+  assert.doesNotMatch(JSON.stringify(view), /<form/i);
+  const broken = api.buildView(snapshot({ messages: [ask("bad", "form", { form: null, formError: { text: "This form has too many {what}.", vars: { what: "fields" }, extra: "x" } })] }));
+  assert.deepEqual(own(broken.asks), [{ id: "bad", kind: "form", title: "Continue?", message: "", formError: { text: "This form has too many {what}.", vars: { what: "fields" } } }]);
+  // Only a `{text, vars}` object travels: a bare string or a malformed vars is not forwarded as such.
+  const plainError = api.buildView(snapshot({ messages: [ask("s", "form", { form: null, formError: "The form is empty." })] }));
+  assert.equal(own(plainError.asks)[0].formError, undefined);
+  const badVars = api.buildView(snapshot({ messages: [ask("v", "form", { form: null, formError: { text: "The form is empty.", vars: ["x"] } })] }));
+  assert.deepEqual(own(badVars.asks)[0].formError, { text: "The form is empty." });
+});
+
+test("phone forms serialize each field once and omit hidden defaults", () => {
+  const { api } = load();
+  const field = { kind: "text", name: "shown", type: "text", value: "yes", label: "Shown", options: [] };
+  const form = {
+    sections: [{ title: "", fieldset: false, blocks: [{ kind: "field", field }] }],
+    fields: [field], hidden: [["large", "hidden-secret"]],
+  };
+  const view = api.buildView(snapshot({ messages: [ask("f", "form", { form })] }));
+  assert.deepEqual(own(view.asks[0].form), {
+    sections: [{ title: "", fieldset: false, blocks: [{ kind: "field", field: 0 }] }],
+    fields: [field], hidden: [],
+  });
+  assert.doesNotMatch(JSON.stringify(view), /hidden-secret/);
+});
+
+test("answerCall dispatches select / confirm / input / editor / dialog / form / cancel", () => {
   const { api } = load();
   for (const [kind, value, method] of [
     ["select", "Approve", "answerAsk"], ["confirm", false, "answerConfirm"],
     ["input", "typed", "answerAsk"], ["editor", "line\nline", "answerAsk"],
     ["dialog", [{ id: "1", selectedOptions: ["yes"] }], "answerAskDialog"],
     ["ask", [{ id: "1", selectedOptions: [] }], "answerAskDialog"],
+    ["form", { db: "pg" }, "answerForm"],
   ]) {
     assert.deepEqual(own(api.answerCall({ id: "q", kind }, value)), { method, args: ["q", value] });
     assert.deepEqual(own(api.answerCall({ id: "q", kind }, null)), { method: "cancelAsk", args: ["q"] });
@@ -503,14 +539,84 @@ test("phone answers are validated per ask kind before reaching omp", async () =>
 
 async function runAnswer(api, item, value) {
   const calls = [], results = [];
-  const snap = snapshot({ messages: [item] });
+  const snap = snapshot({
+    messages: [item],
+    sessions: [{ id: "a", name: "Work", path: "/project" }],
+  });
   const handle = api.makeActionHandler({
     answerAsk: (...a) => calls.push(a), answerConfirm: (...a) => calls.push(a), answerAskDialog: (...a) => calls.push(a),
+    answerForm: (...a) => calls.push(a),
     remoteActionResult: (...a) => results.push(a),
   }, () => snap, liveStatus);
   await handle({ reqId: "r", deviceId: "d", tabId: "a", kind: "answer", askId: item.id, value });
   return { card: { kind: item.method, error: results[0][1] ? null : results[0][2] }, calls };
 }
+
+test("phone form answers are validated against the parsed model before reaching omp", async () => {
+  const { api } = load();
+  const form = {
+    sections: [{ title: "Setup", blocks: [], fieldset: true }],
+    fields: [
+      { kind: "choice", name: "db", multi: false, select: false, other: true, label: "", options: [
+        { value: "pg", label: "Postgres", checked: true, disabled: false },
+        { value: "off", label: "Off", checked: false, disabled: true },
+      ], required: true },
+      { kind: "choice", name: "tags", multi: true, select: false, other: true, label: "Tags", options: [
+        { value: "a", label: "A", checked: false, disabled: false },
+        { value: "b", label: "B", checked: false, disabled: false },
+      ], required: false },
+      { kind: "text", name: "count", type: "number", multiline: false, label: "Count", value: "", placeholder: "", required: false, rows: 1 },
+    ],
+    hidden: [["token", "desktop-default"]],
+  };
+  const card = { kind: "form", id: "f", form };
+  for (const value of [null, { db: "pg" }, { db: "custom" }, { db: "pg", tags: ["a", "b"] }, { db: "pg", count: 4 }])
+    assert.equal(api.invalidAnswer(card, value), null, JSON.stringify(value));
+  for (const value of ["x", [], {}, { db: "off" }, { db: ["pg"] }, { db: "pg", tags: "a" }, { db: "pg", tags: ["z", "q"] }, { db: "pg", count: true }, { db: "pg", nope: "x" }])
+    assert.equal(api.invalidAnswer(card, value), "invalid answer", JSON.stringify(value));
+
+  const calls = [], results = [];
+  const snap = () => snapshot({ messages: [{ kind: "ask", id: "f", method: "form", title: "", form, answered: false, cancelled: false }] });
+  const handle = api.makeActionHandler({
+    answerForm: (...args) => calls.push(args), remoteActionResult: (...args) => results.push(args),
+  }, snap, liveStatus);
+  await handle({ reqId: "r", deviceId: "d", tabId: "a", kind: "answer", askId: "f", value: { db: "pg", tags: ["a"], token: "desktop-default" } });
+  assert.deepEqual(calls, [["f", { db: "pg", tags: ["a"], token: "desktop-default" }]]);
+  assert.deepEqual(results, [["r", true]]);
+  await handle({ reqId: "r2", deviceId: "d", tabId: "a", kind: "answer", askId: "f", value: { db: "off" } });
+  assert.deepEqual(calls, [["f", { db: "pg", tags: ["a"], token: "desktop-default" }]]);
+  assert.deepEqual(results.at(-1), ["r2", false, "invalid answer"]);
+});
+
+test("phone form answers obey the field rules omp 19.1 checks on submit", async () => {
+  const { api } = load();
+  const form = {
+    sections: [],
+    fields: [
+      { kind: "text", name: "name", type: "text", multiline: false, label: "Name", value: "", placeholder: "", required: true, minLength: 8, rows: 1 },
+      { kind: "text", name: "count", type: "number", multiline: false, label: "Count", value: "", placeholder: "", required: false, min: 2, max: 4, rows: 1 },
+    ],
+    hidden: [],
+  };
+  const card = { kind: "form", id: "f2", form };
+  assert.equal(api.invalidAnswer(card, { name: "Ada Lovelace" }), null);
+  assert.equal(api.invalidAnswer(card, { name: "Ada Lovelace", count: 3 }), null);
+  for (const value of [{}, { name: "Ada" }, { name: "Ada Lovelace", count: 5 }, { name: "Ada Lovelace", count: "x" }])
+    assert.equal(api.invalidAnswer(card, value), "invalid answer", JSON.stringify(value));
+});
+
+test("a phone form answer obeys omp's 19.1 submit rules on every omp version", async () => {
+  const { api } = load();
+  const form = {
+    sections: [],
+    fields: [{ kind: "text", name: "name", type: "text", multiline: false, label: "Name", value: "", placeholder: "", required: true, rows: 1 }],
+    hidden: [],
+  };
+  const card = { kind: "ask", id: "f3", method: "form", title: "", form, answered: false, cancelled: false };
+  assert.equal((await runAnswer(api, card, {})).card.error, "invalid answer");
+  assert.equal((await runAnswer(api, card, { name: "Ada" })).card.error, null);
+  assert.equal(api.invalidAnswer.length, 3, "invalidAnswer takes no omp version");
+});
 
 test("blank prompt and steer text is refused", async () => {
   const { api } = load();

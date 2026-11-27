@@ -127,7 +127,7 @@ impl<'a> Event<'a> {
                     "cancel" => text("targetId")
                         .filter(|id| id.len() <= MAX_ID_BYTES)
                         .map(Self::Cancel),
-                    "select" | "confirm" | "input" | "editor" | "ask" => text("id")
+                    "select" | "confirm" | "input" | "editor" | "ask" | "form" => text("id")
                         .filter(|id| id.len() <= MAX_ID_BYTES)
                         .map(Self::Open),
                     _ => None,

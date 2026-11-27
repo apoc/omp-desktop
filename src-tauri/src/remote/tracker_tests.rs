@@ -117,7 +117,7 @@ fn only_dialogs_with_string_ids_open_and_duplicate_ids_do_not_notify() {
     // Both handles intentionally share the collecting sink's event storage.
     t.set_sink(Arc::new(sink.clone()));
     let now = Instant::now();
-    for (index, method) in ["select", "confirm", "input", "editor", "ask"]
+    for (index, method) in ["select", "confirm", "input", "editor", "ask", "form"]
         .into_iter()
         .enumerate()
     {
@@ -150,8 +150,8 @@ fn only_dialogs_with_string_ids_open_and_duplicate_ids_do_not_notify() {
             &AtomicBool::new(true),
         );
     }
-    assert_eq!(state(&t.snapshot().sessions["s1"]), shown(false, 5));
-    assert_eq!(sink.transitions().len(), 5);
+    assert_eq!(state(&t.snapshot().sessions["s1"]), shown(false, 6));
+    assert_eq!(sink.transitions().len(), 6);
     t.on_frame("s1", Some("agent_end"), None, now, &AtomicBool::new(true));
     assert_eq!(state(&t.snapshot().sessions["s1"]), shown(false, 0));
 }

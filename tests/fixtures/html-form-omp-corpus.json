@@ -1,0 +1,1090 @@
+{
+  "omp": "v19.2.1",
+  "source": "packages/coding-agent/src/tools/html-form/parse.ts + packages/utils/src/dom (parseHtmlForm), generated once with bun",
+  "cases": [
+    {
+      "label": "entity outside omp's table stays literal in option text",
+      "html": "<form><label>Files <select name=\"size\"><option>&lt; 10</option><option>&ge; 10</option></select></label></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "size",
+          "label": "Files",
+          "multi": false,
+          "select": true,
+          "other": false,
+          "required": false,
+          "options": [
+            {
+              "value": "< 10",
+              "label": "< 10",
+              "checked": true,
+              "disabled": false
+            },
+            {
+              "value": "&ge; 10",
+              "label": "&ge; 10",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "unknown named entity in an option value",
+      "html": "<form><label>Dir <select name=\"d\"><option value=\"left&rarr;right\">LR</option><option value=\"z\">Z</option></select></label></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "d",
+          "label": "Dir",
+          "multi": false,
+          "select": true,
+          "other": false,
+          "required": false,
+          "options": [
+            {
+              "value": "left&rarr;right",
+              "label": "LR",
+              "checked": true,
+              "disabled": false
+            },
+            {
+              "value": "z",
+              "label": "Z",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "unknown named entity in a checkbox value",
+      "html": "<form><label><input type=\"checkbox\" name=\"ok\" value=\"y&check;\" checked> Yes</label></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "ok",
+          "label": "",
+          "multi": true,
+          "select": false,
+          "other": false,
+          "required": false,
+          "options": [
+            {
+              "value": "y&check;",
+              "label": "Yes",
+              "checked": true,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "entity without semicolon stays literal",
+      "html": "<form><select name=\"m\"><option>Caf&eacute</option><option>Tea</option></select></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "m",
+          "label": "",
+          "multi": false,
+          "select": true,
+          "other": false,
+          "required": false,
+          "options": [
+            {
+              "value": "Caf&eacute",
+              "label": "Caf&eacute",
+              "checked": true,
+              "disabled": false
+            },
+            {
+              "value": "Tea",
+              "label": "Tea",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "entities omp decodes",
+      "html": "<form><select name=\"e\"><option>Caf&eacute;</option><option value=\"&#x263A;&#9731;\">Smile</option><option>&AMP; &Mdash; &mdash;</option></select></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "e",
+          "label": "",
+          "multi": false,
+          "select": true,
+          "other": false,
+          "required": false,
+          "options": [
+            {
+              "value": "Café",
+              "label": "Café",
+              "checked": true,
+              "disabled": false
+            },
+            {
+              "value": "☺☃",
+              "label": "Smile",
+              "checked": false,
+              "disabled": false
+            },
+            {
+              "value": "& — —",
+              "label": "& — —",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "invalid numeric references",
+      "html": "<form><select name=\"n\"><option>&#0;</option><option>&#xD800;</option><option>&#x110000;</option></select></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "n",
+          "label": "",
+          "multi": false,
+          "select": true,
+          "other": false,
+          "required": false,
+          "options": [
+            {
+              "value": "�",
+              "label": "�",
+              "checked": true,
+              "disabled": false
+            },
+            {
+              "value": "�",
+              "label": "�",
+              "checked": false,
+              "disabled": false
+            },
+            {
+              "value": "�",
+              "label": "�",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "bare ampersands",
+      "html": "<form><label><input type=\"radio\" name=\"r\" value=\"R&D\">R&D</label><label><input type=\"radio\" name=\"r\" value=\"a & b\">A & B</label></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "r",
+          "label": "",
+          "multi": false,
+          "select": false,
+          "other": true,
+          "required": false,
+          "options": [
+            {
+              "value": "R&D",
+              "label": "R&D",
+              "checked": false,
+              "disabled": false
+            },
+            {
+              "value": "a & b",
+              "label": "A & B",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "upper-case tag and attribute names",
+      "html": "<FORM><LABEL>Name <INPUT NAME=\"who\" VALUE=\"Ada\" Required></LABEL></FORM>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "who",
+          "label": "Name",
+          "type": "text",
+          "value": "Ada",
+          "required": true
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "duplicate attributes: the first wins",
+      "html": "<form><input name=\"a\" name=\"b\" value=\"1\" VALUE=\"2\"></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "a",
+          "label": "a",
+          "type": "text",
+          "value": "1",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "radios after a table row (browsers foster-parent them)",
+      "html": "<form><table><tr><td>Pick</td></tr><input type=\"radio\" name=\"a\" value=\"1\"><input type=\"radio\" name=\"a\" value=\"2\"></table></form>",
+      "fields": [],
+      "hidden": []
+    },
+    {
+      "label": "form inside a table",
+      "html": "<table><form><tr><td><label>Name <input name=\"who\" value=\"Ada\"></label></td></tr></form></table>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "who",
+          "label": "Name",
+          "type": "text",
+          "value": "Ada",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "form inside a template before the real form",
+      "html": "<template><form><input name=\"t\"></form></template><form><label>Real <input name=\"real\" value=\"x\"></label></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "real",
+          "label": "Real",
+          "type": "text",
+          "value": "x",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "controls inside a template are invisible",
+      "html": "<form><input name=\"a\"><template><input name=\"b\"></template></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "a",
+          "label": "a",
+          "type": "text",
+          "value": "",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "decision matrix with header row",
+      "html": "<form><table><tr><th>Option</th><th>Pick</th></tr><tr><td>Fast</td><td><input type=\"radio\" name=\"m\" value=\"fast\"></td></tr><tr><td>Safe</td><td><input type=\"radio\" name=\"m\" value=\"safe\"></td></tr></table></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "m",
+          "label": "",
+          "multi": false,
+          "select": false,
+          "other": true,
+          "required": false,
+          "options": [
+            {
+              "value": "fast",
+              "label": "Pick",
+              "checked": false,
+              "disabled": false
+            },
+            {
+              "value": "safe",
+              "label": "Pick",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "nested table rows belong to their own table",
+      "html": "<form><table><tr><td><table><tr><td><label>Inner <input name=\"inner\"></label></td></tr></table></td><td><input name=\"outer\"></td></tr></table></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "inner",
+          "label": "Inner",
+          "type": "text",
+          "value": "",
+          "required": false
+        },
+        {
+          "kind": "text",
+          "name": "outer",
+          "label": "outer",
+          "type": "text",
+          "value": "",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "option text keeps comment data",
+      "html": "<form><select name=\"c\"><option>A<!--x-->B</option><option>C</option></select></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "c",
+          "label": "",
+          "multi": false,
+          "select": true,
+          "other": false,
+          "required": false,
+          "options": [
+            {
+              "value": "AxB",
+              "label": "AxB",
+              "checked": true,
+              "disabled": false
+            },
+            {
+              "value": "C",
+              "label": "C",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "unclosed options close each other",
+      "html": "<form><select name=\"u\"><option value=1>One<option value=2>Two<option>Three</select></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "u",
+          "label": "",
+          "multi": false,
+          "select": true,
+          "other": false,
+          "required": false,
+          "options": [
+            {
+              "value": "1",
+              "label": "One",
+              "checked": true,
+              "disabled": false
+            },
+            {
+              "value": "2",
+              "label": "Two",
+              "checked": false,
+              "disabled": false
+            },
+            {
+              "value": "Three",
+              "label": "Three",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "textarea content is text only",
+      "html": "<form><textarea name=\"t\">\n<b>bold</b> &amp; <input name=\"x\"></textarea></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "t",
+          "label": "t",
+          "type": "textarea",
+          "value": "<b>bold</b> & <input name=\"x\">",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "label for a control id",
+      "html": "<form><label for=\"who\">Your name</label><input id=\"who\" name=\"who\"><label for=\"nothing\">Loose</label></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "who",
+          "label": "Your name",
+          "type": "text",
+          "value": "",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "label for a non-control id is walked with its controls",
+      "html": "<form><div id=\"y\"></div><label for=\"y\">Wrapped <input name=\"b\"></label></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "b",
+          "label": "Wrapped",
+          "type": "text",
+          "value": "",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "label for a non-control id stays inline",
+      "html": "<form><div id=\"d\"></div><label for=\"d\">About d</label><input name=\"x\" aria-label=\"X\"></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "x",
+          "label": "X",
+          "type": "text",
+          "value": "",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "block inside an option label decides Other",
+      "html": "<form><label><input type=\"radio\" name=\"w\" value=\"a\"><div>Other</div>wise</label><label><input type=\"radio\" name=\"w\" value=\"b\">B</label></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "w",
+          "label": "",
+          "multi": false,
+          "select": false,
+          "other": true,
+          "required": false,
+          "options": [
+            {
+              "value": "a",
+              "label": "Otherwise",
+              "checked": false,
+              "disabled": false
+            },
+            {
+              "value": "b",
+              "label": "B",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "an Other option suppresses the automatic one",
+      "html": "<form><label><input type=\"radio\" name=\"o\" value=\"a\">A</label><label><input type=\"radio\" name=\"o\" value=\"other\">Other (say)</label></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "o",
+          "label": "",
+          "multi": false,
+          "select": false,
+          "other": false,
+          "required": false,
+          "options": [
+            {
+              "value": "a",
+              "label": "A",
+              "checked": false,
+              "disabled": false
+            },
+            {
+              "value": "other",
+              "label": "Other (say)",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "styled spans keep their own whitespace",
+      "html": "<form><label><input type=\"checkbox\" name=\"s\" value=\"1\">plain <b> bold</b></label><label><input type=\"checkbox\" name=\"s\" value=\"2\">two</label></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "s",
+          "label": "",
+          "multi": true,
+          "select": false,
+          "other": true,
+          "required": false,
+          "options": [
+            {
+              "value": "1",
+              "label": "plain  bold",
+              "checked": false,
+              "disabled": false
+            },
+            {
+              "value": "2",
+              "label": "two",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "unclosed paragraphs before controls",
+      "html": "<form><p>First question<p>Second <label>Answer <input name=\"ans\"></label></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "ans",
+          "label": "Answer",
+          "type": "text",
+          "value": "",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "svg title and img alt",
+      "html": "<form><svg aria-label=\"Chart\"><title>t</title></svg><img src=\"a.png\" alt=\" Pic \"><img alt=\"no src\"><label><input type=\"radio\" name=\"p\" value=\"x\"><img src=\"x.png\" alt=\"Ex\">x</label><label><input type=\"radio\" name=\"p\" value=\"y\">y</label></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "p",
+          "label": "",
+          "multi": false,
+          "select": false,
+          "other": true,
+          "required": false,
+          "options": [
+            {
+              "value": "x",
+              "label": "Exx",
+              "checked": false,
+              "disabled": false
+            },
+            {
+              "value": "y",
+              "label": "y",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "controls inside an svg",
+      "html": "<form><svg><textarea name=\"s\">x</textarea></svg><input name=\"after\"></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "after",
+          "label": "after",
+          "type": "text",
+          "value": "",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "hidden inputs and disabled options",
+      "html": "<form><input type=\"hidden\" name=\"h\" value=\"v\"><select name=\"d\"><option disabled>Off</option><option>On</option></select><label><input type=\"checkbox\" name=\"c\" value=\"a\" disabled checked>A</label><label><input type=\"checkbox\" name=\"c\" value=\"b\">B</label></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "d",
+          "label": "",
+          "multi": false,
+          "select": true,
+          "other": false,
+          "required": false,
+          "options": [
+            {
+              "value": "Off",
+              "label": "Off",
+              "checked": false,
+              "disabled": true
+            },
+            {
+              "value": "On",
+              "label": "On",
+              "checked": true,
+              "disabled": false
+            }
+          ]
+        },
+        {
+          "kind": "choice",
+          "name": "c",
+          "label": "",
+          "multi": true,
+          "select": false,
+          "other": true,
+          "required": false,
+          "options": [
+            {
+              "value": "a",
+              "label": "A",
+              "checked": true,
+              "disabled": true
+            },
+            {
+              "value": "b",
+              "label": "B",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": [
+        [
+          "h",
+          "v"
+        ]
+      ]
+    },
+    {
+      "label": "checkbox and radio sharing a name",
+      "html": "<form><label><input type=\"radio\" name=\"n\" value=\"a\">A</label><label><input type=\"radio\" name=\"n\" value=\"b\">B</label><label><input type=\"checkbox\" name=\"n\" value=\"c\">C</label></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "n",
+          "label": "",
+          "multi": false,
+          "select": false,
+          "other": true,
+          "required": false,
+          "options": [
+            {
+              "value": "a",
+              "label": "A",
+              "checked": false,
+              "disabled": false
+            },
+            {
+              "value": "b",
+              "label": "B",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        },
+        {
+          "kind": "choice",
+          "name": "n",
+          "label": "",
+          "multi": true,
+          "select": false,
+          "other": false,
+          "required": false,
+          "options": [
+            {
+              "value": "c",
+              "label": "C",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "text field sharing a name with a checkbox group",
+      "html": "<form><label>Note <input name=\"n\" required></label><label><input type=\"checkbox\" name=\"n\" value=\"a\">A</label><label><input type=\"checkbox\" name=\"n\" value=\"b\">B</label></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "n",
+          "label": "Note",
+          "type": "text",
+          "value": "",
+          "required": true
+        },
+        {
+          "kind": "choice",
+          "name": "n",
+          "label": "",
+          "multi": true,
+          "select": false,
+          "other": true,
+          "required": false,
+          "options": [
+            {
+              "value": "a",
+              "label": "A",
+              "checked": false,
+              "disabled": false
+            },
+            {
+              "value": "b",
+              "label": "B",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "number, range and colour inputs",
+      "html": "<form><input type=\"number\" name=\"n\" min=\"1\" max=\"9\" value=\"3\"><input type=\"range\" name=\"r\" value=\"\"><input type=\"color\" name=\"c\"><input type=\"email\" name=\"e\" pattern=\"[a-z]+@x\"></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "n",
+          "label": "n",
+          "type": "number",
+          "value": "3",
+          "required": false
+        },
+        {
+          "kind": "text",
+          "name": "r",
+          "label": "r",
+          "type": "range",
+          "value": "",
+          "required": false
+        },
+        {
+          "kind": "text",
+          "name": "c",
+          "label": "c",
+          "type": "color",
+          "value": "",
+          "required": false
+        },
+        {
+          "kind": "text",
+          "name": "e",
+          "label": "e",
+          "type": "email",
+          "value": "",
+          "required": false,
+          "pattern": "[a-z]+@x"
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "ignored input types and buttons",
+      "html": "<form><input type=\"submit\" name=\"s\" value=\"Go\"><input type=\"file\" name=\"f\"><button name=\"b\">B</button><input type=\"Text\" name=\"t\"></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "t",
+          "label": "t",
+          "type": "text",
+          "value": "",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "no form element: the whole document",
+      "html": "<p>Pick one</p><label><input type=\"radio\" name=\"x\" value=\"1\">One</label><label><input type=\"radio\" name=\"x\" value=\"2\">Two</label>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "x",
+          "label": "",
+          "multi": false,
+          "select": false,
+          "other": true,
+          "required": false,
+          "options": [
+            {
+              "value": "1",
+              "label": "One",
+              "checked": false,
+              "disabled": false
+            },
+            {
+              "value": "2",
+              "label": "Two",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "content outside the first form is ignored",
+      "html": "<input name=\"before\"><form><input name=\"inside\"></form><form><input name=\"second\"></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "inside",
+          "label": "inside",
+          "type": "text",
+          "value": "",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "doctype, html and body wrappers",
+      "html": "<!DOCTYPE html><html><head><title>T</title></head><body><form><input name=\"x\" value=\"1\"></form></body></html>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "x",
+          "label": "x",
+          "type": "text",
+          "value": "1",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "CDATA text",
+      "html": "<form><p><![CDATA[a < b]]></p><input name=\"x\"></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "x",
+          "label": "x",
+          "type": "text",
+          "value": "",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "single-quoted and unquoted attributes",
+      "html": "<form><input name='q' value='it\"s'><input name=u value=a&amp;b></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "q",
+          "label": "q",
+          "type": "text",
+          "value": "it\"s",
+          "required": false
+        },
+        {
+          "kind": "text",
+          "name": "u",
+          "label": "u",
+          "type": "text",
+          "value": "a&b",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "fieldsets and legends",
+      "html": "<form><fieldset><legend>Main <b>part</b></legend><fieldset><legend>Inner</legend><input name=\"a\"></fieldset></fieldset><input name=\"b\"></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "a",
+          "label": "a",
+          "type": "text",
+          "value": "",
+          "required": false
+        },
+        {
+          "kind": "text",
+          "name": "b",
+          "label": "b",
+          "type": "text",
+          "value": "",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "list of controls is flow",
+      "html": "<form><ul><li><label><input type=\"checkbox\" name=\"l\" value=\"1\">One</label></li><li><label><input type=\"checkbox\" name=\"l\" value=\"2\">Two</label></li></ul></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "l",
+          "label": "",
+          "multi": true,
+          "select": false,
+          "other": true,
+          "required": false,
+          "options": [
+            {
+              "value": "1",
+              "label": "One",
+              "checked": false,
+              "disabled": false
+            },
+            {
+              "value": "2",
+              "label": "Two",
+              "checked": false,
+              "disabled": false
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "select multiple with selected options",
+      "html": "<form><select name=\"m\" multiple><option selected>A</option><option>B</option><option selected disabled>C</option></select></form>",
+      "fields": [
+        {
+          "kind": "choice",
+          "name": "m",
+          "label": "",
+          "multi": true,
+          "select": true,
+          "other": false,
+          "required": false,
+          "options": [
+            {
+              "value": "A",
+              "label": "A",
+              "checked": true,
+              "disabled": false
+            },
+            {
+              "value": "B",
+              "label": "B",
+              "checked": false,
+              "disabled": false
+            },
+            {
+              "value": "C",
+              "label": "C",
+              "checked": true,
+              "disabled": true
+            }
+          ]
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "rss-like document parses void tags XML-style",
+      "html": "<rss><form><input name=\"a\"><input name=\"b\"></form></rss>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "a",
+          "label": "a",
+          "type": "text",
+          "value": "",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "script and style content is raw text",
+      "html": "<form><script><input name=\"no\"></script><style>input{}</style><input name=\"yes\"></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "yes",
+          "label": "yes",
+          "type": "text",
+          "value": "",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "stray close tags",
+      "html": "<form></div><input name=\"a\"></span><input name=\"b\"></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "a",
+          "label": "a",
+          "type": "text",
+          "value": "",
+          "required": false
+        },
+        {
+          "kind": "text",
+          "name": "b",
+          "label": "b",
+          "type": "text",
+          "value": "",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "prototype-named element after a paragraph",
+      "html": "<form><p><constructor>x</constructor></p><input name=\"a\"></form>",
+      "fields": [
+        {
+          "kind": "text",
+          "name": "a",
+          "label": "a",
+          "type": "text",
+          "value": "",
+          "required": false
+        }
+      ],
+      "hidden": []
+    },
+    {
+      "label": "prototype-named element throws in omp",
+      "html": "<form><div><constructor>x</constructor></div><input name=\"a\"></form>",
+      "ompError": "CLOSE_ON_OPEN[incoming]?.includes is not a function. (In 'CLOSE_ON_OPEN[incoming]?.includes(current.localName)', 'CLOSE_ON_OPEN[incoming]?.includes' is undefined)"
+    }
+  ]
+}

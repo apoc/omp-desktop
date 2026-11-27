@@ -18,6 +18,7 @@
   const PREFS = window.OMP_SESSION_PREFS;
   const QUEUE = window.OMP_QUEUE;
   const ASK = window.OMP_ASK_DIALOG;
+  const HTML_FORM = window.OMP_HTML_FORM;
   const APPROVAL = window.OMP_APPROVAL;
   const AMODE = window.OMP_APPROVAL_MODE;
   const TURN = window.OMP_TURN_STATUS;
@@ -578,11 +579,11 @@
   }
 
   // Buffer an ask bubble instead of pushing it straight into
-  // `state.messages`: omp's `select` (a tool approval) and its ask dialog
-  // request both reach stdout just BEFORE the `tool_execution_start` of the
-  // tool they belong to, so pushing on arrival puts the prompt above its own
-  // tool card. tool_execution_start flushes the queue, giving the
-  // [tool_card, ask_bubble] order.
+  // `state.messages`: omp's `select` (a tool approval), its ask dialog
+  // request and its HTML `form` request all reach stdout just BEFORE the
+  // `tool_execution_start` of the tool they belong to, so pushing on arrival
+  // puts the prompt above its own tool card. tool_execution_start flushes the
+  // queue, giving the [tool_card, ask_bubble] order.
   //
   // Two properties this has to keep, both learned from a wedged session:
   //   1. It is a QUEUE, not a single slot. A turn with parallel tool calls
@@ -630,45 +631,88 @@
     }
   }
 
-  // Settle a pending ask bubble: apply `patch` to the first unanswered,
-  // uncancelled bubble with this id and publish. Returns whether one
-  // matched. The re-answer guard (a bubble already answered or cancelled is
-  // left alone) is the subtle part — it lives here once, for the user's
-  // answers (_resolveAsk) and omp's own `cancel` alike.
+  // Settle a pending ask bubble: apply `patch` to the unanswered,
+  // uncancelled bubble with this id and publish. Returns the settled bubble
+  // (the object now in `state.messages`), or null when none matched. The
+  // re-answer guard (a bubble already answered or cancelled is left alone)
+  // is the subtle part — it lives here once, for the user's answers
+  // (_resolveAsk) and approve-and-remember.
   function _settleAsk(id, patch) {
-    let settled = false;
+    let settled = null;
     state.messages = state.messages.map(m => {
       if (m.kind === "ask" && m.id === id && !m.answered && !m.cancelled) {
-        settled = true;
-        return { ...m, ...patch };
+        // A settlement that goes through supersedes an earlier failed
+        // delivery: its marker goes (see the unreadable-form path).
+        const { deliveryError: _d, ...open } = m;
+        settled = { ...open, ...patch };
+        return settled;
       }
       return m;
     });
-    if (settled) notify();
+    if (!settled) return null;
+    notify();
     return settled;
   }
 
-  // Undo a local `_settleAsk` whose answer never reached omp: the bubble
-  // with this id that reads answered (and was not cancelled by omp since)
-  // takes input again. The caller publishes.
-  function _reopenAsk(id) {
-    state.messages = state.messages.map(m => {
-      if (m.kind === "ask" && m.id === id && m.answered && !m.cancelled) {
-        const { answered: _a, answer: _v, ...open } = m;
-        return open;
-      }
-      return m;
+  // Patch the exact bubble captured before an asynchronous IPC hand-off. If
+  // its tab is backgrounded, update that tab's saved snapshot instead of the
+  // active transcript. Identity matters: a cancellation or newer answer is a
+  // new object and must not be rolled back by this stale completion.
+  function _patchSessionBubble(sessionId, bubble, patch, deliveryNote = false) {
+    const target = activeSessionId === sessionId ? state : sessionSnapshots.get(sessionId);
+    if (!target) return false;
+    let changed = false;
+    let messages = target.messages.map(message => {
+      if (message !== bubble) return message;
+      const next = patch(message);
+      if (next === message) return message;
+      changed = true;
+      return next;
     });
+    if (changed && deliveryNote) {
+      messages = [...messages, _assistantBubble({
+        model: target.model?.name ?? null,
+        blocks: [{ type: "text", text: "**Answer could not be delivered to omp.** The prompt is open again; please retry." }],
+        completed: true,
+      })];
+    }
+    target.messages = messages;
+    if (changed && activeSessionId === sessionId) notify();
+    return changed;
+  }
+
+  // Append a note to the transcript of the tab that owns `sessionId`, even
+  // when another tab is active: a late IPC outcome belongs to the prompt's
+  // tab, not to whatever the user is looking at now. Only a tab that still
+  // has a saved snapshot can receive one.
+  function _noteSession(sessionId, text) {
+    const target = activeSessionId === sessionId ? state : sessionSnapshots.get(sessionId);
+    if (!target) return;
+    target.messages = [...target.messages, _assistantBubble({
+      model: target.model?.name ?? null,
+      blocks: [{ type: "text", text }],
+      completed: true,
+    })];
+    if (activeSessionId === sessionId) notify();
+  }
+
+  // Reopen only a locally settled bubble whose answer was not delivered.
+  // omp's own withdrawal wins and stays closed.
+  function _reopenAsk(bubble) {
+    if (bubble.closedByOmp) return bubble;
+    const { answered: _a, answer: _v, answers: _answers, data: _data, cancelled: _c, ...open } = bubble;
+    return open;
   }
 
   // Resolve a pending ask bubble: settle it, then send `payload` back to
   // omp — only if it was still open, so a re-answer sends nothing.
-  // Proven with an eval-kernel cell (7/7 cases: patch applied, array
-  // replaced, {value}/{confirmed}/{cancelled} payload shapes preserved
-  // per caller, and re-answer + unknown-id both send nothing).
-  function _resolveAsk(id, patch, payload) {
-    if (!_settleAsk(id, patch)) return Promise.resolve(false);
-    return _send({ type: "extension_ui_response", id, ...payload });
+  async function _resolveAsk(id, patch, payload) {
+    const sessionId = activeSessionId;
+    const bubble = _settleAsk(id, patch);
+    if (!bubble) return false;
+    const delivered = await _send({ type: "extension_ui_response", id, ...payload });
+    if (!delivered) _patchSessionBubble(sessionId, bubble, _reopenAsk, true);
+    return delivered;
   }
 
   // Append a synthetic assistant note (process exited, startup failed,
@@ -913,7 +957,9 @@
   }
 
   // ── Session snapshot helpers ──────────────────────────────────────────────
-  function _saveCurrentSession() {
+  // `trackerEvidence`: the outgoing tab's tracker revision as it stood
+  // before the switch's listener teardown (see `_switchToSession`).
+  function _saveCurrentSession(trackerEvidence) {
     if (!activeSessionId) return;
     // Buffered asks belong to the session being left — flush them into its
     // messages so the snapshot carries them. Leaving them in the queue would
@@ -962,9 +1008,10 @@
       // An abort whose pause frame and response are still in the tab's
       // journal: the replay on the way back labels the pause and clears it.
       userAbortInFlight,
-      // Tracker revision this tab last heard about itself: the background
-      // overlay may only act on a later one (`_trackerEvidenceNewer`).
-      trackerEvidence: _trackerEvidence.get(activeSessionId) ?? null,
+      // Tracker revision this tab last heard about itself while its frames
+      // were still dispatched: the background overlay may only act on a
+      // later one (`_trackerEvidenceNewer`).
+      trackerEvidence,
     });
   }
 
@@ -1052,9 +1099,13 @@
     }
     if (_switchIntent !== intent || !sessionRegistry.has(id)) return;
     const myGen = ++_switchGen;
+    // The outgoing tab's tracker evidence, read before the teardown below
+    // (an IPC round-trip). A tracker update landing inside it describes
+    // frames this tab no longer dispatches (`current()` is already false),
+    // so the snapshot must stay older than it: `_trackerEvidenceNewer` then
+    // lets the background overlay retire the dot when the turn ended there.
+    const outgoingEvidence = _trackerEvidence.get(activeSessionId) ?? null;
 
-    // Snapshot current session so we can restore it when switching back
-    _saveCurrentSession();
     // The inspected agent belongs to the tab being left: drop that process
     // back to "progress" while activeSessionId still addresses it.
     if (subagentInspecting) {
@@ -1066,6 +1117,16 @@
     if (_switchGen !== myGen) return; // superseded by a newer switch
     activeListeners = [];
 
+    // Snapshot the outgoing session only now, after its listeners are gone.
+    // The unlisten above is an IPC round-trip, and an asynchronous outcome
+    // for this tab — an approve-and-remember rejection reopening a prompt —
+    // can land inside it, still against `activeSessionId`. Snapshotting
+    // before the teardown would cache the optimistic answer and drop the
+    // rejection's note; switching back would then restore the stale state.
+    // The tracker evidence is the one exception, taken before the teardown
+    // (`outgoingEvidence`). No await separates this save from the id change
+    // below, so nothing can land in between and be lost.
+    _saveCurrentSession(outgoingEvidence);
     activeSessionId = id;
     _noTabProfileId = null;
     _syncRecentsProfile();
@@ -1580,10 +1641,10 @@
       // Both re-read *after* that round-trip, never before it. It is a real
       // IPC gap and `_respawning` only blocks re-entry for this id, so
       // a click on another tab can run `_switchToSession(other)` inside it —
-      // whose first act is `_saveCurrentSession()`, and `activeSessionId` is
-      // still this id at that moment. That both moves the active slot (so a
-      // `wasActive` captured earlier is stale and would detach the tab the
-      // user just picked) and re-creates the very snapshot
+      // which snapshots the tab it leaves (`_saveCurrentSession()`) while
+      // `activeSessionId` is still this id. That both moves the active slot
+      // (so a `wasActive` captured earlier is stale and would detach the tab
+      // the user just picked) and re-creates the very snapshot
       // `_killSessionProcess` just deleted.
       const wasActive = id === activeSessionId;
       const current = sessionRegistry.get(id);
@@ -2605,6 +2666,46 @@
         _queueAskBubble(_askMessage("ask", ev, { questions, timeout: ev.timeout ?? null, answers: null }));
         return;
       }
+      // omp 19.1+ sends the ask tool's whole HTML form as one request. Parse
+      // it into a model first: the HTML never enters the DOM. A form this
+      // shell cannot read is cancelled at once and leaves a visible note, so
+      // omp never waits on a card that could not be submitted. Errors are
+      // `{text, vars}` source strings, translated where they are shown.
+      if (ev.method === "form") {
+        const parsed = HTML_FORM.parse(ev.html);
+        if (!parsed.form) {
+          const sessionId = activeSessionId;
+          const bubble = _askMessage("form", ev, {
+            title: "Unsupported form",
+            form: null,
+            formError: parsed.error ?? { text: "The form could not be read." },
+            timeout: ev.timeout ?? null,
+            data: null,
+            cancelled: true,
+          });
+          state.messages = [...state.messages, bubble];
+          notify();
+          _send({ type: "extension_ui_response", id: ev.id, cancelled: true }).then(delivered => {
+            if (delivered) return;
+            // Reopened for its Retry (`cancelAsk`), whose successful
+            // settlement drops this marker again (`_settleAsk`).
+            _patchSessionBubble(sessionId, bubble, message => {
+              const open = _reopenAsk(message);
+              return open === message ? message : {
+                ...open,
+                deliveryError: { text: "Cancellation could not be delivered to omp." },
+              };
+            }, true);
+          });
+          return;
+        }
+        _queueAskBubble(_askMessage("form", ev, {
+          form: parsed.form,
+          timeout: ev.timeout ?? null,
+          data: null,
+        }));
+        return;
+      }
       // Yes/No confirmation dialog. Pushed directly — see the `input`
       // comment above for why (no guaranteed tool_execution_start
       // pairing). Wire shape confirmed against the installed omp binary:
@@ -2639,7 +2740,12 @@
           return;
         }
         // omp settled it itself (turn stopped, or its ask timeout ran out).
-        _settleAsk(ev.targetId, { cancelled: true, closedByOmp: true });
+        // This also wins over a local answer whose IPC hand-off is pending.
+        const bubble = state.messages.find(message => message.kind === "ask" && message.id === ev.targetId && !message.closedByOmp);
+        if (bubble) _patchSessionBubble(activeSessionId, bubble, message => {
+          const { answered: _a, answer: _v, answers: _answers, data: _data, deliveryError: _d, ...withdrawn } = message;
+          return { ...withdrawn, cancelled: true, closedByOmp: true };
+        });
         return;
       }
       // An extension's status line or text widget (#52): kept per tab, shown
@@ -4394,6 +4500,31 @@
     },
 
     /**
+     * Answer omp's HTML form (`extension_ui_request` method=form, omp
+     * 19.1+). `data` is built by OMP_HTML_FORM.buildData; omp validates it
+     * strictly (parseFormDialogResponse), and the settled bubble keeps it
+     * for its summary. Same re-answer guard as `answerAsk`.
+     * @param {string} id
+     * @param {Object<string, string|number|string[]>} data
+     */
+    answerForm(id, data) {
+      const message = state.messages.find(m => m.kind === "ask" && m.id === id && m.method === "form"
+        && !m.answered && !m.cancelled);
+      if (!message) return Promise.resolve(false);
+      const outgoing = message.form ? HTML_FORM.withHiddenDefaults(message.form, data) : data;
+      // The last gate before the wire: a form answered past its own rules
+      // would make omp fail the ask tool after the desktop already settled
+      // the bubble. Refuse here instead, leaving the card open and saying
+      // why on it (`formError`, a `{text, vars}` source string).
+      const problem = message.form ? HTML_FORM.answerError(message.form, outgoing) : null;
+      if (problem) {
+        _patchSessionBubble(activeSessionId, message, m => ({ ...m, formError: problem }));
+        return Promise.resolve(false);
+      }
+      return _resolveAsk(id, { answered: true, data: outgoing, formError: null }, { data: outgoing });
+    },
+
+    /**
      * Respond to a pending confirm dialog (extension_ui_request
      * method=confirm). Wire shape differs from `answerAsk`: the runtime
      * expects `{confirmed: bool}`, not `{value}` — confirmed against the
@@ -4466,27 +4597,34 @@
      *  the bubble is reopened for a plain Approve/Deny and a note says why —
      *  never a fallback `send_command` Approve, which would answer whatever
      *  process now holds the id. A non-null value means the prompt was
-     *  approved but the rule was not saved. Both only while this activation
-     *  of the tab is still the one shown (the bubble lives in its state). */
+     *  approved but the rule was not saved. The outcome patches the captured
+     *  prompt's own transcript and note even if the user switched tabs while
+     *  the IPC call ran; an omp withdrawal (`closedByOmp`) is left closed and
+     *  gets no "open again" note. */
     async approveAndRemember(prompt, scope) {
       const sessionId = prompt?.sessionId;
       if (!sessionId || sessionId !== activeSessionId || !prompt.id) return;
-      if (!_settleAsk(prompt.id, { answered: true, answer: "Approve" })) return;
+      const settled = _settleAsk(prompt.id, { answered: true, answer: "Approve" });
+      if (!settled) return;
       const gen = _switchGen;
       const res = await _invokeResult("approval_approve_and_grant", { sessionId, requestId: prompt.id, scope });
       const unsaved = res.ok ? res.value : null;
       if (res.ok && !unsaved) return;
-      if (_switchGen !== gen || activeSessionId !== sessionId) {
-        console.warn(`[live] approve and remember for '${sessionId}':`, res.ok ? unsaved : res.error);
-        return;
-      }
+      const switched = _switchGen !== gen || activeSessionId !== sessionId;
       if (!res.ok) {
-        _reopenAsk(prompt.id);
-        _pushAssistantNote(`**Approve and remember failed:** ${res.error}. The prompt is open again.`);
+        // Nothing reached omp: reopen the exact bubble this call settled in
+        // its own tab, so a following Deny has a live prompt to answer.
+        // Identity keeps an omp withdrawal, or a newer answer, from being
+        // rolled back — and a withdrawn prompt gets no "open again" note.
+        if (_patchSessionBubble(sessionId, settled, _reopenAsk)) {
+          _noteSession(sessionId, `**Approve and remember failed:** ${res.error}. The prompt is open again.`);
+        }
       } else {
-        _pushAssistantNote(`**Approved, but the rule was not saved:** ${unsaved}`);
+        _noteSession(sessionId, `**Approved, but the rule was not saved:** ${unsaved}`);
       }
-      notify();
+      if (switched) {
+        console.warn(`[live] approve and remember for '${sessionId}':`, res.ok ? unsaved : res.error);
+      }
     },
 
     /** Revoke a previously granted rule. No-op if it wasn't granted. */

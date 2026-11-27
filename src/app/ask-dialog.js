@@ -156,13 +156,22 @@
   /** The settled desktop bubble's one-line summary. Cancellation (including
    *  omp closing a timed-out dialog) keeps the existing status wording; an
    *  answered multi-question dialog exposes its non-empty answer count for
-   *  translated plurals (or the lone answer when only one question was filled). */
+   *  translated plurals (or the lone answer when only one question was filled).
+   *  A form reports its visible answers only; hidden inputs never show. A
+   *  form the desktop could not read carries the desktop's own title (a
+   *  source string or `{text, vars}`): `promptSource` holds it for
+   *  translation, `prompt` its English text. */
   function collapsedSummary(msg) {
     if (!msg?.answered && !msg?.cancelled) return null;
-    const source = nonBlank(msg.title) ?? nonBlank(msg.message) ?? msg.questions?.[0]?.question ?? "";
+    const own = msg?.method === "form" && !msg.form && msg.title ? msg.title : null;
+    const promptSource = typeof own === "string" ? { text: own } : own?.text ? own : null;
+    const formPrompt = msg?.method === "form" && msg.form ? window.OMP_HTML_FORM?.summaryPrompt(msg.form) : "";
+    const source = promptSource
+      ? window.OMP_HTML_FORM?.errorText(promptSource) ?? promptSource.text
+      : nonBlank(msg.title) ?? nonBlank(msg.message) ?? nonBlank(formPrompt) ?? msg.questions?.[0]?.question ?? "";
     const prompt = String(source).trimStart().split(/\r?\n/, 1)[0].trim();
     if (msg.cancelled) {
-      return { answer: null, answerCount: null, status: msg.closedByOmp ? "closed by omp" : "cancelled", prompt, negative: true };
+      return { answer: null, answerCount: null, status: msg.closedByOmp ? "closed by omp" : "cancelled", prompt, ...(promptSource ? { promptSource } : {}), negative: true };
     }
 
     let answer = nonBlank(msg.answer);
@@ -177,6 +186,10 @@
       } else {
         answer = answered.length === 1 ? answered[0].join(", ") : null;
       }
+    } else if (msg.method === "form") {
+      const shown = msg.form ? window.OMP_HTML_FORM?.summary(msg.form, msg.data) : null;
+      answer = shown?.answer ?? null;
+      answerCount = shown?.count ?? null;
     }
     const isChoice = !msg.method || msg.method === "select" || msg.method === "confirm";
     const status = answer === null && answerCount === null ? "nothing picked" : null;
@@ -185,6 +198,7 @@
       answerCount,
       status,
       prompt,
+      ...(promptSource ? { promptSource } : {}),
       negative: status !== null || (isChoice && answer?.trim().toLowerCase() === "deny"),
     };
   }

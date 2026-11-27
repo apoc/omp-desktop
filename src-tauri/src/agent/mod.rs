@@ -674,6 +674,13 @@ fn validate_command_type(trimmed: &str) -> Result<serde_json::Value, String> {
     if !ALLOWED_COMMAND_TYPES.contains(&cmd_type) {
         return Err(format!("command type '{cmd_type}' is not allowed"));
     }
+    if parsed.get("data").is_some()
+        && (cmd_type != "extension_ui_response" || !parsed["data"].is_object())
+    {
+        return Err(
+            "command 'data' is only allowed as an extension_ui_response object".to_string(),
+        );
+    }
     Ok(parsed)
 }
 
@@ -780,6 +787,33 @@ mod tests {
             "queuedFrame's frames"
         );
         frames.into_iter().for_each(allowed);
+    }
+
+    #[test]
+    fn validate_command_type_preserves_a_form_data_object() {
+        let line = r#"{"type":"extension_ui_response","id":"form-1","data":{"db":"pg","tags":["a","b"],"count":4}}"#;
+        let command = validate_command_type(line).expect("form answer is allowed");
+        assert_eq!(
+            command,
+            serde_json::json!({
+                "type": "extension_ui_response",
+                "id": "form-1",
+                "data": { "db": "pg", "tags": ["a", "b"], "count": 4 },
+            })
+        );
+    }
+
+    #[test]
+    fn validate_command_type_rejects_misplaced_or_non_object_data() {
+        for line in [
+            r#"{"type":"prompt","data":{}}"#,
+            r#"{"type":"extension_ui_response","data":null}"#,
+            r#"{"type":"extension_ui_response","data":[]}"#,
+            r#"{"type":"extension_ui_response","data":"secret"}"#,
+        ] {
+            assert!(validate_command_type(line).is_err(), "accepted {line}");
+        }
+        assert!(validate_command_type(r#"{"type":"prompt","text":"data"}"#).is_ok());
     }
 
     #[test]

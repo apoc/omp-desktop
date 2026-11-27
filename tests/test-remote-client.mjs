@@ -142,6 +142,16 @@ class Element {
   }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map(c => c.textContent).join(""); }
+  get value() { return this._value ?? ""; }
+  set value(value) {
+    this._value = String(value);
+    if (this.type === "range") {
+      const number = Number(this._value);
+      const min = this.min === undefined || this.min === "" ? 0 : Number(this.min);
+      const max = this.max === undefined || this.max === "" ? 100 : Number(this.max);
+      this._value = String(Math.min(max, Math.max(min, Number.isFinite(number) ? number : min)));
+    }
+  }
   set innerHTML(value) { this.markup = value; }
   get firstElementChild() { return this.children[0]; }
   pause() {}
@@ -150,6 +160,7 @@ class Element {
   append(...nodes) { this.children.push(...nodes); }
   replaceChildren(...nodes) { this._text = ""; this.children = nodes; }
   setAttribute(name, value) { assert.notEqual(name, "style"); this[name] = value; }
+  getAttribute(name) { return this[name] ?? null; }
   addEventListener(name, fn) { this.listeners[name] = fn; }
   async emit(name) { return this.listeners[name]?.({ preventDefault() {}, target: this }); }
   focus() { focused = this; }
@@ -200,6 +211,7 @@ function browser({ pair = false, token = "saved-token", standalone = true, pairS
   vm.runInContext(load("src/app/accent.js"), ctx);
   vm.runInContext(load("src/app/scroll-pin.js"), ctx);
   vm.runInContext(load("src/app/ask-dialog.js"), ctx);
+  vm.runInContext(load("src/app/html-form.js"), ctx);
   vm.runInContext(load("src/remote/client.js"), ctx);
   // Markdown safety itself uses the actual vendored libraries above.
   ctx.OMP_REMOTE_CLIENT.renderMarkdown = text => "SAFE:" + text;
@@ -478,6 +490,87 @@ await check("pick-any answers keep option order whatever order the buttons were 
   await b.button("R").emit("click"); await b.button("P").emit("click"); await b.button("Q").emit("click");
   await b.button("Answer").emit("click");
   assert.deepEqual(b.frames.at(-1).value, [{ id: "b", selectedOptions: ["P", "Q", "R"] }]);
+});
+await check("form asks render the parsed controls and send omp's data shape", async () => {
+  const b = browser(); await b.connect();
+  const db = { kind: "choice", name: "db", multi: false, select: false, other: true, label: "", required: true, options: [
+    { value: "pg", label: "Postgres", checked: true, disabled: false },
+    { value: "my", label: "MySQL", checked: false, disabled: false },
+    { value: "off", label: "Off", checked: false, disabled: true },
+  ] };
+  const name = { kind: "text", name: "name", type: "text", multiline: false, label: "Name", value: "", placeholder: "Your name", required: true, rows: 1 };
+  const form = {
+    sections: [{ title: "Setup", fieldset: true, blocks: [{ kind: "text", text: "Pick one", heading: false }, { kind: "field", field: 0 }, { kind: "field", field: 1 }, { kind: "image", alt: "Diagram" }] }],
+    fields: [db, name], hidden: [],
+  };
+  await b.message({ t: "view", view: { ...view().view, asks: [{ id: "f", kind: "form", title: "Setup", message: "", form, timeout: 30000 }] } });
+  assert.match(b.app.textContent, /Setup/);
+  assert.match(b.app.textContent, /Diagram/);
+  assert.match(b.app.textContent, /defaults after 30 s/);
+  assert.equal(b.button("Off").disabled, true);
+  const other = b.nodes().find(n => n.tagName === "input" && n.placeholder === "Other (type your own)");
+  other.value = "SQLite"; await other.emit("input");
+  await b.button("MySQL").emit("click");
+  assert.equal(other.value, "", "a radio pick clears the visible Other draft");
+  const text = b.nodes().find(n => n.tagName === "input" && n.placeholder === "Your name");
+  text.value = "Ada"; await text.emit("input");
+  await b.button("Submit").emit("click");
+  assert.equal(b.frames.at(-1).kind, "answer");
+  assert.equal(b.frames.at(-1).askId, "f");
+  assert.deepEqual(b.frames.at(-1).value, { db: "my", name: "Ada" });
+});
+await check("an untouched range shows and sends omp's own default on the phone", async () => {
+  // omp sends an untouched field's value as written; a native range would
+  // show its midpoint for "" and its maximum for an out-of-range value.
+  const b = browser(); await b.connect();
+  const field = (name, value) => ({ kind: "text", name, type: "range", multiline: false, label: name, value, placeholder: "", required: false, min: 1, max: 9, step: 1, rows: 1 });
+  const fields = [field("empty", ""), field("over", "99"), field("fine", "5")];
+  const form = { sections: [{ title: "", fieldset: false, blocks: fields.map((_, i) => ({ kind: "field", field: i })) }], fields, hidden: [] };
+  await b.message({ t: "view", view: { ...view().view, asks: [{ id: "r", kind: "form", title: "Range", message: "", form }] } });
+  const inputs = b.nodes().filter(n => n.tagName === "input" && n.className.includes("ask-other-input"));
+  assert.deepEqual(inputs.map(n => [n.type, n.value]), [["text", ""], ["text", "99"], ["range", "5"]]);
+  // 99 breaks max (omp 19.1 refuses it): Submit waits until it is fixed.
+  await b.button("Submit").emit("click");
+  assert.notEqual(b.frames.at(-1).kind, "answer");
+  inputs[1].value = "7"; await inputs[1].emit("input");
+  await b.button("Submit").emit("click");
+  assert.deepEqual(b.frames.at(-1).value, { empty: "", over: 7, fine: 5 });
+});
+await check("a reconnect keeps options the form disabled disabled and toggles selects too", async () => {
+  const b = browser(); await b.connect();
+  const pick = { kind: "choice", name: "p", multi: false, select: false, other: false, label: "", required: false, options: [
+    { value: "a", label: "A", checked: false, disabled: false },
+    { value: "b", label: "B", checked: false, disabled: true },
+  ] };
+  const sel = { kind: "choice", name: "s", multi: false, select: true, other: false, label: "S", required: false, options: [
+    { value: "x", label: "X", checked: true, disabled: false },
+  ] };
+  const form = { sections: [{ title: "", fieldset: false, blocks: [{ kind: "field", field: 0 }, { kind: "field", field: 1 }] }], fields: [pick, sel], hidden: [] };
+  await b.message({ t: "view", view: { ...view().view, asks: [{ id: "c", kind: "form", title: "C", message: "", form }] } });
+  const asks = b.nodes().find(n => n.className === "asks");
+  asks.querySelectorAll = selector => {
+    const tags = selector.split(",").map(part => part.trim());
+    const all = node => [node, ...node.children.flatMap(all)];
+    return all(asks).slice(1).filter(node => tags.includes(node.tagName));
+  };
+  const select = b.nodes().find(n => n.tagName === "select");
+  b.sockets[0].onclose({ code: 1006 });
+  assert.equal(b.button("A").disabled, true);
+  assert.equal(select.disabled, true, "a select is disabled while disconnected");
+  b.timers.at(-1).fn(); await b.connect();
+  assert.equal(b.button("A").disabled, false);
+  assert.equal(b.button("B").disabled, true, "the form's disabled option stays disabled");
+  assert.equal(select.disabled, false);
+});
+await check("an unsupported form shows its note and no submit button", async () => {
+  const b = browser(); await b.connect();
+  await b.message({ t: "view", view: { ...view().view, asks: [{ id: "bad", kind: "form", title: "Unsupported form", message: "", formError: { text: "This form has too many {what}.", vars: { what: "fields" } } }] } });
+  assert.match(b.app.textContent, /This form has too many fields\./);
+  assert.doesNotMatch(b.app.textContent, /\{what\}/);
+  assert.equal(b.button("Submit"), undefined);
+  const cancels = b.nodes().filter(n => n.tagName === "button" && n.textContent === "Cancel");
+  await cancels.at(-1).emit("click");
+  assert.equal(b.frames.at(-1).value, null);
 });
 // Rust's build_action drops a frame without a non-empty reqId, so every
 // select and action the phone builds must carry a unique one.

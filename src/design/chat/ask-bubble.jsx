@@ -6,14 +6,14 @@
    interactive until the user answers
    or the request is cancelled (by the runtime, or locally via Cancel). */
 
-const { Icon: _AskIcon, AskDialog: _AskDialog, OMP_ASK_DIALOG: _AskDialogRules } = window;
+const { Icon: _AskIcon, AskDialog: _AskDialog, FormDialog: _AskFormDialog, OMP_ASK_DIALOG: _AskDialogRules } = window;
 // Tool-approval prompts ("Allow tool: <name>" + detail lines): the
 // head/details split and the grant-eligible tool name. See app/approval.js.
 const { approvalInfo: _AskApprovalInfo } = window.OMP_APPROVAL;
 
 // `submitKey` ("enter" | "ctrl+enter", the tweak) is the editor textarea's
 // send chord (constants.js isSubmitKey); the single-line input keeps Enter.
-function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm, onCancelAsk, onGrant, hasProjectPath, submitKey = "enter" }) {
+function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onAnswerForm, onConfirm, onCancelAsk, onGrant, hasProjectPath, submitKey = "enter" }) {
   window.OMP_I18N.useLocale();
   const [draft, setDraft] = React.useState(msg.method === "editor" ? (msg.prefill ?? "") : "");
   const [expanded, setExpanded] = React.useState(false);
@@ -26,6 +26,7 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
   const tool = approval?.tool ?? null;
   // omp's ask dialog while it waits: question count and omp's timeout.
   const dialogOpen = method === "ask" && !done;
+  const formOpen = method === "form" && !done;
   const timeoutNote = dialogOpen ? _AskDialogRules.timeoutNote(msg.questions, msg.timeout) : null;
 
   const submit = (value) => {
@@ -62,6 +63,14 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
       <_AskDialog
         msg={msg}
         onSubmit={answers => onAnswerDialog(msg.id, answers)}
+        onCancel={decline}
+      />
+    );
+  } else if (method === "form") {
+    body = (
+      <_AskFormDialog
+        msg={msg}
+        onSubmit={data => onAnswerForm(msg.id, data)}
         onCancel={decline}
       />
     );
@@ -210,6 +219,8 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
         : OMP_TR(summary.status))
     : "";
   const summaryIcon = !summary?.negative ? "check" : summary.status === "nothing picked" ? "minus" : "close";
+  // A desktop-made prompt (an unreadable form's title) is a source string.
+  const summaryPrompt = summary?.promptSource ? OMP_TR(summary.promptSource.text, summary.promptSource.vars) : summary?.prompt;
 
   return (
     <div className={`row ask fade-up${highlighted ? " mm-hot" : ""}`} data-msg-idx={idx}>
@@ -231,17 +242,20 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onConfirm,
           >
             <_AskIcon name={summaryIcon} size={12} strokeWidth={2.2} dotColor="transparent" aria-hidden="true" />
             <span className="ask-collapsed-answer" title={summaryAnswer || undefined}>{summaryAnswer}</span>
-            <span className="ask-collapsed-prompt" title={summary.prompt || undefined}>{summary.prompt}</span>
+            <span className="ask-collapsed-prompt" title={summaryPrompt || undefined}>{summaryPrompt}</span>
             <span className="chip muted">{msg.time}</span>
             <_AskIcon name={expanded ? "chev" : "chevR"} size={10} color="var(--fg-4)" dotColor="transparent" aria-hidden="true" />
           </button>
         )}
         {!summary && (
           <div className="ass-meta">
-            <span className="mono" style={{ color: "var(--amber)" }}>{OMP_TR("Ask")}</span>
+            <span className="mono" style={{ color: "var(--amber)" }}>{method === "form" ? OMP_TR("form") : OMP_TR("Ask")}</span>
             <span className="chip muted">{msg.time}</span>
             {dialogOpen && msg.questions.length > 1 && (
               <span className="chip muted">{msg.questions.length} {OMP_TR("questions")}</span>
+            )}
+            {formOpen && msg.form && (
+              <span className="chip muted">{msg.form.fields.filter(field => field.name).length} {OMP_TR("fields")}</span>
             )}
             {timeoutNote && <span className="chip warn">{timeoutNote}</span>}
           </div>
