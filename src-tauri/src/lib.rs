@@ -652,14 +652,24 @@ fn extension_ui_state(
 
 /// The assistant message a session is streaming, as far as it got: omp sends
 /// only increments (`agent::inflight`), so a reactivated tab whose replay
-/// came back `dropped` seeds its streaming bubble from this. `None` between
+/// came back `dropped` seeds its streaming bubble from this. `null` between
 /// messages and for an unknown or ended session.
+///
+/// `async`, and a JSON body rather than a `Serialize` value: a tool call's
+/// arguments may nest up to `MAX_FRAME_DEPTH` levels, and serializing them
+/// recursively overflows the 1 MiB `WebView2` main thread a sync command
+/// runs on in a debug build. `AgentBridge::streaming_message` itself moves
+/// the serialization to the blocking pool (stack measured at
+/// `agent::inflight::snapshot_json`); Tauri hands the text over as is.
 #[tauri::command]
-fn streaming_message(
+async fn streaming_message(
     session_id: String,
-    bridge: State<'_, AgentBridge>,
-) -> Option<agent::inflight::Snapshot> {
-    bridge.streaming_message(&session_id)
+    app: AppHandle,
+) -> Result<tauri::ipc::Response, String> {
+    app.state::<AgentBridge>()
+        .streaming_message(&session_id)
+        .await
+        .map(tauri::ipc::Response::new)
 }
 
 /// List tool-approval rules currently in effect for a session/project pair.

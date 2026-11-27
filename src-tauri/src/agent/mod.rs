@@ -1,8 +1,9 @@
 //! Per-session omp process bridge.
 //!
 //! Each tab owns one omp child process spawned via `start_session`. Its
-//! stdout is forwarded as `agent://line/{session_id}` Tauri events; its
-//! exit (clean or otherwise) is announced as `agent://exit/{session_id}`.
+//! stdout's logical frames are forwarded as `agent://line/{session_id}`
+//! Tauri events; its exit (clean or otherwise) is announced as
+//! `agent://exit/{session_id}`.
 //!
 //! Submodules:
 //! - [`inner`]      — `BridgeInner` per-session record (generation token,
@@ -11,6 +12,9 @@
 //!   `CREATE_NO_WINDOW` flag.
 //! - [`reader`]     — stdout/stderr reader threads, bounded
 //!   `read_until_capped`, and credential redaction.
+//! - [`frames`]     — physical stdout lines → logical frames: protocol-v2
+//!   chunk reassembly, lone-surrogate repair, deep-frame parsing, and the
+//!   `desktop_frame_error` diagnostic (#94).
 //! - [`journal`]    — bounded per-session event ring + replay.
 //! - [`ext_ui`]     — latest omp extension status lines / widgets (#52).
 //! - [`inflight`]   — the assistant message being streamed, rebuilt from
@@ -22,6 +26,7 @@
 
 mod approvals;
 pub mod ext_ui;
+mod frames;
 pub mod inflight;
 mod inner;
 pub mod journal;
@@ -37,7 +42,7 @@ use tauri::AppHandle;
 
 use approvals::PendingApprovals;
 use ext_ui::ExtUiState;
-use inflight::{InFlight, Snapshot};
+use inflight::InFlight;
 use inner::BridgeInner;
 use journal::{EventJournal, Replay};
 use reader::{spawn_stderr_reader, spawn_stdout_reader};
@@ -51,10 +56,12 @@ use spawn::spawn_omp;
 const EVENT_JOURNAL_CAPACITY: usize = 4096;
 
 /// Total byte budget for one session's event journal. Bounds the ring by
-/// size as well as entry count: a single RPC line may be up to
-/// `reader::MAX_LINE_BYTES` (16 MiB), so the line count alone (4096 × 16 MiB)
-/// would permit tens of gigabytes of resident memory per open tab. 8 MiB comfortably holds a
-/// normal background-tab gap while capping the pathological case.
+/// size as well as entry count: one entry is one logical frame, up to
+/// `frames::MAX_REASSEMBLED_BYTES` (64 MiB) when omp chunked it, so the
+/// entry count alone (4096 × 64 MiB) would permit hundreds of gigabytes of
+/// resident memory per open tab. 8 MiB comfortably holds a normal
+/// background-tab gap while capping the pathological case; a single larger
+/// frame is still kept on its own (see `journal.rs`).
 const EVENT_JOURNAL_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 /// Written to every omp process's stdin right after the spawn, before the
@@ -159,8 +166,12 @@ pub struct ConditionalStop {
 /// Manages one omp process per tab session.
 ///
 /// # Events
-/// - `agent://line/{session_id}` — payload: a single JSON-encoded RPC
-///   line (string). One event per line that omp wrote to stdout.
+/// - `agent://line/{session_id}` — payload: `{seq, text}`, `text` one
+///   logical RPC frame as JSON text, redacted, stamped with its journal
+///   `seq`. One event per logical frame: an ordinary stdout line, a chunk
+///   run omp split a frame of 1 MiB or more into (up to 64 MiB, reassembled
+///   into one event), or a fixed `desktop_frame_error` diagnostic standing
+///   in for a line or run the desktop could not use.
 /// - `agent://exit/{session_id}` — payload: a string. Empty (`""`) on
 ///   normal process exit; non-empty contains a human-readable error
 ///   describing why the session ended (spawn failed, line truncated past
@@ -489,15 +500,23 @@ impl AgentBridge {
     }
 
     /// The assistant message a session is streaming, as far as it got (see
-    /// [`inflight`]); `None` between messages and for an unknown or ended
-    /// session.
-    pub fn streaming_message(&self, session_id: &str) -> Option<Snapshot> {
+    /// [`inflight`]), as JSON text: `null` between messages and for an
+    /// unknown or ended session. Takes the session's state out under the
+    /// `sessions` lock, then serializes it on Tauri's blocking pool
+    /// ([`crate::off_ipc`]) rather than the caller's thread: the recursion
+    /// needs more stack than the 1 MiB `WebView2` main thread a sync command
+    /// runs on (see [`inflight::snapshot_json`] for the measure).
+    ///
+    /// # Errors
+    /// Serializing the snapshot failed, or the worker panicked.
+    pub async fn streaming_message(&self, session_id: &str) -> Result<String, String> {
         let Ok(Some(inflight)) = self.with_entry(session_id, |inner| Arc::clone(&inner.inflight))
         else {
-            return None;
+            return Ok("null".to_owned());
         };
-        // Copied out under the reader's lock, serialised after it is released.
-        inflight.lock().ok().and_then(|s| s.snapshot())
+        crate::off_ipc(move || inflight::snapshot_json(&inflight))
+            .await?
+            .map_err(|e| e.to_string())
     }
 
     /// `pick` applied to `session_id`'s map entry, holding the `sessions`
@@ -935,6 +954,35 @@ mod tests {
         // An ended or stopped session's entry is gone, and its state with it.
         bridge.sessions.lock().unwrap().remove("sess-x");
         assert_eq!(bridge.extension_ui_state("sess-x"), ExtUiState::default());
+    }
+
+    #[test]
+    fn streaming_message_follows_the_session_entry() {
+        let bridge = AgentBridge::new();
+        let state = Mutex::new(InFlight::default());
+        inflight::record(
+            &state,
+            3,
+            Some(serde_json::json!({
+                "type": "message_start", "messageId": "msg-1",
+                "message": { "role": "assistant", "content": [] },
+            })),
+        );
+        bridge.sessions.lock().unwrap().insert(
+            "sess-x".into(),
+            BridgeInner {
+                inflight: Arc::new(state),
+                ..idle_inner(Arc::new(AtomicBool::new(true)))
+            },
+        );
+        let streaming = |id: &str| tauri::async_runtime::block_on(bridge.streaming_message(id));
+        assert_eq!(
+            streaming("sess-x").unwrap(),
+            r#"{"messageId":"msg-1","seq":3,"message":{"content":[],"role":"assistant"}}"#
+        );
+        assert_eq!(streaming("other").unwrap(), "null");
+        bridge.sessions.lock().unwrap().remove("sess-x");
+        assert_eq!(streaming("sess-x").unwrap(), "null");
     }
 
     #[test]

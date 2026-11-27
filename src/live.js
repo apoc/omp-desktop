@@ -1065,7 +1065,6 @@
     for (const ul of activeListeners) { try { await ul(); } catch (_) {} }
     if (_switchGen !== myGen) return; // superseded by a newer switch
     activeListeners = [];
-    _chunkAcc = null; // drop any partial chunk run from the previous session
 
     activeSessionId = id;
     _noTabProfileId = null;
@@ -1238,68 +1237,12 @@
     }
   }
 
-  // ── v2 lossless transport: rpc_chunk reassembly ──────────────────────────
-  // After negotiate_protocol v2, omp emits oversized stdout objects (e.g. the
-  // ~2 MiB get_available_models response) as an uninterrupted sequence of
-  // rpc_chunk frames. Each carries a base64 segment of the original UTF-8 JSON.
-  const MAX_REASSEMBLED_FRAME = 64 * 1024 * 1024; // matches ready.maxReassembledFrameBytes
-
-  /** Decode base64 (rpc_chunk segments, terminal output) to its bytes. */
+  /** Decode base64 (terminal output) to its bytes. */
   function _b64Bytes(b64) {
     const bin = atob(b64);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     return bytes;
-  }
-
-  // Pure: validate a complete set of rpc_chunk frames for one chunkId and
-  // return the parsed JSON object. Throws on any inconsistency.
-  function reassembleRpcChunks(frames) {
-    if (!Array.isArray(frames) || frames.length === 0) throw new Error("rpc_chunk: empty frame set");
-    const { chunkId, count, byteLength } = frames[0];
-    if (!Number.isInteger(count) || count < 1) throw new Error("rpc_chunk: bad count");
-    if (frames.length !== count) throw new Error(`rpc_chunk: expected ${count} frames, got ${frames.length}`);
-    if (!Number.isInteger(byteLength) || byteLength < 0 || byteLength > MAX_REASSEMBLED_FRAME)
-      throw new Error("rpc_chunk: byteLength out of range");
-    const parts = new Array(count);
-    for (const f of frames) {
-      if (f.chunkId !== chunkId)   throw new Error("rpc_chunk: chunkId mismatch");
-      if (f.count !== count)       throw new Error("rpc_chunk: count mismatch");
-      if (f.byteLength !== byteLength) throw new Error("rpc_chunk: byteLength mismatch");
-      if (!Number.isInteger(f.index) || f.index < 0 || f.index >= count) throw new Error("rpc_chunk: index out of range");
-      if (parts[f.index] !== undefined) throw new Error("rpc_chunk: duplicate index");
-      parts[f.index] = _b64Bytes(f.data);
-    }
-    let total = 0;
-    for (const p of parts) total += p.length;
-    if (total !== byteLength) throw new Error(`rpc_chunk: byte length mismatch (${total} != ${byteLength})`);
-    const merged = new Uint8Array(total);
-    let off = 0;
-    for (const p of parts) { merged.set(p, off); off += p.length; }
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(merged);
-    return JSON.parse(text);
-  }
-  window.reassembleRpcChunks = reassembleRpcChunks;
-
-  // Stateful accumulator for the in-flight chunk sequence. Chunks arrive as an
-  // uninterrupted run; a chunkId change mid-run means the prior run was dropped.
-  let _chunkAcc = null; // { chunkId, count, frames: [] }
-
-  function _ingestChunk(frame) {
-    if (!_chunkAcc || _chunkAcc.chunkId !== frame.chunkId) {
-      if (_chunkAcc) console.warn(`[live] rpc_chunk '${_chunkAcc.chunkId}' interrupted by '${frame.chunkId}'`);
-      _chunkAcc = { chunkId: frame.chunkId, count: frame.count, frames: [] };
-    }
-    _chunkAcc.frames.push(frame);
-    if (_chunkAcc.frames.length < _chunkAcc.count) return null;
-    const frames = _chunkAcc.frames;
-    _chunkAcc = null;
-    try {
-      return reassembleRpcChunks(frames);
-    } catch (e) {
-      console.error(`[live] rpc_chunk reassembly failed: ${e.message}`);
-      return null;
-    }
   }
 
   /** Spawn omp for session `id` under `profile` and wire its git-branch
@@ -2205,9 +2148,11 @@
   // ── RPC line handler ──────────────────────────────────────────────────────
   // `agent://line/{id}` payloads and `replay_events` results share one shape:
   // `{seq, text}` — `seq` is the event's position in the backend's bounded
-  // per-session journal, `text` is the raw (already credential-redacted)
-  // RPC line. Routed through the same _dispatchEnvelope so live and
-  // replayed events can't diverge in behaviour.
+  // per-session journal, `text` is one already credential-redacted logical
+  // RPC frame (the Rust reader reassembles omp's protocol-v2 `rpc_chunk` runs
+  // before redacting; no envelope reaches the webview). Routed through the
+  // same _dispatchEnvelope so live and replayed events can't diverge in
+  // behaviour.
   function handleLine(envelope) {
     if (!envelope || typeof envelope.text !== "string") return;
     if (_replayBuffer) {
@@ -2239,16 +2184,19 @@
     try { obj = JSON.parse(envelope.text); } catch { return; }
     if (!obj || typeof obj !== "object") return;
 
-    if (obj.type === "rpc_chunk") {
-      obj = _ingestChunk(obj);
-      if (!obj) return; // sequence incomplete or reassembly failed
-    }
-
     _dispatchFrame(obj);
   }
 
   function _dispatchFrame(obj) {
     const { type } = obj;
+
+    // The Rust reader's stand-in for a line or chunk run it could not turn
+    // into a frame (`agent/frames.rs`): a fixed reason, no content. Nothing
+    // to show; the omp frame it replaces is lost either way.
+    if (type === "desktop_frame_error") {
+      console.warn(`[live] omp sent an unusable frame: ${obj.reason}`);
+      return;
+    }
 
     if (type === "ready") {
       console.log(`[live] ready from session '${activeSessionId}'`);
@@ -3221,8 +3169,9 @@
 
   function _initFetch() {
     // Negotiate protocol v2 first so oversized responses (get_available_models
-    // is ~2 MiB, well past the v1 1 MiB frame cap) arrive as reassembled
-    // rpc_chunk sequences instead of failing with a transport-limit error.
+    // is ~2 MiB, well past the v1 1 MiB frame cap) arrive as rpc_chunk runs,
+    // which the Rust reader reassembles, instead of failing with a
+    // transport-limit error.
     // Await the negotiate response so v2 is active before the large fetches are
     // dispatched (stdin is processed in order, but this avoids any IPC-ordering
     // race). A v1 server or a repeat negotiate simply rejects — harmless.
