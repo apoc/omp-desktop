@@ -367,6 +367,7 @@ function liveBridge() {
     OMP_QUEUE: { EMPTY_QUEUE: {} }, OMP_GOAL: { UNKNOWN: {} }, OMP_EXT_WIDGETS: { EMPTY: {} },
     OMP_TRANSCRIPT: {}, OMP_PROMPT_HISTORY: { DEFAULT_LIMIT: 100 },
     OMP_SESSION_PREFS: { fromTweaks: () => ({}) }, OMP_TWEAKS_STORE: { read: () => ({}) },
+    OMP_NOTIFY_SOUND: { prefsFrom: () => ({}), cue: () => null },
     INTENT_FRAMING: () => "", timeNow: () => "00:00",
   };
   runInNewContext(source("src/app/live-voice.js"), { window });

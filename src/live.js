@@ -16,6 +16,7 @@
   const SUB = window.OMP_SUBAGENTS;
   const STITLE = window.OMP_SESSION_TITLE;
   const PREFS = window.OMP_SESSION_PREFS;
+  const SOUND = window.OMP_NOTIFY_SOUND;
   const QUEUE = window.OMP_QUEUE;
   const ASK = window.OMP_ASK_DIALOG;
   const HTML_FORM = window.OMP_HTML_FORM;
@@ -270,6 +271,9 @@
   // read from the stored tweaks at load so the boot restore sees
   // `restoreTabs` before React mounts; `setSessionPrefs` keeps them current.
   let sessionPrefs = PREFS.fromTweaks(window.OMP_TWEAKS_STORE.read(), window.TWEAK_DEFAULTS);
+  // Notification sounds (#91, app/notify-sound.js): the mode, the two cue
+  // sounds and the volume, validated; `setSessionPrefs` keeps them current.
+  let soundPrefs = SOUND.prefsFrom(window.OMP_TWEAKS_STORE.read(), window.TWEAK_DEFAULTS);
   // The busy-close confirmation on screen (`PREFS.tabCloseConfirm` /
   // `quitConfirm` shape), or null; `_closeConfirmAnswer` settles it.
   let closeConfirm = null;
@@ -1480,7 +1484,7 @@
     listener.ready
       .then(() => _invokeSafe("attention_snapshot", {}, null))
       .then(snapshot => {
-        if (snapshot) _applyAttention(snapshot, false);
+        if (snapshot) _applyAttention(snapshot, { bounce: false, sound: false });
       });
   }
 
@@ -1493,7 +1497,12 @@
       && a.asksOpened === b.asksOpened && a.background === b.background;
   }
 
-  function _applyAttention(snapshot, bounce = true) {
+  /** Apply a tracker snapshot. `bounce` / `sound`: whether a new ask may
+   *  bounce the dock / a cue may play. The page's first read (state it was
+   *  not there to see) passes neither; a re-read before a busy-close decision
+   *  (`_refreshAttention`) may apply a revision before its event does, so it
+   *  keeps the sound and only skips the bounce. */
+  function _applyAttention(snapshot, { bounce = true, sound = true } = {}) {
     const sessions = snapshot?.sessions;
     if (!sessions || typeof sessions !== "object") return;
     const revision = Number.isFinite(snapshot.revision) ? snapshot.revision : -1;
@@ -1518,11 +1527,14 @@
       if (next[id] === undefined && sessionRegistry.has(id)) _trackerEvidence.set(id, revision);
     }
     // A question opened in any tab bounces the dock once while the window
-    // is not focused; a focused window already shows the tab dot.
+    // is not focused; a focused window already shows the tab dot. The
+    // notification sound reads the same snapshot (any tab, tracker edges).
     const focused = typeof document !== "undefined" && document.hasFocus?.() === true;
     if (bounce && window.OMP_ATTENTION?.shouldBounce({ previous: trackerLive, next, focused })) {
       window.OMP_ATTENTION.requestAttention(window);
     }
+    const cue = sound ? SOUND.cue({ previous: trackerLive, next, focused, prefs: soundPrefs }) : null;
+    if (cue) SOUND.play(soundPrefs[cue], soundPrefs.volume);
     trackerLive = next;
     trackerLoaded = true;
     notify();
@@ -3562,13 +3574,14 @@
     void _invokeSafe("set_close_guard", { armed, enabled });
   }
 
-  /** Re-read the tracker (`attention_snapshot`, no dock bounce) before a
+  /** Re-read the tracker (`attention_snapshot`, no dock bounce; a finish or
+   *  question it finds still plays its sound) before a
    *  busy-close decision, so a turn a background tab started since the last
    *  `agent://attention` event counts. A failed or empty read keeps the
    *  current view; an older one is dropped by `_applyAttention`. */
   async function _refreshAttention() {
     const snapshot = await _invokeSafe("attention_snapshot", {}, null);
-    if (snapshot) _applyAttention(snapshot, false);
+    if (snapshot) _applyAttention(snapshot, { bounce: false });
   }
 
   /** Show `confirm` and resolve to the user's answer. A newer request
@@ -5429,15 +5442,21 @@
     },
 
     /** Apply Settings → Session prefs (`restoreTabs`, `confirmBusyClose`,
-     *  `autoName`, `showCompactedHistory`; any subset, the rest kept).
-     *  Idempotent: only a changed value acts. `restoreTabs` only matters at
-     *  launch (read from the stored tweaks then), `autoName` at each
-     *  auto-title check and `showCompactedHistory` at each get_messages, so
+     *  `autoName`, `showCompactedHistory`, and the notification sounds
+     *  `notifySound`, `soundAttention`, `soundFinished`, `soundVolume`; any
+     *  subset, the rest kept). Idempotent: only a changed value acts.
+     *  `restoreTabs` only matters at launch (read from the stored tweaks
+     *  then), `autoName` at each auto-title check, `showCompactedHistory`
+     *  at each get_messages and the sounds at each tracker snapshot, so
      *  none of them sends anything here. */
     setSessionPrefs(values) {
       // fromTweaks keeps only PREFS.KEYS, so the whole tweaks object may come in.
       const next = PREFS.fromTweaks({ ...sessionPrefs, ...values }, window.TWEAK_DEFAULTS);
       const changed = PREFS.changedKeys(sessionPrefs, next);
+      soundPrefs = SOUND.prefsFrom({
+        notifySound: soundPrefs.mode, soundAttention: soundPrefs.attention, soundFinished: soundPrefs.finished,
+        soundVolume: soundPrefs.volume, ...values,
+      }, window.TWEAK_DEFAULTS);
       if (changed.length === 0) return;
       sessionPrefs = next;
       if (changed.includes("confirmBusyClose")) _syncCloseGuard(_sessionsView());

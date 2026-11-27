@@ -6,6 +6,8 @@
 // the raise-only union of its frozen state and that dot (#89). Approval
 // restarts go through Rust's conditional stop (`stop_session_if_idle`),
 // and a prompt sent while the tab's omp restarts is refused, draft kept.
+// A turn end or new question plays a notification sound (#91: the
+// `notify_sound_play` invoke, app/notify-sound.js), for any tab.
 // Loads the real live.js/turn-status.js/attention.js into a stubbed Tauri
 // whose fake tracker answers `attention_snapshot` and the conditional stop.
 // Run: node tests/test-attention-bridge.mjs
@@ -31,7 +33,7 @@ const atWork = e => !!e && (e.busy || e.asks > 0 || e.background);
 // `unguarded`: counter-probe that restores the pre-#89 guard (`runState`
 // = the frozen state alone). `boot`: Tauri exists while live.js loads, so
 // its startup wiring (the `window://close-requested` listener) runs.
-function harness(initial = null, { unguarded = false, boot = false } = {}) {
+function harness(initial = null, { unguarded = false, boot = false, tweaks = {} } = {}) {
   const listeners = new Map(), journal = new Map(), bounces = [], commands = [], sent = [], guardCalls = [], closes = [];
   const initialRef = { snapshot: initial };
   // The fake approval-mode store: `start_session` resolves the mode its
@@ -51,12 +53,14 @@ function harness(initial = null, { unguarded = false, boot = false } = {}) {
       queuedFrame: (kind, message) => ({ type: kind === "steer" ? "steer" : "follow_up", message }) },
     OMP_SUBAGENTS: { emptySubagents: () => ({}), subscriptionLevelFor: () => "progress", mergeSnapshots: () => ({}) },
     OMP_EXT_WIDGETS: { EMPTY: {} },
-    OMP_TWEAKS_STORE: { read: () => ({}) },
+    OMP_TWEAKS_STORE: { read: () => tweaks },
+    // Only the sound defaults: PREFS reads its own keys as off without them.
+    TWEAK_DEFAULTS: { notifySound: "off", soundAttention: "bell", soundFinished: "chime", soundVolume: 60 },
     // adapter.js's context breakdown; a get_state response needs one.
     buildCtx: () => ({}),
     DEFAULT_PROFILE_ID: "default", INTENT_FRAMING: () => "", timeNow: () => "00:00",
   };
-  for (const file of ["app/live-voice.js", "app/turn-status.js", "app/attention.js", "app/ask-dialog.js", "app/project-nav.js",
+  for (const file of ["app/live-voice.js", "app/turn-status.js", "app/attention.js", "app/notify-sound.js", "app/ask-dialog.js", "app/project-nav.js",
     "app/transcript-merge.js", "app/stream-delta.js", "app/approval.js", "app/live-context.js", "app/approval-mode.js", "app/session-title.js",
     "app/session-prefs.js", "app/message-queue.js", "app/goal.js", "app/prompt-history.js"]) load(w, file);
   const timeout = (fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; };
@@ -188,6 +192,8 @@ function harness(initial = null, { unguarded = false, boot = false } = {}) {
   return {
     bridge: w.OMP_BRIDGE, emit, attention, setRust, fire, reply, sent, runState, displayRunState, armed, commands,
     bounces, setInitial, tick, getSnapshot: () => snapshot, closes,
+    /** What the sound module asked Rust to play (`notify_sound_play`). */
+    sounds: () => commands.filter(c => c.command === "notify_sound_play").map(c => c.args),
     guardArgs: () => commands.filter(c => c.command === "set_close_guard").at(-1)?.args ?? null,
     holdStart: () => { startHold = {}; return startHold; },
     holdStop: () => { stopHold = {}; return stopHold; },
@@ -828,6 +834,121 @@ await check("a frozen retry row does not outlive the run it belongs to", async (
   // An ordinary new wake starts a run: not the old retry row again.
   h.attention({ [a]: { busy: true, asks: 0, asksOpened: 0, background: false } }, 4);
   assert.equal(h.displayRunState(a), "running", "P2: a new wake is running, not the old retry");
+});
+
+const at = (busy, asksOpened = 0) => ({ busy, asks: asksOpened > 0 ? 1 : 0, asksOpened, background: false });
+
+await check("#91: a finished turn plays the finished sound, the first snapshot nothing", async () => {
+  focused = false;
+  const h = harness(null, { tweaks: { notifySound: "always", soundFinished: "knock", soundVolume: 40 } });
+  const a = await h.bridge.openSession("/alpha");
+  await h.bridge.activateSession(a);
+  h.attention({ [a]: at(true) });
+  assert.deepEqual(h.sounds(), [], "the first snapshot is not new");
+  h.attention({ [a]: at(true) });
+  assert.deepEqual(h.sounds(), [], "still working");
+  h.attention({ [a]: at(false) });
+  assert.deepEqual(h.sounds(), [{ sound: "knock", volume: 40 }]);
+  h.attention({ [a]: at(false) });
+  assert.equal(h.sounds().length, 1, "idle → idle is not a finish");
+});
+
+await check("#91: a new question plays the attention sound; one sound per snapshot, attention first", async () => {
+  focused = false;
+  const h = harness(null, { tweaks: { notifySound: "always", soundAttention: "pop" } });
+  const a = await h.bridge.openSession("/alpha");
+  const b = await h.bridge.openSession("/beta");
+  await h.bridge.activateSession(a);
+  h.attention({ [a]: at(true), [b]: at(false) });
+  h.attention({ [a]: at(false), [b]: at(false, 1) });   // a finishes while b asks
+  assert.deepEqual(h.sounds(), [{ sound: "pop", volume: 60 }]);
+});
+
+await check("#91: a background tab's turn end and question play too", async () => {
+  focused = false;
+  const h = harness(null, { tweaks: { notifySound: "always" } });
+  const a = await h.bridge.openSession("/alpha");
+  const b = await h.bridge.openSession("/beta");
+  await h.bridge.activateSession(b);
+  h.attention({ [a]: at(true), [b]: at(false) });
+  h.attention({ [a]: at(false), [b]: at(false) });
+  assert.deepEqual(h.sounds(), [{ sound: "chime", volume: 60 }]);
+});
+
+await check("#91: the initial reply and a closed tab's entry play nothing", async () => {
+  focused = false;
+  const h = harness(null, { tweaks: { notifySound: "always" } });
+  const a = await h.bridge.openSession("/alpha");
+  const b = await h.bridge.openSession("/beta");
+  // A live event lands while the `attention_snapshot` read is out; the read
+  // comes back newer, with that turn already over and a question open.
+  h.attention({ [a]: at(true), [b]: at(false) }, 1);
+  h.setInitial({ revision: 2, sessions: { [a]: at(false), [b]: at(false, 3) } });
+  await h.tick();
+  assert.deepEqual(h.sounds(), [], "the initial reply's state is not new");
+  await h.bridge.activateSession(b);
+  h.attention({ [a]: at(true), [b]: at(false, 3) });
+  assert.equal(await h.bridge.closeSession(a), true);
+  h.attention({ [a]: at(false), [b]: at(false, 3) });   // the closed tab's late event
+  h.attention({ [b]: at(false, 3) });
+  assert.deepEqual(h.sounds(), [], "a closed or vanished entry is not a finish");
+});
+
+await check("#91: the mode decides — off is silent, background only while unfocused, always plays focused", async () => {
+  const run = async (notifySound, hasFocus) => {
+    focused = hasFocus;
+    const h = harness(null, { tweaks: { notifySound } });
+    const a = await h.bridge.openSession("/alpha");
+    await h.bridge.activateSession(a);
+    h.attention({ [a]: at(true) });
+    h.attention({ [a]: at(false) });
+    return h.sounds().length;
+  };
+  assert.equal(await run("off", false), 0);
+  assert.equal(await run("background", true), 0);
+  assert.equal(await run("background", false), 1);
+  assert.equal(await run("always", true), 1);
+  assert.equal(await run("nonsense", false), 0, "an invalid stored mode reads as the default (off)");
+  focused = false;
+});
+
+await check("#91: setSessionPrefs takes effect at once and keeps keys it omits", async () => {
+  focused = false;
+  const h = harness();
+  const a = await h.bridge.openSession("/alpha");
+  await h.bridge.activateSession(a);
+  const finish = () => { h.attention({ [a]: at(true) }); h.attention({ [a]: at(false) }); return h.sounds().length; };
+  assert.equal(finish(), 0, "off by default");
+  h.bridge.setSessionPrefs({ notifySound: "always", soundFinished: "blip", soundVolume: 25 });
+  assert.equal(finish(), 1);
+  assert.deepEqual(h.sounds().at(-1), { sound: "blip", volume: 25 });
+  h.bridge.setSessionPrefs({ soundVolume: 80 });         // partial: mode and sound stay
+  assert.equal(finish(), 2);
+  assert.deepEqual(h.sounds().at(-1), { sound: "blip", volume: 80 });
+  h.bridge.setSessionPrefs({ soundFinished: "none" });
+  assert.equal(finish(), 2, "none keeps the cue silent");
+  h.bridge.setSessionPrefs({ soundFinished: "rise", notifySound: "off" });
+  assert.equal(finish(), 2, "mode off is silent");
+});
+
+await check("#91: a busy-close re-read that finds a finished turn plays it, once", async () => {
+  focused = false;
+  const h = harness(null, { boot: true, tweaks: { notifySound: "always", soundFinished: "rise" } });
+  await flush(4);
+  const a = await h.bridge.openSession("/alpha");
+  const b = await h.bridge.openSession("/beta");
+  await h.bridge.activateSession(a);
+  await h.tick();
+  h.attention({ [a]: at(true), [b]: at(false) });
+  await h.bridge.setSessionPrefs({ confirmBusyClose: true });
+  // A's turn ended; Rust knows, its event has not reached the webview. The
+  // close's fresh read applies that revision, so the later event is stale.
+  h.setRust({ [a]: at(false), [b]: at(false) });
+  assert.equal(await h.bridge.closeSessionGuarded(b), true);
+  assert.deepEqual(h.sounds(), [{ sound: "rise", volume: 60 }], "the re-read's finish is not swallowed");
+  h.attention({ [a]: at(false), [b]: at(false) }, 2);   // the event that carried it (the re-read's revision): stale
+  assert.equal(h.sounds().length, 1, "and not again");
+  assert.deepEqual(h.bounces, [], "the re-read never bounces");
 });
 
 console.log(`test-attention-bridge: ${passed} checks passed`);

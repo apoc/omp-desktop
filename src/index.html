@@ -542,6 +542,7 @@
   <script type="text/babel" src="design/settings/rows-programs.jsx"></script>
   <script type="text/babel" src="design/settings/rows-agent.jsx"></script>
   <script type="text/babel" src="design/settings/rows-session.jsx"></script>
+  <script type="text/babel" src="design/settings/rows-sounds.jsx"></script>
   <script type="text/babel" src="design/settings/rows-approvals.jsx"></script>
   <script type="text/babel" src="design/settings/rows-remote-shared.jsx"></script>
   <script type="text/babel" src="design/settings/rows-remote-server.jsx"></script>
@@ -585,6 +586,12 @@
        ask in any tab. Dependency-free IIFE; live.js and app/use-widgets.jsx
        read window.OMP_ATTENTION at call time, so it must load before both. -->
   <script src="app/attention.js"></script>
+  <!-- Notification sounds (#91): the cue rule and the request to play a
+       sound that live.js makes from `_applyAttention` (window.OMP_NOTIFY_SOUND,
+       read at its top-level init, so it must load before live.js). Reads
+       OMP_ATTENTION at call time; design/settings/rows-sounds.jsx reads it
+       at render. -->
+  <script src="app/notify-sound.js"></script>
   <script src="live.js"></script>
 
   <!-- App root — wired to OMP_BRIDGE, no demo effects -->
