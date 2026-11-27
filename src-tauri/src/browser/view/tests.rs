@@ -12,9 +12,10 @@ use tungstenite::{Message, WebSocket};
 
 use super::super::cdp::CdpClient;
 use super::super::tests::{
-    cdp_result, fake_cdp, http_get, manager, manager_with_chromium, mouse, CHROMIUM,
+    cdp_result, fake_cdp, http_get, manager, manager_with_chromium, mouse, CHROMIUM, CHROMIUM_EVENT,
 };
 use super::super::{lock, BrowserManager};
+use super::frames::ACK_TIMEOUT;
 use super::{
     checked_url, BrowserEmit, Core, Frame, InputEvent, Pick, Status, TabInfo, View, ViewState,
 };
@@ -33,6 +34,8 @@ enum Seen {
 #[derive(Default)]
 struct Collect {
     log: Mutex<Vec<Seen>>,
+    /// When each frame arrived, in the order of the frames in `log`.
+    frame_times: Mutex<Vec<Instant>>,
     view: OnceLock<Weak<View>>,
 }
 
@@ -74,6 +77,18 @@ impl Collect {
             .count()
     }
 
+    /// The median gap between consecutive arrivals among the first `n`
+    /// frames; `None` before `n` frames came.
+    fn median_gap(&self, n: usize) -> Option<Duration> {
+        let mut gaps: Vec<Duration> = lock(&self.frame_times)
+            .get(..n)?
+            .windows(2)
+            .map(|w| w[1].duration_since(w[0]))
+            .collect();
+        gaps.sort_unstable();
+        gaps.get(gaps.len() / 2).copied()
+    }
+
     fn last_tabs(&self) -> Vec<TabInfo> {
         lock(&self.log)
             .iter()
@@ -95,6 +110,7 @@ impl Collect {
 
 impl BrowserEmit for Collect {
     fn frame(&self, _: &str, f: &Frame) {
+        lock(&self.frame_times).push(Instant::now());
         lock(&self.log).push(Seen::Frame(f.clone())); // the log owns what it records
         if let Some(view) = self.view.get().and_then(Weak::upgrade) {
             view.frame_ack(f.seq);
@@ -178,19 +194,11 @@ pub(super) fn sent_count(sent: &Mutex<Vec<String>>, method: &str) -> usize {
     lock(sent).iter().filter(|m| *m == method).count()
 }
 
-const SECS_3: Duration = Duration::from_secs(3);
-
-/// How long the view's state may take to follow a navigation: on a loaded
-/// runner Chromium's page events trail it by seconds (locally under a CPU
-/// burn: up to 5.5s, and the former 3s/5s waits failed 3 of 18 runs; CI's
-/// Windows runner failed the same way). The waits end once the state is there.
-const NAVIGATION_STATE: Duration = Duration::from_secs(20);
-
 /// Wait until the shown page has loaded a document where `condition` (JS)
 /// holds: `navigate` returns before the old document is gone.
 fn loaded(view: &View, condition: &str) {
     let expression = format!("document.readyState === 'complete' && !!({condition})");
-    eventually(SECS_3, || {
+    eventually(CHROMIUM_EVENT, || {
         (view.evaluate_for_test(&expression).ok()? == json!(true)).then_some(())
     })
     .unwrap_or_else(|| panic!("page with {condition} loaded"));
@@ -212,7 +220,7 @@ fn active_tab(seen: &Collect) -> Option<String> {
 /// Wait until no frame has come for a while (a still page), and give back
 /// how many there are.
 fn settled(seen: &Collect) -> usize {
-    eventually(Duration::from_secs(10), || {
+    eventually(CHROMIUM_EVENT, || {
         let before = seen.frame_count();
         std::thread::sleep(Duration::from_millis(400));
         (seen.frame_count() == before).then_some(before)
@@ -258,7 +266,7 @@ fn screencast_emits_numbered_frames_of_the_panel_size() {
         return;
     };
     view.navigate("data:text/html,<h1>hi</h1>").unwrap();
-    let frame = eventually(SECS_3, || {
+    let frame = eventually(CHROMIUM_EVENT, || {
         seen.find_frame(|f| {
             (f.css_w == 400).then(|| (f.css_h, f.w, f.h, f.css_w, f.b64.starts_with("/9j/")))
         })
@@ -270,7 +278,7 @@ fn screencast_emits_numbered_frames_of_the_panel_size() {
     // Chromium may capture its whole window surface for a moment after a
     // navigation; the view restarts the screencast, so the latest frame is
     // the page's size again.
-    let size = eventually(Duration::from_secs(5), || {
+    let size = eventually(CHROMIUM_EVENT, || {
         (seen.last_frame(|f| (f.css_w, f.css_h))? == (400, 300)).then_some(())
     });
     assert!(size.is_some(), "settled on the panel size");
@@ -293,10 +301,16 @@ fn frames_keep_coming_while_the_page_changes() {
          'rgb('+(Date.now()&255)+',0,0)'},20)</script>",
     )
     .unwrap();
-    let flowing = eventually(Duration::from_secs(4), || {
-        (seen.frame_count() >= 15).then_some(())
-    });
+    let flowing = eventually(CHROMIUM_EVENT, || (seen.frame_count() >= 15).then_some(()));
     assert!(flowing.is_some(), "only {} frames", seen.frame_count());
+    // Frames that merely trickle in at the ack timeout, one per second, would
+    // reach 15 within the long deadline too: they must come at the acks' pace.
+    // The median, so a few stalls on a loaded machine do not fail the test.
+    let gap = seen.median_gap(15).expect("15 frames came");
+    assert!(
+        gap < ACK_TIMEOUT / 2,
+        "frames come at the ack timeout, not at the acks' pace: median gap {gap:?}"
+    );
     m.release("s1");
 }
 
@@ -311,7 +325,7 @@ fn refresh_frame_brings_a_newer_frame_of_a_still_page() {
     let before = settled(&seen);
     let newest = seen.last_frame(|f| f.seq).unwrap_or(0);
     view.core.refresh_frame();
-    let fresh = eventually(SECS_3, || {
+    let fresh = eventually(CHROMIUM_EVENT, || {
         seen.find_frame(|f| (f.seq > newest && f.css_w == 400).then_some(()))
     });
     assert!(
@@ -328,7 +342,7 @@ fn the_tab_title_follows_the_page() {
         return;
     };
     let titled = |title: &str| {
-        eventually(NAVIGATION_STATE, || {
+        eventually(CHROMIUM_EVENT, || {
             seen.last_tabs()
                 .iter()
                 .any(|t| t.active && t.title == title)
@@ -358,7 +372,7 @@ fn input_reaches_the_page() {
     focus_input(&view);
     view.input(&InputEvent::Text { text: "abc".into() })
         .unwrap();
-    let typed = eventually(SECS_3, || {
+    let typed = eventually(CHROMIUM_EVENT, || {
         let value = view
             .evaluate_for_test("document.getElementById('i').value")
             .ok()?;
@@ -372,13 +386,14 @@ fn input_reaches_the_page() {
     ] {
         view.input(&event).unwrap();
     }
-    let clicked = eventually(SECS_3, || {
+    let clicked = eventually(CHROMIUM_EVENT, || {
         let title = view.evaluate_for_test("document.title").ok()?;
         (title == json!("clicked")).then_some(title)
     });
     assert!(clicked.is_some(), "click reached the button");
     assert!(
-        view.core.panel_released_within(Duration::from_secs(10)),
+        // A staleness bound: it must exceed the `clicked` wait before it.
+        view.core.panel_released_within(2 * CHROMIUM_EVENT),
         "the release was stamped"
     );
     m.release("s1");
@@ -410,27 +425,29 @@ fn tabs_and_history() {
     };
     assert_eq!(seen.last_tabs().len(), 1, "the initial blank tab");
     view.tab_new().unwrap();
-    let two = eventually(SECS_3, || (seen.last_tabs().len() == 2).then_some(()));
+    let two = eventually(CHROMIUM_EVENT, || {
+        (seen.last_tabs().len() == 2).then_some(())
+    });
     assert!(two.is_some(), "{:?}", seen.last_tabs());
     assert!(seen.last_tabs()[1].active, "the new tab is shown");
     view.navigate("data:text/html,a").unwrap();
     loaded(&view, "location.href.endsWith(',a')");
     view.navigate("data:text/html,b").unwrap();
-    let on_b = eventually(SECS_3, || {
+    let on_b = eventually(CHROMIUM_EVENT, || {
         let state = seen.last_state()?;
         (state.url.ends_with(",b") && state.can_back).then_some(())
     });
     assert!(on_b.is_some(), "{:?}", seen.last_state());
     assert!(!seen.last_state().unwrap().can_forward);
     view.history(-1).unwrap();
-    let back = eventually(SECS_3, || {
+    let back = eventually(CHROMIUM_EVENT, || {
         let state = seen.last_state()?;
         (state.can_forward && state.url.ends_with(",a")).then_some(())
     });
     assert!(back.is_some(), "{:?}", seen.last_state());
     let second = seen.last_tabs().swap_remove(1).target_id;
     view.tab_close(&second).unwrap();
-    let one = eventually(SECS_3, || {
+    let one = eventually(CHROMIUM_EVENT, || {
         let tabs = seen.last_tabs();
         (tabs.len() == 1 && tabs[0].active).then_some(())
     });
@@ -456,9 +473,7 @@ fn a_slow_server_is_not_a_failed_navigation_and_a_failed_load_is_told() {
         started.elapsed() < Duration::from_secs(2),
         "returns once sent"
     );
-    let loading = eventually(NAVIGATION_STATE, || {
-        seen.last_state()?.loading.then_some(())
-    });
+    let loading = eventually(CHROMIUM_EVENT, || seen.last_state()?.loading.then_some(()));
     assert!(loading.is_some(), "{:?}", seen.last_state());
     drop(slow);
     // Nothing listens here: the load fails.
@@ -467,14 +482,14 @@ fn a_slow_server_is_not_a_failed_navigation_and_a_failed_load_is_told() {
     drop(closed);
     view.navigate(&format!("http://127.0.0.1:{closed_port}/"))
         .unwrap();
-    let failed = eventually(NAVIGATION_STATE, || {
+    let failed = eventually(CHROMIUM_EVENT, || {
         seen.last_state()?
             .error
             .filter(|e| e.contains(&format!("127.0.0.1:{closed_port}")))
     });
     assert!(failed.is_some(), "{:?}", seen.last_state());
     view.navigate("data:text/html,fine").unwrap();
-    let cleared = eventually(NAVIGATION_STATE, || {
+    let cleared = eventually(CHROMIUM_EVENT, || {
         let state = seen.last_state()?;
         (state.error.is_none() && state.url.ends_with(",fine")).then_some(())
     });
@@ -538,9 +553,7 @@ fn agent(m: &BrowserManager, page: Option<&str>) -> Agent {
         |id| format!("ws://127.0.0.1:{port}/devtools/page/{id}"),
     );
     let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
+    stream.set_read_timeout(Some(CHROMIUM_EVENT)).unwrap();
     let (ws, _) = tungstenite::client(url.as_str(), stream)
         .unwrap_or_else(|e| panic!("agent handshake: {e}"));
     Agent {
@@ -610,7 +623,7 @@ fn panel_on_a_next_to_b(name: &str, hold: Duration) -> Option<TwoTabs> {
 impl TwoTabs {
     /// Wait out the user's hold.
     fn hold_over(&self) {
-        let over = eventually(Duration::from_secs(5), || {
+        let over = eventually(CHROMIUM_EVENT, || {
             lock(&self.view.core.inner).may_follow().then_some(())
         });
         assert!(over.is_some(), "the hold ends");
@@ -656,7 +669,7 @@ fn follows_an_agent_that_navigates_an_existing_page() {
         "attached is not worked in: puppeteer stays attached to every page"
     );
     navigate(&agent, &session, "data:text/html,agent-b");
-    let followed = eventually(SECS_3, || shows(&t.seen, &t.b).then_some(()));
+    let followed = eventually(CHROMIUM_EVENT, || shows(&t.seen, &t.b).then_some(()));
     assert!(
         followed.is_some(),
         "the view follows the agent to B and shows it"
@@ -675,7 +688,9 @@ fn the_agents_work_during_a_hold_is_shown_when_the_hold_ends() {
     let agent = agent(&t.m, None);
     let session = attach(&agent, &t.b);
     navigate(&agent, &session, "data:text/html,agent-b");
-    let followed = eventually(hold + SECS_3, || shows(&t.seen, &t.b).then(Instant::now));
+    let followed = eventually(hold + CHROMIUM_EVENT, || {
+        shows(&t.seen, &t.b).then(Instant::now)
+    });
     let followed = followed.expect("the agent's last step is shown once the hold is over");
     assert!(
         followed.duration_since(t.held_from) >= hold,
@@ -695,7 +710,7 @@ fn follows_a_page_the_agent_creates() {
     t.hold_over();
     let agent = agent(&t.m, None);
     let created = create_page(&agent, "data:text/html,agent-new");
-    let followed = eventually(SECS_3, || shows(&t.seen, &created).then_some(()));
+    let followed = eventually(CHROMIUM_EVENT, || shows(&t.seen, &created).then_some(()));
     assert!(
         followed.is_some(),
         "the view follows the agent to its new page"
@@ -713,7 +728,7 @@ fn follows_an_agent_on_a_page_level_connection() {
     t.hold_over();
     let agent = agent(&t.m, Some(&t.b));
     agent.call(None, "Page.bringToFront", json!({})).unwrap();
-    let followed = eventually(SECS_3, || shows(&t.seen, &t.b).then_some(()));
+    let followed = eventually(CHROMIUM_EVENT, || shows(&t.seen, &t.b).then_some(()));
     assert!(
         followed.is_some(),
         "bringToFront on B's own connection is work in B"
@@ -736,7 +751,7 @@ fn a_flood_of_follow_reports_costs_one_switch_to_the_last_page() {
             t.view.follow_agent(if i % 2 == 0 { &t.a } else { &t.b }); // ends on B, the view shows A
         }
     }
-    let followed = eventually(SECS_3, || shows(&t.seen, &t.b).then_some(()));
+    let followed = eventually(CHROMIUM_EVENT, || shows(&t.seen, &t.b).then_some(()));
     assert!(
         followed.is_some(),
         "the view ends on the last page reported"
@@ -756,8 +771,11 @@ fn the_agent_acting_ends_annotate_mode() {
     let Some((m, view, seen)) = panel("view-annotate-off") else {
         return;
     };
-    let annotate =
-        |on: bool| eventually(SECS_3, || (seen.last_state()?.annotate == on).then_some(()));
+    let annotate = |on: bool| {
+        eventually(CHROMIUM_EVENT, || {
+            (seen.last_state()?.annotate == on).then_some(())
+        })
+    };
     view.annotate(true).unwrap();
     assert!(annotate(true).is_some(), "{:?}", seen.last_state());
     view.follow_agent(&active_tab(&seen).unwrap());
@@ -778,7 +796,7 @@ fn a_panel_opened_after_the_agent_browsed_starts_on_its_page() {
     let c = create_page(&agent, "data:text/html,c"); // the newest page, not the agent's choice
     let session = attach(&agent, &b);
     navigate(&agent, &session, "data:text/html,agent-b");
-    let told = eventually(SECS_3, || {
+    let told = eventually(CHROMIUM_EVENT, || {
         (m.last_agent_target_for_test("s1").as_deref() == Some(b.as_str())).then_some(())
     });
     assert!(told.is_some(), "the manager remembers the agent's page");
@@ -866,7 +884,7 @@ fn reopening_a_panel_replaces_the_view() {
     seen2.view.set(Arc::downgrade(&second)).unwrap(); // its frames are acked to it
     second.navigate("data:text/html,y").unwrap();
     assert!(
-        eventually(SECS_3, || seen2
+        eventually(CHROMIUM_EVENT, || seen2
             .find_frame(|f| (f.css_w == 300).then_some(())))
         .is_some(),
         "frames of the new size"
@@ -898,11 +916,11 @@ fn a_close_during_a_pending_open_wins() {
             m.open_panel_with("s1", 400, 300, 2.0, emit, move |view| {
                 view_out.send(Arc::clone(view)).unwrap();
                 reached.send(()).unwrap();
-                let _ = wait_release.recv_timeout(Duration::from_secs(30));
+                let _ = wait_release.recv_timeout(CHROMIUM_EVENT);
             })
         });
         wait_reached
-            .recv_timeout(Duration::from_secs(30))
+            .recv_timeout(CHROMIUM_EVENT)
             .expect("the open got as far as installing");
         m.close_panel("s1").unwrap();
         release.send(()).unwrap();
@@ -928,7 +946,7 @@ const INPUT_PAGE: &str = "data:text/html,<input id=i autofocus>";
 fn focus_input(view: &View) {
     view.evaluate_for_test("document.getElementById('i').focus()")
         .unwrap();
-    eventually(SECS_3, || {
+    eventually(CHROMIUM_EVENT, || {
         (view
             .evaluate_for_test("document.activeElement === document.getElementById('i')")
             .ok()?
@@ -966,7 +984,7 @@ fn queued_input_is_not_sent_to_the_page_shown_later() {
     // Input is sent in order: once "xyz" has arrived, "abc" has been dealt with.
     view.input(&InputEvent::Text { text: "xyz".into() })
         .unwrap();
-    let typed = eventually(SECS_3, || {
+    let typed = eventually(CHROMIUM_EVENT, || {
         let value = view
             .evaluate_for_test("document.getElementById('i').value")
             .ok()?;
@@ -996,7 +1014,7 @@ fn a_tab_that_is_not_listed_is_refused_and_the_shown_one_stays() {
     assert_eq!(active_tab(&seen), Some(a), "still showing the same page");
     let frames_before = seen.frame_count();
     view.navigate("data:text/html,still-here").unwrap();
-    let framed = eventually(SECS_3, || {
+    let framed = eventually(CHROMIUM_EVENT, || {
         (seen.frame_count() > frames_before).then_some(())
     });
     assert!(framed.is_some(), "its screencast keeps running");

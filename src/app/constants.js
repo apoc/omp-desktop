@@ -24,8 +24,10 @@
   // `terminalScrollback` is xterm's scrollback in lines; `submitKey` is
   // "enter" | "ctrl+enter" for multi-line fields; `pasteCollapseLines` is
   // the line count above which a paste becomes a chip; `restoreTabs`,
-  // `confirmBusyClose`, `autoName` drive live.js; `autoCompaction` /
-  // `autoRetry` are sent to every omp process; `startScreen` is the
+  // `confirmBusyClose`, `autoName`, `showCompactedHistory` drive live.js;
+  // `notifySound` ("off" | "background" | "always"), `soundAttention`,
+  // `soundFinished` (a catalogue id or "none") and `soundVolume` (0–100) are
+  // the notification sounds live.js plays (app/notify-sound.js); `startScreen` is the
   // empty workspace's animated screen (OMP_BACKDROPS.SCREENS). Rows,
   // labels and bounds: app/settings-schema.js.
   const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
@@ -70,8 +72,11 @@
     "restoreTabs": true,
     "confirmBusyClose": false,
     "autoName": true,
-    "autoCompaction": true,
-    "autoRetry": true
+    "showCompactedHistory": false,
+    "notifySound": "off",
+    "soundAttention": "bell",
+    "soundFinished": "chime",
+    "soundVolume": 60
   }/*EDITMODE-END*/;
 
   const NULL_MODEL    = { id: "", name: "–", provider: "", note: "", latency: 0, current: false };

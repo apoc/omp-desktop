@@ -336,6 +336,11 @@ fn bad_actions_are_refused_without_reaching_the_webview() {
         ws.read_json_where(|m| m["t"] == "ack")["error"],
         "bad request"
     );
+    ws.send_text(r#"{"t":"action","reqId":"b5","tabId":"t1","kind":"answer","askId":"a"}"#);
+    assert_eq!(
+        ws.read_json_where(|m| m["t"] == "ack")["error"],
+        "bad request"
+    );
     // No reqId, no way to answer: dropped without reaching the webview.
     ws.send_text(r#"{"t":"action","tabId":"t1","kind":"abort"}"#);
     ws.send_text(r#"{"t":"action","reqId":"","tabId":"t1","kind":"abort"}"#);

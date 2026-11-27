@@ -9,7 +9,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufReader};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -308,21 +308,11 @@ impl State {
 /// # Errors
 /// Returns the I/O error when the file cannot be opened.
 pub fn parse_file(path: &Path) -> io::Result<Parsed> {
-    let mut reader = BufReader::new(File::open(path)?);
     let mut state = State::default();
-    let mut buf = String::new();
-    loop {
-        buf.clear();
-        match reader.read_line(&mut buf) {
-            Ok(0) => break,
-            Ok(_) => {}
-            // Not UTF-8: the line is consumed, move on to the next.
-            Err(e) if e.kind() == io::ErrorKind::InvalidData => continue,
-            Err(_) => break,
-        }
-        if let Ok(line) = serde_json::from_str::<Line>(buf.trim()) {
+    super::for_each_line(BufReader::new(File::open(path)?), |text, _, _| {
+        if let Ok(line) = serde_json::from_str::<Line>(text) {
             state.apply(line);
         }
-    }
+    });
     Ok(state.finish(path))
 }

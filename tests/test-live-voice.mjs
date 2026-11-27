@@ -240,20 +240,49 @@ check("voice controls start independently and retain stop and cancel actions", (
 
 // Exercise the public bridge against a deterministic fake IPC transport. The
 // assertions concern snapshots and outcomes, not the bridge's internal maps.
-function bridgeHarness() {
+// `realTurnStatus` loads the real turn-status and session-title modules (the
+// background dot's tracker overlay); `htmlForm` replaces the form stub.
+function bridgeHarness({ realTurnStatus = false, htmlForm = null } = {}) {
   const listeners = new Map(), journal = new Map(), commands = [], waiters = [];
+  // A held unlisten: the listener stops dispatching at once but the teardown
+  // await stays pending until the test releases it — a tab switch sitting in
+  // its listener teardown, with `activeSessionId` still naming the tab left.
+  const teardownHolds = new Map(), teardownReleases = new Map();
   const w = {
     OMP_LIVE_VOICE: V,
     OMP_SLASH: { LOCAL_COMMANDS: [] },
+    OMP_ASK_DIALOG: { parseQuestions: () => null },
+    // The form parser itself is covered by tests/test-html-form.mjs. This
+    // harness only needs a model and an unreadable request.
+    OMP_HTML_FORM: htmlForm ?? {
+      parse: html => {
+        if (html === "empty") return { error: { text: "The form is empty." } };
+        if (html.includes("password")) return { error: { text: "This form asks for a password; enter it in a terminal instead — omp would echo it in its output." } };
+        return { form: {
+            sections: [{ title: "Setup", blocks: [], fieldset: true }],
+            fields: [{ kind: "text", name: "name", type: "text", multiline: false, label: "Name", value: "", placeholder: "", required: false, rows: 1 }],
+            hidden: html.includes("hidden") ? [["token", "desktop-default"]] : [],
+        } };
+      },
+      withHiddenDefaults: (form, data) => ({ ...data, ...Object.fromEntries(form.hidden) }),
+      answerError: () => null,
+      // The sentence is built by the real module (its own test covers it).
+      refusalData: error => realHtmlForm().refusalData(error),
+    },
     OMP_SUBAGENTS: { emptySubagents: () => ({}), subscriptionLevelFor: () => "progress", mergeSnapshots: () => ({}) },
     OMP_QUEUE: { EMPTY_QUEUE: {} }, OMP_GOAL: { UNKNOWN: {} }, OMP_EXT_WIDGETS: { EMPTY: {} },
     OMP_TRANSCRIPT: {}, OMP_PROMPT_HISTORY: { DEFAULT_LIMIT: 100 },
-    OMP_SESSION_PREFS: { fromTweaks: () => ({ autoCompaction: true, autoRetry: true }), closeGuardArmed: () => false },
+    OMP_SESSION_PREFS: { fromTweaks: () => ({}), closeGuardArmed: () => false },
     OMP_TWEAKS_STORE: { read: () => ({}) },
-    OMP_TURN_STATUS: { runStateOf: () => "idle", isBusyRunState: () => false, retryCleared: messages => messages },
+    OMP_NOTIFY_SOUND: { prefsFrom: () => ({}), cue: () => null },
+    ...(realTurnStatus ? {} : { OMP_TURN_STATUS: { runStateOf: () => "idle", displayRunState: cached => cached, guardRunState: cached => cached, isBusyRunState: () => false, retryCleared: messages => messages } }),
     OMP_PROJECT_NAV: { basename: path => path.split("/").at(-1), findConversationTab: () => null },
     DEFAULT_PROFILE_ID: "default", INTENT_FRAMING: () => "", timeNow: () => "00:00",
   };
+  if (realTurnStatus) {
+    new Function("window", readFileSync(join(root, "src/app/turn-status.js"), "utf8"))(w);
+    new Function("window", readFileSync(join(root, "src/app/session-title.js"), "utf8"))(w);
+  }
   // Use the real context builder; the fake transport only supplies omp data.
   new Function("window", readFileSync(join(root, "src/app/live-context.js"), "utf8"))(w);
   new Function("window", readFileSync(join(root, "src/app/approval-mode.js"), "utf8"))(w);
@@ -277,7 +306,12 @@ function bridgeHarness() {
     if (matches.length >= count) return Promise.resolve(matches[count - 1]);
     return new Promise(resolve => waiters.push({ type, count, resolve }));
   }
-  let releaseStart = null, holdStart = false, holdHistory = false, approvalMode = "write";
+  let releaseStart = null, holdStart = false, holdHistory = false, failResponses = false, holdResponses = false, approvalMode = "write";
+  let grantError = null;
+  let grantUnsaved = null;
+  let holdGrant = false;
+  const pendingResponses = [];
+  const pendingGrants = [];
   const histories = new Map();
   const invocations = [];
   w.__TAURI__ = {
@@ -286,11 +320,17 @@ function bridgeHarness() {
       if (command === "create_profile") return Promise.resolve({ id: "other", name: "Other" });
       if (command === "list_profiles") return Promise.resolve({ profiles: [{ id: "default", name: "default" }, { id: "other", name: "Other" }] });
       if (command === "stop_session") { journal.delete(args.sessionId); return Promise.resolve(null); }
+      // No tracker here: every tab is idle to Rust (an approval restart).
+      if (command === "stop_session_if_idle") { journal.delete(args.sessionId); return Promise.resolve({ stopped: true, busy: false }); }
       if (command === "approval_mode_set_default") {
         approvalMode = args.mode;
         return Promise.resolve({ default: approvalMode, projects: {} });
       }
       if (command === "start_session") return Promise.resolve(approvalMode);
+      if (command === "approval_approve_and_grant") {
+        if (holdGrant) return new Promise((resolve, reject) => pendingGrants.push({ resolve, reject }));
+        return grantError ? Promise.reject(new Error(grantError)) : Promise.resolve(grantUnsaved);
+      }
       if (command === "replay_events") return Promise.resolve({ dropped: false, events: (journal.get(args.sessionId) ?? []).filter(e => e.seq > args.afterSeq) });
       if (command === "send_command") {
         const cmd = { ...JSON.parse(args.json), sessionId: args.sessionId };
@@ -304,13 +344,19 @@ function bridgeHarness() {
         if (cmd.type === "get_messages" && cmd.id?.startsWith("live-history-") && !holdHistory) {
           queueMicrotask(() => reply(cmd, true, { messages: histories.get(cmd.sessionId) ?? [] }));
         }
+        if (cmd.type === "extension_ui_response" && failResponses) return Promise.reject(new Error("IPC unavailable"));
+        if (cmd.type === "extension_ui_response" && holdResponses) return new Promise((resolve, reject) => pendingResponses.push({ resolve, reject }));
         if ((cmd.type === "live_start" || cmd.type === "dictation_start") && holdStart) return new Promise(resolve => { releaseStart = resolve; });
       }
       return Promise.resolve(null);
     } },
     event: { async listen(name, callback) {
       listeners.set(name, callback);
-      return () => { if (listeners.get(name) === callback) listeners.delete(name); };
+      return () => {
+        if (listeners.get(name) === callback) listeners.delete(name);
+        const hold = teardownHolds.get(name);
+        if (hold) { teardownHolds.delete(name); return hold; }
+      };
     } },
   };
   let snapshot;
@@ -322,6 +368,31 @@ function bridgeHarness() {
     releaseStart: () => { holdStart = false; releaseStart(); },
     holdHistory: () => { holdHistory = true; },
     setHistory: (id, messages) => { histories.set(id, messages); },
+    failResponses: value => { failResponses = value; },
+    failGrant: message => { grantError = message; },
+    unsavedGrant: message => { grantUnsaved = message; },
+    holdGrant: () => { holdGrant = true; },
+    holdTeardown: id => {
+      const name = `agent://line/${id}`;
+      let release;
+      const pending = new Promise(resolve => { release = resolve; });
+      teardownHolds.set(name, pending);
+      teardownReleases.set(name, release);
+    },
+    releaseTeardown: id => {
+      const name = `agent://line/${id}`;
+      teardownReleases.get(name)?.();
+      teardownReleases.delete(name);
+    },
+    failPendingGrant: message => {
+      holdGrant = false;
+      pendingGrants.shift().reject(new Error(message));
+    },
+    holdResponses: () => { holdResponses = true; },
+    failPendingResponse: () => { holdResponses = false; pendingResponses.shift().reject(new Error("IPC unavailable")); },
+    // A Rust tracker snapshot (`agent://attention`), as the background dot's
+    // overlay reads it.
+    attention: payload => listeners.get("agent://attention")?.({ payload }),
     exit: (id, reason) => listeners.get(`agent://exit/${id}`)?.({ payload: reason }),
   };
 }
@@ -831,6 +902,478 @@ await checkAsync("a failed send-on-stop does not tag the Settings stop that foll
   h.reply(stop, true, { text: "words" });
   await settingsStop;
   assert.deepEqual(h.snapshot().dictationCompleted.map(item => [item.text, item.send]), [["words", false]]);
+});
+
+await checkAsync("a form request becomes a bubble and its answer is the data frame omp expects", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.emit(a, {
+    type: "extension_ui_request", id: "form1", method: "form", timeout: 30000,
+    html: "<form><input name=name></form>",
+  });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const bubble = h.snapshot().messages.find(message => message.kind === "ask" && message.id === "form1");
+  assert.equal(bubble?.method, "form");
+  assert.deepEqual(bubble?.form.fields.map(field => field.name), ["name"]);
+  assert.equal(bubble?.timeout, 30000);
+  await h.bridge.answerForm("form1", { name: "Ada" });
+  const reply = h.commands.find(command => command.type === "extension_ui_response" && command.id === "form1");
+  assert.deepEqual(reply?.data, { name: "Ada" });
+  const settled = h.snapshot().messages.find(message => message.id === "form1");
+  assert.deepEqual([settled.answered, settled.data], [true, { name: "Ada" }]);
+});
+
+const PASSWORD_SENTENCE = "OMP Desktop does not show ask forms that mention a password. Do not ask for a password in the chat or in a form; if one is needed, tell the user to enter it in a terminal. Ask anything else in plain text.";
+
+await checkAsync("an unreadable form is refused with its reason, never cancelled, and leaves a visible note", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.emit(a, { type: "extension_ui_request", id: "bad", method: "form", html: "empty" });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const bubble = h.snapshot().messages.find(message => message.kind === "ask" && message.id === "bad");
+  assert.equal(bubble?.cancelled, true, "locally closed, so every re-answer guard keeps working");
+  assert.deepEqual(bubble?.formError, { text: "The form is empty." });
+  const replies = h.commands.filter(command => command.type === "extension_ui_response" && command.id === "bad");
+  assert.equal(replies.length, 1);
+  assert.equal("cancelled" in replies[0], false, "a cancellation would abort omp's turn (#86)");
+  assert.deepEqual(replies[0].data, {
+    "OMP Desktop could not show this ask form: The form is empty. Do not send this form again; ask the user in plain text instead.": null,
+  });
+});
+
+await checkAsync("a second form answer is not resent", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.emit(a, { type: "extension_ui_request", id: "form2", method: "form", html: "<form><input name=name></form>" });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(await h.bridge.answerForm("form2", { name: "one" }), true);
+  assert.equal(await h.bridge.answerForm("form2", { name: "two" }), false);
+  assert.equal(h.commands.filter(command => command.type === "extension_ui_response" && command.id === "form2").length, 1);
+});
+
+await checkAsync("a password form is refused with the terminal-only sentence, never cancelled", async () => {
+  for (const html of [
+    '<form data-omp-desktop-redacted="password"></form>',
+    "<form><input type=password name=pw value=prefilled-secret></form>",
+  ]) {
+    const h = bridgeHarness({ htmlForm: realHtmlForm() });
+    const { a } = await twoTabs(h);
+    h.emit(a, { type: "extension_ui_request", id: "secret", method: "form", html });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const bubble = h.snapshot().messages.find(message => message.id === "secret");
+    assert.equal(bubble.cancelled, true);
+    assert.equal(bubble.form, null);
+    assert.match(bubble.formError.text, /enter it in a terminal instead/);
+    const replies = h.commands.filter(command => command.type === "extension_ui_response" && command.id === "secret");
+    assert.equal(replies.length, 1);
+    assert.equal("cancelled" in replies[0], false);
+    assert.deepEqual(replies[0].data, { [PASSWORD_SENTENCE]: null });
+    assert.doesNotMatch(JSON.stringify(h.commands) + JSON.stringify(bubble), /prefilled-secret/);
+  }
+});
+
+await checkAsync("a failed form answer stays open and retryable, without retaining its answer", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.emit(a, { type: "extension_ui_request", id: "retry", method: "form", html: "<form><input name=name></form>" });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  h.failResponses(true);
+  assert.equal(await h.bridge.answerForm("retry", { name: "first" }), false);
+  let bubble = h.snapshot().messages.find(message => message.id === "retry");
+  assert.equal(Boolean(bubble.answered), false);
+  assert.equal(bubble.data, undefined);
+  assert.match(h.snapshot().messages.at(-1).blocks[0].text, /could not be delivered/i);
+  h.failResponses(false);
+  assert.equal(await h.bridge.answerForm("retry", { name: "second" }), true);
+  bubble = h.snapshot().messages.find(message => message.id === "retry");
+  assert.deepEqual([bubble.answered, bubble.data], [true, { name: "second" }]);
+});
+
+await checkAsync("a delayed answer failure rolls back only its originating tab", async () => {
+  const h = bridgeHarness();
+  const { a, b } = await twoTabs(h);
+  h.emit(a, { type: "extension_ui_request", id: "delayed", method: "form", html: "<form><input name=name></form>" });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  h.holdResponses();
+  const answer = h.bridge.answerForm("delayed", { name: "first" });
+  await h.waitCommand("extension_ui_response");
+  await h.bridge.activateSession(b);
+  h.failPendingResponse();
+  assert.equal(await answer, false);
+  assert.equal(h.snapshot().activeSessionId, b);
+  assert.equal(h.snapshot().messages.some(message => message.id === "delayed"), false);
+  assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /Answer could not be delivered/);
+  await h.bridge.activateSession(a);
+  const bubble = h.snapshot().messages.find(message => message.id === "delayed");
+  assert.equal(Boolean(bubble.answered), false);
+  assert.match(h.snapshot().messages.at(-1).blocks[0].text, /could not be delivered/i);
+});
+
+await checkAsync("omp withdrawal while an answer is pending stays withdrawn after delivery fails", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.emit(a, { type: "extension_ui_request", id: "withdrawn", method: "form", html: "<form><input name=name></form>" });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  h.holdResponses();
+  const answer = h.bridge.answerForm("withdrawn", { name: "first" });
+  await h.waitCommand("extension_ui_response");
+  h.emit(a, { type: "extension_ui_request", id: "cancel-withdrawn", method: "cancel", targetId: "withdrawn" });
+  h.failPendingResponse();
+  assert.equal(await answer, false);
+  const bubble = h.snapshot().messages.find(message => message.id === "withdrawn");
+  assert.equal(bubble.cancelled, true);
+  assert.equal(bubble.closedByOmp, true);
+  assert.equal(bubble.answered, undefined);
+  assert.equal(bubble.data, undefined);
+  assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /Answer could not be delivered|first/);
+});
+
+await checkAsync("a failed manual cancellation reopens and can be retried", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.emit(a, { type: "extension_ui_request", id: "cancel-retry", method: "form", html: "<form><input name=name></form>" });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  h.failResponses(true);
+  assert.equal(await h.bridge.cancelAsk("cancel-retry"), false);
+  let bubble = h.snapshot().messages.find(message => message.id === "cancel-retry");
+  assert.equal(Boolean(bubble.cancelled), false);
+  h.failResponses(false);
+  assert.equal(await h.bridge.cancelAsk("cancel-retry"), true);
+  bubble = h.snapshot().messages.find(message => message.id === "cancel-retry");
+  assert.equal(bubble.cancelled, true);
+  const replies = h.commands.filter(command => command.type === "extension_ui_response" && command.id === "cancel-retry");
+  assert.equal(replies.length, 2);
+  // The user's own Cancel on a shown form stays omp's Esc meaning.
+  assert.deepEqual(replies.map(reply => [reply.cancelled, reply.data]), [[true, undefined], [true, undefined]]);
+});
+
+await checkAsync("a rejected approve-and-remember after a tab switch reopens the captured tab's prompt", async () => {
+  const h = bridgeHarness();
+  const { a, b } = await twoTabs(h);
+  h.emit(a, {
+    type: "extension_ui_request", id: "approve-switched", method: "select",
+    title: "Allow tool: bash\nCommand: ls", options: ["Approve", "Deny"],
+  });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const prompt = h.snapshot().messages.find(message => message.kind === "ask" && message.id === "approve-switched");
+  h.holdGrant();
+  const pending = h.bridge.approveAndRemember(prompt, "session");
+  await h.bridge.activateSession(b);
+  h.failPendingGrant("prompt is not pending");
+  await pending;
+  assert.equal(h.snapshot().activeSessionId, b);
+  assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /approve-switched|open again/);
+  await h.bridge.activateSession(a);
+  const reopened = h.snapshot().messages.find(message => message.id === "approve-switched");
+  assert.equal(Boolean(reopened.answered), false, "the originating tab's prompt is open again");
+  assert.equal(Boolean(reopened.cancelled), false);
+  assert.match(h.snapshot().messages.at(-1).blocks[0].text, /Approve and remember failed:\*\* prompt is not pending/);
+});
+
+await checkAsync("a grant rejected during the outgoing listener teardown survives switching back", async () => {
+  const h = bridgeHarness();
+  const { a, b } = await twoTabs(h);
+  h.emit(a, {
+    type: "extension_ui_request", id: "approve-during-teardown", method: "select",
+    title: "Allow tool: bash\nCommand: ls", options: ["Approve", "Deny"],
+  });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const prompt = h.snapshot().messages.find(message => message.kind === "ask" && message.id === "approve-during-teardown");
+  h.holdGrant();
+  h.holdTeardown(a);
+  const pending = h.bridge.approveAndRemember(prompt, "session");
+  const switching = h.bridge.activateSession(b);
+  // The rejection lands while the outgoing listeners' unlisten is still
+  // outstanding: `activeSessionId` is still `a`, so the reopened prompt and
+  // the note go into the live state that the switch snapshots afterwards.
+  h.failPendingGrant("prompt is not pending");
+  await pending;
+  assert.equal(h.snapshot().activeSessionId, a, "the switch is still in its listener teardown");
+  h.releaseTeardown(a);
+  await switching;
+  assert.equal(h.snapshot().activeSessionId, b);
+  assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /approve-during-teardown|open again/);
+  await h.bridge.activateSession(a);
+  const reopened = h.snapshot().messages.find(message => message.id === "approve-during-teardown");
+  assert.equal(Boolean(reopened?.answered), false, "the originating tab's prompt is open again");
+  assert.equal(Boolean(reopened?.cancelled), false);
+  assert.match(h.snapshot().messages.at(-1).blocks[0].text, /Approve and remember failed:\*\* prompt is not pending/);
+  // The reopened prompt is answerable again: the following Deny goes out.
+  assert.equal(await h.bridge.answerAsk("approve-during-teardown", "Deny"), true);
+  const reply = h.commands.find(command => command.type === "extension_ui_response" && command.id === "approve-during-teardown");
+  assert.equal(reply?.value, "Deny");
+});
+
+await checkAsync("an omp withdrawal during a pending grant stays closed without an open-again note", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.emit(a, {
+    type: "extension_ui_request", id: "approve-withdrawn", method: "select",
+    title: "Allow tool: bash\nCommand: ls", options: ["Approve", "Deny"],
+  });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const prompt = h.snapshot().messages.find(message => message.kind === "ask" && message.id === "approve-withdrawn");
+  h.holdGrant();
+  const pending = h.bridge.approveAndRemember(prompt, "session");
+  h.emit(a, { type: "extension_ui_request", id: "cancel-grant", method: "cancel", targetId: "approve-withdrawn" });
+  h.failPendingGrant("prompt is not pending");
+  await pending;
+  const bubble = h.snapshot().messages.find(message => message.id === "approve-withdrawn");
+  assert.equal(bubble.cancelled, true);
+  assert.equal(bubble.closedByOmp, true);
+  assert.equal(bubble.answered, undefined);
+  assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /open again|Approve and remember failed/);
+});
+
+await checkAsync("a failed approve-and-remember reopens the approval so a following Deny is sent", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.emit(a, {
+    type: "extension_ui_request", id: "approve1", method: "select",
+    title: "Allow tool: bash\nCommand: ls -la", options: ["Approve", "Deny"],
+  });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const prompt = h.snapshot().messages.find(message => message.kind === "ask" && message.id === "approve1");
+  assert.ok(prompt, "the approval prompt is shown");
+  h.failGrant("prompt is not pending");
+  await h.bridge.approveAndRemember(prompt, "session");
+  const reopened = h.snapshot().messages.find(message => message.id === "approve1");
+  assert.equal(Boolean(reopened.answered), false, "a rejected grant must reopen the prompt");
+  assert.equal(Boolean(reopened.cancelled), false);
+  assert.equal(reopened.answer, undefined, "the optimistic Approve is rolled back");
+  assert.match(h.snapshot().messages.at(-1).blocks[0].text, /Approve and remember failed:\*\* prompt is not pending/);
+  assert.equal(
+    h.commands.filter(command => command.type === "extension_ui_response" && command.id === "approve1").length,
+    0,
+    "a rejected grant sends nothing to omp",
+  );
+  // With the prompt open again, the user can Deny — the response actually goes out.
+  h.failGrant(null);
+  assert.equal(await h.bridge.answerAsk("approve1", "Deny"), true);
+  const reply = h.commands.find(command => command.type === "extension_ui_response" && command.id === "approve1");
+  assert.equal(reply?.value, "Deny");
+  const settled = h.snapshot().messages.find(message => message.id === "approve1");
+  assert.deepEqual([settled.answered, settled.answer], [true, "Deny"]);
+});
+
+await checkAsync("an approved prompt and an unsaved rule both stay closed", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  for (const id of ["approve2", "approve3"]) {
+    h.emit(a, { type: "extension_ui_request", id, method: "select", title: "Allow tool: bash\nCommand: ls", options: ["Approve", "Deny"] });
+  }
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const prompt2 = h.snapshot().messages.find(message => message.id === "approve2");
+  h.failGrant(null);
+  await h.bridge.approveAndRemember(prompt2, "session");
+  let bubble = h.snapshot().messages.find(message => message.id === "approve2");
+  assert.deepEqual([bubble.answered, bubble.answer], [true, "Approve"], "a saved grant keeps the prompt settled");
+  assert.equal(h.snapshot().messages.some(message => message.blocks?.[0]?.text?.includes("rule was not saved")), false);
+  const prompt3 = h.snapshot().messages.find(message => message.id === "approve3");
+  h.failGrant(null);
+  h.unsavedGrant("could not write rules.json");
+  await h.bridge.approveAndRemember(prompt3, "session");
+  bubble = h.snapshot().messages.find(message => message.id === "approve3");
+  assert.deepEqual([bubble.answered, bubble.answer], [true, "Approve"], "an approved-but-unsaved rule stays settled");
+  assert.match(h.snapshot().messages.at(-1).blocks[0].text, /Approved, but the rule was not saved:\*\* could not write rules\.json/);
+  h.unsavedGrant(null);
+});
+
+await checkAsync("an unsupported form refusal reports delivery failure visibly and Retry resends the refusal", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.failResponses(true);
+  h.emit(a, { type: "extension_ui_request", id: "bad-delivery", method: "form", html: "empty" });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  let bubble = h.snapshot().messages.find(message => message.id === "bad-delivery");
+  assert.deepEqual(bubble.formError, { text: "The form is empty." }, "the parse error stays as it was");
+  assert.deepEqual(bubble.deliveryError, { text: "The refusal could not be delivered to omp." });
+  assert.equal(Boolean(bubble.cancelled), false);
+  h.failResponses(false);
+  assert.equal(await h.bridge.cancelAsk("bad-delivery"), true);
+  bubble = h.snapshot().messages.find(message => message.id === "bad-delivery");
+  assert.equal(bubble.cancelled, true);
+  assert.equal(bubble.deliveryError, undefined, "a delivered retry clears the delivery failure");
+  const replies = h.commands.filter(command => command.type === "extension_ui_response" && command.id === "bad-delivery");
+  assert.equal(replies.length, 2);
+  const refusal = { "OMP Desktop could not show this ask form: The form is empty. Do not send this form again; ask the user in plain text instead.": null };
+  assert.deepEqual(replies.map(reply => reply.data), [refusal, refusal], "Retry resends the refusal");
+  assert.deepEqual(replies.map(reply => "cancelled" in reply), [false, false]);
+  // Settled now: a further Retry sends nothing.
+  assert.equal(await h.bridge.cancelAsk("bad-delivery"), false);
+  assert.equal(h.commands.filter(command => command.type === "extension_ui_response" && command.id === "bad-delivery").length, 2);
+});
+
+await checkAsync("a reopened refused form renders a working retry control", async () => {
+  const Babel = createRequire(import.meta.url)(join(root, "src/babel.min.js"));
+  const { code } = Babel.transform(readFileSync(join(root, "src/design/chat/form-dialog.jsx"), "utf8"), { presets: ["react"] });
+  const window = { Icon: () => null, OMP_HTML_FORM: {} };
+  const React = {
+    Fragment: "fragment",
+    createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
+    useState: initial => [typeof initial === "function" ? initial() : initial, () => {}],
+    useEffect: () => {},
+  };
+  runInNewContext(code, { window, React, OMP_TR: text => text });
+  let retries = 0;
+  const tree = window.FormDialog({
+    msg: { id: "refused", form: null, formError: { text: "The form is empty." }, deliveryError: { text: "The refusal could not be delivered to omp." } },
+    onSubmit: () => {}, onCancel: () => { retries++; },
+  });
+  const walk = node => [node, ...(node?.children ?? []).flatMap(walk)];
+  const retry = walk(tree).find(node => node?.type === "button" && node.children.includes("Retry"));
+  assert.ok(retry, "refusal must render Retry");
+  retry.props.onClick();
+  assert.equal(retries, 1);
+  const settledTree = window.FormDialog({
+    msg: { id: "refused", form: null, formError: { text: "The form is empty." }, cancelled: true },
+    onSubmit: () => {}, onCancel: () => { retries++; },
+  });
+  assert.equal(walk(settledTree).find(node => node?.type === "button" && node.children.includes("Retry")), undefined,
+    "a settled refusal bubble must not offer Retry");
+});
+
+await checkAsync("omp withdrawal wins over a failed refusal reply", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.holdResponses();
+  h.emit(a, { type: "extension_ui_request", id: "bad-withdrawn", method: "form", html: "empty" });
+  await h.waitCommand("extension_ui_response");
+  h.emit(a, { type: "extension_ui_request", id: "cancel-bad-withdrawn", method: "cancel", targetId: "bad-withdrawn" });
+  h.failPendingResponse();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const bubble = h.snapshot().messages.find(message => message.id === "bad-withdrawn");
+  assert.equal(bubble.closedByOmp, true);
+  assert.equal(bubble.cancelled, true);
+  assert.equal(bubble.deliveryError, undefined);
+  assert.deepEqual(bubble.formError, { text: "The form is empty." });
+  assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /Answer could not be delivered/);
+});
+
+await checkAsync("omp's withdrawal after a failed refusal reply drops the delivery failure", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.failResponses(true);
+  h.emit(a, { type: "extension_ui_request", id: "bad-later-withdrawn", method: "form", html: "empty" });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.ok(h.snapshot().messages.find(message => message.id === "bad-later-withdrawn").deliveryError);
+  h.emit(a, { type: "extension_ui_request", id: "cancel-bad-later", method: "cancel", targetId: "bad-later-withdrawn" });
+  const bubble = h.snapshot().messages.find(message => message.id === "bad-later-withdrawn");
+  assert.deepEqual([bubble.cancelled, bubble.closedByOmp, bubble.deliveryError], [true, true, undefined]);
+});
+
+// The tab switch snapshots the outgoing tab after its listener teardown (an
+// IPC round-trip), but its tracker evidence must be the one from before it:
+// a tracker update inside the teardown describes frames the tab no longer
+// dispatches, so only a snapshot older than it lets the dot retire.
+async function backgroundDotAfterTurnEnd(duringTeardown) {
+  const h = bridgeHarness({ realTurnStatus: true });
+  const { a, b } = await twoTabs(h);
+  h.emit(a, { type: "turn_start" });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  const tracker = (revision, busy) => h.attention({ revision, sessions: { [a]: { busy, asks: 0, asksOpened: 0, background: false } } });
+  tracker(1, true);
+  h.holdTeardown(a);
+  const switching = h.bridge.activateSession(b);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  if (duringTeardown) {
+    h.emit(a, { type: "agent_end" }); // dropped: this activation is superseded
+    tracker(2, false);
+  }
+  h.releaseTeardown(a);
+  await switching;
+  if (!duringTeardown) {
+    h.emit(a, { type: "agent_end" }); // background: journal only
+    tracker(2, false);
+  }
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(h.snapshot().activeSessionId, b);
+  return h.snapshot().sessions.find(session => session.id === a)?.displayRunState;
+}
+
+await checkAsync("a background tab's dot retires when its turn ends after the switch", async () => {
+  assert.equal(await backgroundDotAfterTurnEnd(false), "idle");
+});
+
+await checkAsync("a background tab's dot retires when its turn ends during the switch's listener teardown", async () => {
+  assert.equal(await backgroundDotAfterTurnEnd(true), "idle");
+});
+
+// The real form module (in index.html's load order), so the refusal is the
+// one omp's own checks would give, not a stub's.
+function realHtmlForm() {
+  const w = {};
+  const scripts = [...readFileSync(join(root, "src/index.html"), "utf8").matchAll(/<script src="(app\/html-form[^"]*\.js)"><\/script>/g)];
+  assert.ok(scripts.length > 0, "index.html loads the form module");
+  for (const [, path] of scripts) new Function("window", "DOMParser", readFileSync(join(root, "src", path), "utf8"))(w, undefined);
+  return w.OMP_HTML_FORM;
+}
+const requiredNameForm = {
+  sections: [{ title: "Setup", blocks: [], fieldset: true }],
+  fields: [{ kind: "text", name: "name", type: "text", multiline: false, label: "Name", value: "", placeholder: "", required: true, rows: 1 }],
+  hidden: [],
+};
+
+await checkAsync("a refused form answer stays open, sends nothing and shows why on the card", async () => {
+  const real = realHtmlForm();
+  const h = bridgeHarness({ htmlForm: { ...real, parse: () => ({ form: requiredNameForm }) } });
+  const { a } = await twoTabs(h);
+  h.emit(a, { type: "extension_ui_request", id: "refused-answer", method: "form", html: "<form></form>" });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(await h.bridge.answerForm("refused-answer", { name: "" }), false);
+  assert.equal(h.commands.some(command => command.type === "extension_ui_response"), false, "nothing reaches omp");
+  let bubble = h.snapshot().messages.find(message => message.id === "refused-answer");
+  assert.equal(Boolean(bubble.answered), false);
+  assert.equal(Boolean(bubble.cancelled), false);
+  assert.ok(bubble.formError, "the refusal is on the card");
+  assert.deepEqual(bubble.formError, { text: "Fix the field “{field}” before sending.", vars: { field: "name" } });
+  // Corrected, the answer goes out and the refusal is gone.
+  assert.equal(await h.bridge.answerForm("refused-answer", { name: "Ada" }), true);
+  bubble = h.snapshot().messages.find(message => message.id === "refused-answer");
+  assert.deepEqual([bubble.answered, bubble.data.name, bubble.formError ?? null], [true, "Ada", null]);
+  assert.equal(h.commands.filter(command => command.type === "extension_ui_response").length, 1);
+});
+
+await checkAsync("Cancel on a shown form whose answer was refused still sends a cancellation, not a refusal", async () => {
+  const real = realHtmlForm();
+  const h = bridgeHarness({ htmlForm: { ...real, parse: () => ({ form: requiredNameForm }) } });
+  const { a } = await twoTabs(h);
+  h.emit(a, { type: "extension_ui_request", id: "shown-then-cancelled", method: "form", html: "<form></form>" });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(await h.bridge.answerForm("shown-then-cancelled", { name: "" }), false);
+  const open = h.snapshot().messages.find(message => message.id === "shown-then-cancelled");
+  assert.ok(open.form && open.formError, "a parsed form that carries a field error");
+  assert.equal(await h.bridge.cancelAsk("shown-then-cancelled"), true);
+  const replies = h.commands.filter(command => command.type === "extension_ui_response");
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].id, "shown-then-cancelled");
+  assert.equal(replies[0].cancelled, true);
+  assert.equal("data" in replies[0], false, "a field error is not a refusal");
+  assert.equal(h.snapshot().messages.find(message => message.id === "shown-then-cancelled").cancelled, true);
+});
+
+// Settings → Agent: compaction and retry belong to omp's config (#92). The
+// webview names a closed setting, the bridge never pushes a per-process
+// override to a running omp.
+await checkAsync("omp's compaction and retry are read and written through the config commands, with the profile and a setting name", async () => {
+  const h = bridgeHarness();
+  assert.deepEqual(await h.bridge.ompSetting("work", "autoCompaction"), { ok: true, value: null });
+  assert.deepEqual(await h.bridge.setOmpSetting("work", "autoRetry", false), { ok: true, value: null });
+  assert.deepEqual(h.invocations.map(i => [i.command, i.args]), [
+    ["omp_setting_get", { profile: "work", setting: "autoCompaction" }],
+    ["omp_setting_set", { profile: "work", setting: "autoRetry", enabled: false }],
+  ]);
+});
+
+await checkAsync("a new tab sends no set_auto_compaction or set_auto_retry frame", async () => {
+  const h = bridgeHarness();
+  const a = await h.bridge.openSession(null);
+  await h.waitCommand("get_available_commands");
+  const b = await h.bridge.openSession(null);
+  await h.bridge.activateSession(a);
+  await h.bridge.activateSession(b);
+  assert.ok(h.commands.some(c => c.type === "get_state"));
+  assert.deepEqual(h.commands.filter(c => /^set_auto_/.test(c.type)), []);
 });
 
 console.log(`test-live-voice: ${passed} checks passed`);

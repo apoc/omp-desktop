@@ -15,7 +15,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const win = {};
 // The schema loads before the modules it reads bounds from: they are read late.
 // app/i18n.js precedes it (search indexes translated text), as in index.html.
-for (const f of ["i18n.js", "constants.js", "settings-schema.js", "accent.js", "chat-collapse.js", "prompt-history.js", "session-ui.js", "keymap.js", "backdrops.js"]) {
+for (const f of ["i18n.js", "constants.js", "settings-schema.js", "accent.js", "chat-collapse.js", "prompt-history.js", "session-ui.js", "keymap.js", "backdrops.js", "notify-sound.js"]) {
   // eslint-disable-next-line no-new-func
   new Function("window", readFileSync(join(root, "src/app", f), "utf8"))(win);
 }
@@ -57,7 +57,7 @@ check("every tweak row names a TWEAK_DEFAULTS key whose default is valid", () =>
 
 check("custom rows name the renderers the page expects", () => {
   assert.deepEqual(S.rows().filter(r => r.kind === "custom").map(r => r.type).sort(),
-    ["approvalMode", "approvalRules", "chromium", "goalContinue", "projectAppearance", "remoteCert", "remoteDevices", "remotePair", "remotePush", "remoteServer", "shell", "shortcuts", "startupProfile", "terminalHeight", "version", "widgets", "widths"]);
+    ["approvalMode", "approvalRules", "autoCompaction", "autoRetry", "chromium", "goalContinue", "projectAppearance", "remoteCert", "remoteDevices", "remotePair", "remotePush", "remoteServer", "shell", "shortcuts", "sounds", "startupProfile", "terminalHeight", "version", "widgets", "widths"]);
   for (const r of S.rows().filter(r => r.kind === "custom")) for (const k of r.keys ?? []) assert.ok(k in D, k);
 });
 
@@ -163,6 +163,42 @@ check("resetEdits resets only changed rows; theme brings its accent", () => {
   assert.deepEqual(S.resetRow(row("accent"), vals({ theme: "daylight", accent: "#fff" })), { accent: S.themeAccent("daylight") });
 });
 
+check("Sounds group: the mode row, and sound rows shown only while the mode is not off", () => {
+  const sounds = S.SECTIONS.find(s => s.id === "session").groups.find(g => g.name === "Sounds");
+  assert.deepEqual(sounds.rows.map(r => r.id), ["notifySound", "custom:sounds", "soundVolume"]);
+  assert.deepEqual(row("notifySound").options.map(o => o.value), ["off", "background", "always"]);
+  assert.deepEqual(row("custom:sounds").keys, ["soundAttention", "soundFinished"]);
+  assert.equal(D.notifySound, "off");
+  for (const id of ["custom:sounds", "soundVolume"]) {
+    assert.equal(S.visible(row(id), vals()), false, `${id} hidden while off`);
+    assert.equal(S.visible(row(id), vals({ notifySound: "nonsense" })), false, `${id} hidden for an invalid mode`);
+    assert.equal(S.visible(row(id), vals({ notifySound: "background" })), true);
+    assert.equal(S.visible(row(id), vals({ notifySound: "always" })), true);
+  }
+  assert.deepEqual(row("notifySound").options.map(o => o.value), [...win.OMP_NOTIFY_SOUND.MODES]);
+  const vol = row("soundVolume");
+  assert.deepEqual([vol.min, vol.max, vol.step], [0, 100, 5]);
+  assert.equal(S.clamp(vol, "40"), 40, "a stored string reads as the sound module reads it");
+  assert.equal(S.clamp(vol, 62), 60);
+  assert.equal(S.clamp(row("soundVolume"), 400), 100);
+  assert.equal(S.search("chime", vals()).total, 1, "the sound rows' keywords find only the mode row while off");
+  assert.equal(S.search("chime", vals({ notifySound: "always" })).total, 2);
+});
+
+check("the volume row and the sound module read every stored value alike", () => {
+  const vol = row("soundVolume");
+  for (const v of ["40", 62, 400, -5, null, "", "x", true, undefined]) {
+    assert.equal(S.value(vol, { soundVolume: v }), win.OMP_NOTIFY_SOUND.prefsFrom({ soundVolume: v }, D).volume, `stored ${JSON.stringify(v)}`);
+  }
+});
+
+check("Sounds: changed sounds count and reset with the mode on", () => {
+  const v = vals({ notifySound: "always", soundAttention: "pop", soundFinished: "none" });
+  assert.equal(S.isModified(row("custom:sounds"), v), true);
+  assert.deepEqual(S.resetRow(row("custom:sounds"), v), { soundAttention: D.soundAttention, soundFinished: D.soundFinished });
+  assert.equal(S.isModified(row("custom:sounds"), vals({ notifySound: "always" })), false);
+});
+
 check("Changes participates in Rail search, modified counts and reset", () => {
   const v = vals({ showChanges: false });
   assert.equal(S.value(row("showChanges"), v), false);
@@ -201,6 +237,28 @@ check("the key bindings row is found by any shortcut action's name or id", () =>
   for (const q of [sidebar.label, sidebar.id]) {
     assert.ok(S.search(q, vals()).groups.some(g => g.rows.some(r => r.id === "custom:shortcuts")), q);
   }
+});
+
+check("auto-compaction and retry are custom rows over omp's config: searchable, no tweak behind them (#92)", () => {
+  assert.equal("autoCompaction" in D, false);
+  assert.equal("autoRetry" in D, false);
+  for (const [type, queries] of [
+    ["autoCompaction", ["auto-compact context", "summarises older turns", "/compact", "context window"]],
+    ["autoRetry", ["retry failed requests", "refused or dropped", "rate limit"]],
+  ]) {
+    const r = row(`custom:${type}`);
+    assert.equal(r.kind, "custom");
+    assert.deepEqual(r.keys ?? [], [], `${type} owns no tweak key, so no badge or section reset counts it`);
+    assert.equal(S.isModified(r, vals({ autoCompaction: false, autoRetry: false })), false);
+    for (const q of queries) {
+      const hit = S.search(q, vals()).groups.find(g => g.rows.some(x => x.id === r.id));
+      assert.ok(hit, `${type}: "${q}"`);
+      assert.equal(hit.sectionId, "agent");
+      assert.equal(hit.src, "omp config");
+    }
+  }
+  // A stored desktop "off" of the removed tweaks must not count as a modification either.
+  assert.deepEqual(S.resetEdits("agent", vals({ autoCompaction: false, autoRetry: false })), {});
 });
 
 console.log(`test-settings-schema: ${passed} checks passed`);

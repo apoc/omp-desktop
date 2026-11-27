@@ -53,7 +53,7 @@ So the stdout reader applies each `extension_ui_request` frame to the session's 
 
 On activation (`_switchToSession`), when `replay_events` reports `dropped`, the frontend fetches `extension_ui_state` **before** dispatching the replay, replaces `state.extWidgets` with `fromSnapshot(...)` and sets `extSnapshotSeq` to the snapshot's `seq`. The `setStatus`/`setWidget` handler then skips every replayed or buffered frame whose journal seq is at or below `extSnapshotSeq` and applies the newer ones on top: the same frames, in the same order, on the same state as the backend, so the result is the backend's exactly, the key bound included. A frame pushed but not yet recorded when the snapshot was taken has a higher seq than the snapshot names, so it is applied from the replay. Fetching before the dispatch matters for a newer tab switch during the await: it saves this tab with its old `lastSeq`, so the next visit replays (and fetches) again instead of keeping a cursor past frames that never reached `state.extWidgets`. Without `dropped`, the replay alone is complete and no snapshot is fetched.
 
-The backend sees whole lines only: a frame omp splits into protocol-v2 chunks (over 1 MiB, far beyond the bounds above) reaches the frontend live but not `ExtUiState`.
+A frame omp splits into protocol-v2 chunks (over 1 MiB, far beyond the bounds above) reaches `ExtUiState` whole: the stdout reader reassembles the chunk run (`agent/frames.rs`) before redaction and before any consumer, the journal and the frontend included.
 
 ## Lifecycle
 

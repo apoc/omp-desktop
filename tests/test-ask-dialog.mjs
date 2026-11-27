@@ -12,6 +12,8 @@ import { dirname, join } from "node:path";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const win  = {};
 // eslint-disable-next-line no-new-func
+new Function("window", readFileSync(join(root, "src/app/html-form.js"), "utf8"))(win);
+// eslint-disable-next-line no-new-func
 new Function("window", readFileSync(join(root, "src/app/ask-dialog.js"), "utf8"))(win);
 const A = win.OMP_ASK_DIALOG;
 
@@ -367,6 +369,43 @@ check("collapsedSummary: cancellation and omp-side timeout keep their status wor
     { answer: null, answerCount: null, status: "cancelled", prompt: "Continue?", negative: true });
   assert.deepEqual(A.collapsedSummary({ title: "Continue?", answered: false, cancelled: true, closedByOmp: true }),
     { answer: null, answerCount: null, status: "closed by omp", prompt: "Continue?", negative: true });
+});
+
+check("collapsedSummary: a form uses its visible answer and section title, never hidden input", () => {
+  const form = {
+    sections: [{ title: "Setup", fieldset: true, blocks: [] }],
+    fields: [{ kind: "choice", name: "db", multi: false, select: false, other: true, label: "", required: false, options: [{ value: "pg", label: "Postgres", checked: true, disabled: false }] }],
+    hidden: [["token", "secret"]],
+  };
+  assert.deepEqual(A.collapsedSummary({ method: "form", answered: true, form, data: { token: "secret", db: "pg" } }), {
+    answer: "Postgres", answerCount: null, status: null, prompt: "Setup", negative: false,
+  });
+  assert.deepEqual(A.collapsedSummary({ method: "form", answered: true, form, data: { db: "pg", token: "secret" }, title: "Override" }), {
+    answer: "Postgres", answerCount: null, status: null, prompt: "Override", negative: false,
+  });
+  // An unreadable form's title is the desktop's own source string (or a
+  // `{text, vars}`): handed over for translation, never as omp text.
+  assert.deepEqual(A.collapsedSummary({ method: "form", cancelled: true, form: null, formError: { text: "The form is empty." }, title: "Unsupported form" }), {
+    answer: null, answerCount: null, status: "not shown", prompt: "Unsupported form", promptSource: { text: "Unsupported form" }, negative: true,
+  });
+  // Refused, not cancelled: omp's turn goes on, so the status says so; omp's
+  // own withdrawal still wins, and a cancelled parsed form stays `cancelled`.
+  assert.deepEqual(A.collapsedSummary({ method: "form", cancelled: true, closedByOmp: true, form: null, formError: { text: "The form is empty." }, title: "Unsupported form" }), {
+    answer: null, answerCount: null, status: "closed by omp", prompt: "Unsupported form", promptSource: { text: "Unsupported form" }, negative: true,
+  });
+  assert.deepEqual(A.collapsedSummary({ method: "form", cancelled: true, form, data: null }), {
+    answer: null, answerCount: null, status: "cancelled", prompt: "Setup", negative: true,
+  });
+  // A field error on a shown form (`formError` with a parsed `form`) is not a refusal.
+  assert.deepEqual(A.collapsedSummary({ method: "form", cancelled: true, form, data: null, formError: { text: "Fix the field “{field}” before sending.", vars: { field: "db" } } }), {
+    answer: null, answerCount: null, status: "cancelled", prompt: "Setup", negative: true,
+  });
+  assert.equal(A.collapsedSummary({ method: "input", cancelled: true, form: null, title: "Word?" }).status, "cancelled");
+  assert.deepEqual(A.collapsedSummary({ method: "form", cancelled: true, form: null, title: { text: "Form for {who}", vars: { who: "Ada" } } }).promptSource,
+    { text: "Form for {who}", vars: { who: "Ada" } });
+  assert.equal(A.collapsedSummary({ method: "form", cancelled: true, form: null, title: { text: "Form for {who}", vars: { who: "Ada" } } }).prompt, "Form for Ada");
+  // A readable form's title is omp's text: no translation source.
+  assert.equal("promptSource" in A.collapsedSummary({ method: "form", answered: true, form, data: {}, title: "Override" }), false);
 });
 
 // ── selectRows: the rows of a `select` request ──────────────────────────

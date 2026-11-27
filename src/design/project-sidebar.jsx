@@ -114,7 +114,7 @@ function ProjectSidebar({
                     <button className="psb-main" title={t.name} onClick={() => onSelectTab(t.id)}
                       onDoubleClick={() => startRename(t.id)}>
                       <span className="psb-name">{t.name}</span>
-                      <TabRunDot state={t.runState} />
+                      <TabRunDot state={t.displayRunState} />
                     </button>
                   )}
                   <span className="psb-actions">

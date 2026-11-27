@@ -1,6 +1,6 @@
 [package]
 name = "omp-desktop"
-version = "0.15.2"
+version = "0.15.3"
 edition = "2021"
 rust-version = "1.98"
 
@@ -19,7 +19,9 @@ tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2.13"
 serde = { version = "1", features = ["derive"] }
 # `raw_value`: the conversation tree skips message bodies it does not read.
-serde_json = { version = "1", features = ["raw_value"] }
+# `unbounded_depth`: the stdout reader parses frames nested past serde's 128
+# levels, up to its own ceiling (`agent/frames.rs` `MAX_FRAME_DEPTH`).
+serde_json = { version = "1", features = ["raw_value", "unbounded_depth"] }
 notify = "8"
 gix = "0.87"
 open = { version = "5", features = ["shellexecute-on-windows"] }

@@ -3,19 +3,12 @@
 //! omp continues a goal on its own over RPC only when its setting
 //! `goal.continuationModes` (an array of strings, default
 //! `["interactive"]`) contains `"rpc"`. This module reads and writes that
-//! one setting for one profile through omp's own CLI — `omp config get
-//! goal.continuationModes --json` / `omp config set goal.continuationModes
-//! '<json array>'` — rather than editing `config.yml` ourselves, so omp
-//! stays the owner of the file's location, format and layering, and a
-//! running `omp --mode rpc-ui` tab of that profile picks the change up live.
-//!
-//! `profile` is `None` for the built-in profile (no flag) or `Some(id)` for
-//! a named one, passed as a global `--profile=<id>` *before* the
-//! subcommand (the same placement as `stats::fetch`). `omp --profile <id>`
-//! silently creates `~/.omp/profiles/<id>/` for an unknown id, so callers
-//! MUST only pass ids that went through `ProfileStore::resolve_owned`.
+//! one setting for one profile through `omp_config` (omp's own `config
+//! get|set` CLI, which also documents the `profile` argument: callers MUST
+//! only pass ids that went through `ProfileStore::resolve_owned`). It keeps
+//! only the array logic: which entry to add or remove.
 
-use std::sync::{Mutex, PoisonError};
+use serde_json::Value;
 
 /// The omp setting this module toggles.
 const SETTING_KEY: &str = "goal.continuationModes";
@@ -23,28 +16,13 @@ const SETTING_KEY: &str = "goal.continuationModes";
 /// The entry of [`SETTING_KEY`] that enables continuation over RPC.
 const RPC_MODE: &str = "rpc";
 
-/// Names the subcommand in `omp_cli::run`'s failure messages.
-const OMP_CONFIG: &str = "omp config";
-
-/// How much of an unexpected `config get` output is quoted in an error.
-const OUTPUT_SNIPPET_MAX_CHARS: usize = 120;
-
-/// Serialises every read and write of the setting: [`set`]'s
-/// read-modify-write, so two concurrent toggles cannot interleave and drop
-/// each other's change, and [`get`], so a read issued while a toggle is
-/// still writing waits for it instead of returning the value it replaces.
-/// Taken inside the blocking closure only; guards no data, so a poisoned
-/// lock is still usable.
-static CONFIG_LOCK: Mutex<()> = Mutex::new(());
-
 /// Whether the effective `goal.continuationModes` of `profile` contains
 /// `"rpc"`.
 ///
 /// Spawns `omp`, so callers MUST run this off the main thread (see
 /// `goal_continuation_get` in `lib.rs`).
 pub fn get(profile: Option<&str>) -> Result<bool, String> {
-    let _guard = CONFIG_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    read_modes(profile).map(|modes| has_rpc(&modes))
+    read_modes(&crate::omp_config::lock(), profile).map(|modes| has_rpc(&modes))
 }
 
 /// Add (`enabled`) or remove (`!enabled`) `"rpc"` in the profile's
@@ -52,77 +30,48 @@ pub fn get(profile: Option<&str>) -> Result<bool, String> {
 /// return the effective value re-read after the write. Nothing is written
 /// when the list would not change.
 ///
-/// Blocking (up to three `omp` spawns), like [`get`].
+/// Blocking (up to three `omp` spawns, under one `omp_config` lock so two
+/// concurrent toggles cannot drop each other's change), like [`get`].
+// The guard is the config lock: it must outlive every run below, which only
+// borrow it as proof (the lint does not see a borrow as a use).
+#[allow(clippy::significant_drop_tightening)]
 pub fn set(profile: Option<&str>, enabled: bool) -> Result<bool, String> {
-    let _guard = CONFIG_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    let current = read_modes(profile)?;
+    let guard = crate::omp_config::lock();
+    let current = read_modes(&guard, profile)?;
     let Some(next) = next_modes(current, enabled) else {
         // `next_modes` returns `None` only when the list already says `enabled`.
         return Ok(enabled);
     };
-    crate::omp_cli::run(&set_args(profile, &next)?, OMP_CONFIG)?;
-    // Not `get`: the lock is held, and `std::sync::Mutex` is not reentrant.
-    read_modes(profile).map(|modes| has_rpc(&modes))
+    crate::omp_config::write(&guard, profile, SETTING_KEY, &encode_modes(&next)?)?;
+    read_modes(&guard, profile).map(|modes| has_rpc(&modes))
 }
 
-/// Read and parse the profile's current `goal.continuationModes`.
-fn read_modes(profile: Option<&str>) -> Result<Vec<String>, String> {
-    parse_modes(&crate::omp_cli::run(&get_args(profile), OMP_CONFIG)?)
+/// Read the profile's current `goal.continuationModes`.
+fn read_modes(
+    guard: &crate::omp_config::ConfigGuard,
+    profile: Option<&str>,
+) -> Result<Vec<String>, String> {
+    crate::omp_config::read(guard, profile, SETTING_KEY, modes_from)
 }
 
-/// Argv for `omp [--profile=<id>] config get goal.continuationModes --json`.
-/// `--profile` goes before the subcommand, like `stats::stats_args`.
-fn get_args(profile: Option<&str>) -> Vec<String> {
-    let mut args = Vec::with_capacity(5);
-    args.extend(crate::agent::spawn::profile_flag(profile));
-    args.extend(["config", "get", SETTING_KEY, "--json"].map(String::from));
-    args
-}
-
-/// Argv for `omp [--profile=<id>] config set goal.continuationModes
-/// '<json array>'`: the array text is ONE argv element, so no shell or
-/// quoting layer is involved.
-fn set_args(profile: Option<&str>, modes: &[String]) -> Result<Vec<String>, String> {
-    let value =
-        serde_json::to_string(modes).map_err(|e| format!("could not encode {SETTING_KEY}: {e}"))?;
-    let mut args = Vec::with_capacity(5);
-    args.extend(crate::agent::spawn::profile_flag(profile));
-    args.extend(["config", "set", SETTING_KEY].map(String::from));
-    args.push(value);
-    Ok(args)
-}
-
-/// Parse `omp config get <key> --json`'s stdout —
-/// `{"key":…,"value":[…],"type":"array","description":…}` — into the
-/// setting's entries. `value` must be an array of strings; anything else
-/// is an error quoting (a bounded prefix of) what omp printed.
-fn parse_modes(stdout: &[u8]) -> Result<Vec<String>, String> {
-    let text = String::from_utf8_lossy(stdout);
-    let text = text.trim();
-    let unexpected = || {
-        let snippet: String = text.chars().take(OUTPUT_SNIPPET_MAX_CHARS).collect();
-        let ellipsis = if snippet.len() < text.len() {
-            "…"
-        } else {
-            ""
-        };
-        format!("unexpected {SETTING_KEY} from omp: {snippet}{ellipsis}")
-    };
-    let mut parsed: serde_json::Value = serde_json::from_str(text).map_err(|_| unexpected())?;
-    let serde_json::Value::Array(items) = parsed
-        .get_mut("value")
-        .map(serde_json::Value::take)
-        .ok_or_else(unexpected)?
-    else {
-        return Err(unexpected());
+/// The setting's entries from its `value`, which must be an array of
+/// strings.
+fn modes_from(value: Value) -> Option<Vec<String>> {
+    let Value::Array(items) = value else {
+        return None;
     };
     items
         .into_iter()
         .map(|item| match item {
-            serde_json::Value::String(s) => Ok(s),
-            _ => Err(unexpected()),
+            Value::String(s) => Some(s),
+            _ => None,
         })
         .collect()
+}
+
+/// The text `omp config set` takes for the list: a JSON array.
+fn encode_modes(modes: &[String]) -> Result<String, String> {
+    serde_json::to_string(modes).map_err(|e| format!("could not encode {SETTING_KEY}: {e}"))
 }
 
 /// Whether `modes` enables continuation over RPC.
@@ -148,109 +97,43 @@ fn next_modes(mut current: Vec<String>, enabled: bool) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn v(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| (*s).to_string()).collect()
     }
 
     #[test]
-    fn get_args_for_builtin_profile_has_no_flag() {
+    fn modes_from_reads_a_string_array() {
         assert_eq!(
-            get_args(None),
-            v(&["config", "get", "goal.continuationModes", "--json"])
+            modes_from(json!(["interactive", "rpc"])),
+            Some(v(&["interactive", "rpc"]))
         );
-        assert_eq!(get_args(Some("")), get_args(None));
+        assert_eq!(modes_from(json!([])), Some(Vec::new()));
     }
 
     #[test]
-    fn get_args_put_profile_flag_before_subcommand() {
-        assert_eq!(
-            get_args(Some("work")),
-            v(&[
-                "--profile=work",
-                "config",
-                "get",
-                "goal.continuationModes",
-                "--json"
-            ])
-        );
-    }
-
-    #[test]
-    fn set_args_pass_json_array_as_one_element() {
-        assert_eq!(
-            set_args(None, &v(&["interactive", "rpc"])).unwrap(),
-            v(&[
-                "config",
-                "set",
-                "goal.continuationModes",
-                r#"["interactive","rpc"]"#
-            ])
-        );
-        assert_eq!(
-            set_args(Some("work"), &[]).unwrap(),
-            v(&[
-                "--profile=work",
-                "config",
-                "set",
-                "goal.continuationModes",
-                "[]"
-            ])
-        );
-    }
-
-    #[test]
-    fn set_args_escape_entries_inside_the_one_element() {
-        let args = set_args(None, &v(&[r#"a "b""#])).unwrap();
-        assert_eq!(args.len(), 4);
-        assert_eq!(args[3], r#"["a \"b\""]"#);
-    }
-
-    #[test]
-    fn parse_modes_reads_value_array() {
-        let out = br#"{"key":"goal.continuationModes","value":["interactive","rpc"],"type":"array","description":"d"}"#;
-        assert_eq!(parse_modes(out).unwrap(), v(&["interactive", "rpc"]));
-        assert_eq!(
-            parse_modes(b"  {\"value\":[]}\r\n").unwrap(),
-            Vec::<String>::new()
-        );
-    }
-
-    #[test]
-    fn parse_modes_rejects_non_array_value() {
-        for out in [
-            r#"{"value":"rpc"}"#,
-            r#"{"value":null}"#,
-            r#"{"value":{"rpc":true}}"#,
-            r#"{"key":"goal.continuationModes"}"#,
-        ] {
-            let err = parse_modes(out.as_bytes()).unwrap_err();
-            assert!(err.contains(out), "{err}");
+    fn modes_from_rejects_non_array_value() {
+        for value in [json!("rpc"), json!(null), json!({"rpc": true}), json!(true)] {
+            assert_eq!(modes_from(value), None);
         }
     }
 
     #[test]
-    fn parse_modes_rejects_non_string_entries() {
-        let err = parse_modes(br#"{"value":["interactive",3]}"#).unwrap_err();
-        assert!(
-            err.starts_with("unexpected goal.continuationModes"),
-            "{err}"
+    fn modes_from_rejects_non_string_entries() {
+        assert_eq!(modes_from(json!(["interactive", 3])), None);
+        assert_eq!(modes_from(json!([null])), None);
+    }
+
+    #[test]
+    fn the_array_written_back_is_one_json_text() {
+        // `set` hands this text to `omp config set` as ONE argv element.
+        assert_eq!(
+            encode_modes(&v(&["interactive", "rpc"])).unwrap(),
+            r#"["interactive","rpc"]"#
         );
-    }
-
-    #[test]
-    fn parse_modes_rejects_non_json_and_empty() {
-        assert!(parse_modes(b"not json").unwrap_err().contains("not json"));
-        assert!(parse_modes(b"").is_err());
-        assert!(parse_modes(b"[\"rpc\"]").is_err());
-    }
-
-    #[test]
-    fn parse_modes_error_quote_is_bounded() {
-        let long = "x".repeat(10_000);
-        let err = parse_modes(long.as_bytes()).unwrap_err();
-        assert!(err.chars().count() < 250, "{} chars", err.chars().count());
-        assert!(err.ends_with('…'));
+        assert_eq!(encode_modes(&v(&[r#"a "b""#])).unwrap(), r#"["a \"b\""]"#);
+        assert_eq!(encode_modes(&[]).unwrap(), "[]");
     }
 
     #[test]

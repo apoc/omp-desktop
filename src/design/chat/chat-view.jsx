@@ -6,7 +6,7 @@
    minimap-hover cross-highlight (mm-hot) flows through here via the
    `hoveredMsgIdx` prop. */
 
-const { UserBubble: _CV_UserBubble, ToolCard: _CV_ToolCard, AssistantBubble: _CV_AssistantBubble, AskBubble: _CV_AskBubble, RetryRow: _CV_RetryRow, GoalRow: _CV_GoalRow, ApprovalRow: _CV_ApprovalRow, Icon: _CV_Icon, TOOL_META: _CV_TOOL_META } = window;
+const { UserBubble: _CV_UserBubble, ToolCard: _CV_ToolCard, AssistantBubble: _CV_AssistantBubble, AskBubble: _CV_AskBubble, RetryRow: _CV_RetryRow, GoalRow: _CV_GoalRow, ApprovalRow: _CV_ApprovalRow, EarlierHistoryRow: _CV_EarlierHistoryRow, Icon: _CV_Icon, TOOL_META: _CV_TOOL_META } = window;
 const { nextPinned: _CV_nextPinned, shouldRepin: _CV_shouldRepin, afterOutput: _CV_afterOutput } = window.OMP_SCROLL_PIN;
 const { collapseStates: _CV_collapseStates, PREVIEW_LINES: _CV_PREVIEW_LINES } = window.OMP_COLLAPSE;
 // Lines a collapsed block keeps in view, for chat.css; one object, so a
@@ -120,8 +120,9 @@ const JobRow = React.memo(function JobRow({ msg, idx, highlighted }) {
 // `_id → collapsed` toggles, and `onToggleCollapse(id, collapsed)` flips one
 // (app/chat-collapse.js). `followOutput` and `submitKey` are tweaks too: the
 // first lets new output move a view at the bottom, the second is the ask
-// editor's send chord.
-function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, onAskAnswer, onAskDialogAnswer, onConfirmAsk, onCancelAsk, onGrantApproval, onStopRetry, hasProjectPath, onInspectSubagent, onOpenFile, onPreviewFile, projectRoot, foldModes, collapseAfter, collapseOverrides, onToggleCollapse, followOutput = true, submitKey = "enter" }) {
+// editor's send chord. `olderHistory` (the snapshot's, #85), `transcriptMax`
+// and `onLoadOlderHistory` drive the compacted-history row at the top.
+function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, onAskAnswer, onAskDialogAnswer, onAskFormAnswer, onConfirmAsk, onCancelAsk, onGrantApproval, onStopRetry, hasProjectPath, onInspectSubagent, onOpenFile, onPreviewFile, projectRoot, foldModes, collapseAfter, collapseOverrides, onToggleCollapse, followOutput = true, submitKey = "enter", olderHistory, transcriptMax = 0, onLoadOlderHistory }) {
   const scrollRef   = React.useRef(null);
   const pinnedRef   = React.useRef(true);   // assume start pinned to bottom
   const prevTopRef  = React.useRef(0);
@@ -214,11 +215,16 @@ function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, 
     ...foldModes, after: collapseAfter, overrides: collapseOverrides,
     horizonId: collapseHorizon, hidden: window.OMP_TURN_STATUS.isHidden,
   }), [messages, foldModes.thinking, foldModes.tool, collapseAfter, collapseOverrides, collapseHorizon]);
+  // Compacted history to load (D8): while some exists and the cap has room.
+  const showEarlier = window.OMP_OLDER_HISTORY.showRow(olderHistory, messages, transcriptMax);
 
   return (
     <div className="chat-wrap">
       <div className="chat-scroll selectable" ref={scrollRef} onScroll={onScroll}>
         <div className="chat-pad" style={_CV_PAD_STYLE}>
+          {showEarlier && (
+            <_CV_EarlierHistoryRow loading={!!olderHistory.loading} error={olderHistory.error ?? null} onLoad={onLoadOlderHistory} />
+          )}
           {/* Note: after a trim, idx shifts for all surviving messages, causing a full
              re-render of memo'd bubbles in that notify cycle (bounded at MINIMAP_MAX -
              MINIMAP_COLS = 156). Streaming re-renders are unaffected. Driving annotable
@@ -235,7 +241,7 @@ function ChatView({ messages, planMode, annotations, onAnnotate, hoveredMsgIdx, 
             if (m.kind === "approval") return <_CV_ApprovalRow    key={m._id ?? i} idx={i} highlighted={hl} msg={m} />;
             if (m.kind === "tool")    return <_CV_ToolCard_M      key={m._id ?? i} idx={i} highlighted={hl} msg={m} onInspectSubagent={onInspectSubagent}
               onOpenFile={onOpenFile} onPreviewFile={onPreviewFile} projectRoot={projectRoot} collapsed={collapsed[m._id]} onToggleCollapse={onToggleCollapse} />;
-            if (m.kind === "ask")     return <_CV_AskBubble_M     key={m._id ?? i} idx={i} highlighted={hl} msg={m} onAnswer={onAskAnswer} onAnswerDialog={onAskDialogAnswer} onConfirm={onConfirmAsk} onCancelAsk={onCancelAsk} onGrant={onGrantApproval} hasProjectPath={hasProjectPath} submitKey={submitKey} />;
+            if (m.kind === "ask")     return <_CV_AskBubble_M     key={m._id ?? i} idx={i} highlighted={hl} msg={m} onAnswer={onAskAnswer} onAnswerDialog={onAskDialogAnswer} onAnswerForm={onAskFormAnswer} onConfirm={onConfirmAsk} onCancelAsk={onCancelAsk} onGrant={onGrantApproval} hasProjectPath={hasProjectPath} submitKey={submitKey} />;
             return <_CV_AssistantBubble_M key={m._id ?? i} idx={i} highlighted={hl} msg={m}
               annotable={i === lastAsstIdx}
               annotations={annotations}

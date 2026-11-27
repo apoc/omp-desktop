@@ -103,7 +103,7 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
               className={`tab-group-row ${t.id === activeId ? "active" : ""}${reorder.dropClass(members, t.id)}`} role="none">
               {renaming === t.id ? (
                 <span className="tab-group-item tab-group-editing">
-                  <span className="tab-group-dot"><TabRunDot state={t.runState} /></span>
+                  <span className="tab-group-dot"><TabRunDot state={t.displayRunState} /></span>
                   <RenameField value={t.name}
                     onCommit={name => onRename(t.id, name)}
                     onClose={() => setRenaming(null)} />
@@ -111,7 +111,7 @@ function TabGroupChip({ group, activeId, profileLabel, onSelect, onClose, onNewI
               ) : (
                 <button className="tab-group-item" role="menuitem"
                   onClick={() => { onSelect(t.id); close(); }}>
-                  <span className="tab-group-dot"><TabRunDot state={t.runState} /></span>
+                  <span className="tab-group-dot"><TabRunDot state={t.displayRunState} /></span>
                   <span className="tab-name" title={t.name}>{t.name}</span>
                 </button>
               )}

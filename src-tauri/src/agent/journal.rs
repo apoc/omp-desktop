@@ -1,6 +1,6 @@
 //! Bounded per-session event journal.
 //!
-//! Every stdout line emitted to the frontend is also appended here, stamped
+//! Every logical frame emitted to the frontend is also appended here, stamped
 //! with a monotonic per-session `seq`. This is *not* durable event sourcing —
 //! it is a fixed-size in-memory ring, purely to survive the window between a
 //! tab losing its live listener (backgrounded) and regaining it (reactivated):
@@ -17,13 +17,14 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-/// One journaled line, in emission order.
+/// One journaled logical frame, in emission order.
 ///
-/// `text` is an [`Arc<str>`] rather than a `String` so journaling a line
-/// costs a refcount bump instead of copying the line's bytes: the stdout
-/// reader emits the very same buffer to the frontend, and `since` hands
-/// out clones of it again on replay. Lines run up to `MAX_LINE_BYTES`
-/// (16 MiB), so the copies this avoids are not small.
+/// `text` is an [`Arc<str>`] rather than a `String` so journaling a frame
+/// costs a refcount bump instead of copying its bytes: the stdout reader
+/// emits the very same buffer to the frontend, and `since` hands out clones
+/// of it again on replay. A frame runs up to `MAX_LINE_BYTES` (16 MiB) as
+/// one line, or `frames::MAX_REASSEMBLED_BYTES` (64 MiB) when omp chunked
+/// it, so the copies this avoids are not small.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct JournalEvent {
     pub seq: u64,
@@ -49,10 +50,10 @@ pub struct Replay {
 /// Ring of the most recent [`JournalEvent`]s for one session, bounded by
 /// **both** an entry count and a total byte budget.
 ///
-/// The byte bound matters as much as the count: entries hold whole RPC
-/// lines, which run up to `MAX_LINE_BYTES` (16 MiB) each, so a
-/// count-only bound would let one session streaming large tool results
-/// pin `capacity × 16 MiB` indefinitely — per open tab.
+/// The byte bound matters as much as the count: entries hold whole logical
+/// frames, which run up to `frames::MAX_REASSEMBLED_BYTES` (64 MiB) each,
+/// so a count-only bound would let one session streaming large tool
+/// results pin `capacity × 64 MiB` indefinitely — per open tab.
 pub(super) struct EventJournal {
     capacity: usize,
     max_bytes: usize,

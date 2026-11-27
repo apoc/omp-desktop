@@ -26,7 +26,7 @@
   {
     "name": "non_json_line",
     "raw": "not json at all\n",
-    "expect_text": "not json at all",
+    "expect_text": "{\"type\":\"desktop_frame_error\",\"reason\":\"unparsable\"}",
     "expect_json": false
   },
   {
@@ -45,8 +45,20 @@
   {
     "name": "truncated_json_header",
     "raw": "{\"type\":\"rea\n",
-    "expect_text": "{\"type\":\"rea",
+    "expect_text": "{\"type\":\"desktop_frame_error\",\"reason\":\"unparsable\"}",
     "expect_json": false
+  },
+  {
+    "name": "lone_surrogate_repaired",
+    "raw": "{\"type\":\"x\",\"t\":\"a\\ud800b\"}\n",
+    "expect_contains": "a\ufffdb",
+    "expect_json": true
+  },
+  {
+    "name": "escaped_backslash_kept_while_lone_surrogate_repaired",
+    "raw": "{\"t\":\"\\\\ud800\",\"u\":\"\\ud800\"}\n",
+    "expect_text": "{\"t\":\"\\\\ud800\",\"u\":\"\ufffd\"}",
+    "expect_json": true
   },
   {
     "name": "single_lf_only",

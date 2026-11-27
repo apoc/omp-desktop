@@ -3,7 +3,9 @@
    GOAL_DRAFT_IDLE), kept in React like plan mode (#28) since omp never sees
    it; what blocks it and what it blocks (app/goal.js `composerGate`); the
    send that starts a goal; omp's auto-continue setting for the tab's
-   profile; and the goal strip the composer renders (design/goal-strip.jsx).
+   profile (`useGoalContinuation`, on app/use-omp-setting.jsx's
+   `useOmpFlag`, which loads first); and the goal strip the composer
+   renders (design/goal-strip.jsx).
 
    `goal` is the active tab's `{known, goal}` from the bridge snapshot;
    `runState` its run state (app/turn-status.js). `onRestoreDraft(draft,
@@ -21,44 +23,18 @@ const {
 } = window.OMP_GOAL;
 const { isBusyRunState: _UG_isBusy } = window.OMP_TURN_STATUS;
 
-/** omp's auto-continue setting (`goal.continuationModes` holds "rpc") for
- *  `profileId`, fetched while `active` (goal mode on, or a goal shown) and
- *  refetched whenever that turns on again or the profile changes — the user
- *  may edit omp's config by hand meanwhile. Per profile, not per tab: a
- *  switch between tabs of one profile does not run `omp config` again. A
- *  reply for a profile left meanwhile is never shown; omp's reason for a
- *  failed read or write is. */
-function _UG_useContinuation(bridge, profileId, active) {
-  // `forProfile` tags the whole record.
-  const [st, setSt] = React.useState({ forProfile: null, value: null, error: null, busy: false });
-  const reqRef = React.useRef(0);
-  React.useEffect(() => {
-    if (!active || !bridge || !profileId) return;
-    const my = ++reqRef.current;
-    bridge.goalContinuation(profileId).then(res => {
-      if (reqRef.current !== my) return;
-      setSt({
-        forProfile: profileId,
-        value: res?.ok ? res.value === true : null,
-        error: res?.ok ? null : res?.error ?? "could not read omp's setting",
-        busy: false,
-      });
-    });
-  }, [bridge, profileId, active]);
-  // Only reachable while the value is known for `profileId` (the switch is
-  // disabled otherwise), so `forProfile` already names the target.
-  const set = async enabled => {
-    const my = ++reqRef.current;
-    setSt(s => ({ ...s, busy: true, error: null }));
-    const res = await bridge.setGoalContinuation(profileId, enabled);
-    if (reqRef.current !== my) return;
-    setSt(s => (res?.ok
-      ? { ...s, value: res.value === true, busy: false }
-      : { ...s, busy: false, error: res?.error ?? "could not change the setting" }));
-  };
-  const mine = st.forProfile === profileId;
-  return { value: mine ? st.value : null, busy: mine && st.busy, error: mine ? st.error : null, set };
-}
+/** The two bridge calls behind the goal's auto-continue switch (omp's
+ *  `goal.continuationModes`): `read(bridge, profile)` and `write(bridge,
+ *  profile, enabled)`, each a `{ok, value | error}` promise. A module-level
+ *  object, so the hook can key its fetch on it. */
+const _UG_GOAL_OPS = {
+  read: (bridge, profile) => bridge.goalContinuation(profile),
+  write: (bridge, profile, enabled) => bridge.setGoalContinuation(profile, enabled),
+};
+
+/** omp's auto-continue setting (`goal.continuationModes` holds "rpc"): the
+ *  generic omp-config hook of app/use-omp-setting.jsx, read at call time. */
+const _UG_useContinuation = (bridge, profileId, active) => window.useOmpFlag(bridge, profileId, active, _UG_GOAL_OPS);
 
 function useGoalMode({ bridge, tabId, sessionIds, goal, planMode, profileId, runState, onRestoreDraft }) {
   const [drafts, setDrafts] = React.useState({});
@@ -120,6 +96,6 @@ function useGoalMode({ bridge, tabId, sessionIds, goal, planMode, profileId, run
   return { mode, tint, goalBlocked, planBlocked, toggle, enter, start, strip };
 }
 
-// `_UG_useContinuation` also backs Settings → Agent → Goals
+// `_UG_useContinuation` also backs Settings → Agent's goal row
 // (design/settings/rows-agent.jsx, read at render time).
 Object.assign(window, { useGoalMode, useGoalContinuation: _UG_useContinuation });

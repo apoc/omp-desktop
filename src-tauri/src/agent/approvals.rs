@@ -606,7 +606,11 @@ mod tests {
                 Mutex::new(Broken)
             )),)
             .is_err());
-        assert_eq!(tracker.snapshot()[sid], (false, 1));
+        let snapshot = tracker.snapshot();
+        assert_eq!(
+            (snapshot.sessions[sid].busy, snapshot.sessions[sid].asks),
+            (false, 1)
+        );
         assert_eq!(
             approve(
                 &bridge,
@@ -618,7 +622,11 @@ mod tests {
             ),
             Ok(None)
         );
-        assert_eq!(tracker.snapshot()[sid], (false, 0));
+        let snapshot = tracker.snapshot();
+        assert_eq!(
+            (snapshot.sessions[sid].busy, snapshot.sessions[sid].asks),
+            (false, 0)
+        );
         tracker.on_exit(sid);
     }
 }

@@ -41,6 +41,12 @@
 
   // Descriptors, not spread: spread would read the bound getters once, now.
   const withExtra = (base, extra) => Object.defineProperties(base, Object.getOwnPropertyDescriptors(extra ?? {}));
+
+  // Sound rows show once the mode is on; the notification sound module
+  // (loaded after this file, so read late) decides what an invalid stored
+  // mode reads as.
+  const sounds = () => window.OMP_NOTIFY_SOUND;
+  const soundsOn = (values) => sounds().prefsFrom(values, defaults()).mode !== "off";
   const tweak = (key, type, label, desc, kw, extra) => withExtra({ kind: "tweak", id: key, key, type, label, desc, kw }, extra);
   const custom = (type, label, desc, kw, extra) => withExtra({ kind: "custom", id: `custom:${type}`, type, label, desc, kw }, extra);
 
@@ -162,16 +168,28 @@
       { name: "Goals", src: "omp config", rows: [
         custom("goalContinue", "Keep working on a goal", "omp continues an active goal on its own after each turn instead of waiting for you. Costs tokens while unattended.", "goal auto continue"),
       ] },
-      { name: "omp behaviour", rows: [
-        tweak("autoCompaction", "toggle", "Auto-compact context", "omp summarises older turns when the context fills up. Off: you run `/compact` yourself.", "compaction context window"),
-        tweak("autoRetry", "toggle", "Retry failed requests", "omp retries a request the provider refused or dropped, with a retry row you can stop.", "retry error rate limit"),
+      { name: "omp behaviour", src: "omp config", rows: [
+        custom("autoCompaction", "Auto-compact context", "omp summarises older turns when the context fills up. Off: you run `/compact` yourself.", "compaction context window"),
+        custom("autoRetry", "Retry failed requests", "omp retries a request the provider refused or dropped, with a retry row you can stop.", "retry error rate limit"),
       ] },
     ] },
-    { id: "session", icon: "clock", title: "Session", blurb: "Tabs across restarts, closing, naming and app updates.", groups: [
+    { id: "session", icon: "clock", title: "Session", blurb: "Tabs across restarts, closing, naming, compacted history, notification sounds and app updates.", groups: [
       { name: "Tabs", rows: [
         tweak("restoreTabs", "toggle", "Reopen tabs on launch", "Start with the tabs and conversations that were open when you quit.", "restore session startup"),
         tweak("confirmBusyClose", "toggle", "Ask before closing a working tab", "Closing a tab whose agent is mid-turn stops it. Ask first, also when quitting.", "confirm quit close"),
         tweak("autoName", "toggle", "Name tabs automatically", "omp titles a new conversation from its first turns (one small model call). `/rename` always wins.", "rename title"),
+        tweak("showCompactedHistory", "toggle", "Show compacted history", "When a conversation opens, load what a compaction summarized above it, up to the transcript limit. Off: a row above the transcript loads it on request.", "compaction summary earlier older history transcript"),
+      ] },
+      { name: "Sounds", rows: [
+        tweak("notifySound", "seg", "Play sounds", "A short sound when a question waits or a turn finished, in any tab. `in background` plays only while the window is not focused.", "sound audio notification chime beep alert attention finished done",
+          { get options() { return opts(sounds().MODES, { background: "in background" }); } }),
+        custom("sounds", "Sounds", "Which sound a waiting question and a finished turn play; ▶ previews one at the volume below.", "sound audio notification chime bell pop knock rise blip beep alert attention finished done question preview",
+          { keys: ["soundAttention", "soundFinished"], visibleIf: soundsOn }),
+        tweak("soundVolume", "slider", "Volume", "How loud the notification sounds play, and their preview.", "sound audio loud quiet",
+          { unit: "%", visibleIf: soundsOn,
+            get min() { return sounds().VOLUME.min; },
+            get max() { return sounds().VOLUME.max; },
+            get step() { return sounds().VOLUME.step; } }),
       ] },
       { name: "Updates", rows: [
         tweak("updateCheck", "toggle", "Check for updates", "Look for a new release shortly after launch and every 6 hours. You choose when to install; “Check now” works either way.", "version release"),

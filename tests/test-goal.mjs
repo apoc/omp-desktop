@@ -6,7 +6,8 @@
 // and the budget input. Frame shapes are the ones omp 18.6.0 emitted in RPC
 // probes (rpc-goal.ts / goals/runtime.ts).
 // Also the composer hook app/use-goal-mode.jsx: where a refused goal start
-// hands its draft back.
+// hands its draft back, and the bridge calls behind its auto-continue switch
+// (#92; the generic hook is covered by test-use-omp-setting.mjs).
 // Run: node tests/test-goal.mjs
 
 import assert from "node:assert/strict";
@@ -329,13 +330,14 @@ check("plan mode and goal mode exclude each other", () => {
 
 // ---- use-goal-mode.jsx: a refused start hands the draft back ---------------
 
-// The hook compiled as index.html's Babel does (JSX only matters here), run
-// under a React stand-in that keeps state per call position and runs effects
-// during the render; the test only talks to what the hook returns.
+// The hook files compiled as index.html's Babel does (JSX only matters here),
+// run under a React stand-in that keeps state per call position and runs
+// effects during the render; the tests only talk to what the hooks return.
 const Babel = createRequire(import.meta.url)(join(root, "src/babel.min.js"));
 // eslint-disable-next-line no-new-func
 new Function("window", readFileSync(join(root, "src/app/session-ui.js"), "utf8"))(win);
-function goalHook() {
+/** `file`'s code and a stand-in `React`; `render(call)` runs `call` as one render. */
+function hookHarness(file, extraWindow, expr) {
   const slots = [];
   let i = 0;
   const changed = (a, b) => !a || !b || a.length !== b.length || a.some((v, k) => !Object.is(v, b[k]));
@@ -353,10 +355,17 @@ function goalHook() {
       if (!slots[k] || changed(slots[k].deps, deps)) { slots[k] = { deps }; fn(); }
     },
   };
-  const { code } = Babel.transform(readFileSync(join(root, "src/app/use-goal-mode.jsx"), "utf8"), { presets: ["react"] });
-  const window = { ...win, GoalStrip: () => null, OMP_TURN_STATUS: { isBusyRunState: () => false } };
-  const useGoalMode = runInNewContext(`${code}\nuseGoalMode`, { window, React });
-  return (props) => { i = 0; return useGoalMode(props); };
+  const { code } = Babel.transform(readFileSync(join(root, file), "utf8"), { presets: ["react"] });
+  const window = { ...win, ...extraWindow };
+  const exported = runInNewContext(`${code}\n${expr}`, { window, React });
+  return { exported, window, render: (call) => { i = 0; return call(); } };
+}
+function goalHook() {
+  // app/use-omp-setting.jsx's hook is covered by test-use-omp-setting.mjs: here it is an idle stand-in.
+  const useOmpFlag = () => ({ value: null, busy: false, error: null, set: async () => {} });
+  const { exported, render } = hookHarness("src/app/use-goal-mode.jsx",
+    { GoalStrip: () => null, OMP_TURN_STATUS: { isBusyRunState: () => false }, useOmpFlag }, "useGoalMode");
+  return (props) => render(() => exported(props));
 }
 
 /** Starts a goal on tab "a" that omp refuses once `after(render, props)` ran. */
@@ -406,6 +415,29 @@ await checkAsync("a refused goal start after a tab switch still hands the draft 
 await checkAsync("a refused goal start of a tab closed meanwhile hands nothing back", async () => {
   const { restored } = await refusedStart((render, props) => render(props("b", ["b"])));
   assert.deepEqual(restored, []);
+});
+
+// ---- use-goal-mode.jsx: the goal row's switch is the generic omp-config hook (#92) ----
+
+await checkAsync("useGoalContinuation runs the goal bridge calls through useOmpFlag, looked up when it is called", async () => {
+  const { window, render } = hookHarness("src/app/use-goal-mode.jsx",
+    { GoalStrip: () => null, OMP_TURN_STATUS: { isBusyRunState: () => false } }, "0");
+  // app/use-omp-setting.jsx loads before this file in index.html but is read only
+  // at call time: installing the stand-in after the file ran must be enough.
+  const seen = [];
+  window.useOmpFlag = (bridge, profileId, active, ops) => { seen.push({ bridge, profileId, active }); return { ops }; };
+  const calls = [];
+  const bridge = {
+    goalContinuation: (profile) => { calls.push(["get", profile]); return "read reply"; },
+    setGoalContinuation: (profile, enabled) => { calls.push(["set", profile, enabled]); return "write reply"; },
+  };
+  const { ops } = render(() => window.useGoalContinuation(bridge, "work", true));
+  assert.deepEqual(seen, [{ bridge, profileId: "work", active: true }]);
+  assert.equal(ops.read(bridge, "work"), "read reply");
+  assert.equal(ops.write(bridge, "work", true), "write reply");
+  assert.deepEqual(calls, [["get", "work"], ["set", "work", true]]);
+  // The hook keys its fetch on `ops`: it must be the same object on every render.
+  assert.equal(render(() => window.useGoalContinuation(bridge, "work", true)).ops, ops);
 });
 
 console.log(`test-goal: ${passed} checks passed`);

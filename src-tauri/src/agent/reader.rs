@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::PathBuf;
@@ -12,6 +13,7 @@ use crate::redaction::{is_credential_key, REDACTED_PLACEHOLDER};
 
 use super::approvals::{self, PendingApprovals};
 use super::ext_ui::{self, ExtUiState};
+use super::frames::{self, ChunkAssembler, FrameError, Logical};
 use super::inflight::{self, InFlight};
 use super::inner::BridgeInner;
 use super::journal::EventJournal;
@@ -20,10 +22,32 @@ use super::journal::EventJournal;
 /// agent output that could otherwise allocate unbounded memory.
 const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 
-/// One line forwarded to the frontend, stamped with its journal `seq`. Kept
-/// in sync with `replay_events`'s `ReplayEvent` — both sides of the wire
-/// (live `agent://line/{id}` events and a replay response) use the same
-/// `{seq, text}` shape so the frontend can dispatch either through one path.
+/// The stdout reader thread's stack. Parsing, redacting, re-serializing and
+/// dropping a frame each recurse once per nesting level, and the reader takes
+/// frames up to [`frames::MAX_FRAME_DEPTH`] deep (D94-7). Measured for a
+/// frame at that depth through the whole pipeline
+/// (`a_frame_at_the_depth_ceiling_runs_on_the_reader_stack`): about 330 KiB
+/// in a release build, 2.1 MiB in a debug build (nested objects; arrays
+/// 1.75 MiB). The debug figure is already past Rust's 2 MiB default, so the
+/// size is explicit, with about twice the worst measured case as margin.
+/// Only [`reader_thread`]s get it. The one consumer that hands a deep value
+/// to another thread is [`inflight`]: `streaming_message` serializes the
+/// in-flight message on Tauri's blocking pool, whose stack is sized for that
+/// separately ([`inflight::snapshot_json`]).
+const READER_STACK_BYTES: usize = 4 * 1024 * 1024;
+
+/// A thread with the stdout reader's stack ([`READER_STACK_BYTES`]): the
+/// reader itself and the test that runs the ceiling frame on it.
+fn reader_thread() -> thread::Builder {
+    thread::Builder::new().stack_size(READER_STACK_BYTES)
+}
+
+/// One logical frame forwarded to the frontend (a line, a reassembled chunk
+/// run of up to 64 MiB, or a diagnostic; see `frames.rs`), stamped with its
+/// journal `seq`. Kept in sync with `replay_events`'s `ReplayEvent` — both
+/// sides of the wire (live `agent://line/{id}` events and a replay
+/// response) use the same `{seq, text}` shape so the frontend can dispatch
+/// either through one path.
 #[derive(serde::Serialize, Clone)]
 struct LineEvent<'a> {
     seq: u64,
@@ -68,32 +92,142 @@ fn sanitize_frame(value: &mut serde_json::Value) -> bool {
     redacted
 }
 
-/// Sanitize one raw RPC line. Parses `raw` as JSON and redacts sensitive
-/// keys, returning the sanitized text alongside the parsed (and now
-/// redacted) frame — the caller reuses the parse to check for an
-/// approval-prompt match rather than parsing the line a second time. A
-/// line that fails to parse as JSON is forwarded unchanged (never silently
-/// dropped — that failure mode belongs to the truncation path, not this
-/// one) with `None` in place of the parsed frame, since a non-JSON line
-/// cannot carry a *named* credential field — or an approval prompt — for
-/// us to find in the first place.
-fn sanitize_line(raw: &[u8]) -> (String, Option<serde_json::Value>) {
-    serde_json::from_slice::<serde_json::Value>(raw).map_or_else(
-        |_| (String::from_utf8_lossy(raw).into_owned(), None),
-        |mut value| {
-            // Re-serializing costs a second full pass (escaping, number
-            // formatting, map ordering) over the whole frame. Only pay it
-            // when something was actually redacted; otherwise `raw` already
-            // *is* the correct text.
-            let text = if sanitize_frame(&mut value) {
-                serde_json::to_string(&value)
-                    .unwrap_or_else(|_| String::from_utf8_lossy(raw).into_owned())
-            } else {
-                String::from_utf8_lossy(raw).into_owned()
+/// Decode the character references a browser applies to text and attribute
+/// values before the form parser reads them, so `&#112;assword` is seen as
+/// the word it spells. A reference this cannot resolve — a bare `&`, `&#` or
+/// `&#x` without digits, an unknown name — is copied through literally (the
+/// `&` and whatever follows, unchanged) and the scan goes on.
+///
+/// Copying cannot hide the credential word: no HTML named reference decodes
+/// to an ASCII letter of "password" (the only multi-letter expansion,
+/// `&fjlig;`, is "fj"), so text that is not a reference this resolves is
+/// never replaced by anything that spells it, and keeping it keeps
+/// `&ampassword`-style text matching. Refusing instead would redact every form
+/// with an ordinary `&` (`Terms & conditions`, `R&D`, `make && make install`).
+/// Text without an `&` is returned borrowed; otherwise the scan is single-pass
+/// and allocates only the decoded copy.
+fn decode_html_attribute(value: &str) -> Cow<'_, str> {
+    fn named(name: &str) -> Option<&'static str> {
+        Some(match name {
+            "amp" | "AMP" => "&",
+            "lt" | "LT" => "<",
+            "gt" | "GT" => ">",
+            "quot" | "QUOT" => "\"",
+            "apos" => "'",
+            "nbsp" => "\u{a0}",
+            "Tab" => "\t",
+            "NewLine" => "\n",
+            "fjlig" => "fj",
+            _ => return None,
+        })
+    }
+
+    if !value.contains('&') {
+        return Cow::Borrowed(value);
+    }
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        rest = &rest[amp + 1..];
+        let resolved = if let Some(after_hash) = rest.strip_prefix('#') {
+            let (radix, digits) = after_hash
+                .strip_prefix('x')
+                .or_else(|| after_hash.strip_prefix('X'))
+                .map_or((10, after_hash), |hex| (16, hex));
+            let end = digits
+                .find(|c: char| !c.is_digit(radix))
+                .unwrap_or(digits.len());
+            if end > 0 {
+                let code = u32::from_str_radix(&digits[..end], radix).ok();
+                out.push(code.and_then(char::from_u32).unwrap_or('\u{fffd}'));
+                rest = &digits[end..];
+            }
+            end > 0
+        } else {
+            let end = rest
+                .find(|c: char| !c.is_ascii_alphanumeric())
+                .unwrap_or(rest.len());
+            let known = named(&rest[..end]);
+            if let Some(text) = known {
+                out.push_str(text);
+                rest = &rest[end..];
+            }
+            known.is_some()
+        };
+        if resolved {
+            rest = rest.strip_prefix(';').unwrap_or(rest);
+        } else {
+            out.push('&');
+        }
+    }
+    out.push_str(rest);
+    Cow::Owned(out)
+}
+
+/// The fixed form HTML a credential-bearing request is replaced with before
+/// it is journaled or emitted. `src/app/html-form.js` refuses it with the
+/// same terminal-only password note as a password field. It protects the form
+/// request frame only: the ask tool's own call arguments
+/// (`tool_execution_start.args.html`, and the `toolCall` arguments in
+/// `message_update` / `message_end`) carry the same model-written HTML and are
+/// not rewritten.
+const REDACTED_FORM_HTML: &str = r#"<form data-omp-desktop-redacted="password"></form>"#;
+
+/// Whether a form's HTML mentions a credential. Character references are
+/// decoded first (see [`decode_html_attribute`]), then the decoded text is
+/// searched for `password`, ASCII case-insensitively. One rule for every
+/// spelling — a `type`/`autocomplete` value, a field name, prose in a label,
+/// a numeric or named entity — and no HTML tokenizing, slicing or index
+/// arithmetic, so no input shape can panic it server-side. The trade-off is
+/// deliberate: a form merely mentioning the word is refused too.
+fn form_mentions_password(html: &str) -> bool {
+    decode_html_attribute(html)
+        .as_bytes()
+        .windows("password".len())
+        .any(|window| window.eq_ignore_ascii_case(b"password"))
+}
+
+/// Replace the HTML of an `extension_ui_request` `form` frame that mentions a
+/// credential with [`REDACTED_FORM_HTML`]. Returns `true` when it did.
+fn redact_password_form(value: &mut serde_json::Value) -> bool {
+    let is_form = value.get("type").and_then(serde_json::Value::as_str)
+        == Some("extension_ui_request")
+        && value.get("method").and_then(serde_json::Value::as_str) == Some("form");
+    let mentions_password = is_form
+        && value
+            .get("html")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(form_mentions_password);
+    if mentions_password {
+        value["html"] = serde_json::Value::String(REDACTED_FORM_HTML.to_string());
+    }
+    mentions_password
+}
+
+/// The redacted text and value of one logical frame (see `frames.rs`). A
+/// frame with nothing to redact keeps its exact text when it has one (the
+/// overwhelmingly common case: one copy into the shared text, no second
+/// serializer pass); a redacted or repaired frame is re-serialized from the
+/// value. A diagnostic is its fixed text with no value: nothing of the line
+/// it replaces survives, so it can carry no credential and no prompt.
+fn sanitize_logical(logical: Logical<'_>) -> (Arc<str>, Option<serde_json::Value>) {
+    match logical {
+        Logical::Frame {
+            mut value,
+            verbatim,
+        } => {
+            let mut redacted = sanitize_frame(&mut value);
+            redacted |= redact_password_form(&mut value);
+            // serde accepted the bytes, so they are UTF-8.
+            let text = match verbatim.as_deref().map(std::str::from_utf8) {
+                Some(Ok(text)) if !redacted => Arc::from(text),
+                _ => Arc::from(value.to_string()),
             };
             (text, Some(value))
-        },
-    )
+        }
+        Logical::Error(error) => (Arc::from(error.text()), None),
+    }
 }
 
 /// Strip trailing `\r`/`\n` bytes (any combination/order) off the end of
@@ -167,6 +301,109 @@ fn auto_approve_or_track<W: std::io::Write>(
         approvals::observe(approvals, frame_type, frame);
     }
     notice
+}
+
+/// Everything the stdout reader does with omp's output, minus the pipe and
+/// the webview: physical lines in, each logical frame through every step
+/// once. `emit` sends one journaled frame to the frontend (`seq`, text,
+/// frame type); it runs only while the incarnation is alive.
+struct Pipeline<'a, W, E> {
+    sid: &'a str,
+    journal: &'a Mutex<EventJournal>,
+    ext_ui: &'a Mutex<ExtUiState>,
+    inflight: &'a Mutex<InFlight>,
+    approvals: &'a Mutex<PendingApprovals>,
+    stdin: &'a Mutex<W>,
+    rule_book: &'a RuleBook,
+    project_root: Option<&'a std::path::Path>,
+    alive: &'a AtomicBool,
+    emit: E,
+    assembler: ChunkAssembler,
+    /// omp announces itself with a `ready` frame, so "not one frame all run"
+    /// means it died during startup — the only case where stderr explains
+    /// more than the empty clean-exit payload. Only a parsed frame counts:
+    /// not a blank line, not a terminal escape sequence flushed with no
+    /// newline, and not a diagnostic standing in for a line that was no
+    /// frame; counting those would silently disable the stderr fallback.
+    saw_frame: bool,
+}
+
+impl<W: std::io::Write, E: FnMut(u64, &str, Option<&str>)> Pipeline<'_, W, E> {
+    /// One physical line, CR/LF stripped and non-empty.
+    fn line(&mut self, line: &[u8]) {
+        // Taken out so the callback can borrow `self` mutably; put back after.
+        let mut assembler = std::mem::take(&mut self.assembler);
+        frames::logical_frames(&mut assembler, line, |logical| self.frame(logical));
+        self.assembler = assembler;
+    }
+
+    /// A line dropped for exceeding [`MAX_LINE_BYTES`]: not a chunk (omp's
+    /// chunk lines stay under 1 MiB), so it ends an open run.
+    fn dropped_line(&mut self) {
+        if self.assembler.interrupt() {
+            self.frame(Logical::Error(FrameError::ChunkInterrupted));
+        }
+    }
+
+    /// End of output: a run still open never completes.
+    fn end(&mut self) {
+        self.dropped_line();
+    }
+
+    /// The per-frame steps, in order.
+    fn frame(&mut self, logical: Logical<'_>) {
+        let (sanitized, parsed) = sanitize_logical(logical);
+        self.saw_frame |= parsed.is_some();
+        let frame_type = parsed
+            .as_ref()
+            .and_then(|frame| frame.get("type"))
+            .and_then(serde_json::Value::as_str);
+        // A rule-covered approval prompt is answered directly on stdin and
+        // replaced with a synthetic notice — the human never sees the
+        // original ask, but does see that it was auto-approved.
+        let notice = parsed.as_ref().and_then(|frame| {
+            auto_approve_or_track(
+                frame,
+                frame_type,
+                self.rule_book,
+                self.sid,
+                self.project_root,
+                self.stdin,
+                self.approvals,
+            )
+        });
+        let auto_approved = notice.is_some();
+        // One allocation for the line, shared with the journal by refcount
+        // rather than copied into it.
+        let shared: Arc<str> = notice.map_or(sanitized, Arc::from);
+        // Record in the tracker before exposing the frame in the journal: a
+        // background tab activated in between cannot replay and answer a
+        // question before the tracker knows it.
+        record_tracker_frame(
+            self.sid,
+            frame_type,
+            parsed.as_ref(),
+            auto_approved,
+            self.alive,
+        );
+        let seq = self
+            .journal
+            .lock()
+            .map_or(0, |mut j| j.push(Arc::clone(&shared)));
+        // After the push, stamped with its seq: a snapshot taken in between
+        // names an older seq, so the frontend still applies this frame from
+        // the replay.
+        ext_ui::record(self.ext_ui, seq, frame_type, parsed.as_ref());
+        if should_emit(self.alive) {
+            // Also reruns rail widgets with a `turn_end` trigger on
+            // `agent_end`, reusing the parse above.
+            (self.emit)(seq, &shared, frame_type);
+        }
+        // Last use of the parse: the in-flight copy takes its blocks. After
+        // the journal push like `ext_ui`, so a snapshot never names a seq
+        // the journal lacks.
+        inflight::record(self.inflight, seq, parsed);
+    }
 }
 
 /// Grouped arguments for [`spawn_stdout_reader`] — bundled into one struct
@@ -289,16 +526,35 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
         stderr_tail,
         last_errors,
     } = config;
-    thread::spawn(move || {
+    // `thread::spawn` with the reader's stack size; like `thread::spawn`, a
+    // thread the OS refuses is a panic.
+    let spawned = reader_thread().spawn(move || {
         let mut reader = BufReader::new(stdout);
         let line_event = format!("agent://line/{sid}");
         let exit_event = format!("agent://exit/{sid}");
         let mut buf: Vec<u8> = Vec::with_capacity(8192);
         let mut exit_reason = String::new();
-        // omp announces itself with a `ready` frame, so "not one frame all
-        // run" means it died during startup. That is the only case where
-        // stderr is a better explanation than the empty clean-exit payload.
-        let mut saw_frame = false;
+        let mut pipeline = Pipeline {
+            sid: &sid,
+            journal: &journal,
+            ext_ui: &ext_ui,
+            inflight: &inflight,
+            approvals: &approvals,
+            stdin: &stdin,
+            rule_book: &rule_book,
+            project_root: project_root.as_deref(),
+            alive: &alive,
+            emit: |seq, text: &str, frame_type: Option<&str>| {
+                let _ = app.emit(&line_event, LineEvent { seq, text });
+                // Rail widgets with a `turn_end` trigger rerun after the
+                // turn's last frame.
+                if frame_type == Some("agent_end") {
+                    crate::widgets::notify_turn_end(&app, &sid);
+                }
+            },
+            assembler: ChunkAssembler::default(),
+            saw_frame: false,
+        };
 
         loop {
             buf.clear();
@@ -315,65 +571,13 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
                         "[omp/{sid}] dropped a stdout line that exceeded {MAX_LINE_BYTES} bytes; \
                          frontend will not see this RPC message"
                     );
+                    pipeline.dropped_line();
                 }
                 Ok((_, false)) => {
                     strip_trailing_crlf(&mut buf);
-                    if buf.is_empty() {
-                        continue;
+                    if !buf.is_empty() {
+                        pipeline.line(&buf);
                     }
-                    let (sanitized, parsed) = sanitize_line(&buf);
-                    // A successfully parsed frame — not a stray blank line
-                    // and not a terminal escape sequence flushed with no
-                    // trailing newline — is what proves omp got far enough
-                    // to talk in-protocol, matching the "ready frame"
-                    // definition above. Gating on the raw byte count
-                    // instead would let either of those silently disable
-                    // the stderr fallback this flag exists to gate.
-                    saw_frame |= parsed.is_some();
-                    let frame_type = parsed
-                        .as_ref()
-                        .and_then(|frame| frame.get("type"))
-                        .and_then(serde_json::Value::as_str);
-                    // A rule-covered approval prompt is answered directly on
-                    // stdin and replaced with a synthetic notice — the human
-                    // never sees the original ask, but does see that it was
-                    // auto-approved.
-                    let notice = parsed.as_ref().and_then(|frame| {
-                        auto_approve_or_track(
-                            frame,
-                            frame_type,
-                            &rule_book,
-                            &sid,
-                            project_root.as_deref(),
-                            &stdin,
-                            &approvals,
-                        )
-                    });
-                    let auto_approved = notice.is_some();
-                    // One allocation for the line, shared with the journal
-                    // by refcount rather than copied into it.
-                    let shared: Arc<str> = Arc::from(notice.unwrap_or(sanitized));
-                    // Record in the tracker before exposing the frame in the
-                    // journal: a background tab activated in between cannot
-                    // replay and answer a question before the tracker knows it.
-                    record_tracker_frame(&sid, frame_type, parsed.as_ref(), auto_approved, &alive);
-                    let seq = journal.lock().map_or(0, |mut j| j.push(shared.clone()));
-                    // After the push, stamped with its seq: a snapshot taken
-                    // in between names an older seq, so the frontend still
-                    // applies this frame from the replay.
-                    ext_ui::record(&ext_ui, seq, frame_type, parsed.as_ref());
-                    if should_emit(&alive) {
-                        let _ = app.emit(&line_event, LineEvent { seq, text: &shared });
-                        // Rail widgets with a `turn_end` trigger rerun after
-                        // the turn's last frame. Reuses the parse above.
-                        if frame_type == Some("agent_end") {
-                            crate::widgets::notify_turn_end(&app, &sid);
-                        }
-                    }
-                    // Last use of the parse: the in-flight copy takes its
-                    // blocks. After the journal push like `ext_ui`, so a
-                    // snapshot never names a seq the journal lacks.
-                    inflight::record(&inflight, seq, parsed);
                 }
                 Err(e) => {
                     exit_reason = format!("stdout read error: {e}");
@@ -381,6 +585,9 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
                 }
             }
         }
+        pipeline.end();
+        let saw_frame = pipeline.saw_frame;
+        drop(pipeline);
 
         // A child that died during startup (no frame, non-error EOF) would
         // otherwise report the empty payload the contract defines as a clean
@@ -417,6 +624,7 @@ pub(super) fn spawn_stdout_reader(config: StdoutReaderConfig) {
             let _ = app.emit(&exit_event, exit_reason);
         }
     });
+    spawned.expect("failed to spawn thread");
 }
 
 /// Bounded ring of the child's most recent stderr lines.
@@ -551,6 +759,18 @@ mod tests {
     use crate::agent::tests::approval_prompt;
     use serde_json::json;
 
+    /// One physical line, outside any chunk run, as the reader turns it into
+    /// text: `frames::logical_frames` then [`sanitize_logical`].
+    fn sanitize_line(raw: &[u8]) -> (String, Option<serde_json::Value>) {
+        let mut out = Vec::new();
+        frames::logical_frames(&mut ChunkAssembler::default(), raw, |logical| {
+            out.push(sanitize_logical(logical));
+        });
+        assert_eq!(out.len(), 1, "a line outside a run is one logical frame");
+        let (text, value) = out.pop().unwrap();
+        (text.to_string(), value)
+    }
+
     #[test]
     fn sanitize_redacts_nested_credential_keys() {
         let raw = json!({
@@ -663,12 +883,202 @@ mod tests {
         assert_eq!(parsed.unwrap()["toolName"], "bash");
     }
 
+    fn form_frame(html: &str) -> String {
+        json!({
+            "type": "extension_ui_request",
+            "id": "form-secret",
+            "method": "form",
+            "html": html,
+        })
+        .to_string()
+    }
+
+    /// Any form that mentions a credential is replaced wholesale, before the
+    /// frame is journaled or emitted — no prefilled value survives and no
+    /// token of the original HTML does either.
     #[test]
-    fn sanitize_falls_back_to_raw_text_on_invalid_json() {
-        let raw = b"not json at all";
-        let (out, parsed) = sanitize_line(raw);
-        assert_eq!(out, "not json at all");
+    fn sanitize_form_replaces_any_password_form_before_journaling() {
+        let html = r#"<form><input name="a" TYPE = "PASSWORD" value = "double-canary"><input type='password' value='single-canary'><input type=text autocomplete="off current-password" value="auto-canary"><label>Password <input name=ok value=keep-me></label></form>"#;
+        let (out, parsed) = sanitize_line(form_frame(html).as_bytes());
+        let parsed = parsed.expect("valid JSON parses");
+        assert_eq!(parsed["html"], REDACTED_FORM_HTML);
+        assert_eq!(parsed["method"], "form");
+
+        let mut journal = EventJournal::new(4, 1 << 20);
+        journal.push(Arc::from(out));
+        let replay = journal.since(0);
+        let journaled = replay.events[0].text.as_ref();
+        for canary in ["double-canary", "single-canary", "auto-canary", "keep-me"] {
+            assert!(!journaled.contains(canary), "journal leaked {canary}");
+        }
+        assert!(!journaled.contains("PASSWORD"));
+        assert!(journaled.contains("data-omp-desktop-redacted"));
+    }
+
+    /// The browser decodes character references before the form parser sees
+    /// them, so the match does too. Text that is not a resolvable reference
+    /// stays as written, so it keeps matching what follows it.
+    #[test]
+    fn sanitize_form_matches_decoded_entities() {
+        for html in [
+            r#"<form><input type="&#112;assword" value="decimal-canary"></form>"#,
+            r#"<form><input type="&#x70;ASSWORD" value="hex-canary"></form>"#,
+            r#"<form><input type="&#112assword" value="no-semicolon-canary"></form>"#,
+            r#"<form><input autocomplete="off&Tab;new-password" value="named-canary"></form>"#,
+            r#"<form><input type="&ampassword" value="no-name-canary"></form>"#,
+            r#"<form><input name="user_password" value="name-canary"></form>"#,
+            "<form><p>Password: <input name=n value=\u{feff}padding-canary></p></form>",
+            "<form><input type=text value=\"héllo wörld password\"></form>",
+        ] {
+            let (out, parsed) = sanitize_line(form_frame(html).as_bytes());
+            let parsed = parsed.expect("valid JSON parses");
+            assert_eq!(parsed["html"], REDACTED_FORM_HTML, "{html}");
+            assert!(!out.contains("canary"), "{html} leaked: {out}");
+        }
+    }
+
+    /// No HTML tokenizer, no byte-slice indices: malformed, unterminated,
+    /// huge and multibyte input is just a string to this rule, so nothing can
+    /// panic or be cut in the middle of a UTF-8 sequence.
+    #[test]
+    fn sanitize_form_handles_malformed_huge_and_multibyte_html() {
+        let huge_text = "日本語とalfabet".repeat(80_000);
+        let safe = format!("<form><p>{huge_text}</p><input name=n></form>");
+        assert!(huge_text.len() > 1_000_000);
+        let (_, parsed) = sanitize_line(form_frame(&safe).as_bytes());
+        assert_eq!(parsed.expect("valid JSON")["html"], safe);
+
+        let mut secret = safe;
+        secret.insert_str(
+            secret.len() - "</form>".len(),
+            "<input type=password value=huge-canary>",
+        );
+        let (out, parsed) = sanitize_line(form_frame(&secret).as_bytes());
+        assert_eq!(parsed.expect("valid JSON")["html"], REDACTED_FORM_HTML);
+        assert!(!out.contains("huge-canary"));
+
+        for (malformed, redacted) in [
+            (
+                "<form><input type=\"password value=unterminated-canary",
+                true,
+            ),
+            ("<form><input type='password", true),
+            ("<form><input/type=password/value=x></form>", true),
+            ("<form><<<>>><input type=\"pass\u{0}word\">", false),
+            // A browser leaves `&bogus;` as text, so this does not spell it.
+            ("<form><input type=\"pass&bogus;word\"></form>", false),
+            ("<form><input value='a &amp; b'></form>", false),
+            ("&&&&&&<form></form>", false),
+            ("<form>&#<input name=a>&#x</form>", false),
+        ] {
+            let (out, parsed) = sanitize_line(form_frame(malformed).as_bytes());
+            let parsed = parsed.expect("valid JSON");
+            assert_eq!(
+                parsed["html"] == REDACTED_FORM_HTML,
+                redacted,
+                "{malformed}"
+            );
+            if redacted {
+                assert!(!out.contains("unterminated-canary"), "{malformed}");
+            }
+        }
+    }
+
+    #[test]
+    fn sanitize_form_leaves_non_password_forms_and_other_methods_untouched() {
+        for html in [
+            r"<form><input type=text value=keep-me><input autocomplete=off value=also-keep></form>",
+            r"<form><input value='a &amp; b'></form>",
+        ] {
+            let (out, parsed) = sanitize_line(form_frame(html).as_bytes());
+            assert_eq!(parsed.unwrap()["html"], html);
+            assert!(out.contains("keep-me") || out.contains("&amp;"));
+        }
+
+        let raw = json!({"type":"extension_ui_request", "method":"select", "html":"<input type=password value=select-canary>"}).to_string();
+        let (out, _) = sanitize_line(raw.as_bytes());
+        assert!(out.contains("select-canary"));
+    }
+
+    /// An `&` that starts no resolvable reference is ordinary text — a
+    /// phrase, a code sample, an entity this does not know — and must not
+    /// cost the form its redaction-free delivery.
+    #[test]
+    fn sanitize_form_keeps_forms_with_ordinary_ampersands_and_entities() {
+        for html in [
+            "<form><label>Terms & conditions <input type=checkbox name=t></label></form>",
+            "<form><p>Q&A</p><input name=a></form>",
+            "<form><p>Ship it &mdash; or wait? &rarr; <input name=a></p></form>",
+            "<form><pre>make && make install</pre><input name=a></form>",
+            "<form><p>&copy; 2026</p><input name=a></form>",
+            "<form><select name=n><option>&ge; 10</option></select></form>",
+            "<form><label><input type=radio name=s value=rd>R&D</label></form>",
+            "<form><p>Tests &amp; docs</p><input name=a></form>",
+        ] {
+            let (out, parsed) = sanitize_line(form_frame(html).as_bytes());
+            assert_eq!(parsed.expect("valid JSON")["html"], html, "{html}");
+            assert!(!out.contains("data-omp-desktop-redacted"), "{html}");
+        }
+    }
+
+    /// A password form big enough for omp to send as a protocol-v2
+    /// `rpc_chunk` run is redacted after reassembly, exactly like a line —
+    /// even with the word split across the chunk boundary, where no single
+    /// chunk contains it.
+    #[test]
+    fn sanitize_form_redacts_a_chunked_password_form() {
+        use base64::Engine as _;
+        let head =
+            r#"{"type":"extension_ui_request","id":"form-big","method":"form","html":"<form><p>"#;
+        let word_start = r"</p><input type=pass";
+        // The first chunk (256 KiB) ends right after `pass`.
+        let filler = "x".repeat(256 * 1024 - head.len() - word_start.len());
+        let pad = " ".repeat(1024 * 1024);
+        let frame = format!(r#"{head}{filler}{word_start}word value=chunk-canary>{pad}</form>"}}"#);
+        let lines = frames::tests::chunk_lines(&frame, "form-run");
+        assert!(lines.len() > 1, "not a run: {} chunk(s)", lines.len());
+        for line in &lines {
+            let chunk: serde_json::Value = serde_json::from_str(line).unwrap();
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(chunk["data"].as_str().unwrap())
+                .unwrap();
+            let decoded = String::from_utf8_lossy(&decoded);
+            assert!(!decoded.contains("password"), "word inside one chunk");
+        }
+
+        let mut out = Vec::new();
+        let mut assembler = ChunkAssembler::default();
+        for line in &lines {
+            frames::logical_frames(&mut assembler, line.as_bytes(), |logical| {
+                out.push(sanitize_logical(logical));
+            });
+        }
+        assert_eq!(out.len(), 1, "a run is one logical frame");
+        let (text, value) = out.pop().unwrap();
+        assert_eq!(value.expect("parsed")["html"], REDACTED_FORM_HTML);
+        assert!(!text.contains("chunk-canary"), "leaked into the text");
+        assert!(text.contains("data-omp-desktop-redacted"));
+    }
+
+    #[test]
+    fn sanitize_replaces_invalid_json_with_the_diagnostic_only() {
+        let (out, parsed) = sanitize_line(br#"{"apiKey":"sk-raw" not json"#);
+        assert_eq!(
+            out,
+            r#"{"type":"desktop_frame_error","reason":"unparsable"}"#
+        );
         assert!(parsed.is_none());
+    }
+
+    /// A line serde rejects only for a lone surrogate escape is repaired,
+    /// then redacted like any frame.
+    #[test]
+    fn sanitize_redacts_a_repaired_line() {
+        let (out, parsed) = sanitize_line(br#"{"t":"\ud800","apiKey":"sk-raw"}"#);
+        assert!(!out.contains("sk-raw"), "{out}");
+        let parsed = parsed.expect("repaired line parses");
+        assert_eq!(parsed["t"], "\u{FFFD}");
+        assert_eq!(parsed["apiKey"], REDACTED_PLACEHOLDER);
     }
 
     /// Drives the CR/LF-strip → sanitize pipeline (exactly as the stdout
@@ -1006,14 +1416,393 @@ mod tests {
             true,
             &alive,
         );
-        assert_eq!(tracker.snapshot()[sid], (true, 1));
+        let snapshot = tracker.snapshot();
+        assert_eq!(
+            (snapshot.sessions[sid].busy, snapshot.sessions[sid].asks),
+            (true, 1)
+        );
         alive.store(false, Ordering::Release);
         record_tracker_frame(sid, Some("agent_end"), None, false, &alive);
+        let snapshot = tracker.snapshot();
         assert_eq!(
-            tracker.snapshot()[sid],
+            (snapshot.sessions[sid].busy, snapshot.sessions[sid].asks),
             (true, 1),
             "retired reader must not finish a replacement turn"
         );
         tracker.on_exit(sid);
+    }
+
+    /// What the reader is fed, in order.
+    #[derive(Clone, Copy)]
+    enum Step<'a> {
+        Line(&'a [u8]),
+        /// A line over [`MAX_LINE_BYTES`].
+        Dropped,
+    }
+
+    /// The reader pipeline with no omp and no webview: emits are collected,
+    /// stdin is a buffer.
+    struct Harness {
+        journal: Mutex<EventJournal>,
+        ext_ui: Mutex<ExtUiState>,
+        inflight: Mutex<InFlight>,
+        approvals: Mutex<PendingApprovals>,
+        stdin: Mutex<Vec<u8>>,
+        rule_book: RuleBook,
+        alive: AtomicBool,
+        _dir: crate::test_support::TempDir,
+    }
+
+    /// `(seq, text, frame type)` of each emit.
+    type Emitted = Vec<(u64, String, Option<String>)>;
+
+    impl Harness {
+        fn new(name: &str) -> Self {
+            let dir = crate::test_support::TempDir::new("reader", name);
+            Self {
+                journal: Mutex::new(EventJournal::new(64, 64 * 1024 * 1024)),
+                ext_ui: Mutex::default(),
+                inflight: Mutex::default(),
+                approvals: Mutex::new(PendingApprovals::new(None)),
+                stdin: Mutex::new(Vec::new()),
+                rule_book: RuleBook::new(dir.path().to_path_buf()),
+                alive: AtomicBool::new(true),
+                _dir: dir,
+            }
+        }
+
+        /// Feed `steps` then the end of output; the emits and `saw_frame`.
+        fn run(&self, sid: &str, steps: &[Step<'_>]) -> (Emitted, bool) {
+            let mut emitted = Vec::new();
+            let mut pipeline = Pipeline {
+                sid,
+                journal: &self.journal,
+                ext_ui: &self.ext_ui,
+                inflight: &self.inflight,
+                approvals: &self.approvals,
+                stdin: &self.stdin,
+                rule_book: &self.rule_book,
+                project_root: None,
+                alive: &self.alive,
+                emit: |seq, text: &str, frame_type: Option<&str>| {
+                    emitted.push((seq, text.to_owned(), frame_type.map(str::to_owned)));
+                },
+                assembler: ChunkAssembler::default(),
+                saw_frame: false,
+            };
+            for step in steps {
+                match step {
+                    Step::Line(line) => pipeline.line(line),
+                    Step::Dropped => pipeline.dropped_line(),
+                }
+            }
+            pipeline.end();
+            let saw_frame = pipeline.saw_frame;
+            drop(pipeline);
+            (emitted, saw_frame)
+        }
+
+        fn journaled(&self) -> Vec<(u64, String)> {
+            let replay = self.journal.lock().unwrap().since(0);
+            replay
+                .events
+                .into_iter()
+                .map(|e| (e.seq, e.text.to_string()))
+                .collect()
+        }
+    }
+
+    fn lines(chunks: &[String]) -> Vec<Step<'_>> {
+        chunks.iter().map(|l| Step::Line(l.as_bytes())).collect()
+    }
+
+    const UNPARSABLE: &str = r#"{"type":"desktop_frame_error","reason":"unparsable"}"#;
+    const INTERRUPTED: &str = r#"{"type":"desktop_frame_error","reason":"chunk_interrupted"}"#;
+
+    /// #94: a frame omp chunks reaches the journal and the webview once,
+    /// redacted — never as `rpc_chunk` envelopes whose base64 hides the key.
+    #[test]
+    fn a_chunked_frame_is_journaled_and_emitted_once_redacted() {
+        let secret = "sk-live-SECRET-0123456789";
+        let frame = frames::tests::big_frame(json!({
+            "type": "response", "command": "get_state",
+            "data": { "provider": { "apiKey": secret } },
+        }));
+        let chunks = frames::tests::chunk_lines(&frame, "run-1");
+        assert!(chunks.len() > 1);
+        let harness = Harness::new("chunk-redact");
+        let (emitted, saw_frame) = harness.run("chunk-redact", &lines(&chunks));
+
+        let journaled = harness.journaled();
+        assert_eq!(journaled.len(), 1, "one logical frame, one seq");
+        let (seq, text) = &journaled[0];
+        assert!(!text.contains(secret));
+        assert!(text.contains(REDACTED_PLACEHOLDER));
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(value["type"], "response");
+        assert_eq!(
+            emitted,
+            vec![(*seq, text.clone(), Some("response".to_owned()))]
+        );
+        assert!(saw_frame);
+        // Nothing of an envelope or its base64 survives anywhere.
+        for chunk in &chunks {
+            let data = serde_json::from_str::<serde_json::Value>(chunk).unwrap()["data"]
+                .as_str()
+                .unwrap()[..64]
+                .to_owned();
+            assert!(!text.contains(&data));
+        }
+        assert!(!text.contains("rpc_chunk"));
+    }
+
+    /// Rust consumers see the reassembled frame: the tracker opens the
+    /// question, `approvals` records the prompt for a grant.
+    #[test]
+    fn a_chunked_select_prompt_reaches_the_tracker_and_approvals() {
+        let sid = "reader-chunked-prompt";
+        let frame = frames::tests::big_frame(approval_prompt("req-big", "bash"));
+        let harness = Harness::new("chunk-prompt");
+        let (emitted, _) = harness.run(sid, &lines(&frames::tests::chunk_lines(&frame, "p")));
+        let tracked = crate::remote::tracker::tracker()
+            .snapshot()
+            .sessions
+            .get(sid)
+            .map(|s| (s.busy, s.asks));
+        crate::remote::tracker::tracker().on_exit(sid);
+        assert_eq!(tracked, Some((false, 1)));
+        assert_eq!(
+            harness.approvals.lock().unwrap().tool("req-big"),
+            Some("bash")
+        );
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].2.as_deref(), Some("extension_ui_request"));
+    }
+
+    /// A chunked prompt a rule covers is answered and replaced, as a line is.
+    #[test]
+    fn a_chunked_prompt_a_rule_covers_is_auto_approved() {
+        let frame = frames::tests::big_frame(approval_prompt("req-auto", "bash"));
+        let harness = Harness::new("chunk-auto");
+        harness
+            .rule_book
+            .grant("chunk-auto", None, "bash", approval::RuleScope::Session)
+            .unwrap();
+        let (emitted, _) = harness.run(
+            "chunk-auto",
+            &lines(&frames::tests::chunk_lines(&frame, "a")),
+        );
+        let written = String::from_utf8(harness.stdin.lock().unwrap().clone()).unwrap();
+        assert!(written.contains("req-auto"), "{written}");
+        assert_eq!(emitted.len(), 1);
+        assert!(emitted[0].1.contains("desktop_auto_approval"));
+        assert_eq!(harness.approvals.lock().unwrap().tool("req-auto"), None);
+    }
+
+    /// An unparsable line becomes the fixed diagnostic and nothing else; it
+    /// is no frame for the startup-death check.
+    #[test]
+    fn an_unparsable_line_is_only_the_diagnostic_and_no_frame() {
+        let harness = Harness::new("unparsable");
+        let (emitted, saw_frame) =
+            harness.run("unparsable", &[Step::Line(b"{\"apiKey\":\"sk-raw\"")]);
+        assert_eq!(harness.journaled(), vec![(1, UNPARSABLE.to_owned())]);
+        // No frame type: a diagnostic reaches no consumer but the webview.
+        assert_eq!(emitted, vec![(1, UNPARSABLE.to_owned(), None)]);
+        assert!(!saw_frame);
+
+        let harness = Harness::new("parsable");
+        let (_, saw_frame) = harness.run("parsable", &[Step::Line(br#"{"type":"ready"}"#)]);
+        assert!(saw_frame, "a parsed frame still counts");
+    }
+
+    /// A run cut short reports one diagnostic; the interrupting line is still
+    /// processed. A dropped line or the end of output interrupts too; with no
+    /// run open, neither reports anything.
+    #[test]
+    fn an_interrupted_run_reports_once_and_the_interrupting_line_still_counts() {
+        let frame = frames::tests::big_frame(json!({ "type": "response" }));
+        let chunks = frames::tests::chunk_lines(&frame, "cut");
+        let texts = |steps: &[Step<'_>]| {
+            let harness = Harness::new("interrupt");
+            harness.run("interrupt", steps);
+            harness
+                .journaled()
+                .into_iter()
+                .map(|(_, t)| t)
+                .collect::<Vec<_>>()
+        };
+        let end = br#"{"type":"agent_end"}"#;
+        let open = [
+            Step::Line(chunks[0].as_bytes()),
+            Step::Line(chunks[1].as_bytes()),
+        ];
+        let cut = |next: Step<'static>| texts(&[open[0], open[1], next]);
+
+        assert_eq!(
+            cut(Step::Line(end)),
+            vec![INTERRUPTED, std::str::from_utf8(end).unwrap()]
+        );
+        assert_eq!(cut(Step::Dropped), vec![INTERRUPTED]);
+        assert_eq!(texts(&open), vec![INTERRUPTED], "end of output");
+        assert_eq!(texts(&[Step::Dropped]), Vec::<String>::new());
+        assert_eq!(texts(&[]), Vec::<String>::new());
+    }
+
+    /// A retired incarnation still journals but emits nothing.
+    #[test]
+    fn a_retired_reader_journals_but_does_not_emit() {
+        let harness = Harness::new("retired");
+        harness.alive.store(false, Ordering::Release);
+        let (emitted, _) = harness.run("retired", &[Step::Line(br#"{"type":"ready"}"#)]);
+        assert_eq!(emitted, Emitted::new());
+        assert_eq!(harness.journaled().len(), 1);
+    }
+
+    /// A frame nested `depth` levels deep, by `[` or by `{"a":`, with a
+    /// credential key in the deepest object.
+    fn deep_frame(depth: usize, objects: bool) -> String {
+        // The outer object and the innermost one are two of the levels.
+        let inner = depth - 2;
+        let (open, close) = if objects {
+            (r#"{"a":"#, "}")
+        } else {
+            ("[", "]")
+        };
+        format!(
+            r#"{{"type":"deep","v":{}{{"apiKey":"sk-deep-secret"}}{}}}"#,
+            open.repeat(inner),
+            close.repeat(inner)
+        )
+    }
+
+    /// `frame` through the whole pipeline on a thread of the reader's stack
+    /// size: the journaled texts and `saw_frame`.
+    fn on_reader_stack(frame: String) -> (Vec<String>, bool) {
+        reader_thread()
+            .spawn(move || {
+                let harness = Harness::new("deep");
+                let (_, saw_frame) = harness.run("deep", &[Step::Line(frame.as_bytes())]);
+                let texts = harness.journaled().into_iter().map(|(_, t)| t).collect();
+                (texts, saw_frame)
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    /// D94-7: the worst case the reader takes, `MAX_FRAME_DEPTH` levels by
+    /// arrays and by objects, goes through the whole pipeline (parse,
+    /// redaction, re-serialization, every consumer, the `Value` drop) on a
+    /// thread of the reader's stack size, its deepest credential redacted.
+    /// One level more is the diagnostic.
+    #[test]
+    fn a_frame_at_the_depth_ceiling_runs_on_the_reader_stack() {
+        for objects in [false, true] {
+            let (texts, saw_frame) = on_reader_stack(deep_frame(frames::MAX_FRAME_DEPTH, objects));
+            assert!(saw_frame, "objects: {objects}");
+            assert_eq!(texts.len(), 1);
+            let text = &texts[0];
+            assert!(text.starts_with(r#"{"type":"deep""#), "objects: {objects}");
+            assert!(!text.contains("sk-deep-secret"), "objects: {objects}");
+            assert!(
+                text.contains(&format!(r#"{{"apiKey":"{REDACTED_PLACEHOLDER}"}}"#)),
+                "objects: {objects}"
+            );
+
+            let too_deep = deep_frame(frames::MAX_FRAME_DEPTH + 1, objects);
+            assert_eq!(
+                on_reader_stack(too_deep),
+                (vec![UNPARSABLE.to_owned()], false),
+                "objects: {objects}"
+            );
+        }
+    }
+
+    /// D94-7: a `JSON.parse`-valid frame nested past serde's default limit
+    /// (a model's tool-call arguments, echoed in `message_end`) is a frame,
+    /// not the `unparsable` diagnostic.
+    #[test]
+    fn a_deep_message_end_is_still_a_frame() {
+        let depth = 200;
+        let line = format!(
+            r#"{{"type":"message_end","message":{{"role":"assistant","content":[{{"type":"toolCall","arguments":{{"x":{}1{}}}}}]}}}}"#,
+            "[".repeat(depth),
+            "]".repeat(depth)
+        );
+        let (text, parsed) = sanitize_line(line.as_bytes());
+        assert!(parsed.is_some(), "dropped as: {text}");
+        assert_eq!(text, line);
+    }
+
+    /// R2-M1/R3-m1: the deepest tool call the reader takes (`toolcall_end` at
+    /// `MAX_FRAME_DEPTH`, by arrays and by objects) lands in the in-flight
+    /// state on the reader's stack. `AgentBridge::streaming_message`, called
+    /// from a 1 MiB thread (the `WebView2` main thread's stack, where the
+    /// `streaming_message` command's future is polled), serializes it on
+    /// `off_ipc`'s worker instead, so the call completes.
+    #[test]
+    fn a_ceiling_deep_tool_call_snapshot_serializes_off_ipc() {
+        for objects in [false, true] {
+            // Frame, assistantMessageEvent and toolCall are three levels.
+            let levels = frames::MAX_FRAME_DEPTH - 3;
+            let args = if objects {
+                format!("{}1{}", r#"{"a":"#.repeat(levels), "}".repeat(levels))
+            } else {
+                format!("{}1{}", "[".repeat(levels), "]".repeat(levels))
+            };
+            let start = r#"{"type":"message_start","messageId":"m","message":{"role":"assistant","content":[]}}"#;
+            let update = format!(
+                r#"{{"type":"message_update","messageId":"m","assistantMessageEvent":{{"type":"toolcall_end","contentIndex":0,"toolCall":{{"type":"toolCall","id":"t","name":"x","arguments":{args}}}}}}}"#
+            );
+            let inflight = reader_thread()
+                .spawn(move || {
+                    let mut harness = Harness::new("deep-inflight");
+                    harness.run(
+                        "deep-inflight",
+                        &[Step::Line(start.as_bytes()), Step::Line(update.as_bytes())],
+                    );
+                    Arc::new(std::mem::take(&mut harness.inflight))
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+
+            let bridge = crate::agent::AgentBridge::new();
+            bridge.sessions.lock().unwrap().insert(
+                "deep".into(),
+                BridgeInner {
+                    inflight: Arc::clone(&inflight),
+                    ..crate::agent::tests::idle_inner(Arc::new(AtomicBool::new(true)))
+                },
+            );
+            let text = thread::scope(|scope| {
+                thread::Builder::new()
+                    .stack_size(1024 * 1024)
+                    .spawn_scoped(scope, || {
+                        tauri::async_runtime::block_on(bridge.streaming_message("deep"))
+                    })
+                    .unwrap()
+                    .join()
+                    .unwrap()
+            })
+            .unwrap();
+            assert_eq!(
+                text,
+                format!(
+                    r#"{{"messageId":"m","seq":2,"message":{{"content":[{{"arguments":{args},"id":"t","name":"x","type":"toolCall"}}],"role":"assistant"}}}}"#
+                ),
+                "objects: {objects}"
+            );
+            // The deep `Value` is freed where it was built.
+            reader_thread()
+                .spawn(move || {
+                    drop(bridge);
+                    drop(inflight);
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+        }
     }
 }

@@ -147,7 +147,7 @@ const hasZh = (s) => Object.prototype.hasOwnProperty.call(ZH, s);
 const w2 = load("app/i18n.js", makeWindow());
 load("app/i18n-zh.js", w2);
 w2.OMP_I18N.set("zh");
-for (const f of ["app/constants.js", "app/keymap.js", "app/slash-commands.js", "app/approval-mode.js", "app/settings-schema.js"]) load(f, w2);
+for (const f of ["app/constants.js", "app/keymap.js", "app/slash-commands.js", "app/approval-mode.js", "app/notify-sound.js", "app/settings-schema.js"]) load(f, w2);
 const S = w2.OMP_SETTINGS;
 
 /** Fails listing every string of `strings` without a zh entry. */
@@ -200,6 +200,7 @@ check("the desktop's own string tables are translated", () => {
   assertTranslated(w2.OMP_SLASH.LOCAL_COMMANDS.flatMap(c => [c.hint, c.group]));
   assertTranslated(w2.OMP_APPROVAL_MODE.MODES.flatMap(m => [m.label, m.blurb]));
   assertTranslated(Object.values(w2.THINKING_LEVELS).map(l => l.hint));
+  assertTranslated([w2.OMP_NOTIFY_SOUND.NONE, ...w2.OMP_NOTIFY_SOUND.SOUNDS.map(s => s.label)]);
 });
 
 /** Source strings a translation call receives: the literal, or both
