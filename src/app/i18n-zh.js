@@ -572,7 +572,7 @@ window.OMP_I18N.add("zh", {
   "“{field}” carries an unexpected answer.": "“{field}”包含一个意外的答案。",
   "“{field}” needs text.": "“{field}”需要文本。",
   "Fix the field “{field}” before sending.": "发送前请修正字段“{field}”。",
-  "Cancellation could not be delivered to omp.": "无法将取消操作发送给 omp。",
+  "The refusal could not be delivered to omp.": "无法将拒绝回复发送给 omp。",
 
   // ── Browser panel ──
   "browser panel": "浏览器面板",
@@ -940,6 +940,7 @@ window.OMP_I18N.add("zh", {
   "Stop": "停止",
   "closed by omp": "由 omp 关闭",
   "cancelled": "已取消",
+  "not shown": "未显示",
   "Outside the project: no preview": "项目之外：无法预览",
   "install & restart": "安装并重启",
   "also bound to “": "也绑定到“",

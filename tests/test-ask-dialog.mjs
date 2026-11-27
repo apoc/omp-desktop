@@ -386,8 +386,21 @@ check("collapsedSummary: a form uses its visible answer and section title, never
   // An unreadable form's title is the desktop's own source string (or a
   // `{text, vars}`): handed over for translation, never as omp text.
   assert.deepEqual(A.collapsedSummary({ method: "form", cancelled: true, form: null, formError: { text: "The form is empty." }, title: "Unsupported form" }), {
-    answer: null, answerCount: null, status: "cancelled", prompt: "Unsupported form", promptSource: { text: "Unsupported form" }, negative: true,
+    answer: null, answerCount: null, status: "not shown", prompt: "Unsupported form", promptSource: { text: "Unsupported form" }, negative: true,
   });
+  // Refused, not cancelled: omp's turn goes on, so the status says so; omp's
+  // own withdrawal still wins, and a cancelled parsed form stays `cancelled`.
+  assert.deepEqual(A.collapsedSummary({ method: "form", cancelled: true, closedByOmp: true, form: null, formError: { text: "The form is empty." }, title: "Unsupported form" }), {
+    answer: null, answerCount: null, status: "closed by omp", prompt: "Unsupported form", promptSource: { text: "Unsupported form" }, negative: true,
+  });
+  assert.deepEqual(A.collapsedSummary({ method: "form", cancelled: true, form, data: null }), {
+    answer: null, answerCount: null, status: "cancelled", prompt: "Setup", negative: true,
+  });
+  // A field error on a shown form (`formError` with a parsed `form`) is not a refusal.
+  assert.deepEqual(A.collapsedSummary({ method: "form", cancelled: true, form, data: null, formError: { text: "Fix the field “{field}” before sending.", vars: { field: "db" } } }), {
+    answer: null, answerCount: null, status: "cancelled", prompt: "Setup", negative: true,
+  });
+  assert.equal(A.collapsedSummary({ method: "input", cancelled: true, form: null, title: "Word?" }).status, "cancelled");
   assert.deepEqual(A.collapsedSummary({ method: "form", cancelled: true, form: null, title: { text: "Form for {who}", vars: { who: "Ada" } } }).promptSource,
     { text: "Form for {who}", vars: { who: "Ada" } });
   assert.equal(A.collapsedSummary({ method: "form", cancelled: true, form: null, title: { text: "Form for {who}", vars: { who: "Ada" } } }).prompt, "Form for Ada");

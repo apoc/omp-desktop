@@ -564,12 +564,17 @@ await check("a reconnect keeps options the form disabled disabled and toggles se
 });
 await check("an unsupported form shows its note and no submit button", async () => {
   const b = browser(); await b.connect();
+  // The pairing scanner has its own Cancel button; the refusal card adds none.
+  const labelled = label => b.nodes().filter(n => n.tagName === "button" && n.textContent === label).length;
+  const cancelsBefore = labelled("Cancel");
   await b.message({ t: "view", view: { ...view().view, asks: [{ id: "bad", kind: "form", title: "Unsupported form", message: "", formError: { text: "This form has too many {what}.", vars: { what: "fields" } } }] } });
   assert.match(b.app.textContent, /This form has too many fields\./);
   assert.doesNotMatch(b.app.textContent, /\{what\}/);
   assert.equal(b.button("Submit"), undefined);
-  const cancels = b.nodes().filter(n => n.tagName === "button" && n.textContent === "Cancel");
-  await cancels.at(-1).emit("click");
+  assert.equal(labelled("Cancel"), cancelsBefore, "a refusal is retried, not cancelled");
+  const retries = b.nodes().filter(n => n.tagName === "button" && n.textContent === "Retry");
+  assert.equal(retries.length, 1);
+  await retries[0].emit("click");
   assert.equal(b.frames.at(-1).value, null);
 });
 // Rust's build_action drops a frame without a non-empty reqId, so every

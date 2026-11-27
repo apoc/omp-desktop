@@ -266,6 +266,8 @@ function bridgeHarness({ realTurnStatus = false, htmlForm = null } = {}) {
       },
       withHiddenDefaults: (form, data) => ({ ...data, ...Object.fromEntries(form.hidden) }),
       answerError: () => null,
+      // The sentence is built by the real module (its own test covers it).
+      refusalData: error => realHtmlForm().refusalData(error),
     },
     OMP_SUBAGENTS: { emptySubagents: () => ({}), subscriptionLevelFor: () => "progress", mergeSnapshots: () => ({}) },
     OMP_QUEUE: { EMPTY_QUEUE: {} }, OMP_GOAL: { UNKNOWN: {} }, OMP_EXT_WIDGETS: { EMPTY: {} },
@@ -920,16 +922,22 @@ await checkAsync("a form request becomes a bubble and its answer is the data fra
   assert.deepEqual([settled.answered, settled.data], [true, { name: "Ada" }]);
 });
 
-await checkAsync("an unreadable form is cancelled at once and leaves a visible note", async () => {
+const PASSWORD_SENTENCE = "OMP Desktop does not show ask forms that mention a password. Do not ask for a password in the chat or in a form; if one is needed, tell the user to enter it in a terminal. Ask anything else in plain text.";
+
+await checkAsync("an unreadable form is refused with its reason, never cancelled, and leaves a visible note", async () => {
   const h = bridgeHarness();
   const { a } = await twoTabs(h);
   h.emit(a, { type: "extension_ui_request", id: "bad", method: "form", html: "empty" });
   await new Promise(resolve => setTimeout(resolve, 20));
   const bubble = h.snapshot().messages.find(message => message.kind === "ask" && message.id === "bad");
-  assert.equal(bubble?.cancelled, true);
+  assert.equal(bubble?.cancelled, true, "locally closed, so every re-answer guard keeps working");
   assert.deepEqual(bubble?.formError, { text: "The form is empty." });
-  const reply = h.commands.find(command => command.type === "extension_ui_response" && command.id === "bad");
-  assert.equal(reply?.cancelled, true);
+  const replies = h.commands.filter(command => command.type === "extension_ui_response" && command.id === "bad");
+  assert.equal(replies.length, 1);
+  assert.equal("cancelled" in replies[0], false, "a cancellation would abort omp's turn (#86)");
+  assert.deepEqual(replies[0].data, {
+    "OMP Desktop could not show this ask form: The form is empty. Do not send this form again; ask the user in plain text instead.": null,
+  });
 });
 
 await checkAsync("a second form answer is not resent", async () => {
@@ -942,19 +950,25 @@ await checkAsync("a second form answer is not resent", async () => {
   assert.equal(h.commands.filter(command => command.type === "extension_ui_response" && command.id === "form2").length, 1);
 });
 
-await checkAsync("a password form is cancelled immediately with a visible terminal-only note", async () => {
-  const h = bridgeHarness();
-  const { a } = await twoTabs(h);
-  h.emit(a, { type: "extension_ui_request", id: "secret", method: "form", html: "<form><input type=password name=pw value=prefilled-secret></form>" });
-  await new Promise(resolve => setTimeout(resolve, 30));
-  const bubble = h.snapshot().messages.find(message => message.id === "secret");
-  assert.equal(bubble.cancelled, true);
-  assert.equal(bubble.form, null);
-  assert.match(bubble.formError.text, /enter it in a terminal instead/);
-  const reply = h.commands.find(command => command.type === "extension_ui_response" && command.id === "secret");
-  assert.equal(reply.cancelled, true);
-  assert.equal(reply.data, undefined);
-  assert.doesNotMatch(JSON.stringify(bubble), /prefilled-secret/);
+await checkAsync("a password form is refused with the terminal-only sentence, never cancelled", async () => {
+  for (const html of [
+    '<form data-omp-desktop-redacted="password"></form>',
+    "<form><input type=password name=pw value=prefilled-secret></form>",
+  ]) {
+    const h = bridgeHarness({ htmlForm: realHtmlForm() });
+    const { a } = await twoTabs(h);
+    h.emit(a, { type: "extension_ui_request", id: "secret", method: "form", html });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const bubble = h.snapshot().messages.find(message => message.id === "secret");
+    assert.equal(bubble.cancelled, true);
+    assert.equal(bubble.form, null);
+    assert.match(bubble.formError.text, /enter it in a terminal instead/);
+    const replies = h.commands.filter(command => command.type === "extension_ui_response" && command.id === "secret");
+    assert.equal(replies.length, 1);
+    assert.equal("cancelled" in replies[0], false);
+    assert.deepEqual(replies[0].data, { [PASSWORD_SENTENCE]: null });
+    assert.doesNotMatch(JSON.stringify(h.commands) + JSON.stringify(bubble), /prefilled-secret/);
+  }
 });
 
 await checkAsync("a failed form answer stays open and retryable, without retaining its answer", async () => {
@@ -1026,7 +1040,10 @@ await checkAsync("a failed manual cancellation reopens and can be retried", asyn
   assert.equal(await h.bridge.cancelAsk("cancel-retry"), true);
   bubble = h.snapshot().messages.find(message => message.id === "cancel-retry");
   assert.equal(bubble.cancelled, true);
-  assert.equal(h.commands.filter(command => command.type === "extension_ui_response" && command.id === "cancel-retry").length, 2);
+  const replies = h.commands.filter(command => command.type === "extension_ui_response" && command.id === "cancel-retry");
+  assert.equal(replies.length, 2);
+  // The user's own Cancel on a shown form stays omp's Esc meaning.
+  assert.deepEqual(replies.map(reply => [reply.cancelled, reply.data]), [[true, undefined], [true, undefined]]);
 });
 
 await checkAsync("a rejected approve-and-remember after a tab switch reopens the captured tab's prompt", async () => {
@@ -1161,7 +1178,7 @@ await checkAsync("an approved prompt and an unsaved rule both stay closed", asyn
   h.unsavedGrant(null);
 });
 
-await checkAsync("an unsupported form cancellation reports delivery failure visibly", async () => {
+await checkAsync("an unsupported form refusal reports delivery failure visibly and Retry resends the refusal", async () => {
   const h = bridgeHarness();
   const { a } = await twoTabs(h);
   h.failResponses(true);
@@ -1169,13 +1186,20 @@ await checkAsync("an unsupported form cancellation reports delivery failure visi
   await new Promise(resolve => setTimeout(resolve, 30));
   let bubble = h.snapshot().messages.find(message => message.id === "bad-delivery");
   assert.deepEqual(bubble.formError, { text: "The form is empty." }, "the parse error stays as it was");
-  assert.deepEqual(bubble.deliveryError, { text: "Cancellation could not be delivered to omp." });
+  assert.deepEqual(bubble.deliveryError, { text: "The refusal could not be delivered to omp." });
   assert.equal(Boolean(bubble.cancelled), false);
   h.failResponses(false);
   assert.equal(await h.bridge.cancelAsk("bad-delivery"), true);
   bubble = h.snapshot().messages.find(message => message.id === "bad-delivery");
   assert.equal(bubble.cancelled, true);
   assert.equal(bubble.deliveryError, undefined, "a delivered retry clears the delivery failure");
+  const replies = h.commands.filter(command => command.type === "extension_ui_response" && command.id === "bad-delivery");
+  assert.equal(replies.length, 2);
+  const refusal = { "OMP Desktop could not show this ask form: The form is empty. Do not send this form again; ask the user in plain text instead.": null };
+  assert.deepEqual(replies.map(reply => reply.data), [refusal, refusal], "Retry resends the refusal");
+  assert.deepEqual(replies.map(reply => "cancelled" in reply), [false, false]);
+  // Settled now: a further Retry sends nothing.
+  assert.equal(await h.bridge.cancelAsk("bad-delivery"), false);
   assert.equal(h.commands.filter(command => command.type === "extension_ui_response" && command.id === "bad-delivery").length, 2);
 });
 
@@ -1192,7 +1216,7 @@ await checkAsync("a reopened refused form renders a working retry control", asyn
   runInNewContext(code, { window, React, OMP_TR: text => text });
   let retries = 0;
   const tree = window.FormDialog({
-    msg: { id: "refused", form: null, formError: { text: "The form is empty." }, deliveryError: { text: "Cancellation could not be delivered to omp." } },
+    msg: { id: "refused", form: null, formError: { text: "The form is empty." }, deliveryError: { text: "The refusal could not be delivered to omp." } },
     onSubmit: () => {}, onCancel: () => { retries++; },
   });
   const walk = node => [node, ...(node?.children ?? []).flatMap(walk)];
@@ -1208,7 +1232,7 @@ await checkAsync("a reopened refused form renders a working retry control", asyn
     "a settled refusal bubble must not offer Retry");
 });
 
-await checkAsync("omp withdrawal wins over a failed refusal cancellation", async () => {
+await checkAsync("omp withdrawal wins over a failed refusal reply", async () => {
   const h = bridgeHarness();
   const { a } = await twoTabs(h);
   h.holdResponses();
@@ -1225,7 +1249,7 @@ await checkAsync("omp withdrawal wins over a failed refusal cancellation", async
   assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /Answer could not be delivered/);
 });
 
-await checkAsync("omp's withdrawal after a failed refusal cancellation drops the delivery failure", async () => {
+await checkAsync("omp's withdrawal after a failed refusal reply drops the delivery failure", async () => {
   const h = bridgeHarness();
   const { a } = await twoTabs(h);
   h.failResponses(true);
@@ -1307,6 +1331,24 @@ await checkAsync("a refused form answer stays open, sends nothing and shows why 
   bubble = h.snapshot().messages.find(message => message.id === "refused-answer");
   assert.deepEqual([bubble.answered, bubble.data.name, bubble.formError ?? null], [true, "Ada", null]);
   assert.equal(h.commands.filter(command => command.type === "extension_ui_response").length, 1);
+});
+
+await checkAsync("Cancel on a shown form whose answer was refused still sends a cancellation, not a refusal", async () => {
+  const real = realHtmlForm();
+  const h = bridgeHarness({ htmlForm: { ...real, parse: () => ({ form: requiredNameForm }) } });
+  const { a } = await twoTabs(h);
+  h.emit(a, { type: "extension_ui_request", id: "shown-then-cancelled", method: "form", html: "<form></form>" });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(await h.bridge.answerForm("shown-then-cancelled", { name: "" }), false);
+  const open = h.snapshot().messages.find(message => message.id === "shown-then-cancelled");
+  assert.ok(open.form && open.formError, "a parsed form that carries a field error");
+  assert.equal(await h.bridge.cancelAsk("shown-then-cancelled"), true);
+  const replies = h.commands.filter(command => command.type === "extension_ui_response");
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].id, "shown-then-cancelled");
+  assert.equal(replies[0].cancelled, true);
+  assert.equal("data" in replies[0], false, "a field error is not a refusal");
+  assert.equal(h.snapshot().messages.find(message => message.id === "shown-then-cancelled").cancelled, true);
 });
 
 // Settings → Agent: compaction and retry belong to omp's config (#92). The

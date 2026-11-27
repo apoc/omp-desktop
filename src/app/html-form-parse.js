@@ -8,7 +8,8 @@
 
    The desktop adds limits omp does not have (size, nodes, depth, fields,
    options, cells, display text); past one the form is refused with a
-   specific `{text}` reason and the request cancelled.
+   specific `{text}` reason and the request refused (answered with a reason
+   `data` reply, `OMP_HTML_FORM.refusalData`, never a cancellation).
    ═════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
@@ -460,9 +461,10 @@
     && ["type", "autocomplete"].some(name => (attr(element, name) ?? "").toLowerCase().includes("password"));
 
   /** Parse agent-written form HTML into `{form}` or `{error: {text, vars}}`.
-   *  An error means the request is cancelled so omp never waits on a card
-   *  that cannot be answered. Content outside the first `<form>` is ignored
-   *  when one exists, as in omp. */
+   *  An error means the form is refused (`OMP_HTML_FORM.refusalData`, never
+   *  a cancellation) so omp never waits on a card that cannot be answered.
+   *  Content outside the first `<form>` is ignored when one exists, as in
+   *  omp. */
   function parse(html) {
     if (typeof html !== "string" || !html.trim()) return { error: { text: "The form is empty." } };
     if ((UTF8 ??= new TextEncoder()).encode(html).length > MAX_HTML_BYTES) return { error: { text: "The form HTML is too large to show." } };

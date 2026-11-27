@@ -223,6 +223,31 @@ check("errorText fills placeholders in English and leaves unknown ones", () => {
   assert.equal(H.errorText(undefined), "");
 });
 
+check("refusalData is the one-key reply that refuses a form without cancelling the turn", () => {
+  const PASSWORD_SENTENCE = "OMP Desktop does not show ask forms that mention a password. Do not ask for a password in the chat or in a form; if one is needed, tell the user to enter it in a terminal. Ask anything else in plain text.";
+  const oneKey = (data, sentence) => {
+    assert.deepEqual(Object.keys(data), [sentence]);
+    assert.equal(data[sentence], null);
+  };
+  // The password refusal is recognised from the parser's error, whether the
+  // marker or a password control caused it.
+  oneKey(H.refusalData(parse('<form data-omp-desktop-redacted="password"></form>').error), PASSWORD_SENTENCE);
+  oneKey(H.refusalData(parse("<form><input type=password name=pw></form>").error), PASSWORD_SENTENCE);
+  oneKey(H.refusalData(PASSWORD), PASSWORD_SENTENCE);
+  // Any other refusal quotes its reason, English, placeholders filled.
+  oneKey(H.refusalData(parse("").error),
+    "OMP Desktop could not show this ask form: The form is empty. Do not send this form again; ask the user in plain text instead.");
+  oneKey(H.refusalData({ text: "This form has {n} fields; at most {max} are shown.", vars: { n: 501, max: 500 } }),
+    "OMP Desktop could not show this ask form: This form has 501 fields; at most 500 are shown. Do not send this form again; ask the user in plain text instead.");
+  oneKey(H.refusalData(parse(`<form>${"<input name=a>".repeat(501)}</form>`).error),
+    "OMP Desktop could not show this ask form: This form has too many fields to show. Do not send this form again; ask the user in plain text instead.");
+  // A missing or empty error reads as the parser's fallback text.
+  const fallback = "OMP Desktop could not show this ask form: The form could not be read. Do not send this form again; ask the user in plain text instead.";
+  oneKey(H.refusalData(undefined), fallback);
+  oneKey(H.refusalData(null), fallback);
+  oneKey(H.refusalData({ text: "" }), fallback);
+});
+
 check("a pattern is a hint only: the form is shown and the pattern never runs", () => {
   // A model-written regex never runs in the webview (ReDoS), on any omp
   // version; a catastrophic pattern must not be compiled or matched.
@@ -951,11 +976,15 @@ check("inputType keeps a native type only when the browser shows the default unc
 check("every user-facing form error source string has a zh translation", () => {
   const zh = {};
   new Function("window", readFileSync(join(root, "src/app/i18n-zh.js"), "utf8"))({ OMP_I18N: { add: (_, entries) => Object.assign(zh, entries) } });
-  const strings = new Set(["Unsupported form", "The form could not be read.", "Cancellation could not be delivered to omp.", "closed by omp", "cancelled", "Required"]);
+  const strings = new Set(["Unsupported form", "The form could not be read.", "The refusal could not be delivered to omp.", "closed by omp", "cancelled", "not shown", "Required"]);
   // Every sentence-like literal in the two modules is a user-facing message:
-  // capitalised (or opening with “) and made of words.
+  // capitalised (or opening with “) and made of words. The one exception is
+  // refusalData's password sentence: it is written for the model and never
+  // reaches OMP_TR.
   for (const file of ["src/app/html-form-markup.js", "src/app/html-form-parse.js", "src/app/html-form.js"]) {
-    for (const match of readFileSync(join(root, file), "utf8").matchAll(/"((?:[A-Z]|“)[^"\\]* [^"\\]*)"/g)) strings.add(match[1]);
+    for (const match of readFileSync(join(root, file), "utf8").matchAll(/"((?:[A-Z]|“)[^"\\]* [^"\\]*)"/g)) {
+      if (!match[1].startsWith("OMP Desktop does not show ask forms")) strings.add(match[1]);
+    }
   }
   assert.ok(strings.size >= 36, `only ${strings.size} strings found: ${[...strings].join(" | ")}`);
   for (const text of strings) assert.ok(Object.hasOwn(zh, text), `no zh entry for ${JSON.stringify(text)}`);

@@ -406,9 +406,24 @@
     return "";
   }
 
+  /** The reply for a form this shell refuses to show (no `form` from
+   *  `parse`): omp's response has no non-cancelling variant but `data`, and
+   *  it fails the ask call on an unknown field name, quoting that name in the
+   *  tool error the model reads. So the refusal sentence is the one key,
+   *  value null. A cancellation would end the turn (omp reads it as the
+   *  user's Esc). The sentence is English for the model, never translated.
+   *  The password refusal is recognised by the parser's own text. */
+  function refusalData(error) {
+    const reason = errorText(error) || "The form could not be read.";
+    const sentence = reason === window.OMP_HTML_FORM_PARSE?.PASSWORD_REFUSAL
+      ? "OMP Desktop does not show ask forms that mention a password. Do not ask for a password in the chat or in a form; if one is needed, tell the user to enter it in a terminal. Ask anything else in plain text."
+      : `OMP Desktop could not show this ask form: ${reason} Do not send this form again; ask the user in plain text instead.`;
+    return { [sentence]: null };
+  }
+
   window.OMP_HTML_FORM = {
     parse, emptyDraft, pick, setOther, setText, clearPick, buildData, defaultData, withHiddenDefaults, setInputValue,
-    inputType, fieldError, draftErrors, dataError, answerError, validateData, summary, summaryPrompt, errorText,
+    inputType, fieldError, draftErrors, dataError, answerError, validateData, summary, summaryPrompt, errorText, refusalData,
     isArrayChoice, choiceValue, textValue,
   };
 })();
