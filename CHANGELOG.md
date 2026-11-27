@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.15.3] - 2026-11-27
+
 ### Changed
 
 - Settings → Agent → “Auto-compact context” and “Retry failed requests” now read and change the profile's config of omp itself (`compaction.enabled` with `compaction.methodOrder`, `retry.enabled`) for the active tab's profile, like “Keep working on a goal” does; the description names the profile and its running tabs pick the change up without a restart. A project's own `.omp/config.yml` is not shown. The desktop no longer sends a per-process `set_auto_compaction` / `set_auto_retry` override to every tab. A desktop-only “off” stored by an earlier version is not carried over: the switches show omp's value.
