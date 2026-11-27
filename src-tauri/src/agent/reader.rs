@@ -1274,8 +1274,9 @@ mod tests {
         let (emitted, _) = harness.run(sid, &lines(&frames::tests::chunk_lines(&frame, "p")));
         let tracked = crate::remote::tracker::tracker()
             .snapshot()
+            .sessions
             .get(sid)
-            .copied();
+            .map(|s| (s.busy, s.asks));
         crate::remote::tracker::tracker().on_exit(sid);
         assert_eq!(tracked, Some((false, 1)));
         assert_eq!(
