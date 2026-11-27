@@ -17,7 +17,7 @@ use super::emit::Frame;
 
 /// How long a frame in flight waits for the webview's ack; a lost ack costs
 /// this much, not the stream.
-const ACK_TIMEOUT: Duration = Duration::from_secs(1);
+pub(super) const ACK_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The `Page.screencastFrameAck` a frame of page session `session` owes
 /// Chromium (`id` is the screencast's `sessionId` of the frame).
