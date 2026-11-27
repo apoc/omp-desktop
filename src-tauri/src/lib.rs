@@ -25,6 +25,7 @@ mod json_store;
 mod keybindings;
 mod model_usage;
 mod navigation_guard;
+mod notify_sound;
 mod omp_cli;
 mod omp_config;
 mod open_tabs;
@@ -1078,6 +1079,16 @@ async fn voice_spectrum_stop(
     .await
 }
 
+/// Play a notification sound: `sound` is an id of the built-in catalogue
+/// (`notify_sound/synth.rs`), `volume` is 0..=100 (0 plays nothing). Returns
+/// at once; the sound plays on a thread of its own, and a newer sound cuts
+/// off one still playing. Fails for an unknown id; a missing
+/// audio device only shows in the log.
+#[tauri::command]
+fn notify_sound_play(sound: String, volume: u8) -> Result<(), String> {
+    notify_sound::play(&sound, volume)
+}
+
 /// Manual refresh of one card; a malformed id is ignored.
 #[tauri::command]
 fn widgets_refresh(plugin_id: String, host: State<'_, Arc<widgets::WidgetHost>>) {
@@ -1736,6 +1747,7 @@ pub fn run() {
             widgets_refresh,
             voice_spectrum_start,
             voice_spectrum_stop,
+            notify_sound_play,
             usage_stats,
             goal_continuation_get,
             goal_continuation_set,

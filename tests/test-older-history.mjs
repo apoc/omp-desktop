@@ -248,6 +248,7 @@ function harness() {
     OMP_SUBAGENTS: { emptySubagents: () => ({}), subscriptionLevelFor: () => "progress", mergeSnapshots: () => ({}) },
     OMP_EXT_WIDGETS: { EMPTY: {} },
     OMP_TWEAKS_STORE: { read: () => ({}) },
+    OMP_NOTIFY_SOUND: { prefsFrom: () => ({}), cue: () => null },
     OMP_APPROVAL_MODE: { isMode: () => true },
     OMP_PROJECT_NAV: { basename: path => path.split("/").at(-1), findConversationTab: () => null, tabLayout: () => [] },
     TWEAK_DEFAULTS: { restoreTabs: false, confirmBusyClose: false, autoName: false, showCompactedHistory: false },

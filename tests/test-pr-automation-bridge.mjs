@@ -41,6 +41,7 @@ function harness() {
       closeGuardArmed: () => false,
     },
     OMP_TWEAKS_STORE: { read: () => ({}) },
+    OMP_NOTIFY_SOUND: { prefsFrom: () => ({}), cue: () => null },
     OMP_APPROVAL_MODE: { isMode: () => true },
     OMP_PROJECT_NAV: {
       basename: (path) => path.split("/").at(-1),

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Notification sounds: a short synthesised sound plays when an agent asks you something or finishes a turn, in any tab, with six sounds to pick from and a volume (Settings → Session → Sounds, off by default; “in background” plays only while the window is not focused). Each cue has its own sound or none, and a ▶ button previews it (#91).
 - A conversation opened after omp compacted it (relaunch, reopened tabs, resume from history) can show what the compaction summarized: a row at the top of the chat loads it from the session file, read-only, above the transcript, with a divider for each compaction; a long history loads a page at a time, up to the transcript's 169-entry limit. Settings → Session → “Show compacted history” loads it by itself when a conversation opens (off by default) (#85).
 
 ## [0.15.3] - 2026-11-27
