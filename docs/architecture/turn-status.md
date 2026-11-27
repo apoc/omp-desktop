@@ -101,7 +101,7 @@ state for both; a background tab reads its frozen snapshot.
 
 **Fresh data at decision time.** The tracker reaches the webview as a
 coalesced event, so a turn can be under way in Rust before the webview
-hears of it. When "ask before closing a busy tab" is on, `closeSessionGuarded`
+hears of it. When "Ask before closing a working tab" is on, `closeSessionGuarded`
 and `_requestQuit` first re-read `attention_snapshot` and apply it
 (`_refreshAttention` → `_applyAttention(snapshot, false)`: no dock bounce),
 then compute the confirmation. A failed or empty read keeps the current
