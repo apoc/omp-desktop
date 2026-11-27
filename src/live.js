@@ -705,12 +705,14 @@
   }
 
   // Resolve a pending ask bubble: settle it, then send `payload` back to
-  // omp — only if it was still open, so a re-answer sends nothing.
+  // omp — only if it was still open, so a re-answer sends nothing. `payload`
+  // may be a function of the settled bubble, for a reply that depends on it.
   async function _resolveAsk(id, patch, payload) {
     const sessionId = activeSessionId;
     const bubble = _settleAsk(id, patch);
     if (!bubble) return false;
-    const delivered = await _send({ type: "extension_ui_response", id, ...payload });
+    const reply = typeof payload === "function" ? payload(bubble) : payload;
+    const delivered = await _send({ type: "extension_ui_response", id, ...reply });
     if (!delivered) _patchSessionBubble(sessionId, bubble, _reopenAsk, true);
     return delivered;
   }
@@ -2668,9 +2670,13 @@
       }
       // omp 19.1+ sends the ask tool's whole HTML form as one request. Parse
       // it into a model first: the HTML never enters the DOM. A form this
-      // shell cannot read is cancelled at once and leaves a visible note, so
-      // omp never waits on a card that could not be submitted. Errors are
-      // `{text, vars}` source strings, translated where they are shown.
+      // shell cannot show (unreadable, over a limit, a password) is REFUSED,
+      // not cancelled: omp's ask tool reads `cancelled` as the user's Esc and
+      // aborts the whole turn (#86), while a `data` reply naming the reason
+      // fails only that ask call with an error the model reads. The bubble
+      // stays as a visible note, locally closed (`cancelled: true` is its
+      // closed state, not the wire reply). Errors are `{text, vars}` source
+      // strings, translated where they are shown.
       if (ev.method === "form") {
         const parsed = HTML_FORM.parse(ev.html);
         if (!parsed.form) {
@@ -2685,7 +2691,7 @@
           });
           state.messages = [...state.messages, bubble];
           notify();
-          _send({ type: "extension_ui_response", id: ev.id, cancelled: true }).then(delivered => {
+          _send({ type: "extension_ui_response", id: ev.id, data: HTML_FORM.refusalData(bubble.formError) }).then(delivered => {
             if (delivered) return;
             // Reopened for its Retry (`cancelAsk`), whose successful
             // settlement drops this marker again (`_settleAsk`).
@@ -2693,7 +2699,7 @@
               const open = _reopenAsk(message);
               return open === message ? message : {
                 ...open,
-                deliveryError: { text: "Cancellation could not be delivered to omp." },
+                deliveryError: { text: "The refusal could not be delivered to omp." },
               };
             }, true);
           });
@@ -4549,10 +4555,20 @@
      * `extension_ui_request.cancel` event, but resolved the same way on
      * both the local message (marked `cancelled`) and the wire
      * (`{cancelled: true}`). Same re-answer-proof guard as `answerAsk`.
+     * One exception: Retry on a refused form bubble (a `form` request with
+     * no parsed `form`, reopened after its refusal was not delivered)
+     * resends the refusal data, never a cancellation, which would end omp's
+     * turn (#86). Phone Retry reaches here too.
      * @param {string} id
      */
     cancelAsk(id) {
-      return _resolveAsk(id, { cancelled: true }, { cancelled: true });
+      return _resolveAsk(
+        id,
+        { cancelled: true },
+        bubble => bubble.method === "form" && !bubble.form
+          ? { data: HTML_FORM.refusalData(bubble.formError) }
+          : { cancelled: true },
+      );
     },
 
     /**

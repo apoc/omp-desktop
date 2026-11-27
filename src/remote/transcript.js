@@ -297,10 +297,12 @@
       const F = window.OMP_HTML_FORM;
       const form = ask.form;
       if (!form) {
+        // A refused form whose refusal did not reach omp (the bubble was
+        // reopened): Retry resends that reply, which `null` does (`cancelAsk`).
         wrap.append(node("div", F.errorText(ask.formError) || "Unsupported form", "ask-sum-a none"));
-        const cancel = button("Cancel", () => onAnswer(ask.id, null));
-        cancel.className = "ask-opt";
-        wrap.append(cancel);
+        const retry = button("Retry", () => onAnswer(ask.id, null));
+        retry.className = "ask-opt";
+        wrap.append(retry);
         return wrap;
       }
       const draft = askDrafts.get(key) ?? F.emptyDraft(form);

@@ -160,7 +160,9 @@
    *  A form reports its visible answers only; hidden inputs never show. A
    *  form the desktop could not read carries the desktop's own title (a
    *  source string or `{text, vars}`): `promptSource` holds it for
-   *  translation, `prompt` its English text. */
+   *  translation, `prompt` its English text. That form is refused, not
+   *  cancelled (omp's turn goes on), so its status is `not shown` unless omp
+   *  withdrew it (`closed by omp`). */
   function collapsedSummary(msg) {
     if (!msg?.answered && !msg?.cancelled) return null;
     const own = msg?.method === "form" && !msg.form && msg.title ? msg.title : null;
@@ -171,7 +173,9 @@
       : nonBlank(msg.title) ?? nonBlank(msg.message) ?? nonBlank(formPrompt) ?? msg.questions?.[0]?.question ?? "";
     const prompt = String(source).trimStart().split(/\r?\n/, 1)[0].trim();
     if (msg.cancelled) {
-      return { answer: null, answerCount: null, status: msg.closedByOmp ? "closed by omp" : "cancelled", prompt, ...(promptSource ? { promptSource } : {}), negative: true };
+      const refused = msg.method === "form" && !msg.form;
+      const status = msg.closedByOmp ? "closed by omp" : refused ? "not shown" : "cancelled";
+      return { answer: null, answerCount: null, status, prompt, ...(promptSource ? { promptSource } : {}), negative: true };
     }
 
     let answer = nonBlank(msg.answer);
