@@ -69,14 +69,12 @@ fn build_action(session: &Authed, message: &Value, kind: &str) -> Option<Action>
     if message.get("askId").is_some_and(|raw| !raw.is_null()) && ask_id.is_none() {
         return None;
     }
-    if kind == "answer"
-        && !message
-            .as_object()
-            .is_some_and(|object| object.contains_key("value"))
-    {
+    let value = message.get("value").cloned(); // owned for the webview event
+                                               // `get` yields `Some(Null)` for an explicit null, so only an absent key is
+                                               // refused here: an answer without a `value` is not a decision.
+    if kind == "answer" && value.is_none() {
         return None;
     }
-    let value = message.get("value").cloned(); // owned for the webview event
     if value
         .as_ref()
         .is_some_and(|value| value.to_string().len() > MAX_TEXT)

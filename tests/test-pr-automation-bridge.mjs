@@ -95,7 +95,7 @@ function harness() {
   w.__TAURI__ = {
     core: {
       async invoke(command, args) {
-        if (command === "start_session") return { approvalMode: "write", ompVersion: null };
+        if (command === "start_session") return "write";
         if (command === "start_git_watch") return { branch: "feature", root: "/repo" };
         if (command === "stop_session") {
           journal.delete(args.sessionId);

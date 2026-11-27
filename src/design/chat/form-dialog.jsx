@@ -1,10 +1,22 @@
 /* chat/form-dialog.jsx — the ask tool's HTML form (extension_ui_request
    method "form", omp 19.1+). Renders only the parsed model in
-   app/html-form.js; no part of omp's HTML string reaches the DOM. Picture
-   blocks show alt text, never the source URL. */
+   app/html-form-parse.js / app/html-form.js; no part of omp's HTML string
+   reaches the DOM. Picture blocks show alt text, never the source URL.
+   Every error is the module's `{text, vars}` (or a plain source string) and
+   is translated here. */
 
 const { Icon: _FD_Icon } = window;
 const _FD = window.OMP_HTML_FORM;
+
+/** A `{text, vars}` error or a plain source string, translated. */
+function _FD_tr(error) {
+  if (error === null || error === undefined || error === "") return "";
+  return typeof error === "string" ? OMP_TR(error) : OMP_TR(error.text, error.vars);
+}
+
+function _FD_makeInput() {
+  return document.createElement("input");
+}
 
 // Drafts not sent yet, per request id: the chat view remounts on a tab switch.
 const _FD_drafts = new Map();
@@ -60,6 +72,9 @@ function _FD_Field({ field, index, form, draft, error, update, idPrefix }) {
   const controlId = `${prefix}-c`;
   const choice = field.kind === "choice";
   const radioRefs = React.useRef([]);
+  // The same type rule as the phone (html-form.js inputType): an untouched
+  // field shows exactly the value omp receives.
+  const inputType = React.useMemo(() => choice || field.multiline ? null : _FD.inputType(field, _FD_makeInput), [field, choice]);
   const enabledIndices = (field.options ?? []).flatMap((option, oi) => option.disabled ? [] : [oi]);
   // Arrow keys move focus and selection inside a radiogroup, one tab stop per
   // group (roving tabindex) — the WAI-ARIA radio pattern. Checkboxes keep
@@ -136,7 +151,7 @@ function _FD_Field({ field, index, form, draft, error, update, idPrefix }) {
     );
   } else {
     control = (
-      <input id={controlId} className="ask-other-input selectable" type={field.type || "text"} value={entry}
+      <input id={controlId} className="ask-other-input selectable" type={inputType} value={entry}
         placeholder={field.placeholder} required={field.required}
         min={field.min} max={field.max} step={field.step}
         minLength={field.minLength} maxLength={field.maxLength}
@@ -152,12 +167,24 @@ function _FD_Field({ field, index, form, draft, error, update, idPrefix }) {
         : <div {...labelProps}>{question}</div>}
       {control}
       {field.pattern && <div className="form-context">{OMP_TR("Pattern: {pattern}", { pattern: field.pattern })}</div>}
-      {error && <div className="form-error" role="alert">{OMP_TR(error)}</div>}
+      {error && <div className="form-error" role="alert">{_FD_tr(error)}</div>}
     </section>
   );
 }
 
-function _FD_Summary({ form, data }) {
+function _FD_Summary({ msg, form, data }) {
+  // A cancelled or omp-withdrawn form has no answers to list. omp's own
+  // timeout arrives as the same withdrawal as a stopped turn, so the card
+  // cannot tell them apart and shows the plain status.
+  if (msg.cancelled) {
+    return (
+      <div className="ask-dialog done form-dialog">
+        <div className="ask-sum-row">
+          <div className="ask-sum-a none">{OMP_TR(msg.closedByOmp ? "closed by omp" : "cancelled")}</div>
+        </div>
+      </div>
+    );
+  }
   const hidden = new Set(form.hidden.map(([name]) => name));
   const fields = form.fields.filter(field => field.name && !hidden.has(field.name));
   return (
@@ -192,8 +219,9 @@ function FormDialog({ msg, onSubmit, onCancel }) {
     return (
       <div className="ask-dialog done form-dialog">
         <div className="ask-sum-row">
-          <div className="ask-sum-q"><span className="ask-sum-q-text">{OMP_TR("Unsupported form")}</span></div>
-          <div className="ask-sum-a none">{msg.formError || OMP_TR("The form could not be read.")}</div>
+          <div className="ask-sum-q"><span className="ask-sum-q-text">{_FD_tr(msg.title || "Unsupported form")}</span></div>
+          <div className="ask-sum-a none">{_FD_tr(msg.formError || "The form could not be read.")}</div>
+          {msg.deliveryError && <div className="form-error" role="alert">{_FD_tr(msg.deliveryError)}</div>}
         </div>
         <div className="ask-dialog-foot">
           <span className="ask-foot-spacer" />
@@ -202,7 +230,7 @@ function FormDialog({ msg, onSubmit, onCancel }) {
       </div>
     );
   }
-  if (done) return <_FD_Summary form={form} data={msg.data} />;
+  if (done) return <_FD_Summary msg={msg} form={form} data={msg.data} />;
 
   const update = next => { _FD_saveDraft(msg.id, next); setDraft(next); };
   const errors = _FD.draftErrors(form, draft);
@@ -223,6 +251,7 @@ function FormDialog({ msg, onSubmit, onCancel }) {
           ))}
         </section>
       ))}
+      {msg.formError && <div className="form-error" role="alert">{_FD_tr(msg.formError)}</div>}
       <div className="ask-dialog-foot">
         <span className={`ask-progress${canSend ? "" : " incomplete"}`}>
           {canSend ? OMP_TR("Ready to send") : OMP_TR("Fix the marked fields before sending")}

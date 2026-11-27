@@ -81,9 +81,9 @@ function harness(initial = null, { unguarded = false, boot = false } = {}) {
           if (startHold) {
             const hold = startHold;
             startHold = null;
-            return new Promise(resolve => { hold.release = () => resolve({ approvalMode: mode, ompVersion: null }); });
+            return new Promise(resolve => { hold.release = () => resolve(mode); });
           }
-          return Promise.resolve({ approvalMode: mode, ompVersion: null });
+          return Promise.resolve(mode);
         }
         if (command === "stop_session_if_idle") {
           const answer = () => {

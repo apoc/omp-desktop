@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::PathBuf;
@@ -92,11 +93,20 @@ fn sanitize_frame(value: &mut serde_json::Value) -> bool {
 }
 
 /// Decode the character references a browser applies to text and attribute
-/// values before the form parser reads them. `None` means any `&` left
-/// unresolved — callers treat that as sensitive rather than guessing, so a
-/// malformed reference cannot hide a password marker. The scan is single-pass
-/// and allocates only the decoded copy, which the caller compares and drops.
-fn decode_html_attribute(value: &str) -> Option<String> {
+/// values before the form parser reads them, so `&#112;assword` is seen as
+/// the word it spells. A reference this cannot resolve — a bare `&`, `&#` or
+/// `&#x` without digits, an unknown name — is copied through literally (the
+/// `&` and whatever follows, unchanged) and the scan goes on.
+///
+/// Copying cannot hide the credential word: no HTML named reference decodes
+/// to an ASCII letter of "password" (the only multi-letter expansion,
+/// `&fjlig;`, is "fj"), so text that is not a reference this resolves is
+/// never replaced by anything that spells it, and keeping it keeps
+/// `&ampassword`-style text matching. Refusing instead would redact every form
+/// with an ordinary `&` (`Terms & conditions`, `R&D`, `make && make install`).
+/// Text without an `&` is returned borrowed; otherwise the scan is single-pass
+/// and allocates only the decoded copy.
+fn decode_html_attribute(value: &str) -> Cow<'_, str> {
     fn named(name: &str) -> Option<&'static str> {
         Some(match name {
             "amp" | "AMP" => "&",
@@ -112,12 +122,15 @@ fn decode_html_attribute(value: &str) -> Option<String> {
         })
     }
 
+    if !value.contains('&') {
+        return Cow::Borrowed(value);
+    }
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
     while let Some(amp) = rest.find('&') {
         out.push_str(&rest[..amp]);
         rest = &rest[amp + 1..];
-        if let Some(after_hash) = rest.strip_prefix('#') {
+        let resolved = if let Some(after_hash) = rest.strip_prefix('#') {
             let (radix, digits) = after_hash
                 .strip_prefix('x')
                 .or_else(|| after_hash.strip_prefix('X'))
@@ -125,43 +138,54 @@ fn decode_html_attribute(value: &str) -> Option<String> {
             let end = digits
                 .find(|c: char| !c.is_digit(radix))
                 .unwrap_or(digits.len());
-            if end == 0 {
-                return None;
+            if end > 0 {
+                let code = u32::from_str_radix(&digits[..end], radix).ok();
+                out.push(code.and_then(char::from_u32).unwrap_or('\u{fffd}'));
+                rest = &digits[end..];
             }
-            let code = u32::from_str_radix(&digits[..end], radix).ok();
-            out.push(code.and_then(char::from_u32).unwrap_or('\u{fffd}'));
-            rest = &digits[end..];
+            end > 0
         } else {
             let end = rest
                 .find(|c: char| !c.is_ascii_alphanumeric())
                 .unwrap_or(rest.len());
-            if end == 0 {
-                return None;
+            let known = named(&rest[..end]);
+            if let Some(text) = known {
+                out.push_str(text);
+                rest = &rest[end..];
             }
-            out.push_str(named(&rest[..end])?);
-            rest = &rest[end..];
+            known.is_some()
+        };
+        if resolved {
+            rest = rest.strip_prefix(';').unwrap_or(rest);
+        } else {
+            out.push('&');
         }
-        rest = rest.strip_prefix(';').unwrap_or(rest);
     }
     out.push_str(rest);
-    Some(out)
+    Cow::Owned(out)
 }
 
 /// The fixed form HTML a credential-bearing request is replaced with before
 /// it is journaled or emitted. `src/app/html-form.js` refuses it with the
-/// same terminal-only password note as a password field.
+/// same terminal-only password note as a password field. It protects the form
+/// request frame only: the ask tool's own call arguments
+/// (`tool_execution_start.args.html`, and the `toolCall` arguments in
+/// `message_update` / `message_end`) carry the same model-written HTML and are
+/// not rewritten.
 const REDACTED_FORM_HTML: &str = r#"<form data-omp-desktop-redacted="password"></form>"#;
 
 /// Whether a form's HTML mentions a credential. Character references are
-/// decoded first (an unresolved `&` fails closed), then the whole decoded
-/// string is ASCII-lowercased and searched for `password`. One rule for every
+/// decoded first (see [`decode_html_attribute`]), then the decoded text is
+/// searched for `password`, ASCII case-insensitively. One rule for every
 /// spelling — a `type`/`autocomplete` value, a field name, prose in a label,
 /// a numeric or named entity — and no HTML tokenizing, slicing or index
 /// arithmetic, so no input shape can panic it server-side. The trade-off is
 /// deliberate: a form merely mentioning the word is refused too.
 fn form_mentions_password(html: &str) -> bool {
     decode_html_attribute(html)
-        .is_none_or(|decoded| decoded.to_ascii_lowercase().contains("password"))
+        .as_bytes()
+        .windows("password".len())
+        .any(|window| window.eq_ignore_ascii_case(b"password"))
 }
 
 /// Replace the HTML of an `extension_ui_request` `form` frame that mentions a
@@ -892,16 +916,16 @@ mod tests {
     }
 
     /// The browser decodes character references before the form parser sees
-    /// them, so the match does too. An unresolved `&` cannot hide the
-    /// marker: it fails closed to a match.
+    /// them, so the match does too. Text that is not a resolvable reference
+    /// stays as written, so it keeps matching what follows it.
     #[test]
-    fn sanitize_form_matches_decoded_entities_and_fails_closed() {
+    fn sanitize_form_matches_decoded_entities() {
         for html in [
             r#"<form><input type="&#112;assword" value="decimal-canary"></form>"#,
             r#"<form><input type="&#x70;ASSWORD" value="hex-canary"></form>"#,
             r#"<form><input type="&#112assword" value="no-semicolon-canary"></form>"#,
             r#"<form><input autocomplete="off&Tab;new-password" value="named-canary"></form>"#,
-            r#"<form><input type="pass&bogus;word" value="undecodable-canary"></form>"#,
+            r#"<form><input type="&ampassword" value="no-name-canary"></form>"#,
             r#"<form><input name="user_password" value="name-canary"></form>"#,
             "<form><p>Password: <input name=n value=\u{feff}padding-canary></p></form>",
             "<form><input type=text value=\"héllo wörld password\"></form>",
@@ -941,8 +965,11 @@ mod tests {
             ("<form><input type='password", true),
             ("<form><input/type=password/value=x></form>", true),
             ("<form><<<>>><input type=\"pass\u{0}word\">", false),
+            // A browser leaves `&bogus;` as text, so this does not spell it.
+            ("<form><input type=\"pass&bogus;word\"></form>", false),
             ("<form><input value='a &amp; b'></form>", false),
-            ("&&&&&&<form></form>", true),
+            ("&&&&&&<form></form>", false),
+            ("<form>&#<input name=a>&#x</form>", false),
         ] {
             let (out, parsed) = sanitize_line(form_frame(malformed).as_bytes());
             let parsed = parsed.expect("valid JSON");
@@ -971,6 +998,66 @@ mod tests {
         let raw = json!({"type":"extension_ui_request", "method":"select", "html":"<input type=password value=select-canary>"}).to_string();
         let (out, _) = sanitize_line(raw.as_bytes());
         assert!(out.contains("select-canary"));
+    }
+
+    /// An `&` that starts no resolvable reference is ordinary text — a
+    /// phrase, a code sample, an entity this does not know — and must not
+    /// cost the form its redaction-free delivery.
+    #[test]
+    fn sanitize_form_keeps_forms_with_ordinary_ampersands_and_entities() {
+        for html in [
+            "<form><label>Terms & conditions <input type=checkbox name=t></label></form>",
+            "<form><p>Q&A</p><input name=a></form>",
+            "<form><p>Ship it &mdash; or wait? &rarr; <input name=a></p></form>",
+            "<form><pre>make && make install</pre><input name=a></form>",
+            "<form><p>&copy; 2026</p><input name=a></form>",
+            "<form><select name=n><option>&ge; 10</option></select></form>",
+            "<form><label><input type=radio name=s value=rd>R&D</label></form>",
+            "<form><p>Tests &amp; docs</p><input name=a></form>",
+        ] {
+            let (out, parsed) = sanitize_line(form_frame(html).as_bytes());
+            assert_eq!(parsed.expect("valid JSON")["html"], html, "{html}");
+            assert!(!out.contains("data-omp-desktop-redacted"), "{html}");
+        }
+    }
+
+    /// A password form big enough for omp to send as a protocol-v2
+    /// `rpc_chunk` run is redacted after reassembly, exactly like a line —
+    /// even with the word split across the chunk boundary, where no single
+    /// chunk contains it.
+    #[test]
+    fn sanitize_form_redacts_a_chunked_password_form() {
+        use base64::Engine as _;
+        let head =
+            r#"{"type":"extension_ui_request","id":"form-big","method":"form","html":"<form><p>"#;
+        let word_start = r"</p><input type=pass";
+        // The first chunk (256 KiB) ends right after `pass`.
+        let filler = "x".repeat(256 * 1024 - head.len() - word_start.len());
+        let pad = " ".repeat(1024 * 1024);
+        let frame = format!(r#"{head}{filler}{word_start}word value=chunk-canary>{pad}</form>"}}"#);
+        let lines = frames::tests::chunk_lines(&frame, "form-run");
+        assert!(lines.len() > 1, "not a run: {} chunk(s)", lines.len());
+        for line in &lines {
+            let chunk: serde_json::Value = serde_json::from_str(line).unwrap();
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(chunk["data"].as_str().unwrap())
+                .unwrap();
+            let decoded = String::from_utf8_lossy(&decoded);
+            assert!(!decoded.contains("password"), "word inside one chunk");
+        }
+
+        let mut out = Vec::new();
+        let mut assembler = ChunkAssembler::default();
+        for line in &lines {
+            frames::logical_frames(&mut assembler, line.as_bytes(), |logical| {
+                out.push(sanitize_logical(logical));
+            });
+        }
+        assert_eq!(out.len(), 1, "a run is one logical frame");
+        let (text, value) = out.pop().unwrap();
+        assert_eq!(value.expect("parsed")["html"], REDACTED_FORM_HTML);
+        assert!(!text.contains("chunk-canary"), "leaked into the text");
+        assert!(text.contains("data-omp-desktop-redacted"));
     }
 
     #[test]

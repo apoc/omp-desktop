@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Regression script for src/app/html-form.js — omp's ask tool HTML form:
-// parsing into a render model, the draft and reply `data` shape, defaults,
-// validation, and the rendering-safe image rule.
+// Regression script for src/app/html-form-parse.js (omp's own markup parser
+// and form builder, ported) and src/app/html-form.js — omp's ask tool HTML
+// form: parsing into a render model, the draft and reply `data` shape,
+// defaults, validation, translatable errors, and the rendering-safe image
+// rule. The parser runs here exactly as in the app: it uses no DOM.
 // Run: node tests/test-html-form.mjs
 
 import assert from "node:assert/strict";
@@ -10,13 +12,16 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const path = join(root, "src/app/html-form.js");
-assert.ok(existsSync(path), "src/app/html-form.js must exist");
 const win = {};
 // Same realm as the test's arrays/objects (new Function, not a vm context):
 // deep equality must not trip over cross-realm prototypes.
-new Function("window", "DOMParser", readFileSync(path, "utf8"))(win, undefined);
+for (const file of ["src/app/html-form-markup.js", "src/app/html-form-parse.js", "src/app/html-form.js"]) {
+  const path = join(root, file);
+  assert.ok(existsSync(path), `${file} must exist`);
+  new Function("window", readFileSync(path, "utf8"))(win);
+}
 const H = win.OMP_HTML_FORM;
+const M = win.OMP_HTML_FORM_MARKUP;
 
 let passed = 0;
 function check(label, fn) {
@@ -25,95 +30,13 @@ function check(label, fn) {
   console.log(`ok ${passed} - ${label}`);
 }
 
-// ── A tiny DOM for Node ─────────────────────────────────────────────────────
-// The app parses with the browser's DOMParser. Node has none and jsdom is not
-// a dependency, so this shim covers the HTML the parser reads: elements,
-// attributes, text, comments, void tags and raw-text elements.
-const VOID = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
-const RAW = new Set(["script", "style", "template"]);
-const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" };
-const decode = text => text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (all, ref) => {
-  if (ref[0] === "#") return String.fromCodePoint(ref[1].toLowerCase() === "x" ? parseInt(ref.slice(2), 16) : Number(ref.slice(1)));
-  return ENTITIES[ref.toLowerCase()] ?? all;
-});
-function element(name, attributes = {}) {
-  return {
-    nodeType: 1, localName: name, attributes, childNodes: [],
-    getAttribute(key) { return Object.hasOwn(this.attributes, key) ? this.attributes[key] : null; },
-    hasAttribute(key) { return Object.hasOwn(this.attributes, key); },
-    get textContent() {
-      return this.childNodes.map(node => node.nodeType === 3 ? node.data : node.textContent).join("");
-    },
-  };
-}
-function parseDocument(html) {
-  const head = element("head");
-  const body = element("body");
-  const documentElement = element("html");
-  const root = element("#document");
-  documentElement.childNodes.push(head, body);
-  root.childNodes.push(documentElement);
-  root.documentElement = documentElement;
-  root.body = body;
-  const stack = [body];
-  const pushText = data => stack.at(-1).childNodes.push({ nodeType: 3, data: decode(data) });
-  const start = /<([a-z][a-z0-9:-]*)((?:\s+[^\s=/>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?)*)\s*\/?>/iy;
-  const attrs = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
-  let i = 0;
-  while (i < html.length) {
-    const lt = html.indexOf("<", i);
-    if (lt < 0) { pushText(html.slice(i)); break; }
-    if (lt > i) pushText(html.slice(i, lt));
-    if (html.startsWith("<!--", lt)) {
-      const end = html.indexOf("-->", lt + 4);
-      i = end < 0 ? html.length : end + 3;
-      continue;
-    }
-    if (html[lt + 1] === "/") {
-      const end = html.indexOf(">", lt);
-      const name = html.slice(lt + 2, end).trim().toLowerCase();
-      if (name === "head") stack.splice(0, stack.length, body);
-      else for (let k = stack.length - 1; k > 0; k--) {
-        if (stack[k].localName === name) { stack.length = k; break; }
-      }
-      i = end + 1;
-      continue;
-    }
-    start.lastIndex = lt;
-    const match = start.exec(html);
-    if (!match) { pushText("<"); i = lt + 1; continue; }
-    if (match[1].toLowerCase() === "head") {
-      stack.splice(0, stack.length, head);
-      i = start.lastIndex;
-      continue;
-    }
-    const node = element(match[1].toLowerCase());
-    let attr;
-    attrs.lastIndex = 0;
-    while ((attr = attrs.exec(match[2]))) {
-      const value = attr[2] ?? attr[3] ?? attr[4] ?? "";
-      if (!(attr[1] in node.attributes)) node.attributes[attr[1]] = decode(value);
-    }
-    stack.at(-1).childNodes.push(node);
-    i = start.lastIndex;
-    if (!VOID.has(node.localName) && !/\/>$/.test(match[0])) stack.push(node);
-    if (RAW.has(node.localName)) {
-      const close = html.toLowerCase().indexOf(`</${node.localName}>`, i);
-      if (close >= 0) {
-        node.childNodes.push({ nodeType: 3, data: html.slice(i, close) });
-        i = close + node.localName.length + 3;
-        stack.pop();
-      }
-    }
-  }
-  return root;
-}
-const parse = html => H.parse(html, parseDocument(html));
-// Version-bound parse: omp 19.1.x checks a form's `pattern` on submit,
-// 19.2.0+ treats it as a display hint, and an unknown version fails closed.
-const parseAt = (html, version) => H.parse(html, parseDocument(html), version);
+const parse = html => H.parse(html);
 const fields = html => parse(html).form.fields;
 const field = (html, name, index = 0) => fields(html).filter(f => f.name === name)[index];
+const plain = value => JSON.parse(JSON.stringify(value));
+const PASSWORD = { text: "This form asks for a password; enter it in a terminal instead — omp would echo it in its output." };
+const MARKUP = { text: "This form has too much markup to show." };
+const DISPLAY = { text: "This form has too much display text to show." };
 
 // ── Parse: omp's own examples and control semantics ─────────────────────────
 const legacy = `<form>
@@ -231,8 +154,9 @@ check("content outside the first form is ignored, including an outside control",
 
 check("empty, unnamed and malformed forms are refused instead of yielding an unanswerable card", () => {
   for (const html of ["", "   ", "<form></form>", "<form><label><input></label></form>", "<form><p>no controls</p></form>", "<form><script>alert(1)</script></form>"])
-    assert.equal(typeof parse(html).error, "string", html);
-  assert.equal(typeof H.parse(null).error, "string");
+    assert.equal(typeof parse(html).error?.text, "string", html);
+  assert.deepEqual(H.parse(null).error, { text: "The form is empty." });
+  assert.deepEqual(parse("<form><p>none</p></form>").error, { text: "The form has no named controls." });
 });
 
 check("script, style and inline handler content never becomes text or fields", () => {
@@ -269,56 +193,51 @@ check("blank Other text and unchecked boxes contribute nothing; numbers stay tex
   assert.deepEqual(JSON.parse(JSON.stringify(H.buildData(form, draft))), { n: "not a number" });
 });
 
-check("fieldError enforces required, numeric bounds, lengths, email and URL; pattern stays a hint", () => {
-  const { form } = parseAt(`<form>
+check("fieldError enforces required, numeric bounds, lengths, email and URL as {text, vars}", () => {
+  const { form } = parse(`<form>
     <input name="req" required>
     <input name="num" type="number" min="2" max="4">
     <input name="len" minlength="3" maxlength="5">
     <input name="mail" type="email">
     <input name="url" type="url">
-    <input name="pat" pattern="[a-z]+">
     <label><input type="checkbox" name="pick" value="a" required>Pick</label>
-  </form>`, "19.2.0");
+  </form>`);
   const by = name => form.fields.find(f => f.name === name);
-  assert.equal(H.fieldError(by("req"), undefined), "Required");
-  assert.equal(H.fieldError(by("num"), 5), "Must be at most 4");
-  assert.equal(H.fieldError(by("num"), "x"), "Enter a number");
-  assert.equal(H.fieldError(by("len"), "ab"), "Needs at least 3 characters");
-  assert.equal(H.fieldError(by("mail"), "x"), "Enter an email address");
-  assert.equal(H.fieldError(by("url"), "x"), "Enter a full URL");
-  assert.equal(H.fieldError(by("pat"), "AB"), undefined);
-  assert.equal(by("pat").pattern, "[a-z]+");
-  assert.equal(H.fieldError(by("pick"), []), "Required");
+  assert.deepEqual(H.fieldError(by("req"), undefined), { text: "Required" });
+  assert.deepEqual(H.fieldError(by("num"), 5), { text: "Must be at most {max}", vars: { max: 4 } });
+  assert.deepEqual(H.fieldError(by("num"), 1), { text: "Must be at least {min}", vars: { min: 2 } });
+  assert.deepEqual(H.fieldError(by("num"), "x"), { text: "Enter a number" });
+  assert.deepEqual(H.fieldError(by("len"), "ab"), { text: "Needs at least {n} characters", vars: { n: 3 } });
+  assert.deepEqual(H.fieldError(by("len"), "abcdef"), { text: "At most {n} characters", vars: { n: 5 } });
+  assert.deepEqual(H.fieldError(by("mail"), "x"), { text: "Enter an email address" });
+  assert.deepEqual(H.fieldError(by("url"), "x"), { text: "Enter a full URL" });
+  assert.deepEqual(H.fieldError(by("pick"), []), { text: "Required" });
+  assert.equal(H.fieldError(by("len"), "abcd"), undefined);
 });
 
-check("a form carrying a pattern is refused below omp 19.2.0 and kept from 19.2.0 on", () => {
-  const html = `<form><input name="slug" pattern="[a-z]+" value="abc"></form>`;
-  for (const version of [undefined, null, "", "19.1.0", "19.1.9", "omp/19.0.4", "not-a-version"]) {
-    const parsed = parseAt(html, version);
-    assert.equal(parsed.form, undefined, String(version));
-    assert.match(parsed.error, /pattern/i);
-    assert.match(parsed.error, /19\.2/);
-  }
-  for (const version of ["19.2.0", "19.2.1", "omp/19.2.1", "19.10.0", "20.0.0"]) {
-    const parsed = parseAt(html, version);
-    assert.equal(parsed.error, undefined, version);
-    assert.equal(parsed.form.fields[0].pattern, "[a-z]+");
-  }
-  // A form without a pattern is unaffected on every version.
-  assert.equal(parseAt(`<form><input name="a" value="b"></form>`, "19.1.0").error, undefined);
+check("errorText fills placeholders in English and leaves unknown ones", () => {
+  assert.equal(H.errorText({ text: "Must be at least {min}", vars: { min: 2 } }), "Must be at least 2");
+  assert.equal(H.errorText({ text: "Needs {n} of {m}", vars: { n: 1 } }), "Needs 1 of {m}");
+  assert.equal(H.errorText({ text: "Required" }), "Required");
+  assert.equal(H.errorText("Unsupported form"), "Unsupported form");
+  assert.equal(H.errorText(undefined), "");
 });
 
-check("versionAtLeast compares omp version strings and treats unknown as too old", () => {
-  assert.equal(H.versionAtLeast("19.2.0", [19, 2, 0]), true);
-  assert.equal(H.versionAtLeast("omp/19.2.1", [19, 2, 0]), true);
-  assert.equal(H.versionAtLeast("v19.2.0-dev.3", [19, 2, 0]), true);
-  assert.equal(H.versionAtLeast("19.10.0", [19, 2, 0]), true);
-  assert.equal(H.versionAtLeast("19.1.9", [19, 2, 0]), false);
-  assert.equal(H.versionAtLeast("18.20.0", [19, 2, 0]), false);
-  for (const unknown of [undefined, null, "", "19", "latest"]) assert.equal(H.versionAtLeast(unknown, [19, 2, 0]), false, String(unknown));
+check("a pattern is a hint only: the form is shown and the pattern never runs", () => {
+  // A model-written regex never runs in the webview (ReDoS), on any omp
+  // version; a catastrophic pattern must not be compiled or matched.
+  const html = `<form><input name="slug" pattern="(a+)+$" value="${"a".repeat(40)}!"></form>`;
+  const parsed = parse(html);
+  assert.equal(parsed.error, undefined);
+  const f = parsed.form.fields[0];
+  assert.equal(f.pattern, "(a+)+$");
+  assert.equal(H.fieldError(f, f.value), undefined);
+  assert.deepEqual(H.draftErrors(parsed.form, H.emptyDraft(parsed.form)), {});
+  assert.equal(H.answerError(parsed.form, { slug: "NOT-A-MATCH" }), null);
+  assert.equal("versionAtLeast" in H, false);
 });
 
-check("answerError applies omp 19.1's submit-time rules to each field's own parsed value", () => {
+check("answerError applies omp 19.1's submit-time rules to each field's parsed value", () => {
   const { form } = parse(`<form>
     <input name="req" required>
     <input name="num" type="number" min="2" max="4">
@@ -327,52 +246,44 @@ check("answerError applies omp 19.1's submit-time rules to each field's own pars
     <input name="url" type="url">
     <label><input type="radio" name="r" value="a" required>A</label><label><input type="radio" name="r" value="b">B</label>
   </form>`);
+  const rule = name => ({ text: "Fix the field “{field}” before sending.", vars: { field: name } });
   assert.equal(H.answerError(form, { req: "ok", num: 2, len: "abc", mail: "a@b", url: "https://x.test", r: "a" }), null);
-  assert.match(H.answerError(form, { num: 2, len: "abc", mail: "a@b", url: "https://x.test", r: "a" }), /"req": Required/);
-  assert.match(H.answerError(form, { req: "ok", num: 5 }), /"num": Must be at most 4/);
-  assert.match(H.answerError(form, { req: "ok", len: "ab" }), /"len": Needs at least 3 characters/);
-  assert.match(H.answerError(form, { req: "ok", mail: "nope" }), /"mail": Enter an email address/);
-  assert.match(H.answerError(form, { req: "ok", url: "nope" }), /"url": Enter a full URL/);
-  assert.match(H.answerError(form, { req: "ok" }), /"r": Required/);
-  // Shape-only validation is unchanged; the constraint layer is separate.
+  assert.deepEqual(H.answerError(form, { num: 2, len: "abc", mail: "a@b", url: "https://x.test", r: "a" }), rule("req"));
+  assert.deepEqual(H.answerError(form, { req: "ok", num: 5 }), rule("num"));
+  assert.deepEqual(H.answerError(form, { req: "ok", len: "ab" }), rule("len"));
+  assert.deepEqual(H.answerError(form, { req: "ok", mail: "nope" }), rule("mail"));
+  assert.deepEqual(H.answerError(form, { req: "ok", url: "nope" }), rule("url"));
+  assert.deepEqual(H.answerError(form, { req: "ok" }), rule("r"));
+  // Shape errors name the field and translate as one source string each.
+  assert.deepEqual(H.answerError(form, { unknown: 1 }), { text: "The form has no field named “{field}”.", vars: { field: "unknown" } });
+  assert.deepEqual(H.answerError(form, { r: ["a"] }), { text: "“{field}” takes one answer, not a list.", vars: { field: "r" } });
+  assert.deepEqual(H.answerError(form, { req: 5 }), { text: "“{field}” needs text.", vars: { field: "req" } });
+  assert.deepEqual(H.answerError(form, null), { text: "The answer is not a set of form fields." });
+  // Shape-only validation is separate from the constraint layer.
   assert.equal(H.validateData(form, { num: 2 }), true);
-  // 19.2.0 no longer applies fieldError on submit: the same answer passes,
-  // while shape errors are still refused.
-  for (const version of ["19.2.0", "omp/19.2.1", "20.0.0"]) {
-    assert.equal(H.answerError(form, { req: "ok", num: 5 }, version), null, version);
-    assert.match(H.answerError(form, { unknown: 1 }, version), /unknown field/, version);
-  }
+  assert.deepEqual(H.dataError(form, { r: "zzz" }), null, "a radio group with Other takes free text");
 });
 
-check("a required radio sharing its name with a checkbox group is accepted from omp 19.2.0 on", () => {
+check("a required radio sharing its name with a checkbox group is refused on every omp version", () => {
   const { form } = parse(`<form>
     <label><input type="radio" name="pick" value="one" required>One</label>
     <label><input type="checkbox" name="pick" value="two">Two</label>
     <label><input type="checkbox" name="pick" value="three">Three</label>
   </form>`);
-  const checkboxAnswer = { pick: ["two"] };
-  // 19.1.x checks the required radio against its own (empty) parsed value
-  // and fails the ask tool; 19.2.0+ accepts the checkbox answer.
-  assert.match(H.answerError(form, checkboxAnswer), /"pick": Required/);
-  assert.match(H.answerError(form, checkboxAnswer, "19.1.9"), /"pick": Required/);
-  for (const version of ["19.2.0", "19.2.1", "omp/19.2.1", "19.10.0"]) {
-    assert.equal(H.answerError(form, checkboxAnswer, version), null, version);
-  }
-  // Shape checks still apply on every version.
-  assert.notEqual(H.answerError(form, { pick: 5 }, "19.2.0"), null);
+  // omp 19.1 checks the required radio against its own (empty) parsed value
+  // and fails the ask tool; the client applies that rule everywhere.
+  assert.deepEqual(H.answerError(form, { pick: ["two"] }), { text: "Fix the field “{field}” before sending.", vars: { field: "pick" } });
+  assert.equal(H.answerError.length, 2, "answerError takes no omp version");
 });
 
 check("a required field sharing its name with another is checked against its own answer", () => {
-  // A checkbox group answered while a required same-name radio group is not:
-  // buildData keeps the last defined value for the name, but each field is
-  // checked against its own draft entry.
   const { form } = parse(`<form>
     <label><input type="radio" name="pick" value="one" required>One</label>
     <label><input type="checkbox" name="pick" value="two">Two</label>
   </form>`);
   const draft = H.emptyDraft(form);
-  assert.deepEqual(H.draftErrors(form, draft), { 0: "Required" }, "an unanswered required radio must block Submit");
-  assert.equal(H.draftErrors(form, H.pick(draft, form, 1, 0))[0], "Required", "the checkbox answer must not satisfy the radio");
+  assert.deepEqual(H.draftErrors(form, draft), { 0: { text: "Required" } }, "an unanswered required radio must block Submit");
+  assert.deepEqual(H.draftErrors(form, H.pick(draft, form, 1, 0))[0], { text: "Required" }, "the checkbox answer must not satisfy the radio");
   assert.deepEqual(H.draftErrors(form, H.pick(draft, form, 0, 0)), {});
 });
 
@@ -381,12 +292,56 @@ check("an Other entry that repeats a picked option is a field error", () => {
   let draft = H.emptyDraft(form);
   draft = H.pick(draft, form, 0, 0);
   draft = H.setOther(draft, form, 0, "ci");
-  assert.equal(H.draftErrors(form, draft)[0], "That answer is already picked");
+  assert.deepEqual(H.draftErrors(form, draft)[0], { text: "That answer is already picked" });
   // A different typed value is still a valid Other answer.
   assert.deepEqual(H.draftErrors(form, H.setOther(draft, form, 0, "terraform")), {});
   const data = H.buildData(form, H.setOther(draft, form, 0, "terraform"));
   assert.equal(H.answerError(form, data), null);
-  assert.match(H.answerError(form, H.buildData(form, draft)), /unexpected value/);
+  assert.deepEqual(H.answerError(form, H.buildData(form, draft)), { text: "“{field}” carries an unexpected answer.", vars: { field: "i" } });
+});
+
+// Review cases (PR #93): drafts Submit allowed while answerError (the
+// bridge's answerForm gate) refused them.
+check("an Other text equal to a disabled option's value blocks Submit", () => {
+  for (const html of [
+    `<form><p>Plan?</p><label><input type="radio" name="g" value="a">A</label><label><input type="radio" name="g" value="b" disabled>B</label></form>`,
+    `<form><label><input type="checkbox" name="g" value="a">A</label><label><input type="checkbox" name="g" value="b" disabled>B</label></form>`,
+  ]) {
+    const { form } = parse(html);
+    const draft = H.setOther(H.emptyDraft(form), form, 0, "b");
+    assert.deepEqual(H.draftErrors(form, draft), { 0: { text: "That answer is a disabled option" } }, html);
+    assert.deepEqual(H.answerError(form, H.buildData(form, draft)), { text: "“{field}” carries a disabled option.", vars: { field: "g" } });
+    // Other text that matches no option stays a valid answer.
+    const free = H.setOther(H.emptyDraft(form), form, 0, "c");
+    assert.deepEqual(H.draftErrors(form, free), {}, html);
+    assert.equal(H.answerError(form, H.buildData(form, free)), null);
+  }
+});
+
+check("a field whose answer a same-name field replaces blocks Submit", () => {
+  const { form } = parse(`<form><label>Note <input name="n" required></label><label><input type="checkbox" name="n" value="a">A</label><label><input type="checkbox" name="n" value="b">B</label></form>`);
+  const draft = H.setText(H.emptyDraft(form), form, 0, "hello");
+  // buildData writes the checkbox group last: omp reads {n: []}, so the text
+  // field's "hello" never arrives and omp 19.1 fails its `required`.
+  assert.deepEqual(plain(H.buildData(form, draft)), { n: [] });
+  assert.notEqual(H.answerError(form, H.buildData(form, draft)), null);
+  assert.deepEqual(H.draftErrors(form, draft), { 0: { text: "Another field named “{name}” replaces this answer", vars: { name: "n" } } });
+  // Same-name fields that agree raise nothing.
+  const agree = parse(`<form><label><input type="radio" name="s" value="a">A</label><label><input type="radio" name="s" value="b">B</label><label>Echo <input name="s"></label></form>`).form;
+  let both = H.pick(H.emptyDraft(agree), agree, 0, 0);
+  both = H.setText(both, agree, 1, "a");
+  assert.deepEqual(H.draftErrors(agree, both), {});
+  assert.equal(H.answerError(agree, H.buildData(agree, both)), null);
+});
+
+check("draftErrors never leaves Submit enabled for an answer answerError refuses", () => {
+  // A form only a cancel can answer: two required radio groups of the same
+  // name but different types can never both carry the entry.
+  const { form } = parse(`<form><label><input type="radio" name="x" value="a" required>A</label><label><input type="checkbox" name="x" value="b" required>B</label></form>`);
+  for (const draft of [H.emptyDraft(form), H.pick(H.emptyDraft(form), form, 0, 0), H.pick(H.emptyDraft(form), form, 1, 0)]) {
+    if (H.answerError(form, H.buildData(form, draft)) !== null)
+      assert.notDeepEqual(H.draftErrors(form, draft), {}, JSON.stringify(draft));
+  }
 });
 
 check("an explicitly empty option value keeps its empty label", () => {
@@ -405,19 +360,19 @@ check("an explicitly empty option value keeps its empty label", () => {
 check("password forms are refused with a terminal-only note", () => {
   const parsed = parse(`<form><input name="user" value="Ada"><input type="password" name="pw" value="prefilled-secret"></form>`);
   assert.equal(parsed.form, undefined);
-  assert.equal(parsed.error, "This form asks for a password; enter it in a terminal instead — omp would echo it in its output.");
+  assert.deepEqual(parsed.error, PASSWORD);
   assert.doesNotMatch(JSON.stringify(parsed), /prefilled-secret/);
 });
 
 check("a form redacted by the backend is refused with the password note", () => {
-  const refusal = "This form asks for a password; enter it in a terminal instead — omp would echo it in its output.";
+  const refusal = PASSWORD;
   for (const marker of [
     '<form data-omp-desktop-redacted="password"></form>',
     "<form data-omp-desktop-redacted='password'><input name=ok value=visible></form>",
   ]) {
     const parsed = parse(marker);
     assert.equal(parsed.form, undefined, marker);
-    assert.equal(parsed.error, refusal, marker);
+    assert.deepEqual(parsed.error, refusal, marker);
   }
   // Only the exact marker value is refused; other data attributes parse.
   assert.equal(parse(`<form data-omp-desktop-redacted="no"><input name=ok value=fine></form>`).error, undefined);
@@ -427,14 +382,14 @@ check("autocomplete password markers are refused on every input type", () => {
   for (const autocomplete of ["current-password", "new-password", "off current-password", "section-login NEW-PASSWORD"]) {
     const parsed = parse(`<form><input type=text name=pw autocomplete="${autocomplete}" value=prefilled-secret></form>`);
     assert.equal(parsed.form, undefined, autocomplete);
-    assert.equal(parsed.error, "This form asks for a password; enter it in a terminal instead — omp would echo it in its output.");
+    assert.deepEqual(parsed.error, PASSWORD);
     assert.doesNotMatch(JSON.stringify(parsed), /prefilled-secret/);
   }
   assert.equal(parse(`<form><input name=user autocomplete=username value=Ada></form>`).error, undefined);
 });
 
 check("password markers match as decoded substrings, without token splitting", () => {
-  const refusal = "This form asks for a password; enter it in a terminal instead — omp would echo it in its output.";
+  const refusal = PASSWORD;
   for (const attribute of [
     "type=text autocomplete=\"foo\u00a0current-password\"",
     "autocomplete=\"section-login\u00a0new-password\"",
@@ -445,7 +400,7 @@ check("password markers match as decoded substrings, without token splitting", (
   ]) {
     const parsed = parse(`<form><input ${attribute} name=pw value=prefilled-secret></form>`);
     assert.equal(parsed.form, undefined, attribute);
-    assert.equal(parsed.error, refusal);
+    assert.deepEqual(parsed.error, refusal);
     assert.doesNotMatch(JSON.stringify(parsed), /prefilled-secret/);
   }
   assert.equal(parse(`<form><input name=user type=text autocomplete=username value=Ada></form>`).error, undefined);
@@ -465,18 +420,29 @@ check("duplicate enabled choice values are disabled after their first occurrence
   assert.deepEqual(form.fields[0].options.map(o => o.disabled), [false, true, true]);
 });
 
-check("oversized HTML, excessive nodes, deep nesting and over 1000 options are unsupported", () => {
-  assert.match(H.parse("x".repeat(256 * 1024 + 1)).error, /too large/i);
-  assert.match(parse(`<form><input name="x">${"<div>".repeat(70)}${"</div>".repeat(70)}</form>`).error, /could not be read/i);
-  assert.match(parse(`<form><input name="x">${"<span></span>".repeat(10001)}</form>`).error, /could not be read/i);
+check("oversized HTML, excessive nodes, deep nesting and over 1000 options are refused with their reason", () => {
+  assert.deepEqual(H.parse("x".repeat(256 * 1024 + 1)).error, { text: "The form HTML is too large to show." });
+  assert.deepEqual(parse(`<form><input name="x">${"<div>".repeat(70)}${"</div>".repeat(70)}</form>`).error, MARKUP);
+  assert.equal(parse(`<form><input name="x">${"<div>".repeat(60)}${"</div>".repeat(60)}</form>`).error, undefined);
+  assert.deepEqual(parse(`<form><input name="x">${"<span></span>".repeat(10001)}</form>`).error, MARKUP);
   const options = Array.from({ length: 1001 }, (_, i) => `<option value="${i}">${i}</option>`).join("");
-  assert.match(parse(`<form><select name="x">${options}</select></form>`).error, /could not be read/i);
+  assert.deepEqual(parse(`<form><select name="x">${options}</select></form>`).error, { text: "This form has too many options to show." });
+  const radios = Array.from({ length: 1001 }, (_, i) => `<input type="radio" name="r" value="${i}">`).join("");
+  assert.deepEqual(parse(`<form>${radios}</form>`).error, { text: "This form has too many options to show." });
+  assert.deepEqual(parse(`<form>${"<input name=x>".repeat(501)}</form>`).error, { text: "This form has too many fields to show." });
+  assert.deepEqual(parse(`<form><input name=x>${"<p>a</p>".repeat(2001)}</form>`).error, { text: "This form has too much content to show." });
+  assert.deepEqual(parse(`<form><input name=x><table>${"<tr><td>a</td></tr>".repeat(2001)}</table></form>`).error, { text: "This form has too many table cells to show." });
+});
+
+check("an exception outside the builder's limits maps to the generic refusal", () => {
+  // omp itself throws on this markup (CLOSE_ON_OPEN has no own `constructor`).
+  assert.deepEqual(parse(`<form><div><constructor>x</constructor></div><input name="a"></form>`).error, { text: "The form could not be read." });
 });
 
 check("node and depth limits cover the whole document, not only the first form", () => {
-  assert.match(parse(`<form><input name="x"></form>${"<span></span>".repeat(10001)}`).error, /could not be read/i);
-  assert.match(parse(`<form><input name="x"></form>${"<div>".repeat(70)}${"</div>".repeat(70)}`).error, /could not be read/i);
-  assert.match(parse(`<head>${"<meta>".repeat(10001)}</head><form><input name="x"></form>`).error, /could not be read/i);
+  assert.deepEqual(parse(`<form><input name="x"></form>${"<span></span>".repeat(10001)}`).error, MARKUP);
+  assert.deepEqual(parse(`<form><input name="x"></form>${"<div>".repeat(70)}${"</div>".repeat(70)}`).error, MARKUP);
+  assert.deepEqual(parse(`<head>${"<meta>".repeat(10001)}</head><form><input name="x"></form>`).error, MARKUP);
 });
 
 check("expanded display text is capped at 64 KiB, including the 2 KiB table fixture", () => {
@@ -486,16 +452,16 @@ check("expanded display text is capped at 64 KiB, including the 2 KiB table fixt
   const html = `<form><table><tr><th>${header}</th></tr>${'<tr><td><input name=r></td></tr>'.repeat(controls)}</table></form>`;
   assert.ok(html.length < 3 * 1024, `fixture source was ${html.length}`);
   assert.equal(header.length * controls, 55020);
-  assert.match(parse(html.replace("</form>", `${"<p>context</p>".repeat(1600)}</form>`)).error, /could not be read/i);
+  assert.deepEqual(parse(html.replace("</form>", `${"<p>context</p>".repeat(1600)}</form>`)).error, DISPLAY);
   const hugeOptions = Array.from({ length: 700 }, (_, i) => `<option value="${i}">${"x".repeat(100)}</option>`).join("");
-  assert.match(parse(`<form><select name="x">${hugeOptions}</select></form>`).error, /could not be read/i);
+  assert.deepEqual(parse(`<form><select name="x">${hugeOptions}</select></form>`).error, DISPLAY);
 });
 
 check("fallback field-name labels count toward the display budget", () => {
   const name = "fallback_".repeat(30);
   const html = `<form>${`<input name="${name}">`.repeat(300)}</form>`;
   assert.ok(html.length < 256 * 1024);
-  assert.match(parse(html).error, /could not be read/i);
+  assert.deepEqual(parse(html).error, DISPLAY);
 });
 
 check("unlabeled choice-group name fallbacks count toward the display budget", () => {
@@ -503,7 +469,7 @@ check("unlabeled choice-group name fallbacks count toward the display budget", (
   const groups = Array.from({ length: 300 }, (_, i) => `<input type="radio" name="${name}${i}" value="a"><input type="radio" name="${name}${i}" value="b">`).join("");
   const html = `<form>${groups}</form>`;
   assert.ok(html.length < 256 * 1024);
-  assert.match(parse(html).error, /could not be read/i);
+  assert.deepEqual(parse(html).error, DISPLAY);
 });
 
 check("multiline options and table control labels follow omp's parse.ts oracle", () => {
@@ -753,14 +719,17 @@ check("the client's submit rules match the v19.1.0 oracle on every negative case
 
 // Random forms and random answers: the draft fills every required field, and
 // the reply must pass the client's own checks plus the v19.1.0 oracle and the
-// shape-only 19.2 oracle. A deterministic LCG keeps failures reproducible.
+// shape-only 19.2 oracle. Some forms share a name between a text field and a
+// checkbox group, and some Other texts repeat a disabled option's value: a
+// draft draftErrors lets through must still be accepted. A deterministic LCG
+// keeps failures reproducible.
 function lcg(seed) {
   let s = seed >>> 0;
   return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2 ** 32);
 }
 function randomForm(rnd) {
   const parts = ["<form>", `<input type="hidden" name="h" value="fixed">`];
-  const names = ["one", "many", "sel", "multi", "txt", "num", "area"];
+  const names = ["one", "many", "sel", "multi", "txt", "num", "area", "shared"];
   for (const name of names) {
     if (rnd() < 0.25) continue;
     const kind = name;
@@ -779,6 +748,7 @@ function randomForm(rnd) {
       parts.push("</select></label>");
     } else if (kind === "txt") parts.push(`<label>Text <input name="${name}" value="${rnd() < 0.5 ? "pre" : ""}"${rnd() < 0.3 ? " required" : ""}></label>`);
     else if (kind === "num") parts.push(`<label>Number <input type="number" name="${name}"${rnd() < 0.5 ? ' value="4"' : ""} min="1" max="9"></label>`);
+    else if (kind === "shared") parts.push(`<label>Note <input name="${rnd() < 0.5 ? "many" : "one"}"${rnd() < 0.3 ? " required" : ""}></label>`);
     else parts.push(`<label>Area <textarea name="${name}" rows="${1 + Math.floor(rnd() * 5)}"></textarea></label>`);
   }
   parts.push("</form>");
@@ -787,7 +757,8 @@ function randomForm(rnd) {
 
 check("random answers from the draft replay against omp's validator", () => {
   const rnd = lcg(0x5eed);
-  for (let round = 0; round < 120; round++) {
+  let answerable = 0;
+  for (let round = 0; round < 160; round++) {
     const html = randomForm(rnd);
     const parsed = parse(html);
     assert.equal(parsed.error, undefined, html);
@@ -798,7 +769,8 @@ check("random answers from the draft replay against omp's validator", () => {
         for (let option = 0; option < f.options.length; option++) {
           if (!f.options[option].disabled && rnd() < 0.35) draft = H.pick(draft, form, index, option);
         }
-        if (f.other && rnd() < 0.4) draft = H.setOther(draft, form, index, rnd() < 0.2 ? "  " : ` own-${round} `);
+        const disabled = f.options.find(o => o.disabled)?.value;
+        if (f.other && rnd() < 0.4) draft = H.setOther(draft, form, index, rnd() < 0.2 ? "  " : disabled && rnd() < 0.4 ? disabled : ` own-${round} `);
       } else if (f.type === "number" || f.type === "range") {
         if (rnd() < 0.6) draft = H.setText(draft, form, index, String(1 + Math.floor(rnd() * 9)));
       } else if (rnd() < 0.6) draft = H.setText(draft, form, index, ` text ${round} `);
@@ -815,8 +787,8 @@ check("random answers from the draft replay against omp's validator", () => {
         const f = form.fields[index];
         if (f.kind === "choice") {
           const option = f.options.findIndex(o => !o.disabled);
-          assert.ok(option >= 0, "a required choice needs an enabled option");
-          draft = H.pick(draft, form, index, option);
+          if (f.other) draft = H.setOther(draft, form, index, "");
+          if (option >= 0 && !draft[index].picks.includes(option)) draft = H.pick(draft, form, index, option);
         } else if (f.type === "number" || f.type === "range") {
           draft = H.setText(draft, form, index, String(f.min ?? 1));
         } else {
@@ -824,13 +796,181 @@ check("random answers from the draft replay against omp's validator", () => {
         }
       }
     }
-    assert.deepEqual(H.draftErrors(form, draft), {}, html);
-    const data = JSON.parse(JSON.stringify(H.buildData(form, draft)));
-    assert.equal(H.validateData(form, data), true, H.dataError(form, data) ?? JSON.stringify(data));
-    assert.equal(H.answerError(form, data), null, H.answerError(form, data) ?? JSON.stringify(data));
-    assert.deepEqual(JSON.parse(JSON.stringify(ompParseResponse(form, data))), data, html);
+    // Whatever draftErrors still flags only a cancel can answer; anything it
+    // lets through must be accepted.
+    if (Object.keys(H.draftErrors(form, draft)).length) continue;
+    answerable++;
+    const data = plain(H.buildData(form, draft));
+    assert.equal(H.validateData(form, data), true, JSON.stringify(H.dataError(form, data) ?? data));
+    assert.equal(H.answerError(form, data), null, JSON.stringify(H.answerError(form, data) ?? data));
+    assert.doesNotThrow(() => ompParseResponse(form, data), html);
     assert.doesNotThrow(() => ompParseResponse(form, data, { checkFields: true }), html);
   }
+  assert.ok(answerable >= 80, `only ${answerable} of 160 random forms were answerable`);
+});
+
+// ── Parity with omp's own parser (v19.2.1 fixture corpus) ──────────────────
+// tests/fixtures/html-form-omp-corpus.json holds omp's parseHtmlForm output
+// (field names, labels, option values, flags, hidden pairs) for HTML where a
+// browser DOMParser disagrees with omp: unknown or semicolon-less entities,
+// foster-parented table content, forms inside tables and templates, comment
+// text in options, styled label whitespace and more. Generated once from omp's
+// sources with a throwaway bun script; its header names the omp tag.
+const corpus = JSON.parse(readFileSync(join(root, "tests/fixtures/html-form-omp-corpus.json"), "utf8"));
+const corpusModel = form => form.fields.map(f => f.kind === "choice"
+  ? {
+    kind: "choice", name: f.name, label: f.label, multi: f.multi, select: f.select, other: f.other, required: f.required,
+    options: f.options.map(o => ({ value: o.value, label: o.label, checked: o.checked, disabled: o.disabled })),
+  }
+  : { kind: "text", name: f.name, label: f.label, type: f.type, value: f.value, required: f.required, ...(f.pattern !== undefined ? { pattern: f.pattern } : {}) });
+
+check("the desktop parses the omp corpus exactly as omp v19.2.1 does", () => {
+  assert.equal(corpus.omp, "v19.2.1");
+  assert.ok(corpus.cases.length >= 40);
+  for (const entry of corpus.cases) {
+    const parsed = parse(entry.html);
+    if (entry.ompError) {
+      assert.ok(parsed.error, `${entry.label}: omp throws, the desktop must refuse`);
+      continue;
+    }
+    if (!entry.fields.some(f => f.name) && entry.hidden.length === 0) {
+      assert.deepEqual(parsed.error, { text: "The form has no named controls." }, entry.label);
+      continue;
+    }
+    assert.equal(parsed.error, undefined, `${entry.label}: ${JSON.stringify(parsed.error)}`);
+    assert.deepEqual(plain({ fields: corpusModel(parsed.form), hidden: parsed.form.hidden }),
+      { fields: entry.fields, hidden: entry.hidden }, entry.label);
+  }
+});
+
+check("every desktop answer to a corpus form is accepted by omp's reading of omp's own model", () => {
+  for (const entry of corpus.cases) {
+    const parsed = parse(entry.html);
+    if (parsed.error) continue;
+    const ompForm = { fields: entry.fields, hidden: entry.hidden };
+    const { form } = parsed;
+    const drafts = [H.emptyDraft(form)];
+    form.fields.forEach((f, index) => {
+      if (f.kind === "choice") f.options.forEach((o, oi) => { if (!o.disabled) drafts.push(H.pick(H.emptyDraft(form), form, index, oi)); });
+    });
+    for (const draft of drafts) {
+      if (Object.keys(H.draftErrors(form, draft)).length) continue;
+      const data = plain(H.buildData(form, draft));
+      assert.doesNotThrow(() => ompParseResponse(ompForm, data), `${entry.label}: ${JSON.stringify(data)}`);
+    }
+  }
+});
+
+check("entity decoding is omp's: its table, a required semicolon, numeric references", () => {
+  assert.equal(M.decodeEntities("&lt; &ge; &rarr; &check; Caf&eacute Caf&eacute;"), "< &ge; &rarr; &check; Caf&eacute Café");
+  assert.equal(M.decodeEntities("&AMP; &Eacute; &#x263A; &#9731; &#0; &#xD800;"), "& É ☺ ☃ \uFFFD \uFFFD");
+  assert.equal(M.decodeEntities("R&D & co"), "R&D & co");
+  const { form } = parse(`<form><select name="s"><option>&lt; 10</option><option>&ge; 10</option></select><input type="checkbox" name="c" value="y&check;" checked></form>`);
+  assert.deepEqual(form.fields[0].options.map(o => o.value), ["< 10", "&ge; 10"]);
+  assert.deepEqual(plain(H.buildData(form, H.pick(H.emptyDraft(form), form, 0, 1))), { s: "&ge; 10", c: "y&check;" });
+});
+
+check("table content outside a cell is never a field, as in omp", () => {
+  // A browser moves these radios out of the table and would answer {a: "1"};
+  // omp sees them inside the table but in no cell, so it has no field `a`.
+  const html = `<form><table><tr><td>Pick</td></tr><input type="radio" name="a" value="1"><input type="radio" name="a" value="2"></table></form>`;
+  assert.deepEqual(parse(html).error, { text: "The form has no named controls." });
+  const inTable = parse(`<table><form><tr><td><label>Name <input name="who" value="Ada"></label></td></tr></form></table>`);
+  assert.deepEqual(plain(H.defaultData(inTable.form)), { who: "Ada" });
+});
+
+check("parseMarkup builds plain objects; a template's children stay out of the tree", () => {
+  const document = M.parseMarkup(`<template><input name="t"></template><p>x</p>`);
+  assert.equal(document.childNodes.length, 2);
+  const [template] = document.childNodes;
+  assert.deepEqual(template.childNodes, []);
+  assert.equal(template.content.childNodes[0].localName, "input");
+});
+
+check("a `<` that opens no tag cannot make the parser rescan the input without bound", () => {
+  // omp rescans to the next `>` after each such `<`: quadratic on this input.
+  const html = `<form><input name="x">${"< /".repeat(80000)}></form>`;
+  assert.ok(html.length < 256 * 1024);
+  const started = Date.now();
+  assert.deepEqual(parse(html).error, MARKUP);
+  // Bounded: a few ms; unbounded (node cap only): over a second.
+  assert.ok(Date.now() - started < 400, `took ${Date.now() - started} ms`);
+  // Ordinary stray `<` text still parses as omp does.
+  assert.deepEqual(plain(H.defaultData(parse(`<form><p>a < b, 3 <> 4</p><input name="x" value="1"></form>`).form)), { x: "1" });
+});
+
+// ── One input type rule for the desktop and the phone ──────────────────────
+// A fake <input> that sanitizes like a browser for the types the rule meets.
+function fakeInput() {
+  let type = "text", raw = "";
+  const input = {
+    min: "", max: "", step: "",
+    get type() { return type; },
+    set type(next) { type = ["text", "number", "range", "color", "date", "email"].includes(next) ? next : "text"; },
+    set value(next) { raw = String(next); },
+    get value() {
+      if (type === "range") {
+        const lo = Number(input.min || 0), hi = Number(input.max || 100);
+        const n = Number(raw);
+        return String(raw.trim() === "" || !Number.isFinite(n) ? lo + (hi - lo) / 2 : Math.min(hi, Math.max(lo, n)));
+      }
+      if (type === "color") return /^#[0-9a-f]{6}$/.test(raw) ? raw : "#000000";
+      if (type === "number") return /^-?\d+(\.\d+)?$/.test(raw) ? raw : "";
+      if (type === "date") return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : "";
+      return raw;
+    },
+  };
+  return input;
+}
+
+check("inputType keeps a native type only when the browser shows the default unchanged", () => {
+  const { form } = parse(`<form>
+    <input type="range" name="r1" value=""><input type="range" name="r2" value="5" min="0" max="10">
+    <input type="range" name="r3" value="50" min="0" max="10"><input type="color" name="c1">
+    <input type="color" name="c2" value="#00ff00"><input type="number" name="n1" value="abc">
+    <input type="number" name="n2" value="4"><input type="date" name="d" value="tomorrow">
+    <input type="email" name="e" value="a@b.test"><input type="weird" name="w"><input name="t" value="x"></form>`);
+  const type = name => H.inputType(form.fields.find(f => f.name === name), fakeInput);
+  assert.equal(type("r1"), "text", "an empty range would show its midpoint but send \"\"");
+  assert.equal(type("r2"), "range");
+  assert.equal(type("r3"), "text", "a clamped range would show 10 but send 50");
+  assert.equal(type("c1"), "text", "an empty colour would show #000000 but send \"\"");
+  assert.equal(type("c2"), "color");
+  assert.equal(type("n1"), "text");
+  assert.equal(type("n2"), "number");
+  assert.equal(type("d"), "text");
+  assert.equal(type("e"), "email");
+  assert.equal(type("w"), "text");
+  assert.equal(type("t"), "text");
+  // Without a way to try the value, every field is plain text.
+  assert.equal(H.inputType(form.fields.find(f => f.name === "r2")), "text");
+  // What both renderers show for the untouched range is what omp sends.
+  assert.deepEqual(plain(H.defaultData(form)).r1, "");
+});
+
+check("every user-facing form error source string has a zh translation", () => {
+  const zh = {};
+  new Function("window", readFileSync(join(root, "src/app/i18n-zh.js"), "utf8"))({ OMP_I18N: { add: (_, entries) => Object.assign(zh, entries) } });
+  const strings = new Set(["Unsupported form", "The form could not be read.", "Cancellation could not be delivered to omp.", "closed by omp", "cancelled", "Required"]);
+  // Every sentence-like literal in the two modules is a user-facing message:
+  // capitalised (or opening with “) and made of words.
+  for (const file of ["src/app/html-form-markup.js", "src/app/html-form-parse.js", "src/app/html-form.js"]) {
+    for (const match of readFileSync(join(root, file), "utf8").matchAll(/"((?:[A-Z]|“)[^"\\]* [^"\\]*)"/g)) strings.add(match[1]);
+  }
+  assert.ok(strings.size >= 36, `only ${strings.size} strings found: ${[...strings].join(" | ")}`);
+  for (const text of strings) assert.ok(Object.hasOwn(zh, text), `no zh entry for ${JSON.stringify(text)}`);
+});
+
+check("a long whitespace run inside styled text parses in linear time", () => {
+  // `/\s+$/` on a run that does not end the span is quadratic in V8 (~2 s at
+  // this size, ~23 s at the 256 KiB cap); trimEnd is linear.
+  const html = `<form><p><b>a</b>${"\n".repeat(80000)}x</p><input name=q></form>`;
+  const start = performance.now();
+  parse(html);
+  const ms = performance.now() - start;
+  assert.ok(ms < 250, `parse took ${ms.toFixed(0)} ms`);
+  // Edge whitespace is still trimmed.
+  assert.equal(parse("<form><p>  <b>a</b>  x \n </p><input name=q></form>").form.sections[0].blocks[0].text, "a x");
 });
 
 console.log(`html-form: ${passed} checks passed`);

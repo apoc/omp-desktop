@@ -383,9 +383,16 @@ check("collapsedSummary: a form uses its visible answer and section title, never
   assert.deepEqual(A.collapsedSummary({ method: "form", answered: true, form, data: { db: "pg", token: "secret" }, title: "Override" }), {
     answer: "Postgres", answerCount: null, status: null, prompt: "Override", negative: false,
   });
-  assert.deepEqual(A.collapsedSummary({ method: "form", cancelled: true, form: null, formError: "empty", title: "Unsupported form" }), {
-    answer: null, answerCount: null, status: "cancelled", prompt: "Unsupported form", negative: true,
+  // An unreadable form's title is the desktop's own source string (or a
+  // `{text, vars}`): handed over for translation, never as omp text.
+  assert.deepEqual(A.collapsedSummary({ method: "form", cancelled: true, form: null, formError: { text: "The form is empty." }, title: "Unsupported form" }), {
+    answer: null, answerCount: null, status: "cancelled", prompt: "Unsupported form", promptSource: { text: "Unsupported form" }, negative: true,
   });
+  assert.deepEqual(A.collapsedSummary({ method: "form", cancelled: true, form: null, title: { text: "Form for {who}", vars: { who: "Ada" } } }).promptSource,
+    { text: "Form for {who}", vars: { who: "Ada" } });
+  assert.equal(A.collapsedSummary({ method: "form", cancelled: true, form: null, title: { text: "Form for {who}", vars: { who: "Ada" } } }).prompt, "Form for Ada");
+  // A readable form's title is omp's text: no translation source.
+  assert.equal("promptSource" in A.collapsedSummary({ method: "form", answered: true, form, data: {}, title: "Override" }), false);
 });
 
 // ── selectRows: the rows of a `select` request ──────────────────────────

@@ -297,7 +297,7 @@
       const F = window.OMP_HTML_FORM;
       const form = ask.form;
       if (!form) {
-        wrap.append(node("div", ask.formError || "Unsupported form", "ask-sum-a none"));
+        wrap.append(node("div", F.errorText(ask.formError) || "Unsupported form", "ask-sum-a none"));
         const cancel = button("Cancel", () => onAnswer(ask.id, null));
         cancel.className = "ask-opt";
         wrap.append(cancel);
@@ -312,7 +312,7 @@
       const refresh = () => {
         const errors = F.draftErrors(form, draft);
         for (const [index, slot] of slots) {
-          const text = errors[index] ?? "";
+          const text = errors[index] ? F.errorText(errors[index]) : "";
           slot.textContent = text;
           slot.hidden = !text;
         }
@@ -360,6 +360,7 @@
       });
       submit.className = "ask-submit";
       foot.append(node("span", "", "ask-foot-spacer"), cancel, submit);
+      if (ask.formError) wrap.append(node("p", F.errorText(ask.formError), "error"));
       wrap.append(problem, foot);
       refresh();
       return wrap;
@@ -392,6 +393,7 @@
           const element = node("option", option.label);
           element.value = String(oi);
           element.disabled = option.disabled;
+          if (option.disabled) element.setAttribute("data-model-disabled", "true");
           element.selected = entry.picks.includes(oi);
           select.append(element);
         });
@@ -413,6 +415,7 @@
           pick.className = "ask-row-btn";
           pick.setAttribute("role", field.multi ? "checkbox" : "radio");
           pick.disabled = option.disabled;
+          if (option.disabled) pick.setAttribute("data-model-disabled", "true");
           pick.addEventListener("click", () => {
             if (option.disabled) return;
             update(F.pick(draft, form, index, oi));
@@ -459,8 +462,10 @@
       } else {
         const input = node("input", undefined, "ask-other-input selectable");
         input.id = controlId;
-        input.type = field.type || "text";
-        draft[index] = F.setInputValue(input, field, draft[index]);
+        // One type rule with the desktop (html-form.js inputType): the
+        // untouched field shows exactly the value omp receives.
+        input.type = F.inputType(field, () => document.createElement("input"));
+        F.setInputValue(input, field, draft[index]);
         input.placeholder = field.placeholder || "";
         input.required = field.required;
         input.addEventListener("input", () => update(F.setText(draft, form, index, input.value)));
@@ -520,8 +525,11 @@
       afterRender(view, keep);
     }
 
+    // A control the form itself disabled stays disabled when the connection
+    // comes back (`data-model-disabled`).
     function syncControls(connected) {
-      for (const element of asks.querySelectorAll?.("button, input, textarea") || []) element.disabled = !connected;
+      for (const element of asks.querySelectorAll?.("button, input, textarea, select") || [])
+        element.disabled = !connected || element.getAttribute?.("data-model-disabled") === "true";
     }
 
     return { stage, renderView, syncControls };

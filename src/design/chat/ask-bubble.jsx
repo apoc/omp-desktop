@@ -219,6 +219,8 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onAnswerFo
         : OMP_TR(summary.status))
     : "";
   const summaryIcon = !summary?.negative ? "check" : summary.status === "nothing picked" ? "minus" : "close";
+  // A desktop-made prompt (an unreadable form's title) is a source string.
+  const summaryPrompt = summary?.promptSource ? OMP_TR(summary.promptSource.text, summary.promptSource.vars) : summary?.prompt;
 
   return (
     <div className={`row ask fade-up${highlighted ? " mm-hot" : ""}`} data-msg-idx={idx}>
@@ -240,7 +242,7 @@ function AskBubble({ msg, idx, highlighted, onAnswer, onAnswerDialog, onAnswerFo
           >
             <_AskIcon name={summaryIcon} size={12} strokeWidth={2.2} dotColor="transparent" aria-hidden="true" />
             <span className="ask-collapsed-answer" title={summaryAnswer || undefined}>{summaryAnswer}</span>
-            <span className="ask-collapsed-prompt" title={summary.prompt || undefined}>{summary.prompt}</span>
+            <span className="ask-collapsed-prompt" title={summaryPrompt || undefined}>{summaryPrompt}</span>
             <span className="chip muted">{msg.time}</span>
             <_AskIcon name={expanded ? "chev" : "chevR"} size={10} color="var(--fg-4)" dotColor="transparent" aria-hidden="true" />
           </button>

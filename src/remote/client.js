@@ -50,8 +50,6 @@
       case "input":
       case "editor":
         return { input: true, multiline: ask.kind === "editor" };
-      case "form":
-        return ask.form ? { form: ask.form, timeout: ask.timeout ?? null } : { form: null, error: ask.formError ?? "Unsupported form" };
       default:
         return [];
     }

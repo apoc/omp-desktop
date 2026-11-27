@@ -27,6 +27,13 @@
     };
   }
 
+  // A form error is `{text, vars}` (app/html-form.js); the phone fills it in
+  // with OMP_HTML_FORM.errorText. Only those two keys travel.
+  function phoneError(error) {
+    const vars = error.vars !== null && typeof error.vars === "object" && !Array.isArray(error.vars) ? error.vars : null;
+    return vars ? { text: error.text, vars } : { text: error.text };
+  }
+
   function askCard(message) {
     const ask = message.ask ?? message;
     if (message.kind !== "ask" && !message.ask) return null;
@@ -47,7 +54,7 @@
       ...(kind === "form" ? {
         ...(ask.form ? { form: phoneForm(ask.form) } : {}),
         ...(Number.isFinite(ask.timeout) && ask.timeout > 0 ? { timeout: ask.timeout } : {}),
-        ...(typeof ask.formError === "string" ? { formError: ask.formError } : {}),
+        ...(typeof ask.formError?.text === "string" ? { formError: phoneError(ask.formError) } : {}),
       } : {}),
     };
   }
@@ -148,11 +155,8 @@
   }
 
   // The phone is untrusted input: check the value fits the open ask's kind.
-  // null (cancel) is always allowed. `ompVersion` is the asking tab's own
-  // process version: only below 19.2.0 (or unknown) does omp apply its 19.1
-  // submit constraints, so only then do we replay them here.
-  // Returns an error text or null.
-  function invalidAnswer(ask, value, desktopForm, ompVersion) {
+  // null (cancel) is always allowed. Returns an error text or null.
+  function invalidAnswer(ask, value, desktopForm) {
     if (value === null) return null;
     const bad = "invalid answer";
     switch (ask.kind) {
@@ -166,13 +170,11 @@
         return validDialogAnswers(ask.questions, value) ? null : bad;
       case "form": {
         const form = desktopForm ?? ask.form;
-        // Shape, plus the constraints omp 19.1.x applies on submit when the
-        // asking tab runs that version (or its version is unknown): the phone
-        // is untrusted input, so a required/bounds/length violation is refused
-        // here instead of letting omp fail the ask tool afterwards. On 19.2+
-        // omp accepts such answers itself; replaying the check would refuse
-        // valid phone input.
-        return form && window.OMP_HTML_FORM?.answerError(form, value, ompVersion) === null ? null : bad;
+        // Shape, plus omp 19.1's submit constraints (required, bounds,
+        // lengths, email, url) on every omp version: the phone is untrusted
+        // input, so a violation is refused here instead of letting omp fail
+        // the ask tool afterwards.
+        return form && window.OMP_HTML_FORM?.answerError(form, value) === null ? null : bad;
       }
       default: return bad;
     }
@@ -261,8 +263,7 @@
               await new Promise(resolve => setTimeout(resolve, 100));
             }
             if (!ask) throw new Error("question no longer open");
-            const askingTab = (getSnapshot()?.sessions ?? []).find(session => session.id === tabId);
-            const invalid = invalidAnswer(ask, action.value, desktopForm, askingTab?.ompVersion);
+            const invalid = invalidAnswer(ask, action.value, desktopForm);
             if (invalid) throw new Error(invalid);
             const call = answerCall(ask, action.value);
             await deliver(() => bridge[call.method](...call.args));

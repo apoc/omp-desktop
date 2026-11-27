@@ -148,8 +148,13 @@ test("buildView forwards a parsed form and its timeout, never the raw HTML", () 
   const view = api.buildView(snapshot({ messages: [ask("f", "form", { title: "Setup", form, timeout: 30000 })] }));
   assert.deepEqual(own(view.asks), [{ id: "f", kind: "form", title: "Setup", message: "", form, timeout: 30000 }]);
   assert.doesNotMatch(JSON.stringify(view), /<form/i);
-  const broken = api.buildView(snapshot({ messages: [ask("bad", "form", { form: null, formError: "The form is empty." })] }));
-  assert.deepEqual(own(broken.asks), [{ id: "bad", kind: "form", title: "Continue?", message: "", formError: "The form is empty." }]);
+  const broken = api.buildView(snapshot({ messages: [ask("bad", "form", { form: null, formError: { text: "This form has too many {what}.", vars: { what: "fields" }, extra: "x" } })] }));
+  assert.deepEqual(own(broken.asks), [{ id: "bad", kind: "form", title: "Continue?", message: "", formError: { text: "This form has too many {what}.", vars: { what: "fields" } } }]);
+  // Only a `{text, vars}` object travels: a bare string or a malformed vars is not forwarded as such.
+  const plainError = api.buildView(snapshot({ messages: [ask("s", "form", { form: null, formError: "The form is empty." })] }));
+  assert.equal(own(plainError.asks)[0].formError, undefined);
+  const badVars = api.buildView(snapshot({ messages: [ask("v", "form", { form: null, formError: { text: "The form is empty.", vars: ["x"] } })] }));
+  assert.deepEqual(own(badVars.asks)[0].formError, { text: "The form is empty." });
 });
 
 test("phone forms serialize each field once and omit hidden defaults", () => {
@@ -532,11 +537,11 @@ test("phone answers are validated per ask kind before reaching omp", async () =>
   }
 });
 
-async function runAnswer(api, item, value, ompVersion) {
+async function runAnswer(api, item, value) {
   const calls = [], results = [];
   const snap = snapshot({
     messages: [item],
-    sessions: [{ id: "a", name: "Work", path: "/project", ompVersion }],
+    sessions: [{ id: "a", name: "Work", path: "/project" }],
   });
   const handle = api.makeActionHandler({
     answerAsk: (...a) => calls.push(a), answerConfirm: (...a) => calls.push(a), answerAskDialog: (...a) => calls.push(a),
@@ -600,7 +605,7 @@ test("phone form answers obey the field rules omp 19.1 checks on submit", async 
     assert.equal(api.invalidAnswer(card, value), "invalid answer", JSON.stringify(value));
 });
 
-test("a phone form answer replays omp's 19.1 submit rules only below 19.2.0", async () => {
+test("a phone form answer obeys omp's 19.1 submit rules on every omp version", async () => {
   const { api } = load();
   const form = {
     sections: [],
@@ -608,12 +613,9 @@ test("a phone form answer replays omp's 19.1 submit rules only below 19.2.0", as
     hidden: [],
   };
   const card = { kind: "ask", id: "f3", method: "form", title: "", form, answered: false, cancelled: false };
-  for (const version of [undefined, null, "19.1.9"]) {
-    assert.equal((await runAnswer(api, card, {}, version)).card.error, "invalid answer", String(version));
-  }
-  for (const version of ["19.2.0", "omp/19.2.1"]) {
-    assert.equal((await runAnswer(api, card, {}, version)).card.error, null, version);
-  }
+  assert.equal((await runAnswer(api, card, {})).card.error, "invalid answer");
+  assert.equal((await runAnswer(api, card, { name: "Ada" })).card.error, null);
+  assert.equal(api.invalidAnswer.length, 3, "invalidAnswer takes no omp version");
 });
 
 test("blank prompt and steer text is refused", async () => {

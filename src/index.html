@@ -200,11 +200,18 @@
        live.js reads it at its top-level init, so it must load before them. -->
   <script src="app/ask-dialog.js"></script>
 
-  <!-- omp 19.1+ ask-tool HTML forms: parse into a safe model, reply data
-       shape and validation. Dependency-free IIFE (DOMParser at call time);
+  <!-- omp 19.1+ ask-tool HTML forms, split as omp splits utils/dom and
+       html-form/parse. html-form-markup.js: a port of omp's own markup
+       parser (window.OMP_HTML_FORM_MARKUP; plain objects, no DOM).
+       html-form-parse.js: omp's form builder over that tree
+       (window.OMP_HTML_FORM_PARSE; destructures OMP_HTML_FORM_MARKUP at
+       init, so it loads after it). html-form.js: reply data shape and
+       validation; its `parse` reads OMP_HTML_FORM_PARSE at call time.
        live.js reads window.OMP_HTML_FORM at top-level init, and
        ask-dialog.js's form summary plus the desktop/phone form renderers
        call it at render time. Must precede live.js. -->
+  <script src="app/html-form-markup.js"></script>
+  <script src="app/html-form-parse.js"></script>
   <script src="app/html-form.js"></script>
 
   <!-- Tool approval mode (#57): omp's --approval-mode per project / default,

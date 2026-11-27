@@ -524,14 +524,6 @@
     }
   }
 
-  // The omp version of the process a tab is talking to, bound per session
-  // when `start_session` reports the `--version` it read at spawn time
-  // (`_spawnSession`). Unknown (`null`) refuses a form carrying a `pattern`:
-  // this side cannot verify what omp would check.
-  function _ompVersionOf(sessionId = activeSessionId) {
-    return sessionRegistry.get(sessionId)?.ompVersion ?? null;
-  }
-
   // Git browser reads: `cmd` for the active tab's project folder, as
   // `_invokeResult`'s `{ok, value | error}`; null with no project open.
   async function _gitBrowserInvoke(cmd, args) {
@@ -639,16 +631,20 @@
     }
   }
 
-  // Settle a pending ask bubble: apply `patch` to the first unanswered,
-  // uncancelled bubble with this id and publish. Returns whether one
-  // matched. The re-answer guard (a bubble already answered or cancelled is
-  // left alone) is the subtle part — it lives here once, for the user's
-  // answers (_resolveAsk) and omp's own `cancel` alike.
+  // Settle a pending ask bubble: apply `patch` to the unanswered,
+  // uncancelled bubble with this id and publish. Returns the settled bubble
+  // (the object now in `state.messages`), or null when none matched. The
+  // re-answer guard (a bubble already answered or cancelled is left alone)
+  // is the subtle part — it lives here once, for the user's answers
+  // (_resolveAsk) and approve-and-remember.
   function _settleAsk(id, patch) {
     let settled = null;
     state.messages = state.messages.map(m => {
       if (m.kind === "ask" && m.id === id && !m.answered && !m.cancelled) {
-        settled = { ...m, ...patch };
+        // A settlement that goes through supersedes an earlier failed
+        // delivery: its marker goes (see the unreadable-form path).
+        const { deliveryError: _d, ...open } = m;
+        settled = { ...open, ...patch };
         return settled;
       }
       return m;
@@ -712,9 +708,8 @@
   // omp — only if it was still open, so a re-answer sends nothing.
   async function _resolveAsk(id, patch, payload) {
     const sessionId = activeSessionId;
-    const index = state.messages.findIndex(m => m.kind === "ask" && m.id === id && !m.answered && !m.cancelled);
-    if (index < 0 || !_settleAsk(id, patch)) return false;
-    const bubble = state.messages[index];
+    const bubble = _settleAsk(id, patch);
+    if (!bubble) return false;
     const delivered = await _send({ type: "extension_ui_response", id, ...payload });
     if (!delivered) _patchSessionBubble(sessionId, bubble, _reopenAsk, true);
     return delivered;
@@ -962,7 +957,9 @@
   }
 
   // ── Session snapshot helpers ──────────────────────────────────────────────
-  function _saveCurrentSession() {
+  // `trackerEvidence`: the outgoing tab's tracker revision as it stood
+  // before the switch's listener teardown (see `_switchToSession`).
+  function _saveCurrentSession(trackerEvidence) {
     if (!activeSessionId) return;
     // Buffered asks belong to the session being left — flush them into its
     // messages so the snapshot carries them. Leaving them in the queue would
@@ -1011,9 +1008,10 @@
       // An abort whose pause frame and response are still in the tab's
       // journal: the replay on the way back labels the pause and clears it.
       userAbortInFlight,
-      // Tracker revision this tab last heard about itself: the background
-      // overlay may only act on a later one (`_trackerEvidenceNewer`).
-      trackerEvidence: _trackerEvidence.get(activeSessionId) ?? null,
+      // Tracker revision this tab last heard about itself while its frames
+      // were still dispatched: the background overlay may only act on a
+      // later one (`_trackerEvidenceNewer`).
+      trackerEvidence,
     });
   }
 
@@ -1101,6 +1099,12 @@
     }
     if (_switchIntent !== intent || !sessionRegistry.has(id)) return;
     const myGen = ++_switchGen;
+    // The outgoing tab's tracker evidence, read before the teardown below
+    // (an IPC round-trip). A tracker update landing inside it describes
+    // frames this tab no longer dispatches (`current()` is already false),
+    // so the snapshot must stay older than it: `_trackerEvidenceNewer` then
+    // lets the background overlay retire the dot when the turn ended there.
+    const outgoingEvidence = _trackerEvidence.get(activeSessionId) ?? null;
 
     // The inspected agent belongs to the tab being left: drop that process
     // back to "progress" while activeSessionId still addresses it.
@@ -1119,9 +1123,10 @@
     // can land inside it, still against `activeSessionId`. Snapshotting
     // before the teardown would cache the optimistic answer and drop the
     // rejection's note; switching back would then restore the stale state.
-    // No await separates this save from the id change below, so nothing can
-    // land in between and be lost.
-    _saveCurrentSession();
+    // The tracker evidence is the one exception, taken before the teardown
+    // (`outgoingEvidence`). No await separates this save from the id change
+    // below, so nothing can land in between and be lost.
+    _saveCurrentSession(outgoingEvidence);
     activeSessionId = id;
     _noTabProfileId = null;
     _syncRecentsProfile();
@@ -1310,15 +1315,9 @@
    *  Side-effectful (Tauri IPC invoke, event listeners), so not unit-tested
    *  directly. */
   async function _spawnSession(id, cwd, { resume = null, profile }) {
-    const started = await window.__TAURI__.core.invoke("start_session", {
+    const approvalMode = await window.__TAURI__.core.invoke("start_session", {
       args: { sessionId: id, cwd: cwd ?? "", resume, profile },
     });
-    // What this incarnation was started with. The approval mode is Rust's
-    // resolution for the tab's folder; the version is the one the same spawn
-    // check read from this exact omp (`--version`), so two tabs may carry
-    // different versions. Unknown leaves null, which refuses pattern forms.
-    const approvalMode = started?.approvalMode;
-    const ompVersion = typeof started?.ompVersion === "string" ? started.ompVersion : null;
     // A fresh incarnation owns this id now, and `start_session` cleared the
     // backend's cached error for it — so a *new* startup failure must be
     // reportable again. Cleared after the spawn resolved, so a spawn that
@@ -1337,7 +1336,6 @@
       sessionRegistry.set(id, {
         ...spawned, processStartedAt: Date.now(),
         approvalMode: AMODE.isMode(approvalMode) ? approvalMode : null,
-        ompVersion,
       });
     }
     // Git: read initial branch and work tree and arm the HEAD watcher
@@ -1643,10 +1641,10 @@
       // Both re-read *after* that round-trip, never before it. It is a real
       // IPC gap and `_respawning` only blocks re-entry for this id, so
       // a click on another tab can run `_switchToSession(other)` inside it —
-      // whose first act is `_saveCurrentSession()`, and `activeSessionId` is
-      // still this id at that moment. That both moves the active slot (so a
-      // `wasActive` captured earlier is stale and would detach the tab the
-      // user just picked) and re-creates the very snapshot
+      // which snapshots the tab it leaves (`_saveCurrentSession()`) while
+      // `activeSessionId` is still this id. That both moves the active slot
+      // (so a `wasActive` captured earlier is stale and would detach the tab
+      // the user just picked) and re-creates the very snapshot
       // `_killSessionProcess` just deleted.
       const wasActive = id === activeSessionId;
       const current = sessionRegistry.get(id);
@@ -1967,11 +1965,9 @@
     // the repository's work tree, shared by every tab on a folder of it.
     sessionRegistry.set(id, {
       id, name: tabName, path: cwd ?? "", color, branch: null, repoRoot: null, profile,
-      // The approval mode and omp version `start_session` spawned this tab's
-      // current process with (set by `_spawnSession`); null while no process
-      // runs it. The version is per incarnation, never global.
+      // The approval mode `start_session` spawned this tab's current omp
+      // with (set by `_spawnSession`); null while no process runs it.
       approvalMode: null,
-      ompVersion: null,
       // The conversation's `.jsonl`, same form as `SavedSession.path`: known
       // up front for a resume, filled in from `get_state` otherwise (see
       // `_applyRpcState`). `resumeSession` matches on it to focus instead of
@@ -2673,15 +2669,16 @@
       // omp 19.1+ sends the ask tool's whole HTML form as one request. Parse
       // it into a model first: the HTML never enters the DOM. A form this
       // shell cannot read is cancelled at once and leaves a visible note, so
-      // omp never waits on a card that could not be submitted.
+      // omp never waits on a card that could not be submitted. Errors are
+      // `{text, vars}` source strings, translated where they are shown.
       if (ev.method === "form") {
-        const parsed = HTML_FORM.parse(ev.html, undefined, _ompVersionOf());
+        const parsed = HTML_FORM.parse(ev.html);
         if (!parsed.form) {
           const sessionId = activeSessionId;
           const bubble = _askMessage("form", ev, {
             title: "Unsupported form",
             form: null,
-            formError: parsed.error ?? "The form could not be read.",
+            formError: parsed.error ?? { text: "The form could not be read." },
             timeout: ev.timeout ?? null,
             data: null,
             cancelled: true,
@@ -2690,10 +2687,15 @@
           notify();
           _send({ type: "extension_ui_response", id: ev.id, cancelled: true }).then(delivered => {
             if (delivered) return;
-            _patchSessionBubble(sessionId, bubble, message => ({
-              ..._reopenAsk(message),
-              formError: `${message.formError} Cancellation could not be delivered to omp.`,
-            }), true);
+            // Reopened for its Retry (`cancelAsk`), whose successful
+            // settlement drops this marker again (`_settleAsk`).
+            _patchSessionBubble(sessionId, bubble, message => {
+              const open = _reopenAsk(message);
+              return open === message ? message : {
+                ...open,
+                deliveryError: { text: "Cancellation could not be delivered to omp." },
+              };
+            }, true);
           });
           return;
         }
@@ -2741,7 +2743,7 @@
         // This also wins over a local answer whose IPC hand-off is pending.
         const bubble = state.messages.find(message => message.kind === "ask" && message.id === ev.targetId && !message.closedByOmp);
         if (bubble) _patchSessionBubble(activeSessionId, bubble, message => {
-          const { answered: _a, answer: _v, answers: _answers, data: _data, ...withdrawn } = message;
+          const { answered: _a, answer: _v, answers: _answers, data: _data, deliveryError: _d, ...withdrawn } = message;
           return { ...withdrawn, cancelled: true, closedByOmp: true };
         });
         return;
@@ -4506,19 +4508,20 @@
      * @param {Object<string, string|number|string[]>} data
      */
     answerForm(id, data) {
-      const message = state.messages.find(m => m.kind === "ask" && m.id === id && m.method === "form");
-      const outgoing = message?.form ? HTML_FORM.withHiddenDefaults(message.form, data) : data;
+      const message = state.messages.find(m => m.kind === "ask" && m.id === id && m.method === "form"
+        && !m.answered && !m.cancelled);
+      if (!message) return Promise.resolve(false);
+      const outgoing = message.form ? HTML_FORM.withHiddenDefaults(message.form, data) : data;
       // The last gate before the wire: a form answered past its own rules
-      // would make omp 19.1.x fail the ask tool after the desktop already
-      // settled the bubble. Refuse here instead, leaving the card open.
-      const problem = message?.form
-        ? HTML_FORM.answerError(message.form, outgoing, _ompVersionOf(message.sessionId))
-        : null;
+      // would make omp fail the ask tool after the desktop already settled
+      // the bubble. Refuse here instead, leaving the card open and saying
+      // why on it (`formError`, a `{text, vars}` source string).
+      const problem = message.form ? HTML_FORM.answerError(message.form, outgoing) : null;
       if (problem) {
-        console.warn(`[live] refused form answer for '${id}':`, problem);
-        return false;
+        _patchSessionBubble(activeSessionId, message, m => ({ ...m, formError: problem }));
+        return Promise.resolve(false);
       }
-      return _resolveAsk(id, { answered: true, data: outgoing }, { data: outgoing });
+      return _resolveAsk(id, { answered: true, data: outgoing, formError: null }, { data: outgoing });
     },
 
     /**
@@ -5443,7 +5446,6 @@
     // The approval-mode view, alongside: the status bar and the restart
     // plan read it, and spawns never wait for it (Rust resolves the mode).
     void _refreshApprovalModes();
-    _refreshOmpVersion();
     _refreshProfiles()
       .catch(e => console.error("[live] startup profile load failed:", e))
       // Tab ids are never reused across a webview reload: anything Rust still

@@ -240,29 +240,24 @@ check("voice controls start independently and retain stop and cancel actions", (
 
 // Exercise the public bridge against a deterministic fake IPC transport. The
 // assertions concern snapshots and outcomes, not the bridge's internal maps.
-function bridgeHarness() {
+// `realTurnStatus` loads the real turn-status and session-title modules (the
+// background dot's tracker overlay); `htmlForm` replaces the form stub.
+function bridgeHarness({ realTurnStatus = false, htmlForm = null } = {}) {
   const listeners = new Map(), journal = new Map(), commands = [], waiters = [];
   // A held unlisten: the listener stops dispatching at once but the teardown
   // await stays pending until the test releases it — a tab switch sitting in
   // its listener teardown, with `activeSessionId` still naming the tab left.
   const teardownHolds = new Map(), teardownReleases = new Map();
-  const formVersions = [];
-  const atLeast192 = version => {
-    const match = /^(?:\S*\/)?v?(\d+)\.(\d+)/.exec(String(version ?? ""));
-    return Boolean(match) && (Number(match[1]) > 19 || (Number(match[1]) === 19 && Number(match[2]) >= 2));
-  };
   const w = {
     OMP_LIVE_VOICE: V,
     OMP_SLASH: { LOCAL_COMMANDS: [] },
     OMP_ASK_DIALOG: { parseQuestions: () => null },
     // The form parser itself is covered by tests/test-html-form.mjs. This
     // harness only needs a model and an unreadable request.
-    OMP_HTML_FORM: {
-      parse: (html, _documentImpl, ompVersion) => {
-        formVersions.push(ompVersion);
-        if (html === "empty") return { error: "The form is empty." };
-        if (html.includes("password")) return { error: "This form asks for a password; enter it in a terminal instead — omp would echo it in its output." };
-        if (html.includes("pattern") && !atLeast192(ompVersion)) return { error: "This form's `pattern` needs omp 19.2 or newer." };
+    OMP_HTML_FORM: htmlForm ?? {
+      parse: html => {
+        if (html === "empty") return { error: { text: "The form is empty." } };
+        if (html.includes("password")) return { error: { text: "This form asks for a password; enter it in a terminal instead — omp would echo it in its output." } };
         return { form: {
             sections: [{ title: "Setup", blocks: [], fieldset: true }],
             fields: [{ kind: "text", name: "name", type: "text", multiline: false, label: "Name", value: "", placeholder: "", required: false, rows: 1 }],
@@ -277,10 +272,14 @@ function bridgeHarness() {
     OMP_TRANSCRIPT: {}, OMP_PROMPT_HISTORY: { DEFAULT_LIMIT: 100 },
     OMP_SESSION_PREFS: { fromTweaks: () => ({}), closeGuardArmed: () => false },
     OMP_TWEAKS_STORE: { read: () => ({}) },
-    OMP_TURN_STATUS: { runStateOf: () => "idle", displayRunState: cached => cached, guardRunState: cached => cached, isBusyRunState: () => false, retryCleared: messages => messages },
+    ...(realTurnStatus ? {} : { OMP_TURN_STATUS: { runStateOf: () => "idle", displayRunState: cached => cached, guardRunState: cached => cached, isBusyRunState: () => false, retryCleared: messages => messages } }),
     OMP_PROJECT_NAV: { basename: path => path.split("/").at(-1), findConversationTab: () => null },
     DEFAULT_PROFILE_ID: "default", INTENT_FRAMING: () => "", timeNow: () => "00:00",
   };
+  if (realTurnStatus) {
+    new Function("window", readFileSync(join(root, "src/app/turn-status.js"), "utf8"))(w);
+    new Function("window", readFileSync(join(root, "src/app/session-title.js"), "utf8"))(w);
+  }
   // Use the real context builder; the fake transport only supplies omp data.
   new Function("window", readFileSync(join(root, "src/app/live-context.js"), "utf8"))(w);
   new Function("window", readFileSync(join(root, "src/app/approval-mode.js"), "utf8"))(w);
@@ -308,7 +307,6 @@ function bridgeHarness() {
   let grantError = null;
   let grantUnsaved = null;
   let holdGrant = false;
-  const startVersions = [];
   const pendingResponses = [];
   const pendingGrants = [];
   const histories = new Map();
@@ -325,9 +323,7 @@ function bridgeHarness() {
         approvalMode = args.mode;
         return Promise.resolve({ default: approvalMode, projects: {} });
       }
-      if (command === "start_session") {
-        return Promise.resolve({ approvalMode, ompVersion: startVersions.length ? startVersions.shift() : null });
-      }
+      if (command === "start_session") return Promise.resolve(approvalMode);
       if (command === "approval_approve_and_grant") {
         if (holdGrant) return new Promise((resolve, reject) => pendingGrants.push({ resolve, reject }));
         return grantError ? Promise.reject(new Error(grantError)) : Promise.resolve(grantUnsaved);
@@ -389,10 +385,11 @@ function bridgeHarness() {
       holdGrant = false;
       pendingGrants.shift().reject(new Error(message));
     },
-    startVersions: versions => { startVersions.push(...versions); },
-    formVersions,
     holdResponses: () => { holdResponses = true; },
     failPendingResponse: () => { holdResponses = false; pendingResponses.shift().reject(new Error("IPC unavailable")); },
+    // A Rust tracker snapshot (`agent://attention`), as the background dot's
+    // overlay reads it.
+    attention: payload => listeners.get("agent://attention")?.({ payload }),
     exit: (id, reason) => listeners.get(`agent://exit/${id}`)?.({ payload: reason }),
   };
 }
@@ -930,7 +927,7 @@ await checkAsync("an unreadable form is cancelled at once and leaves a visible n
   await new Promise(resolve => setTimeout(resolve, 20));
   const bubble = h.snapshot().messages.find(message => message.kind === "ask" && message.id === "bad");
   assert.equal(bubble?.cancelled, true);
-  assert.equal(bubble?.formError, "The form is empty.");
+  assert.deepEqual(bubble?.formError, { text: "The form is empty." });
   const reply = h.commands.find(command => command.type === "extension_ui_response" && command.id === "bad");
   assert.equal(reply?.cancelled, true);
 });
@@ -953,7 +950,7 @@ await checkAsync("a password form is cancelled immediately with a visible termin
   const bubble = h.snapshot().messages.find(message => message.id === "secret");
   assert.equal(bubble.cancelled, true);
   assert.equal(bubble.form, null);
-  assert.match(bubble.formError, /enter it in a terminal instead/);
+  assert.match(bubble.formError.text, /enter it in a terminal instead/);
   const reply = h.commands.find(command => command.type === "extension_ui_response" && command.id === "secret");
   assert.equal(reply.cancelled, true);
   assert.equal(reply.data, undefined);
@@ -1030,26 +1027,6 @@ await checkAsync("a failed manual cancellation reopens and can be retried", asyn
   bubble = h.snapshot().messages.find(message => message.id === "cancel-retry");
   assert.equal(bubble.cancelled, true);
   assert.equal(h.commands.filter(command => command.type === "extension_ui_response" && command.id === "cancel-retry").length, 2);
-});
-
-await checkAsync("a per-session omp version decides a pattern form, not one global version", async () => {
-  const h = bridgeHarness();
-  h.startVersions(["19.1.9", "19.2.0"]);
-  const { a, b } = await twoTabs(h);
-  const pattern = '<form><input name="slug" pattern="[a-z]+" value="abc"></form>';
-  h.emit(a, { type: "extension_ui_request", id: "pattern-191", method: "form", html: pattern });
-  await new Promise(resolve => setTimeout(resolve, 30));
-  const refused = h.snapshot().messages.find(message => message.id === "pattern-191");
-  assert.equal(refused.cancelled, true, "19.1 cannot verify a pattern and must refuse it");
-  assert.match(refused.formError, /pattern/i);
-  h.emit(b, { type: "extension_ui_request", id: "pattern-192", method: "form", html: pattern });
-  await h.bridge.activateSession(b);
-  await new Promise(resolve => setTimeout(resolve, 300));
-  const shown = h.snapshot().messages.find(message => message.id === "pattern-192");
-  assert.ok(shown, "the 19.2 tab shows the form");
-  assert.equal(Boolean(shown.cancelled), false, "19.2 treats the pattern as a hint");
-  assert.ok(shown.form, "the parsed form is kept");
-  assert.deepEqual(h.formVersions.filter(Boolean).sort(), ["19.1.9", "19.2.0"]);
 });
 
 await checkAsync("a rejected approve-and-remember after a tab switch reopens the captured tab's prompt", async () => {
@@ -1191,12 +1168,14 @@ await checkAsync("an unsupported form cancellation reports delivery failure visi
   h.emit(a, { type: "extension_ui_request", id: "bad-delivery", method: "form", html: "empty" });
   await new Promise(resolve => setTimeout(resolve, 30));
   let bubble = h.snapshot().messages.find(message => message.id === "bad-delivery");
-  assert.match(bubble.formError, /could not be delivered/i);
+  assert.deepEqual(bubble.formError, { text: "The form is empty." }, "the parse error stays as it was");
+  assert.deepEqual(bubble.deliveryError, { text: "Cancellation could not be delivered to omp." });
   assert.equal(Boolean(bubble.cancelled), false);
   h.failResponses(false);
   assert.equal(await h.bridge.cancelAsk("bad-delivery"), true);
   bubble = h.snapshot().messages.find(message => message.id === "bad-delivery");
   assert.equal(bubble.cancelled, true);
+  assert.equal(bubble.deliveryError, undefined, "a delivered retry clears the delivery failure");
   assert.equal(h.commands.filter(command => command.type === "extension_ui_response" && command.id === "bad-delivery").length, 2);
 });
 
@@ -1213,7 +1192,7 @@ await checkAsync("a reopened refused form renders a working retry control", asyn
   runInNewContext(code, { window, React, OMP_TR: text => text });
   let retries = 0;
   const tree = window.FormDialog({
-    msg: { id: "refused", form: null, formError: "Refusal could not be delivered." },
+    msg: { id: "refused", form: null, formError: { text: "The form is empty." }, deliveryError: { text: "Cancellation could not be delivered to omp." } },
     onSubmit: () => {}, onCancel: () => { retries++; },
   });
   const walk = node => [node, ...(node?.children ?? []).flatMap(walk)];
@@ -1222,7 +1201,7 @@ await checkAsync("a reopened refused form renders a working retry control", asyn
   retry.props.onClick();
   assert.equal(retries, 1);
   const settledTree = window.FormDialog({
-    msg: { id: "refused", form: null, formError: "Refusal could not be delivered.", cancelled: true },
+    msg: { id: "refused", form: null, formError: { text: "The form is empty." }, cancelled: true },
     onSubmit: () => {}, onCancel: () => { retries++; },
   });
   assert.equal(walk(settledTree).find(node => node?.type === "button" && node.children.includes("Retry")), undefined,
@@ -1241,8 +1220,93 @@ await checkAsync("omp withdrawal wins over a failed refusal cancellation", async
   const bubble = h.snapshot().messages.find(message => message.id === "bad-withdrawn");
   assert.equal(bubble.closedByOmp, true);
   assert.equal(bubble.cancelled, true);
-  assert.doesNotMatch(bubble.formError, /could not be delivered/i);
+  assert.equal(bubble.deliveryError, undefined);
+  assert.deepEqual(bubble.formError, { text: "The form is empty." });
   assert.doesNotMatch(JSON.stringify(h.snapshot().messages), /Answer could not be delivered/);
+});
+
+await checkAsync("omp's withdrawal after a failed refusal cancellation drops the delivery failure", async () => {
+  const h = bridgeHarness();
+  const { a } = await twoTabs(h);
+  h.failResponses(true);
+  h.emit(a, { type: "extension_ui_request", id: "bad-later-withdrawn", method: "form", html: "empty" });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.ok(h.snapshot().messages.find(message => message.id === "bad-later-withdrawn").deliveryError);
+  h.emit(a, { type: "extension_ui_request", id: "cancel-bad-later", method: "cancel", targetId: "bad-later-withdrawn" });
+  const bubble = h.snapshot().messages.find(message => message.id === "bad-later-withdrawn");
+  assert.deepEqual([bubble.cancelled, bubble.closedByOmp, bubble.deliveryError], [true, true, undefined]);
+});
+
+// The tab switch snapshots the outgoing tab after its listener teardown (an
+// IPC round-trip), but its tracker evidence must be the one from before it:
+// a tracker update inside the teardown describes frames the tab no longer
+// dispatches, so only a snapshot older than it lets the dot retire.
+async function backgroundDotAfterTurnEnd(duringTeardown) {
+  const h = bridgeHarness({ realTurnStatus: true });
+  const { a, b } = await twoTabs(h);
+  h.emit(a, { type: "turn_start" });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  const tracker = (revision, busy) => h.attention({ revision, sessions: { [a]: { busy, asks: 0, asksOpened: 0, background: false } } });
+  tracker(1, true);
+  h.holdTeardown(a);
+  const switching = h.bridge.activateSession(b);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  if (duringTeardown) {
+    h.emit(a, { type: "agent_end" }); // dropped: this activation is superseded
+    tracker(2, false);
+  }
+  h.releaseTeardown(a);
+  await switching;
+  if (!duringTeardown) {
+    h.emit(a, { type: "agent_end" }); // background: journal only
+    tracker(2, false);
+  }
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(h.snapshot().activeSessionId, b);
+  return h.snapshot().sessions.find(session => session.id === a)?.displayRunState;
+}
+
+await checkAsync("a background tab's dot retires when its turn ends after the switch", async () => {
+  assert.equal(await backgroundDotAfterTurnEnd(false), "idle");
+});
+
+await checkAsync("a background tab's dot retires when its turn ends during the switch's listener teardown", async () => {
+  assert.equal(await backgroundDotAfterTurnEnd(true), "idle");
+});
+
+// The real form module (in index.html's load order), so the refusal is the
+// one omp's own checks would give, not a stub's.
+function realHtmlForm() {
+  const w = {};
+  const scripts = [...readFileSync(join(root, "src/index.html"), "utf8").matchAll(/<script src="(app\/html-form[^"]*\.js)"><\/script>/g)];
+  assert.ok(scripts.length > 0, "index.html loads the form module");
+  for (const [, path] of scripts) new Function("window", "DOMParser", readFileSync(join(root, "src", path), "utf8"))(w, undefined);
+  return w.OMP_HTML_FORM;
+}
+const requiredNameForm = {
+  sections: [{ title: "Setup", blocks: [], fieldset: true }],
+  fields: [{ kind: "text", name: "name", type: "text", multiline: false, label: "Name", value: "", placeholder: "", required: true, rows: 1 }],
+  hidden: [],
+};
+
+await checkAsync("a refused form answer stays open, sends nothing and shows why on the card", async () => {
+  const real = realHtmlForm();
+  const h = bridgeHarness({ htmlForm: { ...real, parse: () => ({ form: requiredNameForm }) } });
+  const { a } = await twoTabs(h);
+  h.emit(a, { type: "extension_ui_request", id: "refused-answer", method: "form", html: "<form></form>" });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(await h.bridge.answerForm("refused-answer", { name: "" }), false);
+  assert.equal(h.commands.some(command => command.type === "extension_ui_response"), false, "nothing reaches omp");
+  let bubble = h.snapshot().messages.find(message => message.id === "refused-answer");
+  assert.equal(Boolean(bubble.answered), false);
+  assert.equal(Boolean(bubble.cancelled), false);
+  assert.ok(bubble.formError, "the refusal is on the card");
+  assert.deepEqual(bubble.formError, { text: "Fix the field “{field}” before sending.", vars: { field: "name" } });
+  // Corrected, the answer goes out and the refusal is gone.
+  assert.equal(await h.bridge.answerForm("refused-answer", { name: "Ada" }), true);
+  bubble = h.snapshot().messages.find(message => message.id === "refused-answer");
+  assert.deepEqual([bubble.answered, bubble.data.name, bubble.formError ?? null], [true, "Ada", null]);
+  assert.equal(h.commands.filter(command => command.type === "extension_ui_response").length, 1);
 });
 
 // Settings → Agent: compaction and retry belong to omp's config (#92). The

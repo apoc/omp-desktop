@@ -157,14 +157,21 @@
    *  omp closing a timed-out dialog) keeps the existing status wording; an
    *  answered multi-question dialog exposes its non-empty answer count for
    *  translated plurals (or the lone answer when only one question was filled).
-   *  A form reports its visible answers only; hidden inputs never show. */
+   *  A form reports its visible answers only; hidden inputs never show. A
+   *  form the desktop could not read carries the desktop's own title (a
+   *  source string or `{text, vars}`): `promptSource` holds it for
+   *  translation, `prompt` its English text. */
   function collapsedSummary(msg) {
     if (!msg?.answered && !msg?.cancelled) return null;
+    const own = msg?.method === "form" && !msg.form && msg.title ? msg.title : null;
+    const promptSource = typeof own === "string" ? { text: own } : own?.text ? own : null;
     const formPrompt = msg?.method === "form" && msg.form ? window.OMP_HTML_FORM?.summaryPrompt(msg.form) : "";
-    const source = nonBlank(msg.title) ?? nonBlank(msg.message) ?? nonBlank(formPrompt) ?? msg.questions?.[0]?.question ?? "";
+    const source = promptSource
+      ? window.OMP_HTML_FORM?.errorText(promptSource) ?? promptSource.text
+      : nonBlank(msg.title) ?? nonBlank(msg.message) ?? nonBlank(formPrompt) ?? msg.questions?.[0]?.question ?? "";
     const prompt = String(source).trimStart().split(/\r?\n/, 1)[0].trim();
     if (msg.cancelled) {
-      return { answer: null, answerCount: null, status: msg.closedByOmp ? "closed by omp" : "cancelled", prompt, negative: true };
+      return { answer: null, answerCount: null, status: msg.closedByOmp ? "closed by omp" : "cancelled", prompt, ...(promptSource ? { promptSource } : {}), negative: true };
     }
 
     let answer = nonBlank(msg.answer);
@@ -191,6 +198,7 @@
       answerCount,
       status,
       prompt,
+      ...(promptSource ? { promptSource } : {}),
       negative: status !== null || (isChoice && answer?.trim().toLowerCase() === "deny"),
     };
   }

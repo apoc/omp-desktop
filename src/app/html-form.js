@@ -1,527 +1,41 @@
 /* ═════════════════════════════════════════════════════════════════════
-   app/html-form.js — omp's ask-tool HTML form. Pure model + rules;
-   design/chat/form-dialog.jsx renders it on the desktop and
-   remote/transcript.js on the phone. The HTML is parsed with DOMParser and
-   never inserted into the document: the model is drawn from text, alt text
-   and file/option values only.
+   app/html-form.js — omp's ask-tool HTML form: drafts, the reply `data`
+   and its validation (`window.OMP_HTML_FORM`). The parser is
+   app/html-form-parse.js (a port of omp's own); `parse` here delegates to
+   it at call time, so the phone page loads only this file.
+   design/chat/form-dialog.jsx renders the model on the desktop and
+   remote/transcript.js on the phone.
 
-   Mirrors omp's tools/html-form/{parse,data}.ts. The reply is
+   Mirrors omp's tools/html-form/data.ts. The reply is
    `{data: {<control name>: value}}` (rpc-mode.ts
    parseFormDialogResponse): one string for a radio/single select, an array
    for a checkbox group or multi-select, a number for number/range, and a
    free-text value for a group's automatic Other. Unknown names, wrong
    shapes and disabled options make omp fail the ask tool, so this module
    builds only that shape and validates untrusted phone input with it.
+
+   Every user-facing error is `{text, vars}`: an English source string with
+   `{name}` placeholders. The desktop shows `OMP_TR(text, vars)`;
+   `errorText` fills it in English (phone page, console).
    ═════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
 
-  const SKIPPED = new Set(["button", "head", "iframe", "link", "meta", "noscript", "script", "style", "template", "title"]);
-  const BLOCK = new Set([
-    "address", "article", "aside", "blockquote", "dd", "details", "div", "dl", "dt", "figure",
-    "figcaption", "footer", "header", "li", "main", "nav", "p", "section",
-  ]);
-  const HEADING = new Set(["h1", "h2", "h3", "h4", "h5", "h6", "summary"]);
-  const IGNORED_INPUTS = new Set(["button", "file", "image", "reset", "submit"]);
-  const MAX_HTML_BYTES = 256 * 1024;
-  const MAX_NODES = 10000;
-  const MAX_DEPTH = 64;
-  const MAX_FIELDS = 500;
-  const MAX_BLOCKS = 2000;
-  const MAX_OPTIONS = 1000;
-  const MAX_TABLE_CELLS = 2000;
-  const MAX_DISPLAY_BYTES = 64 * 1024;
-  const PASSWORD_REFUSAL = "This form asks for a password; enter it in a terminal instead — omp would echo it in its output.";
-  // omp 19.1.x applies its own `fieldError` (required, min/max,
-  // min/maxLength, email, url and `pattern`) to the submitted answer and
-  // fails the ask tool on a violation; the desktop only observes the stdin
-  // hand-off, so it must refuse such a form up front. From 19.2.0 on,
-  // `pattern` is a display hint again (rpc-mode.ts no longer applies
-  // fieldError). Required, bounds and lengths are enforced here on every
-  // version: harmless where omp no longer checks them.
-  const PATTERN_MIN_VERSION = [19, 2, 0];
-  const PATTERN_REFUSAL = "This form's `pattern` needs omp 19.2 or newer: older omp checks it itself and could reject an answer the desktop cannot verify. Update omp.";
-  let UTF8;
-
-  /** Whether an omp version string like `19.2.1` (or `omp/19.2.1`) reaches
-   *  `minimum`. A missing or unreadable version is treated as too old. */
-  function versionAtLeast(version, minimum) {
-    const match = /^(?:\S*\/)?v?(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(version ?? "").trim());
-    if (!match) return false;
-    const found = [Number(match[1]), Number(match[2]), Number(match[3] ?? 0)];
-    for (const [index, part] of minimum.entries()) {
-      if (found[index] !== part) return found[index] > part;
-    }
-    return true;
+  function message(text, vars) {
+    return vars ? { text, vars } : { text };
   }
 
-
-  function nonBlank(value) {
-    return typeof value === "string" && value.trim() ? value : null;
+  /** An error object (or plain source string) with its placeholders filled,
+   *  untranslated. */
+  function errorText(error) {
+    const text = String(typeof error === "string" ? error : error?.text ?? "");
+    const vars = typeof error === "object" ? error?.vars : undefined;
+    return text.replace(/\{(\w+)\}/g, (whole, key) => vars && Object.hasOwn(vars, key) ? String(vars[key]) : whole);
   }
 
-  function localName(node) {
-    return String(node?.localName ?? node?.nodeName ?? "").toLowerCase();
-  }
-
-  function attr(node, name) {
-    if (typeof node?.getAttribute === "function") return node.getAttribute(name);
-    const value = node?.attributes?.[name];
-    return value === undefined || value === null ? null : String(value);
-  }
-
-  /** Credential marker shared by both stack halves: after entity decoding the
-   *  browser already did, a `type`/`autocomplete` value counts as a password
-   *  field when it contains "password" anywhere — no token splitting and no
-   *  dependence on whitespace, so NBSP or BOM padding cannot slip past. */
-  function passwordMarker(value) {
-    return (value ?? "").toLowerCase().includes("password");
-  }
-
-  function children(node) {
-    return Array.from(node?.childNodes ?? []);
-  }
-
-  function descendants(node, predicate, out = []) {
-    for (const child of children(node)) {
-      if (child.nodeType !== 1) continue;
-      if (predicate(child)) out.push(child);
-      descendants(child, predicate, out);
-    }
-    return out;
-  }
-
-  function textOf(node) {
-    if (!node) return "";
-    if (node.nodeType === 3) return node.data ?? "";
-    return children(node).map(textOf).join("");
-  }
-
-  function numberAttr(node, name) {
-    const raw = attr(node, name);
-    if (raw === null || raw.trim() === "") return undefined;
-    const value = Number(raw);
-    return Number.isFinite(value) ? value : undefined;
-  }
-
-  function normalize(text) {
-    return String(text ?? "").replace(/[^\S\n]+/g, " ").replace(/ ?\n ?/g, "\n").trim();
-  }
-
-  function labelText(node) {
-    const walk = element => {
-      if (element.nodeType === 3) return element.data ?? "";
-      if (element.nodeType !== 1) return "";
-      const tag = localName(element);
-      if (SKIPPED.has(tag) || tag === "input" || tag === "select" || tag === "textarea" || tag === "svg") return "";
-      if (tag === "br") return "\n";
-      if (tag === "img") return attr(element, "alt") ?? "";
-      const body = children(element).map(walk).join("");
-      return BLOCK.has(tag) || HEADING.has(tag) ? ` ${body} ` : body;
-    };
-    return normalize(walk(node));
-  }
-
-  function hasControl(node) {
-    return descendants(node, element => ["input", "select", "textarea"].includes(localName(element))).length > 0;
-  }
-
-  // querySelectorAll("tr") plus closest("table") in omp's parser: a nested
-  // table's rows belong to that table, never to the outer decision matrix.
-  function tableRows(table) {
-    const rows = [];
-    const walk = node => {
-      for (const child of children(node)) {
-        if (child.nodeType !== 1) continue;
-        const tag = localName(child);
-        if (tag === "table") continue;
-        if (tag === "tr") rows.push(child);
-        else walk(child);
-      }
-    };
-    walk(table);
-    return rows;
-  }
-
-  function wrappingLabel(cell, control) {
-    return descendants(cell, element => localName(element) === "label" && descendants(element, candidate => candidate === control).length > 0).at(-1) ?? null;
-  }
-
-  function allElements(root) {
-    const out = [];
-    const pending = [{ node: root, depth: 0 }];
-    let nodes = 0;
-    while (pending.length) {
-      const { node, depth } = pending.pop();
-      if (++nodes > MAX_NODES || depth > MAX_DEPTH) throw new Error("This form has too much markup to show.");
-      if (node.nodeType === 1 && depth > 0) out.push(node);
-      for (const child of children(node)) pending.push({ node: child, depth: depth + 1 });
-    }
-    return out.reverse();
-  }
-
-  class Builder {
-    constructor(root) {
-      this.root = root;
-      this.sections = [{ title: "", blocks: [], fieldset: false }];
-      this.section = this.sections[0];
-      this.fields = [];
-      this.hidden = [];
-      this.groups = new Map();
-      this.labelsFor = new Map();
-      this.inline = "";
-      this.fieldsetDepth = 0;
-      this.blockCount = 0;
-      this.optionCount = 0;
-      this.tableCellCount = 0;
-      this.displayBytes = 0;
-    }
-
-    budget(text) {
-      this.displayBytes += (UTF8 ??= new TextEncoder()).encode(String(text ?? "")).length;
-      if (this.displayBytes > MAX_DISPLAY_BYTES) throw new Error("This form has too much display text to show.");
-    }
-
-    budgetField(field) {
-      this.budget(field.label);
-      if (field.kind === "choice" && !field.label) this.budget(field.name.replace(/[_-]+/g, " "));
-      if (field.kind === "choice") for (const option of field.options) this.budget(option.label);
-      else {
-        this.budget(field.value);
-        this.budget(field.placeholder);
-        this.budget(field.pattern);
-      }
-    }
-
-    build() {
-      const elements = allElements(this.root);
-      const ids = new Set(elements.map(element => attr(element, "id")).filter(Boolean));
-      for (const element of elements) {
-        if (localName(element) !== "label") continue;
-        const target = attr(element, "for");
-        if (target && ids.has(target) && !this.labelsFor.has(target)) this.labelsFor.set(target, element);
-      }
-      this.walkChildren(this.root);
-      this.flush(false);
-      for (const field of this.fields) {
-        if (field.kind !== "choice" || field.select || field.options.length < 2) continue;
-        field.other = !field.options.some(option => /^\s*other\b/i.test(option.label));
-      }
-      return {
-        sections: this.sections.filter(section => section.title !== "" || section.blocks.length > 0),
-        fields: this.fields,
-        hidden: this.hidden,
-      };
-    }
-
-    walkChildren(node) {
-      for (const child of children(node)) this.walk(child);
-    }
-
-    appendInline(text) {
-      if (text) this.inline += text;
-    }
-
-    flush(heading) {
-      const text = normalize(this.inline);
-      this.inline = "";
-      if (!text) return;
-      if (++this.blockCount > MAX_BLOCKS) throw new Error("This form has too much content to show.");
-      this.budget(text);
-      this.section.blocks.push({ kind: "text", text, heading: Boolean(heading) });
-    }
-
-    block(block) {
-      if (++this.blockCount > MAX_BLOCKS) throw new Error("This form has too much content to show.");
-      if (block.kind === "text" || block.kind === "pre" || block.kind === "image") this.budget(block.text ?? block.alt);
-      else if (block.kind === "list") for (const item of block.items) this.budget(item);
-      else if (block.kind === "table") for (const row of block.rows) for (const cell of row) this.budget(cell);
-      else if (block.kind === "field") this.budgetField(block.field);
-      this.section.blocks.push(block);
-    }
-
-    walk(node) {
-      if (!node || node.nodeType === 8) return;
-      if (node.nodeType === 3) {
-        this.appendInline(node.data ?? "");
-        return;
-      }
-      if (node.nodeType !== 1) return;
-      const tag = localName(node);
-      if (SKIPPED.has(tag)) return;
-      if (tag === "br") return this.appendInline("\n");
-      if (tag === "hr") return this.flush(false);
-      if (tag === "input" || tag === "select" || tag === "textarea") return this.control(node, null);
-      if (tag === "label") return this.label(node);
-      if (tag === "fieldset") return this.fieldset(node);
-      if (tag === "legend") {
-        this.flush(false);
-        this.walkChildren(node);
-        this.flush(true);
-        return;
-      }
-      if (tag === "ul" || tag === "ol") return this.list(node, tag === "ol");
-      if (tag === "pre") {
-        this.flush(false);
-        return this.block({ kind: "pre", text: textOf(node).replace(/^\n/, "").trimEnd() });
-      }
-      if (tag === "table") return this.table(node);
-      if (tag === "img") {
-        const alt = normalize(attr(node, "alt") ?? "");
-        if (alt) {
-          this.flush(false);
-          this.block({ kind: "image", alt });
-        }
-        return;
-      }
-      if (tag === "svg") {
-        const label = normalize(attr(node, "aria-label") ?? "");
-        const title = descendants(node, child => localName(child) === "title")
-          .map(textOf).join(" ").replace(/\s+/g, " ").trim();
-        const alt = label || title;
-        if (alt) {
-          this.flush(false);
-          this.block({ kind: "image", alt });
-        }
-        return;
-      }
-      if (HEADING.has(tag)) {
-        this.flush(false);
-        this.walkChildren(node);
-        this.flush(true);
-        return;
-      }
-      if (BLOCK.has(tag)) {
-        this.flush(false);
-        this.walkChildren(node);
-        this.flush(false);
-        return;
-      }
-      this.walkChildren(node);
-    }
-
-    label(node) {
-      const target = attr(node, "for");
-      if (target && this.labelsFor.get(target) === node) return;
-      const controls = descendants(node, element => ["input", "select", "textarea"].includes(localName(element)));
-      if (controls.length === 0) return this.walkChildren(node);
-      this.flush(false);
-      const label = labelText(node);
-      for (const control of controls) this.control(control, label);
-    }
-
-    fieldset(node) {
-      this.flush(false);
-      const legend = children(node).find(child => child.nodeType === 1 && localName(child) === "legend");
-      if (this.fieldsetDepth > 0) {
-        if (legend) this.walk(legend);
-      } else {
-        this.startSection(legend ? labelText(legend) : "", true);
-      }
-      this.fieldsetDepth++;
-      for (const child of children(node)) if (child !== legend) this.walk(child);
-      this.flush(false);
-      this.fieldsetDepth--;
-      if (this.fieldsetDepth === 0) this.startSection("", false);
-    }
-
-    startSection(title, fieldset) {
-      this.budget(title);
-      if (this.section.blocks.length === 0 && this.section.title === "") {
-        this.section.title = title;
-        this.section.fieldset = fieldset;
-        return;
-      }
-      this.section = { title, blocks: [], fieldset };
-      this.sections.push(this.section);
-    }
-
-    list(node, ordered) {
-      this.flush(false);
-      if (hasControl(node)) {
-        this.walkChildren(node);
-        this.flush(false);
-        return;
-      }
-      const items = children(node)
-        .filter(child => child.nodeType === 1 && localName(child) === "li")
-        .map(labelText)
-        .filter(Boolean);
-      if (items.length) this.block({ kind: "list", items, ordered });
-    }
-
-    table(node) {
-      this.flush(false);
-      const rows = tableRows(node);
-      const cellsOf = row => children(row).filter(cell => ["td", "th"].includes(localName(cell)));
-      this.tableCellCount += rows.reduce((count, row) => count + cellsOf(row).length, 0);
-      if (this.tableCellCount > MAX_TABLE_CELLS) throw new Error("This form has too many table cells to show.");
-      if (!hasControl(node)) {
-        const cells = rows.map(row => cellsOf(row).map(labelText));
-        let headerRows = 0;
-        while (headerRows < rows.length && cellsOf(rows[headerRows]).every(cell => localName(cell) === "th")) headerRows++;
-        if (cells.some(row => row.length)) this.block({ kind: "table", rows: cells, headerRows });
-        return;
-      }
-      // A decision matrix: row text stays context and an unlabelled control
-      // borrows its column header, exactly as omp's parse.ts does.
-      let header = [];
-      for (const row of rows) {
-        const cells = cellsOf(row);
-        if (cells.every(cell => localName(cell) === "th") && !hasControl(row)) {
-          header = cells.map(labelText);
-          continue;
-        }
-        const text = cells.filter(cell => !hasControl(cell)).map(labelText).filter(Boolean).join(" · ");
-        if (text) this.block({ kind: "text", text, heading: false });
-        cells.forEach((cell, column) => {
-          for (const control of descendants(cell, child => ["input", "select", "textarea"].includes(localName(child)))) {
-            const label = wrappingLabel(cell, control);
-            const own = labelText(label ?? cell);
-            this.control(control, own || header[column] || null);
-          }
-        });
-      }
-    }
-
-    detachedLabel(control) {
-      const label = this.labelsFor.get(attr(control, "id"));
-      if (label) return labelText(label);
-      return normalize(attr(control, "aria-label") ?? attr(control, "title") ?? "");
-    }
-
-    control(control, wrapping) {
-      this.flush(false);
-      const own = typeof wrapping === "string" && wrapping ? wrapping : this.detachedLabel(control);
-      const name = attr(control, "name") ?? "";
-      const required = control.hasAttribute?.("required") ?? attr(control, "required") !== null;
-      const tag = localName(control);
-      if (tag === "select") {
-        const multi = control.hasAttribute?.("multiple") ?? attr(control, "multiple") !== null;
-        const options = descendants(control, child => localName(child) === "option").map(option => {
-          const label = textOf(option).replace(/\s+/g, " ").trim();
-          return {
-            value: attr(option, "value") ?? label,
-            label,
-            checked: option.hasAttribute?.("selected") ?? attr(option, "selected") !== null,
-            disabled: option.hasAttribute?.("disabled") ?? attr(option, "disabled") !== null,
-          };
-        });
-        this.optionCount += options.length;
-        if (this.optionCount > MAX_OPTIONS) throw new Error("This form has too many options to show.");
-        if (!multi && !options.some(option => option.checked)) {
-          const first = options.find(option => !option.disabled);
-          if (first) first.checked = true;
-        }
-        return this.addField({ kind: "choice", name, multi, select: true, other: false, label: own, options, required });
-      }
-      if (tag === "textarea") {
-        return this.addField({
-          kind: "text", name, type: "textarea", multiline: true,
-          label: own || name.replace(/[_-]+/g, " "),
-          value: textOf(control).replace(/^\r?\n/, ""),
-          placeholder: attr(control, "placeholder") ?? "",
-          required,
-          minLength: numberAttr(control, "minlength"),
-          maxLength: numberAttr(control, "maxlength"),
-          rows: numberAttr(control, "rows") ?? 4,
-        });
-      }
-      const type = (attr(control, "type") ?? "text").toLowerCase();
-      if (IGNORED_INPUTS.has(type)) return;
-      const value = attr(control, "value");
-      if (type === "hidden") {
-        if (name) this.hidden.push([name, value ?? ""]);
-        return;
-      }
-      if (type === "radio" || type === "checkbox") {
-        const option = {
-          value: value ?? "on",
-          label: own || (value ?? name),
-          checked: control.hasAttribute?.("checked") ?? attr(control, "checked") !== null,
-          disabled: control.hasAttribute?.("disabled") ?? attr(control, "disabled") !== null,
-        };
-        this.optionCount++;
-        if (this.optionCount > MAX_OPTIONS) throw new Error("This form has too many options to show.");
-        const key = `${type}\0${name}`;
-        const group = this.groups.get(key);
-        if (group) {
-          // omp resolves a submitted value to the first enabled option. A
-          // later enabled duplicate could never be submitted distinctly.
-          if (group.options.some(existing => !existing.disabled && existing.value === option.value)) option.disabled = true;
-          group.options.push(option);
-          this.budget(option.label);
-          group.required ||= required;
-          return;
-        }
-        const field = { kind: "choice", name, multi: type === "checkbox", select: false, other: false, label: "", options: [option], required };
-        this.groups.set(key, field);
-        return this.addField(field);
-      }
-      return this.addField({
-        kind: "text", name, type, multiline: false,
-        label: own || name.replace(/[_-]+/g, " "),
-        value: value ?? "",
-        placeholder: attr(control, "placeholder") ?? "",
-        required,
-        min: numberAttr(control, "min"),
-        max: numberAttr(control, "max"),
-        step: numberAttr(control, "step"),
-        pattern: attr(control, "pattern") ?? undefined,
-        minLength: numberAttr(control, "minlength"),
-        maxLength: numberAttr(control, "maxlength"),
-        rows: 1,
-      });
-    }
-
-    addField(field) {
-      if (this.fields.length >= MAX_FIELDS) throw new Error("This form has too many fields to show.");
-      this.fields.push(field);
-      this.block({ kind: "field", field });
-    }
-  }
-
-  /** Parse agent-written form HTML. `documentImpl` is a test seam for Node,
-   *  where DOMParser does not exist; the app always uses DOMParser.
-   *  `ompVersion` is the asking tab's own `omp --version`, bound to the
-   *  session at spawn time (Rust `start_session`); a form carrying a
-   *  `pattern` is refused unless it is 19.2.0+,
-   *  because 19.1.x checks patterns itself and would reject an answer this
-   *  side cannot verify. Returns `{form}` or `{error}` — an error means the
-   *  request is cancelled so omp never waits on a card that cannot be
-   *  answered. */
-  function parse(html, documentImpl, ompVersion) {
-    if (typeof html !== "string" || !html.trim()) return { error: "The form is empty." };
-    if (new TextEncoder().encode(html).length > MAX_HTML_BYTES) return { error: "The form HTML is too large to show." };
-    let document;
-    try {
-      if (documentImpl) document = documentImpl;
-      else if (typeof DOMParser !== "undefined") document = new DOMParser().parseFromString(html, "text/html");
-      else return { error: "This page cannot read forms." };
-      const documentElements = allElements(document.documentElement ?? document.body ?? document);
-      const root = document.body ?? document.documentElement ?? document;
-      const elements = root === document.documentElement ? documentElements : allElements(root);
-      const formNode = elements.find(node => localName(node) === "form");
-      // `reader.rs` replaces a form whose HTML mentions a credential with
-      // this marker before journaling or emitting it, so neither the original
-      // HTML nor a prefilled value ever reaches this parser.
-      if (attr(formNode ?? root, "data-omp-desktop-redacted") === "password")
-        return { error: PASSWORD_REFUSAL };
-      const passwordControl = node => localName(node) === "input"
-        && (passwordMarker(attr(node, "type")) || passwordMarker(attr(node, "autocomplete")));
-      if (descendants(formNode ?? root, passwordControl).length > 0)
-        return { error: PASSWORD_REFUSAL };
-      const builder = new Builder(formNode ?? root);
-      const form = builder.build();
-      if (form.fields.some(field => field.pattern !== undefined)
-        && !versionAtLeast(ompVersion, PATTERN_MIN_VERSION))
-        return { error: PATTERN_REFUSAL };
-      if (!form.fields.some(field => field.name) && form.hidden.length === 0)
-        return { error: "The form has no named controls." };
-      return { form };
-    } catch {
-      return { error: "The form could not be read." };
-    }
+  function parse(html) {
+    const parser = window.OMP_HTML_FORM_PARSE;
+    return parser ? parser.parse(html) : { error: message("This page cannot read forms.") };
   }
 
   function isArrayChoice(field) {
@@ -543,10 +57,7 @@
     return text;
   }
 
-  /** One field's value from its own draft entry. `buildData` and
-   *  `draftErrors` both call this, so a field that shares its name with
-   *  another is validated against its own answer and not against the last
-   *  value `buildData` happened to write for that name. */
+  /** One field's value from its own draft entry. */
   function entryValue(field, entry) {
     return field.kind === "text"
       ? textValue(field, typeof entry === "string" ? entry : field.value)
@@ -628,45 +139,82 @@
     return input.value;
   }
 
+  /** The `<input type>` both renderers draw a single-line text field with:
+   *  its own type when the browser keeps the field's default unchanged under
+   *  it, else "text". omp sends an untouched field's value as written, but a
+   *  range input shows its midpoint for `value=""`, a colour input
+   *  `#000000`, a date input nothing for an unreadable date — the shown and
+   *  the sent answer would differ. `makeInput` creates a detached
+   *  `<input>` to try the value on; without one the answer is "text". */
+  function inputType(field, makeInput) {
+    const type = field.type || "text";
+    if (type === "text" || typeof makeInput !== "function") return "text";
+    const input = makeInput();
+    input.type = type;
+    if (input.type !== type) return "text";
+    return setInputValue(input, field, field.value) === field.value ? type : "text";
+  }
+
+  /** omp 19.1's `fieldError` (data.ts) as `{text, vars}`: required, numeric
+   *  min/max, min/max length, email and url. `pattern` is a hint only: a
+   *  model-written regex never runs in the webview. */
   function fieldError(field, value) {
     if (field.kind === "choice") {
-      // Two entries for one value (a picked option plus the same text in
-      // Other) make omp fail the answer with `unexpected value`; say so
-      // before the request is sent.
-      if (Array.isArray(value) && new Set(value).size !== value.length) return "That answer is already picked";
       const empty = value === undefined || (Array.isArray(value) && value.length === 0);
       if (!field.required || !empty) return undefined;
-      return isArrayChoice(field) ? "Select at least one" : "Required";
+      return message(isArrayChoice(field) ? "Select at least one" : "Required");
     }
     const text = value === undefined ? "" : String(value);
-    if (text.trim() === "") return field.required ? "Required" : undefined;
+    if (text.trim() === "") return field.required ? message("Required") : undefined;
     if (field.type === "number" || field.type === "range") {
       const number = Number(text);
-      if (!Number.isFinite(number)) return "Enter a number";
-      if (field.min !== undefined && number < field.min) return `Must be at least ${field.min}`;
-      if (field.max !== undefined && number > field.max) return `Must be at most ${field.max}`;
+      if (!Number.isFinite(number)) return message("Enter a number");
+      if (field.min !== undefined && number < field.min) return message("Must be at least {min}", { min: field.min });
+      if (field.max !== undefined && number > field.max) return message("Must be at most {max}", { max: field.max });
     }
-    if (field.minLength !== undefined && text.length < field.minLength) return `Needs at least ${field.minLength} characters`;
-    if (field.maxLength !== undefined && text.length > field.maxLength) return `At most ${field.maxLength} characters`;
-    if (field.type === "email" && !/^[^\s@]+@[^\s@]+$/.test(text)) return "Enter an email address";
+    if (field.minLength !== undefined && text.length < field.minLength) return message("Needs at least {n} characters", { n: field.minLength });
+    if (field.maxLength !== undefined && text.length > field.maxLength) return message("At most {n} characters", { n: field.maxLength });
+    if (field.type === "email" && !/^[^\s@]+@[^\s@]+$/.test(text)) return message("Enter an email address");
     if (field.type === "url") {
       try {
         new URL(text);
       } catch {
-        return "Enter a full URL";
+        return message("Enter a full URL");
       }
     }
     return undefined;
   }
 
-  function draftErrors(form, draft) {
-    const errors = {};
-    form.fields.forEach((field, index) => {
-      if (!field.name) return;
-      const error = fieldError(field, entryValue(field, draft[index]));
-      if (error) errors[index] = error;
-    });
-    return errors;
+  // ── omp's reading of a submitted answer (rpc-mode.ts) ───────────────────
+  /** Why omp refuses an answer: `kind` picks the wording, `field` the name. */
+  class AnswerRefusal extends Error {
+    constructor(kind, field) {
+      super(kind);
+      this.kind = kind;
+      this.field = field;
+    }
+  }
+
+  // Shown beside the field in a draft (the field is known there).
+  const DRAFT_TEXT = {
+    disabled: "That answer is a disabled option",
+    unexpected: "That answer is already picked",
+  };
+  // `answerError`'s wording, naming the field.
+  const ANSWER_TEXT = {
+    record: "The answer is not a set of form fields.",
+    unknown: "The form has no field named “{field}”.",
+    list: "“{field}” needs a list of answers.",
+    single: "“{field}” takes one answer, not a list.",
+    disabled: "“{field}” carries a disabled option.",
+    unexpected: "“{field}” carries an unexpected answer.",
+    text: "“{field}” needs text.",
+    rule: "Fix the field “{field}” before sending.",
+  };
+
+  function refusalMessage(refusal) {
+    const kind = refusal instanceof AnswerRefusal ? refusal.kind : "unexpected";
+    return message(ANSWER_TEXT[kind] ?? ANSWER_TEXT.unexpected, kind === "record" ? undefined : { field: refusal?.field ?? "" });
   }
 
   function isRecord(value) {
@@ -676,19 +224,19 @@
   function parseChoice(field, value) {
     if (value === undefined) return choiceValue(field, new Set());
     const array = isArrayChoice(field);
-    const shape = array ? "an array of strings" : "one string, not an array";
-    if (array !== Array.isArray(value)) throw new Error(shape);
+    const shape = array ? "list" : "single";
+    if (array !== Array.isArray(value)) throw new AnswerRefusal(shape, field.name);
     const entries = array ? value : [value];
     const checked = new Set();
     let other;
     for (const entry of entries) {
-      if (typeof entry !== "string") throw new Error(shape);
+      if (typeof entry !== "string") throw new AnswerRefusal(shape, field.name);
       const enabled = field.options.findIndex(option => !option.disabled && option.value === entry);
       const index = enabled >= 0 ? enabled : field.options.findIndex(option => option.value === entry);
-      if (index >= 0 && field.options[index].disabled) throw new Error("disabled option");
+      if (index >= 0 && field.options[index].disabled) throw new AnswerRefusal("disabled", field.name);
       if (index >= 0 && !checked.has(index)) checked.add(index);
       else if (index < 0 && field.other && other === undefined) other = entry;
-      else throw new Error("unexpected value");
+      else throw new AnswerRefusal("unexpected", field.name);
     }
     return choiceValue(field, checked, other);
   }
@@ -698,7 +246,7 @@
     const numeric = field.type === "number" || field.type === "range";
     if (typeof value === "string" || (numeric && typeof value === "number" && Number.isFinite(value)))
       return textValue(field, String(value));
-    throw new Error("text shape");
+    throw new AnswerRefusal("text", field.name);
   }
 
   function parseChoiceOrHidden(field, value, hiddenValue) {
@@ -715,15 +263,15 @@
     }
   }
 
-  /** Every field of `data` parsed into its own value, plus a shape error.
-   *  Mirrors `parseFormDialogResponse`'s per-name grouping: one entry answers
-   *  every field of its name, a field of another shape declines it, at least
-   *  one field must carry the entry, and an undeclared name is refused. */
+  /** Every named field's value as omp parses `data`; throws an
+   *  AnswerRefusal. One entry answers every field of its name, a field of
+   *  another shape declines it, at least one field must carry the entry, and
+   *  an undeclared name is refused. */
   function readAnswer(form, data) {
-    if (!isRecord(data)) return { error: "data must be an object" };
+    if (!isRecord(data)) throw new AnswerRefusal("record");
     const named = form.fields.filter(field => field.name);
     const names = new Set([...named.map(field => field.name), ...form.hidden.map(([name]) => name)]);
-    for (const name of Object.keys(data)) if (!names.has(name)) return { error: `unknown field ${name}` };
+    for (const name of Object.keys(data)) if (!names.has(name)) throw new AnswerRefusal("unknown", name);
     const hidden = new Map(form.hidden);
     const groups = new Map();
     for (const field of named) {
@@ -737,64 +285,95 @@
       let mismatch;
       const values = group.map(field => {
         try {
-          const value = field.kind === "choice"
-            ? parseChoiceOrHidden(field, entry, hiddenValue)
-            : parseText(field, entry);
+          const value = field.kind === "choice" ? parseChoiceOrHidden(field, entry, hiddenValue) : parseText(field, entry);
           return { field, name, value, carried: true };
         } catch (error) {
           if (group.length === 1) throw error;
           mismatch ??= error;
-          return {
-            field,
-            name,
-            value: field.kind === "choice" ? parseChoice(field, undefined) : parseText(field, undefined),
-            carried: false,
-          };
+          return { field, name, value: field.kind === "choice" ? parseChoice(field, undefined) : parseText(field, undefined), carried: false };
         }
       });
-      if (!values.some(value => value.carried)) throw mismatch ?? new Error("field shape");
+      if (!values.some(value => value.carried)) throw mismatch;
       fields.push(...values);
     }
-    return { fields };
+    return fields;
   }
 
-  /** Why omp would reject `data` by shape, or null: unknown names, wrong
-   *  shapes, disabled options and duplicate entries. Constraint rules
-   *  (`required`, bounds, lengths, email, url) are `answerError`'s. */
+  /** Why omp would reject `data` by shape (`{text, vars}`), or null:
+   *  unknown names, wrong shapes, disabled options and duplicate entries. */
   function dataError(form, data) {
-    return readAnswer(form, data).error ?? null;
+    try {
+      readAnswer(form, data);
+      return null;
+    } catch (error) {
+      return refusalMessage(error);
+    }
   }
 
-  /** Why `data` would be rejected, or null: always the shape rules above,
-   *  then — only below omp 19.2.0 (or when the session's version is unknown)
-   *  — omp 19.1.x's `fieldError` (data.ts) on every field's own parsed
-   *  value. From 19.2.0 omp no longer applies `fieldError` to a submitted
-   *  answer, and a required radio sharing its name with a checkbox group is
-   *  accepted there; replaying the 19.1 check would refuse a valid answer.
-   *  `pattern` is absent at every version: a form carrying one is refused at
-   *  parse time unless omp is 19.2.0+ and treats it as a display hint. */
-  function answerError(form, data, ompVersion) {
-    let answer;
+  /** Why `data` must not be sent (`{text, vars}`), or null: the shape rules,
+   *  then omp 19.1's `fieldError` on every field's value as omp parses it —
+   *  applied on every omp version (19.2+ no longer checks them, so the
+   *  check only ever refuses what an older omp would reject). */
+  function answerError(form, data) {
+    let fields;
     try {
-      answer = readAnswer(form, data);
+      fields = readAnswer(form, data);
     } catch (error) {
-      return error?.message ?? String(error ?? "field shape");
+      return refusalMessage(error);
     }
-    if (answer.error) return answer.error;
-    if (versionAtLeast(ompVersion, PATTERN_MIN_VERSION)) return null;
-    for (const { field, name, value } of answer.fields) {
-      const problem = fieldError(field, value);
-      if (problem) return `Form field ${JSON.stringify(name)}: ${problem}`;
+    for (const { field, name, value } of fields) {
+      if (fieldError(field, value)) return message(ANSWER_TEXT.rule, { field: name });
     }
     return null;
   }
 
   function validateData(form, data) {
-    try {
-      return dataError(form, data) === null;
-    } catch {
-      return false;
+    return dataError(form, data) === null;
+  }
+
+  function sameValue(a, b) {
+    if (Array.isArray(a) && Array.isArray(b)) {
+      const sorted = list => [...list].map(String).sort();
+      return JSON.stringify(sorted(a)) === JSON.stringify(sorted(b));
     }
+    return a === b;
+  }
+
+  /** Errors to show beside each field (`{index: {text, vars}}`); Submit
+   *  stays disabled while any exist. Each field is checked on its own
+   *  answer (omp's per-field reading, then `fieldError`), then against the
+   *  value omp would read for it from the whole answer: a field whose answer
+   *  another field of the same name replaces is flagged. Whatever
+   *  `answerError` still refuses lands on the first named field. */
+  function draftErrors(form, draft) {
+    const errors = {};
+    const data = buildData(form, draft);
+    let parsed = null;
+    try {
+      parsed = new Map(readAnswer(form, data).map(entry => [entry.field, entry.value]));
+    } catch {
+      parsed = null;
+    }
+    form.fields.forEach((field, index) => {
+      if (!field.name) return;
+      const own = entryValue(field, draft[index]);
+      let error;
+      try {
+        if (field.kind === "choice") parseChoice(field, own);
+      } catch (refusal) {
+        error = message(DRAFT_TEXT[refusal?.kind] ?? DRAFT_TEXT.unexpected);
+      }
+      error ??= fieldError(field, own);
+      if (!error && parsed?.has(field) && !sameValue(parsed.get(field), own))
+        error = message("Another field named “{name}” replaces this answer", { name: field.name });
+      if (error) errors[index] = error;
+    });
+    if (Object.keys(errors).length === 0) {
+      const refusal = answerError(form, data);
+      const first = form.fields.findIndex(field => field.name);
+      if (refusal && first >= 0) errors[first] = refusal;
+    }
+    return errors;
   }
 
   function summary(form, data) {
@@ -829,7 +408,7 @@
 
   window.OMP_HTML_FORM = {
     parse, emptyDraft, pick, setOther, setText, clearPick, buildData, defaultData, withHiddenDefaults, setInputValue,
-    fieldError, draftErrors, dataError, answerError, validateData, summary, summaryPrompt,
-    isArrayChoice, choiceValue, textValue, versionAtLeast,
+    inputType, fieldError, draftErrors, dataError, answerError, validateData, summary, summaryPrompt, errorText,
+    isArrayChoice, choiceValue, textValue,
   };
 })();
