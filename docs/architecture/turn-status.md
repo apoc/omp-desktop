@@ -121,13 +121,10 @@ bounces the dock once while the window is not focused, through the same
 Informational). The first snapshot after a page load never bounces: its asks
 are not new. A focused window already shows the tab dot, so it stays quiet.
 
-Known gap (display and phone push alike): protocol v2 sends oversized stdout
-objects as `rpc_chunk` sequences, and only the webview reassembles them
-(`live.js` `_dispatchEnvelope`). The tracker sees the chunk envelopes as
-unrelated frames, so an oversized `extension_ui_request` (or `get_state`
-answer) reaches neither the tab dot nor the phone's `hasAsk`. Every frame
-carrying a question in practice fits one chunk; a Rust-side reassembly would
-close it for both consumers at once.
+Chunked frames: protocol v2 sends oversized stdout objects as `rpc_chunk`
+sequences, and the stdout reader reassembles them in Rust (`agent/frames.rs`)
+before the tracker, so an oversized `extension_ui_request` (or `get_state`
+answer) reaches the tab dot and the phone's `hasAsk` like any other frame.
 
 One replaceable `Arc<dyn TrackerSink>` receives committed changes after both
 tracker locks are released. Sinks must only enqueue work; transport and push
