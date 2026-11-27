@@ -164,6 +164,9 @@ function App() {
   // Tool approval mode `{ default, projects }` (app/approval-mode.js), null
   // until the bridge's boot fetch lands.
   const [approvalModes, setApprovalModes] = React.useState(null);
+  // The tab on screen whose omp is restarting (the snapshot's
+  // `restartingTab`), or null: the composer's restart note.
+  const [restartingTab, setRestartingTab] = React.useState(null);
 
   // ── Cross-cutting effects ─────────────────────────────────────────────────
   // The rendered tab's project. Derived before the effects because the theme
@@ -174,7 +177,7 @@ function App() {
     setModels, setActivity, setSparkline,
     setModelState, setThinkingLevel,
     setSessions, setActiveSessionId, setProfiles, setStartupProfileId, setRecentProjects,
-    setNoTabProfileId, setWorkspaceNotes, setApprovalModes, setCloseConfirm,
+    setNoTabProfileId, setWorkspaceNotes, setApprovalModes, setCloseConfirm, setRestartingTab,
     setPromptHistory, setSubagents, setSubagentTranscripts, setQueue, setQueueSending, setGoal, setExtWidgets, setLiveVoice, setDictation, setCodexLogin, setDictationCompleted,
   });
   useRemote({ bridge });
@@ -528,9 +531,26 @@ function App() {
     const out = takeChips(msg, images, route);
     goalUi.start({ text: msg, images, chips: out.chips, marks: out.marks }, out);
   };
+  // A submit while the tab's omp restarts (a profile switch, an
+  // approval-mode change) would be lost: the bridge refuses it, so it is
+  // refused here first — before plan framing spends annotations or chips
+  // and marks are taken — and `false` tells the composer to keep the
+  // draft. The note names the tab that restarts (`restartNoteTab`) and
+  // shows while the composer is on it and it still restarts; the restart's
+  // end drops it (`TURN.restartNoteShown` / `restartNoteKept`).
+  const [restartNoteTab, setRestartNoteTab] = React.useState(null);
+  React.useEffect(() => {
+    setRestartNoteTab(tab => window.OMP_TURN_STATUS.restartNoteKept(tab, restartingTab));
+  }, [restartingTab]);
+  const refusedForRestart = () => {
+    if (!bridge?.isRestarting?.()) return false;
+    setRestartNoteTab(bridge.restartingTab?.() ?? null);
+    return true;
+  };
   const handleSend = (text, images) => {
     const hasAnnotations = Object.keys(plan.annotations).length > 0;
     if (!text.trim() && !hasAnnotations && !(images && images.length > 0) && !browser.chips.length && !files.marks.length) return;
+    if (refusedForRestart()) return false;
     let msg = text.trim();
     // A slash command (typed by hand, or inserted by picking a non-desktop
     // entry from the `/` popup or the ⌘K bridge) must reach omp with its
@@ -624,6 +644,7 @@ function App() {
   // chord starts the goal too, like Enter (handleSend). The tab's browser
   // annotations and file marks ride along as they do with a send.
   const handleFollowUp = (text, images) => {
+    if (refusedForRestart()) return false;
     const msg = text.trim();
     const route = routeOf(msg, true);
     if (route.via === "goal") {
@@ -754,6 +775,7 @@ function App() {
   };
 
   const handleApprovePlan = () => {
+    if (refusedForRestart()) return;
     updatePlan(approvePlan);
     bridge?.followUp(APPROVAL_PROMPT);
     setPlanOpen(true);
@@ -1123,6 +1145,7 @@ function App() {
                     onSetThinking={level => bridge.setThinkingLevel(level)}
                     isStreaming={streaming}
                     backgroundWork={activeProject.runState === "background"}
+                    restartNote={window.OMP_TURN_STATUS.restartNoteShown(restartNoteTab, activeProject.id, restartingTab)}
                     onAbort={handleAbort}
                     onApprove={handleApprovePlan}
                     annotationCount={Object.keys(plan.annotations).length}

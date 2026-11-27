@@ -668,3 +668,70 @@ fn asks_opened_rises_for_a_new_question_while_the_open_count_stays() {
         "a duplicate open does not stamp again"
     );
 }
+
+/// What the tracker counts as at work: a run, an open question, or
+/// background work; an idle entry is not.
+#[test]
+fn a_tracker_entry_is_at_work_when_busy_asking_or_holding_background_work() {
+    let idle = SessionSnapshot::default();
+    assert!(!idle.at_work());
+    assert!(SessionSnapshot { busy: true, ..idle }.at_work());
+    assert!(SessionSnapshot { asks: 1, ..idle }.at_work());
+    assert!(SessionSnapshot {
+        background: true,
+        ..idle
+    }
+    .at_work());
+    assert!(!SessionSnapshot {
+        asks_opened: 3,
+        ..idle
+    }
+    .at_work());
+}
+
+/// `session_at_work` (the conditional stop) and `any_at_work` (the close
+/// guard) follow a run, an open question and background work through to
+/// settling, per session: one session at work is enough for `any`.
+#[test]
+fn at_work_follows_runs_asks_and_background_work_until_settled() {
+    let t = Tracker::default();
+    let now = Instant::now();
+    let live = AtomicBool::new(true);
+    assert!(!t.any_at_work(), "no session: nothing at work");
+    assert!(!t.session_at_work("a"), "no entry is idle");
+
+    // A runs; B ran and yielded, so it has an idle entry.
+    t.on_frame("a", Some("agent_start"), None, now, &live);
+    t.on_frame("b", Some("agent_start"), None, now, &live);
+    let yielded = json!({"yielded": true});
+    t.on_frame("b", Some("agent_end"), Some(&yielded), now, &live);
+    assert!(t.session_at_work("a"), "a run");
+    assert!(!t.session_at_work("b"), "a yielded session");
+    assert!(t.any_at_work(), "one session at work is enough");
+
+    t.on_frame("a", Some("agent_end"), Some(&yielded), now, &live);
+    assert!(!t.session_at_work("a"));
+    assert!(!t.any_at_work(), "every session idle");
+
+    // An open question on B.
+    let ask = json!({"id":"q","method":"input"});
+    t.on_frame("b", Some("extension_ui_request"), Some(&ask), now, &live);
+    assert!(t.session_at_work("b"), "an open question");
+    assert!(!t.session_at_work("a"));
+    assert!(t.any_at_work());
+    t.on_answered("b", "q", &live);
+    assert!(!t.session_at_work("b"), "answered");
+    assert!(!t.any_at_work());
+
+    // Background work on A, until it settles.
+    let pending = json!({
+        "type": "response", "command": "get_state", "success": true,
+        "data": {"hasPendingAsyncWork": true},
+    });
+    t.on_frame("a", Some("response"), Some(&pending), now, &live);
+    assert!(t.session_at_work("a"), "background work");
+    assert!(t.any_at_work());
+    t.on_frame("a", Some("session_settled"), None, now, &live);
+    assert!(!t.session_at_work("a"), "settled");
+    assert!(!t.any_at_work());
+}

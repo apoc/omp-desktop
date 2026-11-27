@@ -571,18 +571,66 @@ check("a newer removal means the process is gone: the stale ask retires", () => 
   }
 });
 
-check("the tracker overlay is display-only", () => {
-  // The union was removed with the guard revert: no helper takes a tracker
-  // entry for a protective decision, and the busy predicates the guards use
-  // read `runState` alone — an idle frozen tab stays idle however busy the
-  // tracker says the dot is.
-  assert.equal(T.guardRunState, undefined, "no guard-state helper");
-  const frozenIdle = [{ id: "a", path: "/p", repoRoot: "/r", runState: "idle", displayRunState: "running" }];
-  assert.equal(T.busyInRepo(frozenIdle, "/r"), false, "a dot-only run is not repo work");
-  assert.equal(T.busyElsewhere(frozenIdle, "b", "/p"), false, "a dot-only run is not busy elsewhere");
-  assert.equal(T.isBusyRunState(frozenIdle[0].runState), false);
-  const frozenRun = [{ id: "a", path: "/p", repoRoot: "/r", runState: "running", displayRunState: "idle" }];
+check("guardRunState raises a frozen state to the dot, never lowers it, and keeps failed", () => {
+  // Raise: a turn the tab started after it was left (frozen idle, dot busy).
+  assert.equal(T.guardRunState("idle", "running"), "running");
+  assert.equal(T.guardRunState("idle", "waiting-user"), "waiting-user");
+  assert.equal(T.guardRunState("idle", "background"), "background");
+  assert.equal(T.guardRunState("background", "retrying"), "retrying");
+  assert.equal(T.guardRunState("running", "waiting-user"), "waiting-user");
+  // Never lower: a frozen run whose dot a newer report retired stays busy.
+  assert.equal(T.guardRunState("running", "idle"), "running");
+  assert.equal(T.guardRunState("waiting-user", "running"), "waiting-user");
+  assert.equal(T.guardRunState("retrying", "background"), "retrying");
+  assert.equal(T.guardRunState("idle", "idle"), "idle");
+  // `failed` is the process's own verdict.
+  assert.equal(T.guardRunState("failed", "running"), "failed");
+  assert.equal(T.guardRunState("failed", "waiting-user"), "failed");
+  // The busy predicates the guards use read that raised state.
+  const tabs = [{ id: "a", path: "/p", repoRoot: "/r", runState: T.guardRunState("idle", "running"), displayRunState: "running" }];
+  assert.equal(T.busyInRepo(tabs, "/r"), true, "a run the frozen tab never saw is repo work");
+  assert.equal(T.busyElsewhere(tabs, "b", "/p"), true, "and busy elsewhere");
+  const frozenRun = [{ id: "a", path: "/p", repoRoot: "/r", runState: T.guardRunState("running", "idle"), displayRunState: "idle" }];
   assert.equal(T.busyInRepo(frozenRun, "/r"), true, "the frozen run still counts");
+});
+
+// app-live.jsx's restart note: `refuse` is a refused submit (records the
+// bridge's restarting tab), `snapshot` a new `restartingTab` (the effect
+// keeps or drops the recorded tab), `shown` what the composer on `tab` renders.
+function restartNote() {
+  let noteTab = null, restartingTab = null;
+  return {
+    refuse: tab => { noteTab = tab; },
+    snapshot: tab => { restartingTab = tab; noteTab = T.restartNoteKept(noteTab, tab); },
+    shown: composerTab => T.restartNoteShown(noteTab, composerTab, restartingTab),
+  };
+}
+
+check("the restart note shows after a refused submit on the restarting tab and goes when the restart ends", () => {
+  const n = restartNote();
+  n.snapshot("a");
+  assert.equal(n.shown("a"), false, "no submit refused yet");
+  n.refuse("a");
+  assert.equal(n.shown("a"), true, "a refused submit on the restarting tab");
+  n.snapshot(null);
+  assert.equal(n.shown("a"), false, "the restart ended: gone without a submit");
+  n.snapshot("a");
+  assert.equal(n.shown("a"), false, "a later restart of that tab shows nothing until a submit is refused");
+});
+
+check("the restart note never shows on another tab", () => {
+  const n = restartNote();
+  n.snapshot("a");
+  n.refuse("a");
+  // Detached: the composer renders another tab (App's fallback) while A restarts.
+  assert.equal(n.shown("b"), false, "not on B while A is detached");
+  assert.equal(n.shown("a"), true, "on A");
+  // The user moved to B mid-restart: B is not restarting.
+  n.snapshot(null);
+  assert.equal(n.shown("b"), false);
+  n.refuse(null); // a refusal whose restarting tab is unknown records none
+  assert.equal(n.shown("a"), false);
+  assert.equal(T.restartNoteShown("b", "b", "a"), false, "a note recorded for B never shows while A restarts");
 });
 
 check("a frozen ask yields to a tracker entry that has stamped a question", () => {

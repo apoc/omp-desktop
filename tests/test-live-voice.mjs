@@ -250,7 +250,7 @@ function bridgeHarness() {
     OMP_TRANSCRIPT: {}, OMP_PROMPT_HISTORY: { DEFAULT_LIMIT: 100 },
     OMP_SESSION_PREFS: { fromTweaks: () => ({ autoCompaction: true, autoRetry: true }), closeGuardArmed: () => false },
     OMP_TWEAKS_STORE: { read: () => ({}) },
-    OMP_TURN_STATUS: { runStateOf: () => "idle", displayRunState: cached => cached, isBusyRunState: () => false, retryCleared: messages => messages },
+    OMP_TURN_STATUS: { runStateOf: () => "idle", displayRunState: cached => cached, guardRunState: cached => cached, isBusyRunState: () => false, retryCleared: messages => messages },
     OMP_PROJECT_NAV: { basename: path => path.split("/").at(-1), findConversationTab: () => null },
     DEFAULT_PROFILE_ID: "default", INTENT_FRAMING: () => "", timeNow: () => "00:00",
   };
@@ -286,6 +286,8 @@ function bridgeHarness() {
       if (command === "create_profile") return Promise.resolve({ id: "other", name: "Other" });
       if (command === "list_profiles") return Promise.resolve({ profiles: [{ id: "default", name: "default" }, { id: "other", name: "Other" }] });
       if (command === "stop_session") { journal.delete(args.sessionId); return Promise.resolve(null); }
+      // No tracker here: every tab is idle to Rust (an approval restart).
+      if (command === "stop_session_if_idle") { journal.delete(args.sessionId); return Promise.resolve({ stopped: true, busy: false }); }
       if (command === "approval_mode_set_default") {
         approvalMode = args.mode;
         return Promise.resolve({ default: approvalMode, projects: {} });

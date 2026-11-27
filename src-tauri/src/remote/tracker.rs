@@ -55,6 +55,15 @@ pub struct SessionSnapshot {
     pub background: bool,
 }
 
+impl SessionSnapshot {
+    /// Whether the session's agent is at work: mid-run, waiting on an open
+    /// question, or holding background work that can wake it. What the close
+    /// guard and `stop_session_if_idle` treat as busy.
+    pub const fn at_work(&self) -> bool {
+        self.busy || self.asks > 0 || self.background
+    }
+}
+
 pub type Snapshot = HashMap<String, SessionSnapshot>;
 
 /// What the webview receives after every committed change: all sessions plus
@@ -382,6 +391,22 @@ impl Tracker {
     pub fn snapshot(&self) -> Arc<AttentionSnapshot> {
         let guard = self.snapshot.read().unwrap_or_else(PoisonError::into_inner);
         Arc::clone(&*guard)
+    }
+
+    /// Whether `sid`'s published entry is [`SessionSnapshot::at_work`]; no
+    /// entry is idle. Reads the snapshot under its read lock, no copy.
+    pub fn session_at_work(&self, sid: &str) -> bool {
+        let guard = self.snapshot.read().unwrap_or_else(PoisonError::into_inner);
+        guard
+            .sessions
+            .get(sid)
+            .is_some_and(SessionSnapshot::at_work)
+    }
+
+    /// Whether any published session is [`SessionSnapshot::at_work`].
+    pub fn any_at_work(&self) -> bool {
+        let guard = self.snapshot.read().unwrap_or_else(PoisonError::into_inner);
+        guard.sessions.values().any(SessionSnapshot::at_work)
     }
 
     fn notify(&self, sid: &str, transition: Option<Transition>) {

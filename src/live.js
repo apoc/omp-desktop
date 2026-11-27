@@ -161,10 +161,9 @@
   // Every session's tracker entry from Rust (`agent://attention`, initial
   // `attention_snapshot`): `{ busy, asks, asksOpened, background }` per
   // tab id, background ones included, filtered to the tabs currently
-  // registered. Display only: a background tab's dot overlays it on its
-  // frozen snapshot (`TURN.displayRunState`), while `runState` — what every
-  // guard reads — stays the active/frozen state it was before the tracker
-  // existed. Null until the backend answers.
+  // registered. A background tab's dot overlays it on its frozen snapshot
+  // (`TURN.displayRunState`), and its guard `runState` is the raise-only
+  // union of the two (`TURN.guardRunState`). Null until the backend answers.
   let trackerLive = null;
   // Whether a tracker snapshot ever arrived. Distinguishes "no data yet"
   // (keep the frozen snapshot) from a loaded one; whether its report may
@@ -174,7 +173,8 @@
   // (`_applyAttention`). A frozen tab compares this against the stamp it
   // recorded when it was left: only a later change says anything about
   // work done since, so the dot overlay cannot retire a run whose busy
-  // fan-out is still in flight (`TURN.displayRunState`). No guard reads it.
+  // fan-out is still in flight (`TURN.displayRunState`). It only shapes the
+  // dot: the guard state is raise-only, so retiring a dot never lowers it.
   // Removed with the tab.
   const _trackerEvidence = new Map(); // session id → revision
   // Highest tracker revision applied (the tracker snapshot carries one per
@@ -202,6 +202,9 @@
   // Session ids with an omp respawn in flight (`_respawnSession`: a profile
   // switch or an approval-mode restart).
   const _respawning = new Set();
+  // The tab a respawn detached (it was the active one): while the active
+  // slot is empty it is still the tab on screen (`_restartingTab`).
+  let _respawnDetached = null;
   const _closingVoiceTabs = new Set();
   // Tool approval mode (app/approval-mode.js): the `{ default, projects }`
   // view from Rust (`approval_mode_get`, replaced by every set's response),
@@ -212,6 +215,9 @@
   // leaves such a tab alone until the target changes, so a frontend/Rust
   // disagreement can never become a restart loop.
   const _modeRestartMissed = new Map();
+  // Set when an ifIdle restart was deferred because the active tab was
+  // dictating; cleared, once, by `_retryModesAfterDictation`.
+  let _modeWaitsForDictation = false;
   // Session ids whose cached `session_status` startup error has already been
   // filed into the transcript. The backend keeps that entry until the id's
   // next successful spawn, but `_switchToSession` asks on *every* activation,
@@ -257,9 +263,9 @@
   // `quitConfirm` shape), or null; `_closeConfirmAnswer` settles it.
   let closeConfirm = null;
   let _closeConfirmAnswer = null;
-  // Last armed state handed to Rust's close guard (null = none sent yet),
-  // and whether a confirmed quit is closing the window: the guard then
-  // stays disarmed, or a notify would re-arm it under the closing window.
+  // Last `{ armed, enabled }` handed to Rust's close guard (null = none sent
+  // yet), and whether a confirmed quit is closing the window: the guard then
+  // stays cleared, or a notify would re-arm it under the closing window.
   let _closeGuardSent = null;
   let _quitting = false;
 
@@ -430,9 +436,11 @@
       liveVoice:       state.liveVoice,
       dictation:       state.dictation,
       codexLogin:      state.codexLogin,
+      // The tab on screen whose omp is restarting, or null (`_restartingTab`).
+      restartingTab:   _restartingTab(),
       dictationCompleted: _dictationCompleted,
       // Tab list — derived from session registry, not per-session state.
-      // Each entry carries the tab's own `runState` and the dot's
+      // Each entry carries the guard `runState` and the dot's
       // `displayRunState` (see `_sessionsView`).
       sessions:        _sessionsView(),
       activeSessionId,
@@ -448,16 +456,19 @@
     };
   }
 
-  // Snapshot `sessions[]`: the registry entries plus each tab's run state.
-  // Active tab reads live state; background tabs read their cached snapshot
-  // (never activated yet = "idle" defaults) — the pre-tracker `runState`,
-  // which every guard still reads unchanged.
-  //
-  // `displayRunState` is the dot's separate, display-only state: a
-  // background tab has no live listener, so an ask that arrives (or is
-  // answered elsewhere) never reaches its snapshot; the dot overlays the
-  // backend tracker there. No guard reads it — see
-  // docs/architecture/turn-status.md.
+  // Snapshot `sessions[]`: the registry entries plus each tab's run states.
+  // The active tab reads live state for both. A background tab reads its
+  // cached snapshot (never activated yet = "idle" defaults), which froze
+  // when it was left:
+  //  - `displayRunState` (the dot) overlays the backend tracker there — its
+  //    own listener is gone, so an ask that arrives (or is answered
+  //    elsewhere) never reaches that snapshot;
+  //  - `runState`, what every guard reads (busy-close and quit
+  //    confirmation, the close guard, approval-mode restarts, the updater,
+  //    PR automation, the branch picker), is the stronger of the frozen
+  //    state and the dot (`TURN.guardRunState`): a turn started after the
+  //    tab was left counts as busy, and a report never lowers the frozen
+  //    state. See docs/architecture/turn-status.md.
   function _sessionsView() {
     return [...sessionRegistry.values()].map(s => {
       const snapshot = s.id === activeSessionId ? null : sessionSnapshots.get(s.id);
@@ -466,18 +477,14 @@
           ? state
           : snapshot ?? _EMPTY_SESSION_FIELDS
       );
-      return {
-        ...s,
-        runState: cached,
-        displayRunState: s.id === activeSessionId
-          ? cached
-          : TURN.displayRunState(
-              cached,
-              trackerLive?.[s.id] ?? null,
-              trackerLoaded,
-              _trackerEvidenceNewer(s.id, snapshot?.trackerEvidence ?? null),
-            ),
-      };
+      if (s.id === activeSessionId) return { ...s, runState: cached, displayRunState: cached };
+      const display = TURN.displayRunState(
+        cached,
+        trackerLive?.[s.id] ?? null,
+        trackerLoaded,
+        _trackerEvidenceNewer(s.id, snapshot?.trackerEvidence ?? null),
+      );
+      return { ...s, runState: TURN.guardRunState(cached, display), displayRunState: display };
     });
   }
 
@@ -794,6 +801,7 @@
     const snap = _buildSnapshot();
     subscribers.forEach(cb => cb(snap));
     _syncCloseGuard(snap.sessions);
+    _retryModesAfterDictation();
     // Keep OMP_DATA in sync for design components that read it directly
     window.OMP_DATA.messages  = state.messages;
     window.OMP_DATA.models    = state.models;
@@ -1361,14 +1369,15 @@
   /** Kill a session's omp process and everything bound to it (git watcher,
    *  cached snapshot) for a respawn (`_respawnSession`); the tab and its
    *  terminal shell stay (a tab ends only through `_closeTab`). The registry
-   *  entry is left to the caller.
+   *  entry is left to the caller. `stopped`: the process is already gone
+   *  (`stop_session_if_idle` stopped it), so only the webview's bindings go.
    *
    *  Returns a promise for the `stop_session` round-trip, which a
    *  respawn MUST await: `stop_session`'s backend body does an
    *  unconditional `sessions.remove(id)`, so if it were still queued when
    *  `start_session` installed the fresh incarnation under the same id, it
    *  would reap the *new* process instead of the dead one. */
-  function _killSessionProcess(id) {
+  function _killSessionProcess(id, { stopped: alreadyStopped = false } = {}) {
     if (id === activeSessionId) {
       _cancelLiveRequests();
       state.liveVoice = LIVE.EMPTY;
@@ -1377,7 +1386,7 @@
     }
     let stopped = Promise.resolve();
     if (window.__TAURI__) {
-      stopped = window.__TAURI__.core.invoke("stop_session", { sessionId: id }).catch(() => {});
+      if (!alreadyStopped) stopped = window.__TAURI__.core.invoke("stop_session", { sessionId: id }).catch(() => {});
       window.__TAURI__.core.invoke("stop_git_watch", { sessionId: id }).catch(() => {});
     }
     _dropGitListener(id);
@@ -1491,6 +1500,7 @@
     trackerLive = next;
     trackerLoaded = true;
     notify();
+    _retryModesOnIdle(next);
   }
 
   /** Detach the active session's listeners and clear all per-session state,
@@ -1550,10 +1560,18 @@
    *  can render a refusal (a respawn already in flight, a failed respawn)
    *  instead of dropping it silently.
    *
+   *  `ifIdle` (approval-mode restarts only, `_applyApprovalModes`): the
+   *  kill is Rust's `stop_session_if_idle`, and it is the restart's first
+   *  side effect. Rust refuses while its tracker has the tab at work (a
+   *  run, an open question, background work); a refusal — or an active tab
+   *  still dictating, whose transcript only its omp can hand back — tears
+   *  nothing down and resolves to `{ok: false, deferred: true}`: the mode
+   *  change stays pending for the tab's next idle point.
+   *
    *  The dictation-before-restart ordering is covered by the fake IPC bridge
    *  in test-live-voice.mjs; the remaining ordering relies on the comments
    *  at each await and the pure profile/approval-mode decisions. */
-  async function _respawnSession(id, { profile, resume = null, fresh = false }) {
+  async function _respawnSession(id, { profile, resume = null, fresh = false, ifIdle = false }) {
     if (!window.__TAURI__) return { ok: false, error: "not connected" };
     const entry = sessionRegistry.get(id);
     if (!entry) return { ok: false, error: "unknown tab" };
@@ -1568,8 +1586,27 @@
       return { ok: false, error: "omp is already restarting in this tab" };
     }
     _respawning.add(id);
+    // The composer's restart note reads `restartingTab` from the snapshot;
+    // only the tab on screen changes it.
+    if (_restartingTab() === id) notify();
     try {
-      if (id === activeSessionId && (state.dictation.active || _dictationStopPending)) {
+      let stoppedIfIdle = false;
+      if (ifIdle) {
+        // Dictation runs inside omp: killing it first would lose the text,
+        // and stopping it first would be a side effect of a restart Rust may
+        // still refuse. Wait for it instead (`_retryModesAfterDictation`).
+        if (id === activeSessionId && (state.dictation.active || _dictationStopPending)) {
+          _modeWaitsForDictation = true;
+          return { ok: false, deferred: true };
+        }
+        const r = await window.__TAURI__.core.invoke("stop_session_if_idle", { sessionId: id }).catch(e => {
+          console.error("[live] stop_session_if_idle error:", e);
+          return null;
+        });
+        // Busy, or the stop could not run: nothing was torn down either way.
+        if (r?.stopped !== true) return { ok: false, deferred: true };
+        stoppedIfIdle = true;
+      } else if (id === activeSessionId && (state.dictation.active || _dictationStopPending)) {
         const stopped = await _dictationStop();
         if (!stopped.ok && state.dictation.active) return stopped;
         if (!sessionRegistry.has(id)) return { ok: false, error: "tab closed" };
@@ -1583,8 +1620,8 @@
       // Awaited: `stop_session` must have removed the old incarnation from
       // the backend's session map before `_spawnSession` installs the new
       // one under the same id, or the late remove would reap the fresh
-      // process. See `_killSessionProcess`.
-      await _killSessionProcess(id);
+      // process. See `_killSessionProcess`. A conditional stop already did.
+      await _killSessionProcess(id, { stopped: stoppedIfIdle });
       // The tab may have been closed inside that round-trip: `closeSession`
       // has no `_respawning` guard, so it can `sessionRegistry.delete`
       // this id while we are waiting. Writing an entry back below would
@@ -1619,7 +1656,10 @@
         // only an in-flight `/rename` dies with the process (its note can
         // never arrive, so the flag would block every later refresh).
         : { ...current, approvalMode: null, autoRenameInFlight: false });
-      if (wasActive) await _detachActiveSession();
+      if (wasActive) {
+        _respawnDetached = id;
+        await _detachActiveSession();
+      }
       // After the detach, which nulls `activeSessionId` synchronously — so no
       // later `_saveCurrentSession` can re-add it. A resurrected snapshot
       // would restore the dead incarnation's `lastSeq`, and the respawned
@@ -1719,41 +1759,58 @@
       notify();
       return spawnError ? { ok: false, error: spawnError } : { ok: true };
     } finally {
+      const shown = _restartingTab() === id;
       _respawning.delete(id);
+      if (_respawnDetached === id) _respawnDetached = null;
+      if (shown) notify();
     }
   }
 
   /** Bring every open tab's omp onto the approval mode its folder now
    *  resolves to (`OMP_APPROVAL_MODE.restartPlan` over the snapshot's
-   *  `sessions`): idle tabs restart now, with `--resume` so the
-   *  conversation continues; busy ones are left running and picked up at
-   *  their next idle point — the active tab's next applied `get_state`
-   *  (the one its `agent_end` asks for, or the one `_initFetch` sends when
-   *  it is activated; see the `get_state` branch of `_handleResponse`).
+   *  `sessions`, with the active tab named), with `--resume` so the
+   *  conversation continues. Every restart goes through the conditional
+   *  stop (`_respawnSession` `ifIdle`): Rust's tracker has the last word.
+   *  - The active tab restarts now when its live state is idle, else it is
+   *    left running and picked up at its next applied `get_state` (the one
+   *    its `agent_end` asks for, or the one `_initFetch` sends when it is
+   *    activated; see the `get_state` branch of `_handleResponse`).
+   *  - A background tab always attempts: its frozen state cannot tell. A
+   *    refusal keeps it pending until an applied tracker payload shows it
+   *    idle (`_retryModesOnIdle`), or until it is activated.
+   *  An active tab still dictating waits for the dictation to end
+   *  (`_retryModesAfterDictation`).
    *  Resolves to `{ restarted, deferred }` tab ids (`restarted`: respawns
-   *  that succeeded).
+   *  that succeeded; `deferred`: busy now, or refused by Rust).
    *
-   *  Side-effectful (respawns through `_respawnSession`), so not
-   *  unit-tested directly; which tab restarts when is the pure
-   *  `restartPlan`, proven in tests/test-approval-mode.mjs. */
+   *  Side-effectful (respawns through `_respawnSession`); which tab
+   *  attempts when is the pure `restartPlan` (tests/test-approval-mode.mjs),
+   *  the refusals and retries are tests/test-attention-bridge.mjs. */
   async function _applyApprovalModes() {
     // No view yet: the frontend cannot know what Rust resolves, and a
     // guess would restart a tab Rust spawned with a project override.
     if (!approvalModes) return { restarted: [], deferred: [] };
     const sessions = _sessionsView();
-    const { now, later } = AMODE.restartPlan(approvalModes, sessions);
+    const { now, later } = AMODE.restartPlan(approvalModes, sessions, { activeId: activeSessionId });
     const byId = new Map(sessions.map(s => [s.id, s]));
     const todo = now.filter(id => {
       if (_respawning.has(id)) return false; // its spawn resolves the mode afresh
       const target = AMODE.effectiveFor(approvalModes, byId.get(id).path || null);
       return _modeRestartMissed.get(id) !== target;
     });
+    const refused = [];
     const results = await Promise.all(todo.map(async id => {
       const entry = sessionRegistry.get(id);
       const target = AMODE.effectiveFor(approvalModes, entry?.path || null);
       const r = entry
-        ? await _respawnSession(id, { profile: entry.profile, resume: entry.sessionFile || null })
+        ? await _respawnSession(id, { profile: entry.profile, resume: entry.sessionFile || null, ifIdle: true })
         : { ok: false };
+      // Not a missed target: nothing was torn down and the change is still
+      // pending. `_modeRestartMissed` would suppress exactly its retry.
+      if (r.deferred) {
+        refused.push(id);
+        return null;
+      }
       const reached = r.ok && sessionRegistry.get(id)?.approvalMode === target;
       if (reached) _modeRestartMissed.delete(id);
       else if (sessionRegistry.has(id)) {
@@ -1762,7 +1819,41 @@
       }
       return reached ? id : null;
     }));
-    return { restarted: results.filter(Boolean), deferred: later };
+    return { restarted: results.filter(Boolean), deferred: [...later, ...refused] };
+  }
+
+  /** Whether tab `id` runs a different approval mode than its folder now
+   *  resolves to (`statusCell`'s `pending`). */
+  function _modeChangePending(id) {
+    const entry = sessionRegistry.get(id);
+    return !!approvalModes && !!entry && AMODE.statusCell(approvalModes, entry).pending;
+  }
+
+  /** The tracker side of the approval-mode idle hook: a pending tab that an
+   *  applied payload shows idle (`busy` false, no asks, no background
+   *  work) — a background tab Rust refused, typically — is retried. Each
+   *  retry follows a new tracker revision, and a refusal changes nothing in
+   *  the tracker, so this cannot loop. */
+  function _retryModesOnIdle(entries) {
+    if (!approvalModes) return;
+    const idle = Object.entries(entries).some(([id, e]) =>
+      e && !e.busy && !(e.asks > 0) && !e.background && !_respawning.has(id) && _modeChangePending(id));
+    if (idle) void _applyApprovalModes();
+  }
+
+  /** The dictation side of the approval-mode idle hook: a restart deferred
+   *  for dictation is retried once when it ends, rather than waiting for an
+   *  unrelated `get_state` or tracker report. The flag is cleared before
+   *  the retry, and only a new deferral sets it again, so it cannot loop.
+   *  A capture that ended by sending its text ("send on stop") is not
+   *  retried here: the restart would refuse that send. The send's turn
+   *  picks the change up instead (its `agent_end` → `get_state`).
+   *  Called from `notify` and from `_dictationStop`'s settlement. */
+  function _retryModesAfterDictation() {
+    if (!_modeWaitsForDictation || state.dictation.active || _dictationStopPending) return;
+    _modeWaitsForDictation = false;
+    if (_dictationCompleted.some(d => d.send && d.sessionId === activeSessionId)) return;
+    if ([...sessionRegistry.keys()].some(_modeChangePending)) queueMicrotask(() => void _applyApprovalModes());
   }
 
   /** Store a set command's view, notify, and apply it to the open tabs.
@@ -3384,14 +3475,27 @@
   // `window://close-requested`) asks first while a tab is busy; the dialog
   // renders the snapshot's `closeConfirm`. Decisions: app/session-prefs.js.
 
-  /** Arm Rust's close guard exactly while a close would need confirming;
-   *  called on every notify, so it only sends a change. */
+  /** Hand Rust's close guard its two flags (`lib.rs` `CloseGuard`): `armed`
+   *  exactly while a close would need confirming by this view, `enabled`
+   *  while the setting is on — Rust then also holds while its tracker has a
+   *  tab at work, covering a turn this view has not heard of yet. Called on
+   *  every notify (tracker payloads included), so it only sends a change. */
   function _syncCloseGuard(sessions) {
     if (_quitting) return;
     const armed = PREFS.closeGuardArmed(sessionPrefs, sessions);
-    if (armed === _closeGuardSent) return;
-    _closeGuardSent = armed;
-    void _invokeSafe("set_close_guard", { armed });
+    const enabled = sessionPrefs.confirmBusyClose === true;
+    if (armed === _closeGuardSent?.armed && enabled === _closeGuardSent?.enabled) return;
+    _closeGuardSent = { armed, enabled };
+    void _invokeSafe("set_close_guard", { armed, enabled });
+  }
+
+  /** Re-read the tracker (`attention_snapshot`, no dock bounce) before a
+   *  busy-close decision, so a turn a background tab started since the last
+   *  `agent://attention` event counts. A failed or empty read keeps the
+   *  current view; an older one is dropped by `_applyAttention`. */
+  async function _refreshAttention() {
+    const snapshot = await _invokeSafe("attention_snapshot", {}, null);
+    if (snapshot) _applyAttention(snapshot, false);
   }
 
   /** Show `confirm` and resolve to the user's answer. A newer request
@@ -3411,17 +3515,20 @@
   }
 
   /** Close the window — and with it the app, through Rust's usual exit
-   *  path (`kill_child_processes`) — after confirming busy tabs. The guard
-   *  is disarmed first, so Rust lets this close through. */
+   *  path (`kill_child_processes`) — after confirming busy tabs, read
+   *  against a fresh tracker snapshot. Both guard flags are cleared first,
+   *  so Rust lets this close through. */
   async function _requestQuit() {
     if (_quitting || !window.__TAURI__) return;
+    if (sessionPrefs.confirmBusyClose) await _refreshAttention();
+    if (_quitting) return;
     const confirm = PREFS.quitConfirm(sessionPrefs, _sessionsView());
     if (confirm && !(await _askClose(confirm))) return;
     if (_quitting) return; // a second request confirmed meanwhile
     _quitting = true;
     try {
-      await window.__TAURI__.core.invoke("set_close_guard", { armed: false });
-      _closeGuardSent = false;
+      await window.__TAURI__.core.invoke("set_close_guard", { armed: false, enabled: false });
+      _closeGuardSent = { armed: false, enabled: false };
       await window.__TAURI__.window.getCurrentWindow().close();
     } catch (e) {
       console.error("[live] closing the window failed:", e);
@@ -3466,7 +3573,7 @@
    *  shapes are pure and tested in test-message-queue.mjs. */
   function _sendQueued(kind, text, images, send) {
     const origin = activeSessionId;
-    if (!origin) return Promise.resolve(false);
+    if (!origin || _tabRestarting()) return Promise.resolve(false);
     const id = ++_queueSendSeq;
     _disarmAutoRename(text);
     _recordPrompt(text);
@@ -3561,10 +3668,33 @@
     return { ok: true, text: String(data?.text ?? "") };
   }
 
+  /** Whether the tab the user is on is having its omp respawned
+   *  (`_respawnSession`): from the restart's first side effect until it is
+   *  re-activated — while detached the active slot is empty. A prompt now
+   *  would reach the dying process or none at all, so the user-entry sends
+   *  (`_sendPrompt`, `_sendQueued`, `goalStart`) refuse it: no bubble, no
+   *  command. The composer keeps the draft (`isRestarting`). The respawn's
+   *  own `_initFetch` goes through `_send` and is never gated. */
+  function _tabRestarting() {
+    return activeSessionId === null ? _respawning.size > 0 : _respawning.has(activeSessionId);
+  }
+
+  /** Which tab `_tabRestarting` is about: the active tab while it
+   *  respawns, or, while a respawn has the active slot empty, the tab it
+   *  detached. Null otherwise. The snapshot's `restartingTab` (the
+   *  composer's restart note, `TURN.restartNoteShown`); `_respawnSession`
+   *  notifies whenever it changes. */
+  function _restartingTab() {
+    if (activeSessionId === null) return _respawnDetached;
+    return _respawning.has(activeSessionId) ? activeSessionId : null;
+  }
+
   /** `OMP_BRIDGE.send`: the user bubble at once, then `prompt`. A
    *  `streamingBehavior` tells omp what to do if a turn is running by the
-   *  time the prompt arrives; idle, omp ignores it and runs the prompt. */
+   *  time the prompt arrives; idle, omp ignores it and runs the prompt.
+   *  Refused (`false`, nothing shown or sent) while the tab restarts. */
   function _sendPrompt(text, images, streamingBehavior) {
+    if (_tabRestarting()) return Promise.resolve(false);
     state.messages = [...state.messages, { kind: "user", time: timeNow(), text, images: images ?? [] }];
     _disarmAutoRename(text);
     _recordPrompt(text);
@@ -3847,6 +3977,7 @@
         return { ok: false, error };
       } finally {
         if (_dictationStopPending === op) _dictationStopPending = null;
+        _retryModesAfterDictation();
       }
     })();
     notify();
@@ -3899,6 +4030,14 @@
     // persisted message. A command omp runs locally sends no echo, so its
     // bubble keeps no `ts` and the get_messages merge leaves it in place.
     send(text, images) { return _sendPrompt(text, images); },
+    /** Whether the tab on screen is having its omp restarted (a profile
+     *  switch, an approval-mode change): a submit now is refused by `send`,
+     *  `steer`, `followUp` and `goalStart`, so the composer keeps the draft
+     *  and says so instead. */
+    isRestarting() { return _tabRestarting(); },
+    /** The tab `isRestarting` is about (`_restartingTab`), or null; the
+     *  snapshot carries it too, as `restartingTab`. */
+    restartingTab() { return _restartingTab(); },
     // Monitoring is read-only. Only the selected, fully settled tab may
     // receive remediation; recheck here after the asynchronous GitHub read.
     // A read the tab can't take now is `OMP_PR_AUTOMATION.STALE`, never
@@ -4037,6 +4176,7 @@
       const text = String(objective ?? "").trim();
       const imgs = images ?? [];
       if (!text) return { ok: false, error: "Describe the goal first." };
+      if (_tabRestarting()) return { ok: false, error: "omp is restarting in this tab. Send your message again once it is back." };
       const message = String(prompt ?? "").trim() || text;
       const origin = activeSessionId;
       if (!origin) return { ok: false, error: "Not connected" };
@@ -5077,9 +5217,12 @@
     },
 
     /** `closeSession`, after asking when Settings → Session "Ask before
-     *  closing a busy tab" is on and the tab's agent is busy. Resolves to
+     *  closing a busy tab" is on and the tab's agent is busy — read against
+     *  a fresh tracker snapshot (`_refreshAttention`), so a turn a
+     *  background tab started since it was left counts. Resolves to
      *  whether the tab was closed. */
     async closeSessionGuarded(id) {
+      if (sessionPrefs.confirmBusyClose) await _refreshAttention();
       const confirm = PREFS.tabCloseConfirm(sessionPrefs, _sessionsView(), id);
       if (confirm && !(await _askClose(confirm))) return false;
       if (!sessionRegistry.has(id)) return false; // closed meanwhile

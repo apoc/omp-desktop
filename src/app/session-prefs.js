@@ -47,8 +47,10 @@
       .map(s => ({ id: s.id, name: s.name || "untitled tab", state: BUSY_LABELS[s.runState] ?? "working" }));
   }
 
-  /** Whether the Rust close guard should hold the window's close: the
-   *  setting is on and some tab is busy. */
+  /** The `armed` flag of Rust's close guard (`set_close_guard`): the
+   *  setting is on and some tab is busy. Rust also holds the window's close
+   *  while `enabled` (the setting alone) and its tracker reports a session
+   *  at work (`lib.rs` `guard_holds`). */
   function closeGuardArmed(prefs, sessions) {
     // Runs on every notify: no per-tab objects just to test for one.
     if (!prefs?.confirmBusyClose || !Array.isArray(sessions)) return false;

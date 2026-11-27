@@ -112,4 +112,23 @@ check("quitConfirm: nothing busy or setting off quits at once", () => {
   assert.equal(P.quitConfirm(OFF, [tab("a", "running")]), null);
 });
 
+// ── guard states (#89) ───────────────────────────────────────────────────
+check("busy helpers over guard states: a run started after the freeze counts, a retired one still does", () => {
+  const { guardRunState } = win.OMP_TURN_STATUS;
+  // Background tabs as `_sessionsView` builds them: frozen state, dot.
+  const startedSince = { ...tab("a", guardRunState("idle", "running")), displayRunState: "running" };
+  const askedSince = { ...tab("b", guardRunState("idle", "waiting-user")), displayRunState: "waiting-user" };
+  const retired = { ...tab("c", guardRunState("running", "idle")), displayRunState: "idle" };
+  const quiet = { ...tab("d", guardRunState("idle", "idle")), displayRunState: "idle" };
+  const dead = { ...tab("e", guardRunState("failed", "running")), displayRunState: "failed" };
+  const all = [startedSince, askedSince, retired, quiet, dead];
+  assert.deepEqual(P.busyTabs(all).map(t => [t.id, t.state]),
+    [["a", "working"], ["b", "waiting for your answer"], ["c", "working"]]);
+  assert.equal(P.closeGuardArmed(ON, [startedSince, quiet]), true, "a run the freeze never saw arms the guard");
+  assert.equal(P.closeGuardArmed(ON, [quiet, dead]), false);
+  assert.equal(P.tabCloseConfirm(ON, all, "a")?.kind, "tab");
+  assert.equal(P.tabCloseConfirm(ON, all, "d"), null);
+  assert.deepEqual(P.quitConfirm(ON, all).tabs.map(t => t.id), ["a", "b", "c"]);
+});
+
 console.log(`test-session-prefs: ${passed} checks passed`);

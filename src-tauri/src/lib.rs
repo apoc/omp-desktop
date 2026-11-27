@@ -343,6 +343,24 @@ fn stop_session(
     widget_host.session_closed(&session_id);
 }
 
+/// `stop_session`, but only while Rust's tracker reports the tab idle
+/// (`AgentBridge::stop_session_if_idle`): `{ stopped, busy }`. A refused
+/// stop touches nothing, widget runs included. Approval-mode restarts only
+/// (`live.js` `_respawnSession` `ifIdle`).
+#[tauri::command]
+fn stop_session_if_idle(
+    session_id: String,
+    bridge: State<'_, AgentBridge>,
+    rule_book: State<'_, Arc<RuleBook>>,
+    widget_host: State<'_, Arc<widgets::WidgetHost>>,
+) -> agent::ConditionalStop {
+    let outcome = bridge.stop_session_if_idle(&session_id, &rule_book);
+    if outcome.stopped {
+        widget_host.session_closed(&session_id);
+    }
+    outcome
+}
+
 /// End tabs for good: their omp processes (with their session grants),
 /// widget runs, git watchers, browsers and terminal shells. The one place a
 /// tab ends. The two slow teardowns are independent and run side by side:
@@ -1302,28 +1320,63 @@ pub(crate) fn kill_child_processes(app: &AppHandle) {
 
 /// "Ask before closing a busy tab" (#37, Settings → Session): whether a
 /// user's request to close the main window (or quit) must first be
-/// confirmed in the webview. The webview arms it only while the setting is
-/// on and a tab is busy (`live.js` `_syncCloseGuard`), so with nothing to
-/// lose the window closes the normal way; armed, [`handle_run_event`]
-/// holds the close and emits [`CLOSE_REQUESTED_EVENT`], and the webview
-/// disarms the guard before it closes the window itself, so the exit then
-/// takes the usual path through [`kill_child_processes`].
+/// confirmed in the webview. Two flags from the webview (`live.js`
+/// `_syncCloseGuard`): `armed` while the setting is on and its own view of
+/// the tabs has one busy, and `enabled` while the setting is on. Enabled,
+/// the guard also holds while Rust's tracker (`remote::tracker`) has any
+/// session at work, so a turn a background tab started after the last
+/// re-arm is covered before the webview hears of it. Holding,
+/// [`handle_run_event`] keeps the close and emits [`CLOSE_REQUESTED_EVENT`];
+/// the webview clears both flags before it closes the window itself, so
+/// the exit then takes the usual path through [`kill_child_processes`].
 #[derive(Default)]
-struct CloseGuard(AtomicBool);
+struct CloseGuard {
+    armed: AtomicBool,
+    enabled: AtomicBool,
+}
+
+impl CloseGuard {
+    /// Whether a close (or a user's quit) is held now.
+    fn holds(&self) -> bool {
+        guard_holds(
+            self.armed.load(Ordering::SeqCst),
+            self.enabled.load(Ordering::SeqCst),
+            || remote::tracker::tracker().any_at_work(),
+        )
+    }
+}
 
 /// Payload-free: tells the webview a close was held for its confirmation.
 const CLOSE_REQUESTED_EVENT: &str = "window://close-requested";
 
-/// Arm (`true`) or disarm the [`CloseGuard`].
+/// Set the [`CloseGuard`]'s two flags.
 #[tauri::command]
-fn set_close_guard(armed: bool, guard: State<'_, CloseGuard>) {
-    guard.0.store(armed, Ordering::SeqCst);
+fn set_close_guard(armed: bool, enabled: bool, guard: State<'_, CloseGuard>) {
+    guard.armed.store(armed, Ordering::SeqCst);
+    guard.enabled.store(enabled, Ordering::SeqCst);
+}
+
+/// The guard's rule: held while the webview armed it, or while the setting
+/// is on and the tracker has a session at work (read only then).
+fn guard_holds(armed: bool, enabled: bool, tracker_at_work: impl FnOnce() -> bool) -> bool {
+    armed || (enabled && tracker_at_work())
 }
 
 /// Whether a close of window `label` is held for the webview to confirm:
-/// only the main window's, and only while the webview armed the guard.
-fn holds_close(label: &str, armed: bool) -> bool {
-    armed && label == "main"
+/// only the main window's, and only while the guard `holds` (asked only for
+/// the main window).
+fn holds_close(label: &str, holds: impl FnOnce() -> bool) -> bool {
+    label == "main" && holds()
+}
+
+/// Whether a user's quit (`ExitRequested` with no code) is held for the
+/// webview to confirm: only while the main window still exists, and then
+/// only while the guard `holds` (asked only then). With the window gone
+/// there is nobody to confirm, and holding would leave the app running
+/// with no window: the last window's own close lands here too, and a tab
+/// can turn busy between that close and this exit.
+fn holds_exit(main_window_exists: bool, holds: impl FnOnce() -> bool) -> bool {
+    main_window_exists && holds()
 }
 
 /// The per-user folder the persistent stores live in, from Tauri's
@@ -1556,6 +1609,7 @@ pub fn run() {
             send_command,
             start_session,
             stop_session,
+            stop_session_if_idle,
             terminal_open,
             terminal_status,
             terminal_replay,
@@ -1675,17 +1729,21 @@ fn handle_run_event(app: &AppHandle, event: tauri::RunEvent) {
             label,
             event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
-        } if holds_close(label, app.state::<CloseGuard>().0.load(Ordering::SeqCst)) => {
+        } if holds_close(label, || app.state::<CloseGuard>().holds()) => {
             api.prevent_close();
             announce_held_close(app);
         }
         // A quit that is not a window close (macOS Cmd+Q). `code: None` is
         // a user's request; the updater's restart and `exit` carry a code.
-        // The last window closing also lands here with `None`, but only
-        // after the guard let that close through, i.e. while disarmed.
+        // The last window closing also lands here with `None`, after the
+        // guard let that close through; the window is gone by then, so it
+        // is never held (`holds_exit`).
         tauri::RunEvent::ExitRequested {
             code: None, api, ..
-        } if app.state::<CloseGuard>().0.load(Ordering::SeqCst) => {
+        } if holds_exit(app.get_webview_window("main").is_some(), || {
+            app.state::<CloseGuard>().holds()
+        }) =>
+        {
             api.prevent_exit();
             announce_held_close(app);
         }
@@ -1710,7 +1768,7 @@ fn announce_held_close(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{config_dir, holds_close, StartSessionArgs};
+    use super::{config_dir, guard_holds, holds_close, holds_exit, StartSessionArgs};
     use std::path::PathBuf;
 
     #[test]
@@ -1734,13 +1792,51 @@ mod tests {
         );
     }
 
-    /// The guard holds only the main window's close, and only while armed:
-    /// with it disarmed (setting off, or no busy tab) closing never waits.
+    /// Only the main window's close is held, and the guard is asked only
+    /// for it.
     #[test]
-    fn only_an_armed_guard_holds_the_main_windows_close() {
-        assert!(holds_close("main", true));
-        assert!(!holds_close("main", false));
-        assert!(!holds_close("other", true));
+    fn only_the_main_windows_close_is_held() {
+        assert!(holds_close("main", || true));
+        assert!(!holds_close("main", || false));
+        assert!(!holds_close("other", || panic!("asked for another window")));
+    }
+
+    /// `armed` (the webview's view) holds on its own; `enabled` (the
+    /// setting) holds while the tracker has a session at work, which covers
+    /// a turn a background tab started after the webview last re-armed.
+    /// With the setting off and nothing armed, closing never waits.
+    #[test]
+    fn the_guard_holds_when_armed_or_enabled_with_tracker_work() {
+        // (armed, enabled, tracker at work) → holds
+        let table = [
+            (false, false, false, false),
+            (false, false, true, false),
+            (false, true, false, false),
+            (false, true, true, true),
+            (true, false, false, true),
+            (true, false, true, true),
+            (true, true, false, true),
+            (true, true, true, true),
+        ];
+        for (armed, enabled, at_work, holds) in table {
+            assert_eq!(
+                guard_holds(armed, enabled, || at_work),
+                holds,
+                "armed {armed}, enabled {enabled}, tracker at work {at_work}"
+            );
+        }
+    }
+
+    /// A user's quit is held only while the main window exists; with it
+    /// gone the guard is not even asked, whatever it would say.
+    #[test]
+    fn a_quit_is_held_only_while_the_main_window_exists() {
+        assert!(holds_exit(true, || true));
+        assert!(!holds_exit(true, || false));
+        assert!(!holds_exit(false, || true), "window gone: never held");
+        assert!(!holds_exit(false, || unreachable!(
+            "guard asked with the window gone"
+        )));
     }
 
     /// The exact payload `live.js::_spawnSession` sends. Tauri hands the

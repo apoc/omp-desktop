@@ -60,8 +60,8 @@
    *  `live.js` has received the tracker snapshot at all, and `fresh`
    *  whether the tracker reported this session after the tab was frozen.
    *
-   *  Display only: `runState` (what every guard reads) stays the frozen
-   *  snapshot, exactly as before the tracker existed.
+   *  The dot only: a background tab's guard state (`runState`, what every
+   *  guard reads) is `guardRunState`, which this may raise but never lower.
    *
    *  A newer report owns the display: the run settled, the ask cleared or
    *  the process exited. An older one may still know more than the snapshot
@@ -83,6 +83,35 @@
     if (cached === "waiting-user" && tracked !== "waiting-user" && _asksOpened(live) > 0) return tracked;
     if (fresh) return tracked;
     return RUN_STATE_RANK[tracked] > RUN_STATE_RANK[cached] ? tracked : cached;
+  }
+
+  /** A background tab's guard state (`runState`: busy-close and quit
+   *  confirmation, the close guard, the updater's busy count, PR
+   *  automation, the branch picker): the stronger of its frozen run state
+   *  `cached` and the dot's `display` (`displayRunState`), so a turn the
+   *  tab started after it was left counts as busy. Raise-only: a tracker
+   *  report never lowers it below the frozen state, so a frozen busy tab
+   *  that went idle stays busy for guards until it is activated — annoying,
+   *  but safe. `failed` stays `failed`. */
+  function guardRunState(cached, display) {
+    if (cached === "failed") return "failed";
+    return (RUN_STATE_RANK[display] ?? 0) > (RUN_STATE_RANK[cached] ?? 0) ? display : cached;
+  }
+
+  /** The composer's "omp is restarting in this tab" note (`app-live.jsx`).
+   *  `noteTab` is the tab a submit was refused on (the bridge's
+   *  `restartingTab()` at that moment), `composerTab` the tab the composer
+   *  renders, `restartingTab` the snapshot's. Shown only while all three
+   *  name the same tab: never on another tab, never after the restart. */
+  function restartNoteShown(noteTab, composerTab, restartingTab) {
+    return noteTab != null && noteTab === composerTab && noteTab === restartingTab;
+  }
+
+  /** `noteTab` once the snapshot's `restartingTab` changed: kept while that
+   *  tab still restarts, else dropped, so a later restart of the same tab
+   *  shows no note until a submit is refused again. */
+  function restartNoteKept(noteTab, restartingTab) {
+    return noteTab != null && noteTab === restartingTab ? noteTab : null;
   }
 
   // Strongest first, as `runStateOf` decides: an older tracker report may
@@ -425,7 +454,7 @@
   }
 
   window.OMP_TURN_STATUS = Object.freeze({
-    runStateOf, displayRunState, isBusyRunState, busyElsewhere, busyInRepo, isYield, stripDiagnostics, providerHeadline, failureOf, finalFailures,
+    runStateOf, displayRunState, guardRunState, restartNoteShown, restartNoteKept, isBusyRunState, busyElsewhere, busyInRepo, isYield, stripDiagnostics, providerHeadline, failureOf, finalFailures,
     withPromptError, finishedJobsOf,
     failedStop, producedOutput, isHidden, retryIndex, retryStarted, retryAttempting, retryEnded, retryFinished, retryYielded, retryCleared,
   });

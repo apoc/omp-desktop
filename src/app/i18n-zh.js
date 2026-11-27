@@ -690,6 +690,7 @@ window.OMP_I18N.add("zh", {
   "Next (→)": "下一个 (→)",
   "next change": "下一处更改",
   "no text reply": "没有文字回复",
+  "omp is restarting in this tab · your message was not sent; send it again once it is back": "omp 正在此标签页中重启 · 消息未发送；重启完成后请再次发送",
   "omp profile for this tab (auth, sessions, settings)": "此标签页的 omp 配置（认证、会话、设置）",
   "omp reports background work (an async bash, task or eval job) whose result will wake the agent": "omp 报告了后台工作（异步 bash、task 或 eval 任务），其结果会唤醒智能体",
   "omp's goal.continuationModes setting for this profile. On: omp keeps working on an active goal between turns by itself.": "此配置的 omp goal.continuationModes 设置。开启后：omp 会在轮次之间自行继续当前目标。",

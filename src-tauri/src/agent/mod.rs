@@ -152,6 +152,15 @@ pub struct Launch<'a> {
     pub config: Option<&'a std::path::Path>,
 }
 
+/// What [`AgentBridge::stop_session_if_idle`] did, as the webview gets it:
+/// `{ stopped, busy }`. `busy` means the tracker held the session at work
+/// and nothing was touched; neither flag means the bridge lock was poisoned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct ConditionalStop {
+    pub stopped: bool,
+    pub busy: bool,
+}
+
 /// Manages one omp process per tab session.
 ///
 /// # Events
@@ -338,17 +347,62 @@ impl AgentBridge {
             let Ok(mut s) = self.sessions.lock() else {
                 return;
             };
-            let removed = s.remove(session_id);
-            // Clear liveness before releasing the lock: a reader thread
-            // parked on this same mutex must see `alive == false` the
-            // instant it observes the entry gone, not after — see
-            // reader.rs's post-EOF `None` arm.
-            if let Some(inner) = &removed {
-                inner.alive.store(false, Ordering::Release);
-                crate::remote::tracker::tracker().on_exit(session_id);
-            }
-            removed
+            remove_locked(&mut s, session_id)
         };
+        self.finish_stop(session_id, removed, rule_book);
+    }
+
+    /// [`Self::stop_session`], but only while the tracker
+    /// (`remote::tracker`) reports the session idle: not busy, no open
+    /// question, no background work. A busy session is left untouched (no
+    /// side effect at all) and reported as `{ stopped: false, busy: true }`.
+    /// No tracker entry counts as idle; an unknown session is stopped the
+    /// way `stop_session` stops one (its grants and cached error go).
+    /// Used only for approval-mode restarts (`live.js` `_respawnSession`
+    /// `ifIdle`); a profile switch and a tab close stop unconditionally.
+    ///
+    /// The tracker is read under the `sessions` lock, the same critical
+    /// section that removes the entry, so no `start_session` or
+    /// `stop_session` can interleave. Accepted window: the stdout reader
+    /// records frames without this lock, so a frame read right after the
+    /// check (an `agent_start` from a queued prompt) still dies with the
+    /// process — the same as a kill an instant earlier, and omp keeps the
+    /// conversation on disk for the `--resume` that follows.
+    pub fn stop_session_if_idle(
+        &self,
+        session_id: &str,
+        rule_book: &crate::approval::RuleBook,
+    ) -> ConditionalStop {
+        let removed = {
+            let Ok(mut s) = self.sessions.lock() else {
+                return ConditionalStop {
+                    stopped: false,
+                    busy: false,
+                };
+            };
+            if crate::remote::tracker::tracker().session_at_work(session_id) {
+                return ConditionalStop {
+                    stopped: false,
+                    busy: true,
+                };
+            }
+            remove_locked(&mut s, session_id)
+        };
+        self.finish_stop(session_id, removed, rule_book);
+        ConditionalStop {
+            stopped: true,
+            busy: false,
+        }
+    }
+
+    /// The part of a stop after the map entry is gone: reap it (or drop
+    /// stale grants when there was none) and forget its cached error.
+    fn finish_stop(
+        &self,
+        session_id: &str,
+        removed: Option<BridgeInner>,
+        rule_book: &crate::approval::RuleBook,
+    ) {
         if let Some(inner) = removed {
             reap_and_clear_grants(session_id, inner, rule_book);
         } else {
@@ -530,6 +584,22 @@ impl Drop for AgentBridge {
     fn drop(&mut self) {
         self.shutdown_all();
     }
+}
+
+/// Take `session_id`'s entry out of the locked `sessions` map, shared by
+/// both stops. Liveness is cleared before the lock is released: a reader
+/// thread parked on the same mutex must see `alive == false` the instant it
+/// observes the entry gone, not after — see reader.rs's post-EOF `None` arm.
+fn remove_locked(
+    sessions: &mut HashMap<String, BridgeInner>,
+    session_id: &str,
+) -> Option<BridgeInner> {
+    let removed = sessions.remove(session_id);
+    if let Some(inner) = &removed {
+        inner.alive.store(false, Ordering::Release);
+        crate::remote::tracker::tracker().on_exit(session_id);
+    }
+    removed
 }
 
 /// Reap `prev`'s process tree off-thread (so the Tauri command thread is
@@ -1037,5 +1107,112 @@ mod tests {
         let rules = crate::approval::RuleBook::new(dir.path().to_path_buf());
         bridge.stop_session(sid, &rules);
         assert!(!tracker.snapshot().sessions.contains_key(sid));
+    }
+}
+
+#[cfg(test)]
+mod stop_if_idle_tests {
+    use super::tests::{approval_prompt, idle_inner};
+    use super::*;
+    use crate::approval::{RuleBook, RuleScope};
+    use crate::remote::tracker::tracker;
+    use serde_json::{json, Value};
+    use std::time::Instant;
+
+    const REFUSED: ConditionalStop = ConditionalStop {
+        stopped: false,
+        busy: true,
+    };
+    const STOPPED: ConditionalStop = ConditionalStop {
+        stopped: true,
+        busy: false,
+    };
+
+    fn frame(sid: &str, frame_type: &str, frame: Option<&Value>) {
+        tracker().on_frame(
+            sid,
+            Some(frame_type),
+            frame,
+            Instant::now(),
+            &AtomicBool::new(true),
+        );
+    }
+
+    /// A tracker that holds the session at work — mid-run, an open question,
+    /// background work — refuses with no side effect: the process entry,
+    /// its liveness, its session grants and the tracker entry all stay. Once
+    /// the tracker reports it idle the same call stops it like `stop_session`.
+    #[test]
+    fn refuses_while_the_tracker_holds_the_session_at_work_and_stops_once_idle() {
+        let dir = crate::test_support::TempDir::new("stop-if-idle", "at-work");
+        let rules = RuleBook::new(dir.path().to_path_buf());
+        let background = json!({
+            "type": "response", "command": "get_state", "success": true,
+            "data": { "hasPendingAsyncWork": true },
+        });
+        let prompt = approval_prompt("q", "bash");
+        let cases: [(&str, &str, Option<&Value>, &str); 3] = [
+            ("stop-if-idle-busy", "agent_start", None, "agent_end"),
+            (
+                "stop-if-idle-ask",
+                "extension_ui_request",
+                Some(&prompt),
+                "agent_end",
+            ),
+            (
+                "stop-if-idle-background",
+                "response",
+                Some(&background),
+                "session_settled",
+            ),
+        ];
+        for (sid, at_work, payload, settle) in cases {
+            let bridge = AgentBridge::new();
+            let alive = Arc::new(AtomicBool::new(true));
+            bridge
+                .sessions
+                .lock()
+                .unwrap()
+                .insert(sid.into(), idle_inner(Arc::clone(&alive)));
+            rules.grant(sid, None, "bash", RuleScope::Session).unwrap();
+            frame(sid, at_work, payload);
+
+            assert_eq!(bridge.stop_session_if_idle(sid, &rules), REFUSED, "{sid}");
+            assert!(bridge.sessions.lock().unwrap().contains_key(sid), "{sid}");
+            assert!(alive.load(Ordering::Acquire), "{sid}");
+            assert!(rules.is_granted(sid, None, "bash"), "{sid}");
+            assert!(tracker().snapshot().sessions.contains_key(sid), "{sid}");
+
+            frame(sid, settle, None);
+            assert_eq!(bridge.stop_session_if_idle(sid, &rules), STOPPED, "{sid}");
+            assert!(bridge.sessions.lock().unwrap().is_empty(), "{sid}");
+            assert!(!alive.load(Ordering::Acquire), "{sid}");
+            assert!(!rules.is_granted(sid, None, "bash"), "{sid}");
+            assert!(!tracker().snapshot().sessions.contains_key(sid), "{sid}");
+        }
+    }
+
+    /// No tracker entry is idle, and an unknown session is stopped the way
+    /// `stop_session` stops one: its stale grants go.
+    #[test]
+    fn no_tracker_entry_and_an_unknown_session_count_as_idle() {
+        let dir = crate::test_support::TempDir::new("stop-if-idle", "untracked");
+        let rules = RuleBook::new(dir.path().to_path_buf());
+        let bridge = AgentBridge::new();
+        let sid = "stop-if-idle-untracked";
+        bridge
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(sid.into(), idle_inner(Arc::new(AtomicBool::new(true))));
+        assert_eq!(bridge.stop_session_if_idle(sid, &rules), STOPPED);
+        assert!(bridge.sessions.lock().unwrap().is_empty());
+
+        let unknown = "stop-if-idle-unknown";
+        rules
+            .grant(unknown, None, "bash", RuleScope::Session)
+            .unwrap();
+        assert_eq!(bridge.stop_session_if_idle(unknown, &rules), STOPPED);
+        assert!(!rules.is_granted(unknown, None, "bash"));
     }
 }

@@ -7,7 +7,8 @@
 //
 // A "tab" is a snapshot `sessions` entry: `{id, name, path, profile, color,
 // runState, displayRunState, sessionFile}`. `runState` is the guard state
-// (as before the tracker); `displayRunState` is what its dot shows. A
+// (a background tab's frozen state raised, never lowered, by its dot:
+// `OMP_TURN_STATUS.guardRunState`); `displayRunState` is what its dot shows. A
 // project is identified by (profile, folder): the same folder opened under
 // two profiles is two projects, because each runs against its own omp tree.
 // Pathless tabs (a resumed session with no

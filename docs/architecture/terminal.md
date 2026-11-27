@@ -92,7 +92,7 @@ TerminalSettings { shell, defaultShell, shells: [{ name, path }] }
 |`terminal://data/{id}`|`{ instance, seq, b64 }`: base64 of the pty bytes|
 |`terminal://exit/{id}`|`{ instance, code }`: `code` `null` = killed by a signal|
 
-`stop_session` (profile switch, approval-mode restart) does **not** touch the terminal, and there is no `terminal_close`: `close_tab` is the only way a tab ends.
+Neither `stop_session` (profile switch) nor `stop_session_if_idle` (approval-mode restart) touches the terminal, and there is no `terminal_close`: `close_tab` is the only way a tab ends.
 
 ### Bridge (`live.js`)
 
@@ -102,7 +102,7 @@ IPC glue only, no lifecycle policy:
 - `terminalReplay(sid, instance, afterSeq)` → `{ instance, bytes: Uint8Array, headSeq, dropped } | null`; `terminalAck(sid, instance, n)`; `terminalWrite`, `terminalResize`.
 - `onTerminalData(sid, cb({ instance, seq, bytes }))`, `onTerminalExit(sid, cb({ instance, code }))`: each returns `{ stop, ready }`; `ready` resolves once the Tauri listener is registered.
 - `terminalSettings()` → `{ shell, defaultShell, shells } | null`; `setTerminalShell(shell)` (Rust trims) → `{ ok: true, settings } | { ok: false, error }`; `pickTerminalShell()` → `{ ok: true, settings }` (`settings` null = cancelled) `| { ok: false, error }`.
-- `_closeTab(id)` invokes `close_tab` and drops the tab's JS-side bindings; every path that removes a tab from `sessionRegistry` goes through it: `closeSession`, the rollback of a tab that failed to start (`start_session` already registered its terminal), and a respawn (profile switch, approval-mode restart) that finds its tab closed meanwhile. A respawn itself uses `stop_session`. Boot invokes `close_all_tabs` (after loading profiles) before `_restoreOpenTabs`.
+- `_closeTab(id)` invokes `close_tab` and drops the tab's JS-side bindings; every path that removes a tab from `sessionRegistry` goes through it: `closeSession`, the rollback of a tab that failed to start (`start_session` already registered its terminal), and a respawn (profile switch, approval-mode restart) that finds its tab closed meanwhile. A respawn itself stops the process with `stop_session` (profile switch) or `stop_session_if_idle` (approval-mode restart). Boot invokes `close_all_tabs` (after loading profiles) before `_restoreOpenTabs`.
 
 ## Lifecycle
 
